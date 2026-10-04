@@ -12,12 +12,12 @@ import { track } from '@/utils/events'
 import { openRandomPerson } from '@/utils/explore'
 import './index.scss'
 
-/** 热门运营位（§2.1 M1：MVP 仅静态运营位，V1.5 数据化） */
-const HOT_PEOPLE: Array<{ domain: DomainCode; names: string[] }> = [
-  { domain: 'tech', names: ['雷军', '马斯克', '黄仁勋', '奥特曼'] },
-  { domain: 'business', names: ['巴菲特', '张一鸣', '王传福', '董明珠'] },
-  { domain: 'ent', names: ['周杰伦', '吴京', '赵丽颖', '李子柒'] },
-  { domain: 'sports', names: ['姚明', '苏炳添', '全红婵', '梅西'] }
+/** 热门运营位（§2.1 M1：MVP 仅静态运营位，V1.5 数据化；heat 为静态热门指数） */
+const HOT_PEOPLE: Array<{ domain: DomainCode; names: string[]; heat: number; desc: string }> = [
+  { domain: 'tech', names: ['雷军', '马斯克', '黄仁勋', '奥特曼'], heat: 85, desc: '科技大佬\n最新动向' },
+  { domain: 'business', names: ['巴菲特', '张一鸣', '王传福', '董明珠'], heat: 64, desc: '商界人物\n热点速览' },
+  { domain: 'ent', names: ['周杰伦', '吴京', '赵丽颖', '李子柒'], heat: 72, desc: '文娱明星\n动态追踪' },
+  { domain: 'sports', names: ['姚明', '苏炳添', '全红婵', '梅西'], heat: 58, desc: '体坛名将\n赛场内外' }
 ]
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
@@ -75,19 +75,22 @@ export default function Index() {
 
   return (
     <View className='page-index glow-page safe-tab'>
-      {/* 问候区（参照样例 Hello + 用户名） */}
+      {/* 问候区（参照样例：头像 + Hello + 右侧铃铛） */}
       <View className='page-index__header'>
+        <View className='page-index__avatar'>{userId ? (nickname || '微').slice(0, 1) : '?'}</View>
         <View className='page-index__greet'>
           <Text className='page-index__hello'>Hello!</Text>
           <Text className='page-index__username'>{userId ? nickname || '名人观察员' : '名人观察员'}</Text>
         </View>
-        <Text className='page-index__date'>{dateLabel}</Text>
+        <View className='page-index__bell'>
+          <View className='page-index__bell-dot' />
+        </View>
       </View>
 
       {/* 主横幅卡（参照样例紫色卡 + 环形元素） */}
       <View className='page-index__banner'>
         <View className='page-index__banner-body'>
-          <Text className='page-index__banner-title'>今日名人雷达</Text>
+          <Text className='page-index__banner-title'>今日名人雷达 · {dateLabel}</Text>
           <Text className='page-index__banner-desc'>AI 联网整理公开动态\n生成可溯源的深度报告</Text>
           <View className='page-index__banner-btn' onClick={() => openRandomPerson()}>
             随机探索一位
@@ -168,7 +171,7 @@ export default function Index() {
         />
       )}
 
-      {/* 热门领域（双列卡片，参照样例 Task Groups 小卡） */}
+      {/* 热门领域（双列卡片，参照样例 In Progress 小卡：标签 + 标题 + 进度条） */}
       <View className='section-head'>
         <Text className='section-head__title'>热门领域</Text>
         <Text className='section-head__extra'>点击名人直接查看</Text>
@@ -176,7 +179,11 @@ export default function Index() {
       <View className='page-index__groups'>
         {HOT_PEOPLE.map((group) => (
           <View key={group.domain} className={`page-index__group page-index__group--${group.domain}`}>
-            <Text className='page-index__group-title'>{DOMAIN_META[group.domain].label}</Text>
+            <Text className='page-index__group-label'>{DOMAIN_META[group.domain].label}</Text>
+            <Text className='page-index__group-desc'>{group.desc}</Text>
+            <View className='page-index__group-bar'>
+              <View className='page-index__group-fill' style={{ width: `${group.heat}%` }} />
+            </View>
             <View className='page-index__group-chips'>
               {group.names.map((name) => (
                 <View

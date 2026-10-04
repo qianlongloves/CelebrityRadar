@@ -1,20 +1,37 @@
 @import '../../styles/variables.scss';
+@import './_bell.scss';
 
 .page-index {
   min-height: 100vh;
 
-  /* ===== 问候区（统一 32rpx 水平边距） ===== */
+  /* ===== 问候区（头像 + Hello + 铃铛，参照样例） ===== */
   &__header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 32rpx 32rpx 8rpx;
+    gap: 20rpx;
+    padding: 28rpx 44rpx 0;
+  }
+
+  &__avatar {
+    flex-shrink: 0;
+    width: 92rpx;
+    height: 92rpx;
+    border-radius: 50%;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    color: #fff;
+    font-size: 36rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   &__greet {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 4rpx;
+    gap: 6rpx;
+    min-width: 0;
   }
 
   &__hello {
@@ -23,19 +40,41 @@
   }
 
   &__username {
-    font-size: 40rpx;
+    font-size: 38rpx;
     font-weight: 600;
     color: $text-1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  &__date {
-    font-size: 24rpx;
-    color: $text-3;
+  &__bell {
+    flex-shrink: 0;
+    position: relative;
+    width: 56rpx;
+    height: 56rpx;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: $shadow-card;
+    background-image: $icon-bell;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 44% 44%;
+
+    &-dot {
+      position: absolute;
+      right: 12rpx;
+      top: 12rpx;
+      width: 12rpx;
+      height: 12rpx;
+      border-radius: 50%;
+      background: $accent-orange;
+    }
   }
 
   /* ===== 主横幅卡（紫色，参照样例） ===== */
   &__banner {
-    margin: 20rpx 32rpx 0;
+    margin: 40rpx 44rpx 0;
     padding: 36rpx 32rpx;
     border-radius: 48rpx;
     background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
@@ -55,7 +94,7 @@
 
   &__banner-title {
     color: #fff;
-    font-size: 36rpx;
+    font-size: 34rpx;
     font-weight: 600;
   }
 
@@ -66,24 +105,32 @@
     white-space: pre-line;
   }
 
+  /* 浅紫底紫字按钮（参照样例 View Task） */
   &__banner-btn {
-    margin-top: 14rpx;
+    margin-top: 16rpx;
     align-self: flex-start;
-    padding: 12rpx 36rpx;
+    display: flex;
+    align-items: center;
+    gap: 10rpx;
+    padding: 12rpx 30rpx;
     border-radius: 999rpx;
-    background: rgba(255, 255, 255, 0.18);
-    color: #fff;
+    background: $brand-weak;
+    color: $brand;
     font-size: 26rpx;
-    font-weight: 500;
-    border: 2rpx solid rgba(255, 255, 255, 0.35);
+    font-weight: 600;
+
+    &::after {
+      content: '→';
+      font-size: 26rpx;
+    }
   }
 
-  /* 环形装饰（conic-gradient 描边） */
+  /* 双环装饰（#8764FF 外环 + #EEE9FF 内环 + 百分比） */
   &__ring {
     width: 152rpx;
     height: 152rpx;
     border-radius: 50%;
-    background: conic-gradient(#fff 0 62%, rgba(255, 255, 255, 0.22) 62% 100%);
+    background: $brand-soft;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -94,18 +141,18 @@
     width: 112rpx;
     height: 112rpx;
     border-radius: 50%;
-    background: $brand-soft;
+    background: $brand-weak;
     display: flex;
     align-items: center;
     justify-content: center;
     color: #fff;
-    font-size: 34rpx;
+    font-size: 32rpx;
     font-weight: 600;
   }
 
-  /* ===== 搜索模块卡（半透明白 + 毛玻璃） ===== */
+  /* ===== 搜索模块卡 ===== */
   &__search {
-    margin: 24rpx 32rpx 0;
+    margin: 40rpx 44rpx 0;
     padding: 20rpx;
     border-radius: 38rpx;
     background: rgba(255, 255, 255, 0.66);
@@ -142,48 +189,78 @@
     color: $brand;
   }
 
-  /* ===== 热门领域双列卡 ===== */
+  /* ===== 热门领域双列卡（参照样例 In Progress：标签 + 标题 + 进度条） ===== */
   &__groups {
     display: flex;
     flex-wrap: wrap;
-    gap: 24rpx;
-    padding: 8rpx 32rpx 0;
+    gap: 32rpx;
+    padding: 20rpx 44rpx 0;
   }
 
   &__group {
-    width: calc(50% - 12rpx);
+    width: calc(50% - 16rpx);
     box-sizing: border-box;
     border-radius: 38rpx;
-    padding: 28rpx;
+    padding: 30rpx 28rpx;
     display: flex;
     flex-direction: column;
-    gap: 18rpx;
-    /* 半透明领域底色 */
-    &--tech { background: rgba(0, 135, 255, 0.08); }
-    &--business { background: rgba(255, 125, 83, 0.1); }
-    &--ent { background: rgba(236, 72, 153, 0.08); }
-    &--sports { background: rgba(16, 185, 129, 0.08); }
+    gap: 14rpx;
 
-    &-title {
-      font-size: 26rpx;
-      font-weight: 600;
-      color: $text-1;
+    &--tech { background: rgba(0, 135, 255, 0.1); }
+    &--business { background: rgba(255, 125, 83, 0.12); }
+    &--ent { background: rgba(236, 72, 153, 0.1); }
+    &--sports { background: rgba(16, 185, 129, 0.1); }
+
+    &-label {
+      font-size: 22rpx;
+      color: $text-2;
     }
+
+    &-desc {
+      font-size: 28rpx;
+      font-weight: 500;
+      color: $text-1;
+      line-height: 1.5;
+      white-space: pre-line;
+    }
+
+    /* 进度条：白底 + 领域色填充 */
+    &-bar {
+      height: 12rpx;
+      border-radius: 6rpx;
+      background: rgba(255, 255, 255, 0.9);
+      overflow: hidden;
+    }
+
+    &-fill {
+      height: 100%;
+      border-radius: 6rpx;
+    }
+
+    &--tech &-fill { background: $domain-tech; }
+    &--business &-fill { background: $domain-business; }
+    &--ent &-fill { background: $domain-ent; }
+    &--sports &-fill { background: $domain-sports; }
   }
 
   &__group-chips {
     display: flex;
     flex-wrap: wrap;
     gap: 14rpx;
+    margin-top: 6rpx;
   }
 
-  /* 半透明白胶囊 */
   &__gchip {
     padding: 10rpx 24rpx;
     border-radius: 999rpx;
-    background: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.85);
     color: $text-1;
     font-size: 24rpx;
     box-shadow: 0 4rpx 20rpx rgba(36, 37, 44, 0.04);
   }
+}
+
+/* 热门领域分区头与页面边距对齐（44rpx） */
+.page-index .section-head {
+  padding: 48rpx 44rpx 0;
 }

@@ -2,10 +2,14 @@
 @import '../styles/tabbar-icons.scss';
 
 .tabbar {
-  /* 撑起底栏高度 + 安全区（凸起部分 overflow 可见） */
+  /* 贴屏幕最底部（fixed 保险，兼容部分基础库容器定位差异） */
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 999;
   height: calc(112rpx + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
-  position: relative;
 
   &__inner {
     display: flex;
