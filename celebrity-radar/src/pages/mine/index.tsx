@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import Taro, { useDidShow } from '@tarojs/taro'
-import { View, Text } from '@tarojs/components'
+import { View, Text, Button } from '@tarojs/components'
 import { AtButton, AtList, AtListItem, AtAvatar } from 'taro-ui'
 import { useAuth } from '@/stores/auth'
 import { getTavilyKey, setTavilyKey, isKnowledgeModeEnabled, setKnowledgeMode } from '@/utils/settings'
+import { clearAllMyData } from '@/utils/data-deletion'
 import './index.scss'
 
 export default function Mine() {
@@ -33,20 +34,21 @@ export default function Mine() {
     Taro.showToast({ title: value ? '已保存（仅存本地）' : '已清除', icon: 'none' })
   }
 
-  /** 清空我的数据：本地设置（DB 侧删除在阶段 7 合规项统一处理） */
+  /** 清空我的数据：本地设置 + 云端（follows / favorites / history，§六.6） */
   const clearMyData = async () => {
     const res = await Taro.showModal({
       title: '清空我的数据',
-      content: '将清除本地保存的搜索源 key 与偏好设置，不可恢复。云端数据（关注/收藏/历史）可在举报反馈中申请删除。',
+      content: '将清除本地保存的搜索源 key 与偏好设置，并删除云端的关注、收藏、历史记录，不可恢复。',
       confirmText: '清除',
       confirmColor: '#EF4444'
     })
     if (!res.confirm) return
+    const ok = await clearAllMyData()
     setTavilyKey(null)
     setKnowledgeMode(false)
     setHasKey(false)
     setKnowledgeMode(false)
-    Taro.showToast({ title: '已清空本地数据', icon: 'none' })
+    Taro.showToast({ title: ok ? '已清空全部数据' : '本地已清空，云端删除失败请稍后重试', icon: 'none' })
   }
 
   const menus = [
@@ -60,7 +62,11 @@ export default function Mine() {
       note: '最近 50 条',
       onTap: () => Taro.navigateTo({ url: '/pages/collection/index?tab=history' })
     },
-    { title: '内容举报 / 反馈', note: '', onTap: () => Taro.showToast({ title: '阶段 7 开放', icon: 'none' }) }
+    {
+      title: '隐私与免责声明',
+      note: '隐私清单 · 免责文案',
+      onTap: () => Taro.navigateTo({ url: '/pages/agreement/index' })
+    }
   ]
 
   return (
@@ -115,6 +121,14 @@ export default function Mine() {
             />
           ))}
         </AtList>
+      </View>
+
+      <View className='card' style={{ padding: '8rpx 0' }}>
+        {/* 内容举报 / 反馈：微信客服会话（open-type=contact），需在小程序后台开通客服 */}
+        <Button className='page-mine__contact' openType='contact' hoverClass='none'>
+          <Text>内容举报 / 反馈</Text>
+          <Text className='page-mine__contact-note'>名誉投诉核实后下线对应内容</Text>
+        </Button>
       </View>
 
       <View className='card'>

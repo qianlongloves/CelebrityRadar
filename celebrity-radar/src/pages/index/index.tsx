@@ -7,6 +7,7 @@ import PersonCard from '@/components/person-card'
 import EmptyState from '@/components/empty-state'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
+import { track } from '@/utils/events'
 import './index.scss'
 
 /** 热门运营位（§2.1 M1：MVP 仅静态运营位，V1.5 数据化） */
@@ -41,6 +42,7 @@ export default function Index() {
     }
 
     setState({ phase: 'loading' })
+    track('search', { name })
     const res = await disambiguate(name)
     if (!res.ok) {
       setState({ phase: 'error', message: res.error })
@@ -59,6 +61,7 @@ export default function Index() {
 
   const openPerson = (name: string, domain: DomainCode) => {
     const personKey = buildPersonKey(name, domain)
+    track('disambiguate_selected', { personKey })
     Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}` })
   }
 

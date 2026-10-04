@@ -8,6 +8,7 @@ import { getOrBuildReport, ReportOutcome } from '@/utils/cache'
 import { Report } from '@/utils/report'
 import { favoriteQuote, favoriteReport, makeFavoriteId } from '@/utils/favorites'
 import { addHistory } from '@/utils/history'
+import { track } from '@/utils/events'
 import { useAuth } from '@/stores/auth'
 import { fromNow } from '@/utils/time'
 import './index.scss'
@@ -125,6 +126,7 @@ export default function ReportPage() {
   }
 
   const copyAll = (report: Report) => {
+    track('share', { personKey: report.personKey, way: 'copy_all' })
     const lines = [
       `【${report.name} · 深度报告】`,
       report.intro,

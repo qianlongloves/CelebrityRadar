@@ -5,7 +5,8 @@ export default defineAppConfig({
     'pages/mine/index',
     'pages/profile/index',
     'pages/report/index',
-    'pages/collection/index'
+    'pages/collection/index',
+    'pages/agreement/index'
   ],
   tabBar: {
     color: '#999999',
