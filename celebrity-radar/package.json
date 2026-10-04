@@ -1,0 +1,51 @@
+{
+  "name": "celebrity-radar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "名人雷达 MVP —— Taro(React) + Taro UI 微信小程序",
+  "scripts": {
+    "dev:weapp": "npm run build:weapp -- --watch",
+    "build:weapp": "taro build --type weapp",
+    "build:h5": "taro build --type h5"
+  },
+  "browserslist": [
+    "last 3 versions",
+    "Android >= 4.1",
+    "ios >= 8"
+  ],
+  "dependencies": {
+    "@babel/runtime": "^7.24.0",
+    "@tarojs/components": "^3.6.25",
+    "@tarojs/helper": "^3.6.25",
+    "@tarojs/plugin-platform-alipay": "^3.6.25",
+    "@tarojs/plugin-platform-h5": "^3.6.25",
+    "@tarojs/plugin-platform-jd": "^3.6.25",
+    "@tarojs/plugin-platform-qq": "^3.6.25",
+    "@tarojs/plugin-platform-swan": "^3.6.25",
+    "@tarojs/plugin-platform-tt": "^3.6.25",
+    "@tarojs/plugin-platform-weapp": "^3.6.25",
+    "@tarojs/react": "^3.6.25",
+    "@tarojs/runtime": "^3.6.25",
+    "@tarojs/shared": "^3.6.25",
+    "@tarojs/taro": "^3.6.25",
+    "dayjs": "^1.11.11",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "taro-ui": "^3.0.8",
+    "zod": "^3.23.8",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@tarojs/cli": "^3.6.25",
+    "@tarojs/plugin-framework-react": "^3.6.25",
+    "@tarojs/webpack5-runner": "^3.6.25",
+    "@types/node": "^20.12.0",
+    "@types/react": "^18.2.0",
+    "@types/webpack-env": "^1.18.0",
+    "babel-preset-taro": "^3.6.25",
+    "sass": "^1.69.0",
+    "typescript": "^5.4.0",
+    "webpack": "~5.91.0"
+  }
+}

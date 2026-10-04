@@ -1,0 +1,22 @@
+.page-index {
+  padding: 32rpx 24rpx;
+
+  &__hero {
+    padding: 32rpx 8rpx 24rpx;
+  }
+
+  &__title {
+    font-size: 44rpx;
+    font-weight: 600;
+  }
+
+  &__subtitle {
+    margin-top: 8rpx;
+    color: #7b8794;
+    font-size: 26rpx;
+  }
+
+  &__hint {
+    margin: 16rpx 8rpx 24rpx;
+  }
+}

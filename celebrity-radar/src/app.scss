@@ -1,0 +1,23 @@
+/* 全局样式：浅色卡片风（§4.3） */
+page {
+  background: #f6f7f9;
+  font-size: 28rpx;
+  color: #1f2933;
+}
+
+.card {
+  background: #ffffff;
+  border-radius: 24rpx;
+  padding: 24rpx;
+  margin: 16rpx 24rpx;
+  box-shadow: 0 2rpx 8rpx rgba(31, 41, 51, 0.04);
+}
+
+.page-padding {
+  padding: 24rpx;
+}
+
+.text-secondary {
+  color: #7b8794;
+  font-size: 24rpx;
+}
