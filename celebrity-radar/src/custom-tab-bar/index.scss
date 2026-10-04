@@ -2,23 +2,21 @@
 @import '../styles/tabbar-icons.scss';
 
 .tabbar {
-  /* 贴屏幕最底部（fixed 保险，兼容部分基础库容器定位差异） */
+  /* 贴屏幕最底部：背景放在根容器（含安全区 padding，避免底部透明缝） */
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 999;
-  height: calc(112rpx + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
+  background: rgba(238, 233, 255, 0.92);
+  border-radius: 44rpx 44rpx 0 0;
+  box-shadow: 0 -8rpx 40rpx rgba(95, 51, 225, 0.08);
 
   &__inner {
     display: flex;
     align-items: center;
     height: 112rpx;
-    /* 半透明浅紫底栏（Figma #EEE9FF），顶部大圆角 */
-    background: rgba(238, 233, 255, 0.92);
-    border-radius: 44rpx 44rpx 0 0;
-    box-shadow: 0 -8rpx 40rpx rgba(95, 51, 225, 0.08);
   }
 
   /* ===== 普通槽位 ===== */

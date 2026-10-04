@@ -4,24 +4,31 @@
   display: flex;
   align-items: center;
   gap: 20rpx;
-  padding: 24rpx;
-  background: #fff;
+  padding: 26rpx 28rpx;
+  background: rgba(255, 255, 255, 0.86);
   border-radius: $radius-lg;
-  margin: 12rpx 24rpx;
-  box-shadow: 0 2rpx 12rpx rgba(17, 24, 39, 0.04);
+  margin: 12rpx 44rpx;
+  box-shadow: $shadow-card;
 
+  /* 领域色头像 */
   &__avatar {
     flex-shrink: 0;
     width: 88rpx;
     height: 88rpx;
     border-radius: 50%;
-    background: linear-gradient(135deg, #dbeafe, #eff6ff);
-    color: $brand;
+    color: #fff;
     font-size: 36rpx;
     font-weight: 600;
     display: flex;
     align-items: center;
     justify-content: center;
+
+    &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+    &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+    &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+    &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+    &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+    &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
   }
 
   &__main {
@@ -40,13 +47,16 @@
     font-weight: 600;
   }
 
+  /* 简介两行截断 */
   &__brief {
     margin-top: 8rpx;
     font-size: 24rpx;
     color: $text-2;
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   &__action {

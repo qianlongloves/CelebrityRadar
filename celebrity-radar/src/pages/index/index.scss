@@ -189,6 +189,34 @@
     color: $brand;
   }
 
+  /* ===== 候选领域筛选 chips ===== */
+  &__filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14rpx;
+    padding: 12rpx 44rpx 4rpx;
+  }
+
+  &__filter {
+    padding: 10rpx 30rpx;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $brand;
+    font-size: 24rpx;
+    box-shadow: $shadow-card;
+
+    &--active {
+      background: $brand;
+      color: #fff;
+      font-weight: 600;
+    }
+  }
+
+  &__filter-empty {
+    text-align: center;
+    padding: 40rpx 44rpx;
+  }
+
   /* ===== 热门领域：一行一卡（全宽，参照样例 Task Groups 列表节奏） ===== */
   &__groups {
     display: flex;

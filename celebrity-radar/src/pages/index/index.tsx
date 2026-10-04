@@ -33,6 +33,7 @@ type SearchState =
 export default function Index() {
   const [keyword, setKeyword] = useState('')
   const [state, setState] = useState<SearchState>({ phase: 'idle' })
+  const [domainFilter, setDomainFilter] = useState<DomainCode | 'all'>('all')
   const { nickname, userId } = useAuth()
 
   const now = new Date()
@@ -50,6 +51,7 @@ export default function Index() {
     }
 
     setState({ phase: 'loading' })
+    setDomainFilter('all')
     track('search', { name })
     const res = await disambiguate(name)
     if (!res.ok) {
@@ -72,6 +74,12 @@ export default function Index() {
     track('disambiguate_selected', { personKey })
     Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}` })
   }
+
+  /* 候选领域筛选（派生值） */
+  const candidates = state.phase === 'candidates' ? state.candidates : []
+  const candidateDomains = Array.from(new Set(candidates.map((c) => c.domain)))
+  const filteredCandidates =
+    domainFilter === 'all' ? candidates : candidates.filter((c) => c.domain === domainFilter)
 
   return (
     <View className='page-index glow-page safe-tab'>
@@ -134,7 +142,29 @@ export default function Index() {
               <Text className='count-badge'>{state.candidates.length}</Text>
             </Text>
           </View>
-          {state.candidates.map((c) => (
+
+          {/* 领域筛选（多于一个领域时展示） */}
+          {candidateDomains.length > 1 && (
+            <View className='page-index__filters'>
+              <View
+                className={`page-index__filter ${domainFilter === 'all' ? 'page-index__filter--active' : ''}`}
+                onClick={() => setDomainFilter('all')}
+              >
+                全部
+              </View>
+              {candidateDomains.map((d) => (
+                <View
+                  key={d}
+                  className={`page-index__filter ${domainFilter === d ? 'page-index__filter--active' : ''}`}
+                  onClick={() => setDomainFilter(d)}
+                >
+                  {DOMAIN_META[d].label}
+                </View>
+              ))}
+            </View>
+          )}
+
+          {filteredCandidates.map((c) => (
             <PersonCard
               key={`${c.name}#${c.domain}`}
               person={{ personKey: buildPersonKey(c.name, c.domain), name: c.name, domain: c.domain, brief: c.brief }}
@@ -143,6 +173,11 @@ export default function Index() {
               onClick={(p) => openPerson(p.name, p.domain)}
             />
           ))}
+
+          {filteredCandidates.length === 0 && (
+            <View className='page-index__filter-empty text-tertiary'>该领域暂无候选，试试其他筛选</View>
+          )}
+
           <View className='page-index__fallback text-tertiary' onClick={() => setState({ phase: 'notfound' })}>
             都不是 TA？补充领域关键词再试 →
           </View>
@@ -202,10 +237,6 @@ export default function Index() {
             </View>
           </View>
         ))}
-      </View>
-
-      <View className='disclaimer'>
-        内容由 AI 基于公开网络信息生成，仅供参考，不代表本平台立场
       </View>
     </View>
   )

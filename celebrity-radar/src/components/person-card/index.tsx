@@ -26,7 +26,7 @@ export default function PersonCard({ person, actionText, onAction, onClick }: Pe
   const meta = DOMAIN_META[person.domain] ?? DOMAIN_META.other
   return (
     <View className='person-card' onClick={() => onClick?.(person)}>
-      <View className='person-card__avatar'>{person.name.slice(0, 1)}</View>
+      <View className={`person-card__avatar person-card__avatar--${person.domain}`}>{person.name.slice(0, 1)}</View>
       <View className='person-card__main'>
         <View className='person-card__name-row'>
           <Text className='person-card__name'>{person.name}</Text>
