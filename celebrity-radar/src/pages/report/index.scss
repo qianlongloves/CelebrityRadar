@@ -97,6 +97,11 @@
     padding: 20rpx 0;
     border-bottom: 1rpx solid $line;
 
+    &-ops {
+      display: flex;
+      gap: 24rpx;
+    }
+
     &:last-child {
       border-bottom: none;
       padding-bottom: 4rpx;

@@ -1,0 +1,55 @@
+.page-collection {
+  min-height: 100vh;
+
+  &__loading {
+    padding: 96rpx 0;
+  }
+
+  &__tabs {
+    margin-top: 0;
+  }
+
+  &__quote,
+  &__report,
+  &__hist {
+    display: block;
+  }
+
+  &__quote-person {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__quote-text {
+    margin-top: 14rpx;
+    font-size: 30rpx;
+    line-height: 1.7;
+    font-weight: 500;
+  }
+
+  &__foot {
+    margin-top: 14rpx;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8rpx 24rpx;
+  }
+
+  &__hist {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__op {
+    color: #64748b;
+    font-size: 24rpx;
+  }
+}

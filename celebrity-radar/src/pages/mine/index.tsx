@@ -50,8 +50,16 @@ export default function Mine() {
   }
 
   const menus = [
-    { title: '我的收藏', note: '名言 / 报告', onTap: () => Taro.showToast({ title: '阶段 6 开放', icon: 'none' }) },
-    { title: '查询历史', note: '最近 50 条', onTap: () => Taro.showToast({ title: '阶段 6 开放', icon: 'none' }) },
+    {
+      title: '我的收藏',
+      note: '名言 / 报告',
+      onTap: () => Taro.navigateTo({ url: '/pages/collection/index?tab=favorites' })
+    },
+    {
+      title: '查询历史',
+      note: '最近 50 条',
+      onTap: () => Taro.navigateTo({ url: '/pages/collection/index?tab=history' })
+    },
     { title: '内容举报 / 反馈', note: '', onTap: () => Taro.showToast({ title: '阶段 7 开放', icon: 'none' }) }
   ]
 

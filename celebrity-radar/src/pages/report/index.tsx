@@ -6,6 +6,9 @@ import { DOMAIN_META, DomainCode } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
 import { getOrBuildReport, ReportOutcome } from '@/utils/cache'
 import { Report } from '@/utils/report'
+import { favoriteQuote, favoriteReport, makeFavoriteId } from '@/utils/favorites'
+import { addHistory } from '@/utils/history'
+import { useAuth } from '@/stores/auth'
 import { fromNow } from '@/utils/time'
 import './index.scss'
 
@@ -29,6 +32,8 @@ export default function ReportPage() {
   const router = useRouter()
   const personKey = decodeURIComponent(router.params.personKey || '')
   const [state, setState] = useState<PageState>({ phase: 'loading' })
+  const [reportFaved, setReportFaved] = useState(false)
+  const [favedQuotes, setFavedQuotes] = useState<Set<string>>(new Set())
 
   const name = personKey.split('#')[0] || '名人'
   const domain = (personKey.split('#')[1] || 'other') as DomainCode
@@ -68,10 +73,55 @@ export default function ReportPage() {
 
   useEffect(() => {
     void load(false)
+    void addHistory(personKey, name)
   }, [load])
+
+  /** 进入页面 / 报告就绪时同步收藏状态 */
+  useEffect(() => {
+    const userId = useAuth.getState().userId
+    const rep = state.phase === 'ready' ? state.report : null
+    if (!userId || !personKey) return
+    void (async () => {
+      const ids = rep?.quotes.map((q) => makeFavoriteId(userId, 'quote', `${personKey}:${q.text}`)) ?? []
+      const { table } = await import('@/utils/db')
+      const { data } = await table('favorites')
+        .select('id')
+        .in('id', [makeFavoriteId(userId, 'report', personKey), ...ids])
+      const rows = (data as Array<{ id: string }>) ?? []
+      setReportFaved(rows.some((r) => r.id === makeFavoriteId(userId, 'report', personKey)))
+      setFavedQuotes(new Set(rows.map((r) => r.id)))
+    })()
+  }, [personKey, state])
 
   const copyQuote = (text: string, source: string) => {
     Taro.setClipboardData({ data: `${text}\n—— 来源：${source}` })
+  }
+
+  const toggleQuoteFav = async (q: Report['quotes'][number]) => {
+    const ok = await favoriteQuote(personKey, name, q)
+    if (!ok) return
+    const userId = useAuth.getState().userId
+    if (!userId) return
+    const id = makeFavoriteId(userId, 'quote', `${personKey}:${q.text}`)
+    setFavedQuotes((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    Taro.showToast({ title: favedQuotes.has(id) ? '已取消收藏' : '已收藏', icon: 'none' })
+  }
+
+  const toggleReportFav = async () => {
+    if (!report) return
+    const ok = await favoriteReport(personKey, name, {
+      heat: report.heat,
+      mode: report.mode,
+      generatedAt: report.generatedAt
+    })
+    if (!ok) return
+    setReportFaved(true)
+    Taro.showToast({ title: '已收藏报告', icon: 'none' })
   }
 
   const copyAll = (report: Report) => {
@@ -212,17 +262,27 @@ export default function ReportPage() {
           {report.quotes.length > 0 && (
             <View className='card'>
               <View className='card-title'>经典名言</View>
-              {report.quotes.map((q, i) => (
-                <View key={i} className='page-report__quote'>
-                  <View className='page-report__quote-text'>「{q.text}」</View>
-                  <View className='page-report__quote-foot'>
-                    <Text className='text-tertiary'>{q.context || '公开场合'}</Text>
-                    <Text className='page-report__copy-link' onClick={() => copyQuote(q.text, q.source)}>
-                      复制这句
-                    </Text>
+              {report.quotes.map((q, i) => {
+                const userId = useAuth.getState().userId
+                const favId = userId ? makeFavoriteId(userId, 'quote', `${personKey}:${q.text}`) : ''
+                const faved = favId && favedQuotes.has(favId)
+                return (
+                  <View key={i} className='page-report__quote'>
+                    <View className='page-report__quote-text'>「{q.text}」</View>
+                    <View className='page-report__quote-foot'>
+                      <Text className='text-tertiary'>{q.context || '公开场合'}</Text>
+                      <View className='page-report__quote-ops'>
+                        <Text className='page-report__copy-link' onClick={() => void toggleQuoteFav(q)}>
+                          {faved ? '已收藏' : '收藏'}
+                        </Text>
+                        <Text className='page-report__copy-link' onClick={() => copyQuote(q.text, q.source)}>
+                          复制这句
+                        </Text>
+                      </View>
+                    </View>
                   </View>
-                </View>
-              ))}
+                )
+              })}
             </View>
           )}
 
@@ -259,6 +319,9 @@ export default function ReportPage() {
           </View>
 
           <View className='page-report__actions'>
+            <AtButton type='secondary' circle onClick={() => void toggleReportFav()}>
+              {reportFaved ? '已收藏' : '收藏报告'}
+            </AtButton>
             <AtButton type='secondary' circle onClick={() => copyAll(report)}>
               复制全文
             </AtButton>
