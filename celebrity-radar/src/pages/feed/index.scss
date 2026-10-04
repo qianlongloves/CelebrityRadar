@@ -2,4 +2,44 @@
 
 .page-feed {
   min-height: 100vh;
+
+  &__loading {
+    padding: 96rpx 0;
+  }
+
+  &__item {
+    &-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    &-title {
+      margin-top: 14rpx;
+      font-size: 30rpx;
+      font-weight: 600;
+      line-height: 1.5;
+    }
+
+    &-summary {
+      margin-top: 10rpx;
+      line-height: 1.6;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+    }
+
+    &-src {
+      margin-top: 14rpx;
+      display: flex;
+      align-items: center;
+      gap: 16rpx;
+    }
+  }
+
+  &__copy {
+    color: $brand;
+    font-size: 22rpx;
+  }
 }

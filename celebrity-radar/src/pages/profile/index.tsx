@@ -1,26 +1,51 @@
 import { useState } from 'react'
-import Taro, { useRouter } from '@tarojs/taro'
+import Taro, { useDidShow, useRouter } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
-import { AtTabs, AtButton, AtIcon } from 'taro-ui'
-import { DOMAIN_META, DomainCode } from '@/config/domains'
+import { AtTabs, AtButton, AtActivityIndicator } from 'taro-ui'
+import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
+import { getCachedReport } from '@/utils/cache'
+import { Report } from '@/utils/report'
+import { isFollowed, toggleFollow } from '@/utils/follows'
+import { fromNow } from '@/utils/time'
 import './index.scss'
 
-/** 名人主页（M2 简版：动态 / 名言两 Tab）
- *  路由参数：personKey（§4.1）。数据接入在阶段 4/5。 */
+/** 名人主页（M2 简版：动态 / 名言两 Tab，数据读报告缓存，不触发生成） */
 export default function Profile() {
   const router = useRouter()
-  const personKey = router.params.personKey || ''
-  // 占位：阶段 5 接入真实数据后由 query 读取（demo 数据展示布局）
-  const name = decodeURIComponent(personKey.split('#')[0] || '名人')
-  const domain = (personKey.split('#')[1] || 'other') as DomainCode
-  const heat = 78
+  const personKey = decodeURIComponent(router.params.personKey || '')
+  const parsed = parsePersonKey(personKey)
+  const name = parsed?.name ?? '名人'
+  const domain: DomainCode = parsed?.domain ?? 'other'
 
+  const [loading, setLoading] = useState(true)
+  const [report, setReport] = useState<Report | null>(null)
+  const [followed, setFollowed] = useState(false)
   const [tab, setTab] = useState(0)
+
+  const load = async () => {
+    setLoading(true)
+    const [r, f] = await Promise.all([getCachedReport(personKey), isFollowed(personKey)])
+    setReport(r)
+    setFollowed(f)
+    setLoading(false)
+  }
+
+  useDidShow(() => {
+    void load()
+  })
 
   const goReport = () => {
     Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}` })
   }
+
+  const onToggleFollow = async () => {
+    const next = await toggleFollow(personKey)
+    setFollowed(next)
+    Taro.showToast({ title: next ? '已关注' : '已取消关注', icon: 'none' })
+  }
+
+  const heat = report?.heat ?? 0
 
   return (
     <View className='page-profile safe-bottom'>
@@ -30,9 +55,11 @@ export default function Profile() {
           <View className='page-profile__meta'>
             <View className='page-profile__name-row'>
               <Text className='page-profile__name'>{name}</Text>
-              <View className={`chip chip--${domain}`}>{DOMAIN_META[domain]?.label ?? '其他'}</View>
+              <View className={`chip chip--${domain}`}>{DOMAIN_META[domain].label}</View>
             </View>
-            <View className='text-tertiary'>公开信息整理 · 头像为占位（§六.4）</View>
+            <View className='text-tertiary'>
+              {report ? `报告生成于 ${fromNow(report.generatedAt)}` : '公开信息整理 · 头像为占位'}
+            </View>
           </View>
         </View>
         <View className='page-profile__heat'>
@@ -44,26 +71,76 @@ export default function Profile() {
         </View>
         <View className='page-profile__actions'>
           <AtButton type='primary' size='small' className='page-profile__btn' onClick={goReport}>
-            生成深度报告
+            深度报告
           </AtButton>
-          <AtButton type='secondary' size='small' className='page-profile__btn' onClick={() => Taro.showToast({ title: '阶段 4 接入关注', icon: 'none' })}>
-            + 关注
+          <AtButton
+            type={followed ? 'secondary' : 'primary'}
+            size='small'
+            className='page-profile__btn'
+            onClick={() => void onToggleFollow()}
+          >
+            {followed ? '已关注' : '+ 关注'}
           </AtButton>
         </View>
       </View>
 
-      <AtTabs
-        current={tab}
-        tabList={[{ title: '动态' }, { title: '名言' }]}
-        onClick={setTab}
-        className='page-profile__tabs'
-      >
-        {tab === 0 ? (
-          <EmptyState icon='📰' title='动态加载中' desc='近期公开动态将在这里展示（带来源与时间）' />
-        ) : (
-          <EmptyState icon='💬' title='名言整理中' desc='经典语录将按主题分类展示，可复制（自动附来源）' />
-        )}
-      </AtTabs>
+      {loading && <AtActivityIndicator mode='center' content='加载中…' className='page-profile__loading' />}
+
+      {!loading && !report && (
+        <EmptyState
+          icon='🗂'
+          title='还没有生成过报告'
+          desc='生成后将在这里展示 TA 的近期动态与经典名言'
+          actionText='生成深度报告'
+          onAction={goReport}
+        />
+      )}
+
+      {!loading && report && (
+        <AtTabs
+          current={tab}
+          tabList={[
+            { title: `动态 (${report.dynamics.length})` },
+            { title: `名言 (${report.quotes.length})` }
+          ]}
+          onClick={setTab}
+          className='page-profile__tabs'
+        >
+          {tab === 0 ? (
+            report.dynamics.length === 0 ? (
+              <EmptyState icon='📰' title='暂无近期动态' desc='该名人近 30 天无公开新闻' />
+            ) : (
+              report.dynamics.map((d, i) => (
+                <View key={i} className='card page-profile__dyn'>
+                  <View className='page-profile__dyn-head'>
+                    <Text className='text-tertiary'>{d.date}</Text>
+                    <Text className='text-tertiary'>{d.source}</Text>
+                  </View>
+                  <View className='page-profile__dyn-title'>{d.title}</View>
+                  {d.summary && <View className='text-secondary page-profile__dyn-summary'>{d.summary}</View>}
+                </View>
+              ))
+            )
+          ) : report.quotes.length === 0 ? (
+            <EmptyState icon='💬' title='暂无整理名言' desc='名言来自公开资料与新闻素材' />
+          ) : (
+            report.quotes.map((q, i) => (
+              <View key={i} className='card page-profile__quote'>
+                <View className='page-profile__quote-text'>「{q.text}」</View>
+                <View className='page-profile__quote-foot'>
+                  <Text className='text-tertiary'>{q.context || '公开场合'}</Text>
+                  <Text
+                    className='page-profile__copy'
+                    onClick={() => Taro.setClipboardData({ data: `${q.text}\n—— 来源：${q.source}` })}
+                  >
+                    复制这句
+                  </Text>
+                </View>
+              </View>
+            ))
+          )}
+        </AtTabs>
+      )}
 
       <View className='disclaimer'>内容由 AI 基于公开网络信息生成，仅供参考</View>
     </View>

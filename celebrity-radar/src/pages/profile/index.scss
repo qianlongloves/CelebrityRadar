@@ -71,4 +71,47 @@
   &__tabs {
     margin-top: 8rpx;
   }
+
+  &__loading {
+    padding: 64rpx 0;
+  }
+
+  &__dyn {
+    &-head {
+      display: flex;
+      justify-content: space-between;
+    }
+
+    &-title {
+      margin-top: 12rpx;
+      font-size: 28rpx;
+      font-weight: 600;
+      line-height: 1.5;
+    }
+
+    &-summary {
+      margin-top: 8rpx;
+      line-height: 1.6;
+    }
+  }
+
+  &__quote {
+    &-text {
+      font-size: 30rpx;
+      line-height: 1.7;
+      font-weight: 500;
+    }
+
+    &-foot {
+      margin-top: 14rpx;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+  }
+
+  &__copy {
+    color: $brand;
+    font-size: 22rpx;
+  }
 }

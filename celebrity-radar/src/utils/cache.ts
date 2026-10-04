@@ -191,6 +191,12 @@ export async function getOrBuildReport(
 
 /* ===== 动态缓存 + 刷新配额（§3.7） ===== */
 
+/** 只读缓存（不触发生成、不抢锁）：名人主页 / 关注流用 */
+export async function getCachedReport(personKey: string): Promise<Report | null> {
+  const row = await getRow(personKey)
+  return row?.state === 'ready' ? row.report : null
+}
+
 export async function getFeed(personKey: string): Promise<NewsItem[]> {
   const { data, error } = await table('feed_cache').select('*').eq('id', personKey).maybeSingle()
   if (error) diagLog('warn', 'db', `feed_cache 读取失败：${error.message ?? error}`)
@@ -216,6 +222,39 @@ export async function consumeRefreshQuota(userId: string): Promise<{ allowed: bo
     await table('refresh_quota').update({ count: count + 1 }).eq('id', id)
   }
   return { allowed: true, remaining: DAILY_REFRESH_LIMIT - count - 1 }
+}
+
+/** 关注流下拉刷新：整次动作消耗 1 配额，刷新全部关注人物（Tavily 上限 10 人次） */
+export async function refreshAllFeeds(
+  follows: Array<{ person_key: string; name: string }>
+): Promise<{ ok: boolean; message: string; refreshed: number }> {
+  const userId = useAuth.getState().userId
+  if (!userId) return { ok: false, message: '未登录', refreshed: 0 }
+  if (follows.length === 0) return { ok: true, message: '暂无关注', refreshed: 0 }
+  if (getTavilyKey() === null) return { ok: false, message: '未配置搜索源 key，展示缓存动态', refreshed: 0 }
+
+  const quota = await consumeRefreshQuota(userId)
+  if (!quota.allowed) {
+    return { ok: false, message: `今日刷新已达上限（${DAILY_REFRESH_LIMIT} 次），明日再来`, refreshed: 0 }
+  }
+
+  let refreshed = 0
+  for (const f of follows.slice(0, 10)) {
+    try {
+      const news = await fetchNews(f.name)
+      if (news && news.length > 0) {
+        await table('feed_cache').upsert(
+          { id: f.person_key, items: news, fetched_at: new Date().toISOString() },
+          { onConflict: 'id' }
+        )
+        refreshed++
+      }
+    } catch (err) {
+      diagLog('warn', 'http', `feed 刷新失败（${f.name}）：${String(err)}`)
+    }
+  }
+  track('refresh_feed', { count: follows.length })
+  return { ok: true, message: `已刷新 ${refreshed} 位名人（剩余 ${quota.remaining} 次刷新）`, refreshed }
 }
 
 /** 关注流刷新：配额 → Tavily → feed_cache 更新 */
