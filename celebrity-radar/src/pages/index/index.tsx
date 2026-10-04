@@ -5,6 +5,7 @@ import { AtSearchBar, AtButton, AtActivityIndicator } from 'taro-ui'
 import { DOMAIN_META, DomainCode, buildPersonKey } from '@/config/domains'
 import PersonCard from '@/components/person-card'
 import EmptyState from '@/components/empty-state'
+import { useAuth } from '@/stores/auth'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
 import { track } from '@/utils/events'
@@ -18,6 +19,8 @@ const HOT_PEOPLE: Array<{ domain: DomainCode; names: string[] }> = [
   { domain: 'sports', names: ['姚明', '苏炳添', '全红婵', '梅西'] }
 ]
 
+const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
+
 type SearchState =
   | { phase: 'idle' }
   | { phase: 'loading' }
@@ -29,6 +32,10 @@ type SearchState =
 export default function Index() {
   const [keyword, setKeyword] = useState('')
   const [state, setState] = useState<SearchState>({ phase: 'idle' })
+  const { nickname, userId } = useAuth()
+
+  const now = new Date()
+  const dateLabel = `${now.getMonth() + 1}月${now.getDate()}日 · 周${WEEKDAYS[now.getDay()]}`
 
   /** 搜索流（§4.2）：一级敏感拦截 → LLM 消歧 → 选定 personKey → 报告页 */
   const doSearch = async () => {
@@ -66,14 +73,31 @@ export default function Index() {
   }
 
   return (
-    <View className='page-index safe-bottom'>
-      <View className='page-index__hero'>
-        <View className='page-index__title'>名人雷达</View>
-        <View className='page-index__subtitle'>
-          联网抓取近期公开动态，AI 整理成一份可溯源的报告
+    <View className='page-index glow-page safe-bottom'>
+      {/* 问候区（参照样例 Hello + 用户名） */}
+      <View className='page-index__header'>
+        <View className='page-index__greet'>
+          <Text className='page-index__hello'>Hello!</Text>
+          <Text className='page-index__username'>{userId ? nickname || '名人观察员' : '名人观察员'}</Text>
+        </View>
+        <Text className='page-index__date'>{dateLabel}</Text>
+      </View>
+
+      {/* 主横幅卡（参照样例紫色卡 + 环形元素） */}
+      <View className='page-index__banner'>
+        <View className='page-index__banner-body'>
+          <Text className='page-index__banner-title'>今日名人雷达</Text>
+          <Text className='page-index__banner-desc'>AI 联网整理公开动态\n生成可溯源的深度报告</Text>
+          <View className='page-index__banner-btn' onClick={() => setKeyword('')}>
+            开始探索
+          </View>
+        </View>
+        <View className='page-index__ring'>
+          <View className='page-index__ring-inner'>AI</View>
         </View>
       </View>
 
+      {/* 搜索区 */}
       <View className='page-index__search'>
         <AtSearchBar
           value={keyword}
@@ -101,8 +125,10 @@ export default function Index() {
       {state.phase === 'candidates' && (
         <View>
           <View className='section-head'>
-            <Text className='section-head__title'>TA 是哪一位？</Text>
-            <Text className='section-head__extra'>共 {state.candidates.length} 位候选</Text>
+            <Text className='section-head__title'>
+              TA 是哪一位？
+              <Text className='count-badge'>{state.candidates.length}</Text>
+            </Text>
           </View>
           {state.candidates.map((c) => (
             <PersonCard
@@ -141,25 +167,29 @@ export default function Index() {
         />
       )}
 
-      {HOT_PEOPLE.map((group) => (
-        <View key={group.domain}>
-          <View className='section-head'>
-            <Text className='section-head__title'>{DOMAIN_META[group.domain].label} · 热门</Text>
-            <Text className='section-head__extra'>静态运营位</Text>
+      {/* 热门领域（双列卡片，参照样例 Task Groups 小卡） */}
+      <View className='section-head'>
+        <Text className='section-head__title'>热门领域</Text>
+        <Text className='section-head__extra'>点击名人直接查看</Text>
+      </View>
+      <View className='page-index__groups'>
+        {HOT_PEOPLE.map((group) => (
+          <View key={group.domain} className={`page-index__group page-index__group--${group.domain}`}>
+            <Text className='page-index__group-title'>{DOMAIN_META[group.domain].label}</Text>
+            <View className='page-index__group-chips'>
+              {group.names.map((name) => (
+                <View
+                  key={name}
+                  className='page-index__gchip'
+                  onClick={() => openPerson(name, group.domain)}
+                >
+                  {name}
+                </View>
+              ))}
+            </View>
           </View>
-          <View className='page-index__chips'>
-            {group.names.map((name) => (
-              <View
-                key={name}
-                className={`chip page-index__chip chip--${group.domain}`}
-                onClick={() => setKeyword(name)}
-              >
-                {name}
-              </View>
-            ))}
-          </View>
-        </View>
-      ))}
+        ))}
+      </View>
 
       <View className='disclaimer'>
         内容由 AI 基于公开网络信息生成，仅供参考，不代表本平台立场

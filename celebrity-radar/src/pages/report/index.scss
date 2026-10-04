@@ -85,12 +85,23 @@
 
   &__sentiment {
     font-size: 20rpx;
-    padding: 2rpx 14rpx;
+    padding: 6rpx 18rpx;
     border-radius: 999rpx;
+    display: inline-flex;
+    align-items: center;
+    gap: 8rpx;
+
+    &::before {
+      content: '';
+      width: 12rpx;
+      height: 12rpx;
+      border-radius: 50%;
+      background: currentColor;
+    }
 
     &.positive { background: rgba(16, 185, 129, 0.1); color: $success; }
-    &.neutral { background: rgba(107, 114, 128, 0.1); color: $domain-other; }
-    &.negative { background: rgba(239, 68, 68, 0.1); color: $danger; }
+    &.neutral { background: $brand-weak; color: $brand-soft; }
+    &.negative { background: $accent-orange-bg; color: $accent-orange; }
   }
 
   &__quote {

@@ -52,7 +52,7 @@ export default function Collection() {
   }
 
   return (
-    <View className='page-collection safe-bottom'>
+    <View className='page-collection glow-page safe-bottom'>
       {loading && <AtActivityIndicator mode='center' content='加载中…' className='page-collection__loading' />}
 
       {!loading && (

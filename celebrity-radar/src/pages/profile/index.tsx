@@ -70,13 +70,13 @@ export default function Profile() {
           <Text className='page-profile__heat-value'>{heat} / 100</Text>
         </View>
         <View className='page-profile__actions'>
-          <AtButton type='primary' size='small' className='page-profile__btn' onClick={goReport}>
+          <AtButton type='secondary' size='small' className='page-profile__btn' onClick={goReport}>
             深度报告
           </AtButton>
           <AtButton
-            type={followed ? 'secondary' : 'primary'}
+            type='secondary'
             size='small'
-            className='page-profile__btn'
+            className='page-profile__btn page-profile__btn--ghost'
             onClick={() => void onToggleFollow()}
           >
             {followed ? '已关注' : '+ 关注'}

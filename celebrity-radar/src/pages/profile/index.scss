@@ -2,7 +2,12 @@
 
 .page-profile {
   &__info {
-    margin-top: 24rpx;
+    margin: 24rpx;
+    padding: 36rpx 32rpx;
+    border-radius: 48rpx;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 16rpx 48rpx rgba(95, 51, 225, 0.28);
+    color: #fff;
   }
 
   &__row {
@@ -16,8 +21,9 @@
     width: 108rpx;
     height: 108rpx;
     border-radius: 50%;
-    background: linear-gradient(135deg, #dbeafe, #eff6ff);
-    color: $brand;
+    background: rgba(255, 255, 255, 0.18);
+    border: 3rpx solid rgba(255, 255, 255, 0.4);
+    color: #fff;
     font-size: 44rpx;
     font-weight: 600;
     display: flex;
@@ -42,6 +48,17 @@
   &__name {
     font-size: 36rpx;
     font-weight: 700;
+    color: #fff;
+  }
+
+  &__meta .text-tertiary {
+    color: rgba(255, 255, 255, 0.75);
+  }
+
+  /* 头部内领域 chip 反白 */
+  &__name-row .chip {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
   }
 
   &__heat {
@@ -49,11 +66,20 @@
     align-items: center;
     gap: 16rpx;
     margin-top: 28rpx;
+    color: #fff;
+  }
+
+  &__heat .heat__bar {
+    background: rgba(255, 255, 255, 0.22);
+  }
+
+  &__heat .heat__bar-fill {
+    background: #fff;
   }
 
   &__heat-value {
     font-size: 24rpx;
-    color: $brand;
+    color: #fff;
     font-weight: 600;
     flex-shrink: 0;
   }
@@ -66,6 +92,13 @@
 
   &__btn {
     flex: 1;
+    border-radius: 999rpx;
+
+    &--ghost {
+      background: transparent;
+      color: #fff;
+      border: 2rpx solid rgba(255, 255, 255, 0.45);
+    }
   }
 
   &__tabs {

@@ -1,40 +1,120 @@
 @import '../../styles/variables.scss';
 
 .page-index {
-  &__hero {
-    padding: 48rpx 32rpx 32rpx;
-    background: linear-gradient(160deg, rgba(59, 130, 246, 0.12), rgba(59, 130, 246, 0));
-    border-radius: 0 0 48rpx 48rpx;
+  min-height: 100vh;
+
+  /* ===== 问候区 ===== */
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 32rpx 44rpx 8rpx;
   }
 
-  &__title {
-    font-size: 48rpx;
-    font-weight: 700;
-    letter-spacing: 2rpx;
+  &__greet {
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
   }
 
-  &__subtitle {
-    margin-top: 12rpx;
-    font-size: 24rpx;
+  &__hello {
+    font-size: 28rpx;
     color: $text-2;
-    line-height: 1.6;
   }
 
+  &__username {
+    font-size: 40rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__date {
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  /* ===== 主横幅卡（紫色，参照样例） ===== */
+  &__banner {
+    margin: 24rpx;
+    padding: 36rpx 32rpx;
+    border-radius: 48rpx;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 16rpx 48rpx rgba(95, 51, 225, 0.28);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24rpx;
+  }
+
+  &__banner-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10rpx;
+    flex: 1;
+  }
+
+  &__banner-title {
+    color: #fff;
+    font-size: 36rpx;
+    font-weight: 600;
+  }
+
+  &__banner-desc {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 24rpx;
+    line-height: 1.6;
+    white-space: pre-line;
+  }
+
+  &__banner-btn {
+    margin-top: 14rpx;
+    align-self: flex-start;
+    padding: 12rpx 36rpx;
+    border-radius: 999rpx;
+    background: rgba(255, 255, 255, 0.18);
+    color: #fff;
+    font-size: 26rpx;
+    font-weight: 500;
+    border: 2rpx solid rgba(255, 255, 255, 0.35);
+  }
+
+  /* 环形装饰（conic-gradient 描边） */
+  &__ring {
+    width: 152rpx;
+    height: 152rpx;
+    border-radius: 50%;
+    background: conic-gradient(#fff 0 62%, rgba(255, 255, 255, 0.22) 62% 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  &__ring-inner {
+    width: 112rpx;
+    height: 112rpx;
+    border-radius: 50%;
+    background: $brand-soft;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 34rpx;
+    font-weight: 600;
+  }
+
+  /* ===== 搜索区 ===== */
   &__search {
-    margin: 24rpx 24rpx 8rpx;
-    padding: 24rpx;
-    background: #fff;
-    border-radius: $radius-lg;
-    box-shadow: 0 4rpx 16rpx rgba(17, 24, 39, 0.06);
+    margin: 8rpx 24rpx 0;
 
     .at-search-bar {
-      background: $bg;
       border-radius: $radius-md;
     }
   }
 
   &__search-btn {
-    margin-top: 20rpx;
+    margin-top: 16rpx;
+    border-radius: 999rpx;
   }
 
   &__status {
@@ -43,18 +123,51 @@
 
   &__fallback {
     text-align: center;
-    padding: 20rpx 0 8rpx;
+    padding: 24rpx;
+    color: $brand;
   }
 
-  &__chips {
+  /* ===== 热门领域双列卡 ===== */
+  &__groups {
     display: flex;
     flex-wrap: wrap;
-    gap: 16rpx;
-    padding: 8rpx 32rpx 16rpx;
+    gap: 20rpx;
+    padding: 8rpx 24rpx 0;
   }
 
-  &__chip {
-    padding: 10rpx 26rpx;
-    font-size: 26rpx;
+  &__group {
+    width: calc(50% - 10rpx);
+    box-sizing: border-box;
+    border-radius: 38rpx;
+    padding: 26rpx;
+    display: flex;
+    flex-direction: column;
+    gap: 16rpx;
+
+    &--tech { background: $accent-blue-bg; }
+    &--business { background: $accent-orange-bg; }
+    &--ent { background: rgba(236, 72, 153, 0.1); }
+    &--sports { background: rgba(16, 185, 129, 0.1); }
+
+    &-title {
+      font-size: 26rpx;
+      font-weight: 600;
+      color: $text-1;
+    }
+  }
+
+  &__group-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12rpx;
+  }
+
+  &__gchip {
+    padding: 10rpx 24rpx;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $text-1;
+    font-size: 24rpx;
+    box-shadow: 0 4rpx 20rpx rgba(36, 37, 44, 0.04);
   }
 }

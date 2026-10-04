@@ -23,6 +23,11 @@
     gap: 6rpx;
   }
 
+  &__hello {
+    font-size: 24rpx;
+    color: $text-2;
+  }
+
   &__name {
     font-size: 34rpx;
     font-weight: 600;

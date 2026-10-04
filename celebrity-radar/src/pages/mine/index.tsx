@@ -74,7 +74,8 @@ export default function Mine() {
       <View className='page-mine__header'>
         <AtAvatar circle text={userId ? (nickname || '微').slice(0, 1) : '?'} size='large' className='page-mine__avatar' />
         <View className='page-mine__info'>
-          <Text className='page-mine__name'>{userId ? (nickname || '已登录用户') : '未登录'}</Text>
+          <Text className='page-mine__hello'>Hello!</Text>
+          <Text className='page-mine__name'>{userId ? nickname || '名人观察员' : '名人观察员'}</Text>
           <Text className='page-mine__uid'>{userId ? `ID ${userId.slice(0, 10)}…` : '启动时自动登录'}</Text>
         </View>
         {!ready && <Text className='page-mine__status'>登录中…</Text>}

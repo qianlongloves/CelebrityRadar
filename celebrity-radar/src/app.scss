@@ -1,5 +1,5 @@
 /* ===== taro-ui 主题覆盖（必须在 taro-ui 样式引入之前赋值） ===== */
-$color-brand: #3b82f6;
+$color-brand: #5f33e1;
 $color-success: #10b981;
 $color-warning: #f59e0b;
 $color-error: #ef4444;
@@ -15,13 +15,39 @@ page {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ===== 背景光斑层（参照样例：彩色 blur 光斑 → 径向渐变模拟） ===== */
+.glow-page {
+  position: relative;
+
+  &::before {
+    content: '';
+    position: fixed;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(circle at 6% 4%, rgba(70, 240, 128, 0.16), transparent 34%),
+      radial-gradient(circle at 94% 6%, rgba(237, 240, 70, 0.18), transparent 36%),
+      radial-gradient(circle at 96% 72%, rgba(70, 189, 240, 0.14), transparent 38%),
+      radial-gradient(circle at 4% 62%, rgba(135, 100, 255, 0.14), transparent 40%);
+    z-index: 0;
+  }
+
+  > view {
+    position: relative;
+    z-index: 1;
+  }
+}
+
 /* ===== 通用卡片 ===== */
 .card {
   background: #fff;
   border-radius: $radius-lg;
   padding: 28rpx;
   margin: 16rpx 24rpx;
-  box-shadow: 0 2rpx 12rpx rgba(17, 24, 39, 0.04);
+  box-shadow: $shadow-card;
 }
 
 .card-title {
@@ -48,14 +74,33 @@ page {
   padding: 24rpx 32rpx 8rpx;
 
   &__title {
-    font-size: 30rpx;
+    font-size: 32rpx;
     font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
   }
 
   &__extra {
     font-size: 24rpx;
     color: $text-3;
   }
+}
+
+/* 计数徽章（标题旁紫色小胶囊，参照样例 "In Progress ⑥"） */
+.count-badge {
+  min-width: 36rpx;
+  height: 36rpx;
+  padding: 0 10rpx;
+  border-radius: 999rpx;
+  background: $brand-weak;
+  color: $brand;
+  font-size: 22rpx;
+  font-weight: 400;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
 }
 
 /* ===== 领域标签（§1.6 领域码） ===== */
@@ -69,12 +114,62 @@ page {
   background: $brand-weak;
   color: $brand;
 
-  &--tech { background: rgba(59, 130, 246, 0.1); color: $domain-tech; }
-  &--business { background: rgba(245, 158, 11, 0.12); color: $domain-business; }
+  &--tech { background: rgba(0, 135, 255, 0.1); color: $domain-tech; }
+  &--business { background: rgba(255, 125, 83, 0.12); color: $domain-business; }
   &--ent { background: rgba(236, 72, 153, 0.1); color: $domain-ent; }
   &--sports { background: rgba(16, 185, 129, 0.1); color: $domain-sports; }
-  &--academia { background: rgba(139, 92, 246, 0.1); color: $domain-academia; }
-  &--other { background: rgba(107, 114, 128, 0.1); color: $domain-other; }
+  &--academia { background: rgba(95, 51, 225, 0.1); color: $domain-academia; }
+  &--other { background: rgba(110, 106, 124, 0.1); color: $domain-other; }
+}
+
+/* ===== 状态徽章（胶囊描边样式，参照样例 Done / In Progress / To-do） ===== */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8rpx;
+  padding: 6rpx 18rpx;
+  border-radius: 999rpx;
+  font-size: 20rpx;
+  line-height: 1.5;
+
+  &--positive {
+    background: rgba(16, 185, 129, 0.1);
+    color: $success;
+
+    &::before {
+      content: '';
+      width: 12rpx;
+      height: 12rpx;
+      border-radius: 50%;
+      background: $success;
+    }
+  }
+
+  &--neutral {
+    background: $brand-weak;
+    color: $brand-soft;
+
+    &::before {
+      content: '';
+      width: 12rpx;
+      height: 12rpx;
+      border-radius: 50%;
+      background: $brand-soft;
+    }
+  }
+
+  &--negative {
+    background: $accent-orange-bg;
+    color: $accent-orange;
+
+    &::before {
+      content: '';
+      width: 12rpx;
+      height: 12rpx;
+      border-radius: 50%;
+      background: $accent-orange;
+    }
+  }
 }
 
 /* ===== 热度 ===== */
@@ -93,7 +188,7 @@ page {
     &-fill {
       height: 100%;
       border-radius: 6rpx;
-      background: linear-gradient(90deg, #93c5fd, $brand);
+      background: linear-gradient(90deg, $brand-soft, $brand);
     }
   }
 

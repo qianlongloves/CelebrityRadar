@@ -1,24 +1,31 @@
-/* 设计令牌（§4.3 UI 规范：浅色卡片风、圆角、留白充足） */
-$brand: #3b82f6;
-$brand-weak: #eff6ff;
-$brand-dark: #2563eb;
-$text-1: #111827;
-$text-2: #6b7280;
-$text-3: #9ca3af;
-$bg: #f6f7f9;
-$line: #f0f1f3;
-$radius-lg: 24rpx;
-$radius-md: 16rpx;
+/* 设计令牌 v2（参照 Figma 样例：紫色主题 + 白卡浅阴影 + 大圆角） */
+$brand: #5f33e1;
+$brand-weak: #ede8ff;
+$brand-soft: #8764ff;
+$brand-dark: #4a21c4;
+$accent-blue: #0087ff;
+$accent-blue-bg: #e7f3ff;
+$accent-orange: #ff7d53;
+$accent-orange-bg: #ffe9e1;
+$text-1: #24252c;
+$text-2: #6e6a7c;
+$text-3: #9b97ab;
+$bg: #f7f7fb;
+$line: #f0eff5;
+$radius-lg: 30rpx;
+$radius-md: 20rpx;
+$radius-sm: 15rpx;
+$shadow-card: 0 8rpx 64rpx rgba(36, 37, 44, 0.05);
 $danger: #ef4444;
 $warning: #f59e0b;
 $success: #10b981;
 $knowledge-warn-bg: #fff7ed;
 $knowledge-warn-text: #b45309;
 
-/* 领域色（§1.6 领域码枚举） */
-$domain-tech: #3b82f6;
-$domain-business: #f59e0b;
+/* 领域色（§1.6 领域码枚举；v2 对齐样例配色） */
+$domain-tech: #0087ff;
+$domain-business: #ff7d53;
 $domain-ent: #ec4899;
 $domain-sports: #10b981;
-$domain-academia: #8b5cf6;
-$domain-other: #6b7280;
+$domain-academia: #5f33e1;
+$domain-other: #6e6a7c;
