@@ -14,10 +14,10 @@ import './index.scss'
 
 /** 热门运营位（§2.1 M1：MVP 仅静态运营位，V1.5 数据化；heat 为静态热门指数） */
 const HOT_PEOPLE: Array<{ domain: DomainCode; names: string[]; heat: number; desc: string }> = [
-  { domain: 'tech', names: ['雷军', '马斯克', '黄仁勋', '奥特曼'], heat: 85, desc: '科技大佬\n最新动向' },
-  { domain: 'business', names: ['巴菲特', '张一鸣', '王传福', '董明珠'], heat: 64, desc: '商界人物\n热点速览' },
-  { domain: 'ent', names: ['周杰伦', '吴京', '赵丽颖', '李子柒'], heat: 72, desc: '文娱明星\n动态追踪' },
-  { domain: 'sports', names: ['姚明', '苏炳添', '全红婵', '梅西'], heat: 58, desc: '体坛名将\n赛场内外' }
+  { domain: 'tech', names: ['雷军', '马斯克', '黄仁勋', '奥特曼'], heat: 85, desc: '科技大佬最新动向' },
+  { domain: 'business', names: ['巴菲特', '张一鸣', '王传福', '董明珠'], heat: 64, desc: '商界人物热点速览' },
+  { domain: 'ent', names: ['周杰伦', '吴京', '赵丽颖', '李子柒'], heat: 72, desc: '文娱明星动态追踪' },
+  { domain: 'sports', names: ['姚明', '苏炳添', '全红婵', '梅西'], heat: 58, desc: '体坛名将赛场内外' }
 ]
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
@@ -179,8 +179,13 @@ export default function Index() {
       <View className='page-index__groups'>
         {HOT_PEOPLE.map((group) => (
           <View key={group.domain} className={`page-index__group page-index__group--${group.domain}`}>
-            <Text className='page-index__group-label'>{DOMAIN_META[group.domain].label}</Text>
-            <Text className='page-index__group-desc'>{group.desc}</Text>
+            <View className='page-index__group-head'>
+              <View className='page-index__group-titlewrap'>
+                <Text className='page-index__group-label'>{DOMAIN_META[group.domain].label}</Text>
+                <Text className='page-index__group-desc'>{group.desc}</Text>
+              </View>
+              <Text className='page-index__group-heat'>{group.heat}</Text>
+            </View>
             <View className='page-index__group-bar'>
               <View className='page-index__group-fill' style={{ width: `${group.heat}%` }} />
             </View>

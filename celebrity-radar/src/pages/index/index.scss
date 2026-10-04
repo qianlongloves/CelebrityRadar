@@ -189,39 +189,67 @@
     color: $brand;
   }
 
-  /* ===== 热门领域双列卡（参照样例 In Progress：标签 + 标题 + 进度条） ===== */
+  /* ===== 热门领域：一行一卡（全宽，参照样例 Task Groups 列表节奏） ===== */
   &__groups {
     display: flex;
-    flex-wrap: wrap;
-    gap: 32rpx;
+    flex-direction: column;
+    gap: 24rpx;
     padding: 20rpx 44rpx 0;
   }
 
   &__group {
-    width: calc(50% - 16rpx);
+    width: 100%;
     box-sizing: border-box;
     border-radius: 38rpx;
-    padding: 30rpx 28rpx;
+    padding: 30rpx 32rpx;
     display: flex;
     flex-direction: column;
-    gap: 14rpx;
+    gap: 18rpx;
 
     &--tech { background: rgba(0, 135, 255, 0.1); }
     &--business { background: rgba(255, 125, 83, 0.12); }
     &--ent { background: rgba(236, 72, 153, 0.1); }
     &--sports { background: rgba(16, 185, 129, 0.1); }
 
+    &-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16rpx;
+    }
+
+    &-titlewrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6rpx;
+      min-width: 0;
+    }
+
     &-label {
-      font-size: 22rpx;
-      color: $text-2;
+      font-size: 30rpx;
+      font-weight: 600;
+      color: $text-1;
     }
 
     &-desc {
-      font-size: 28rpx;
-      font-weight: 500;
+      font-size: 22rpx;
+      color: $text-2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 右侧热度数值 */
+    &-heat {
+      flex-shrink: 0;
+      font-size: 26rpx;
+      font-weight: 600;
       color: $text-1;
-      line-height: 1.5;
-      white-space: pre-line;
+      &::after {
+        content: '%';
+        font-size: 20rpx;
+        color: $text-3;
+      }
     }
 
     /* 进度条：白底 + 领域色填充 */
@@ -247,11 +275,10 @@
     display: flex;
     flex-wrap: wrap;
     gap: 14rpx;
-    margin-top: 6rpx;
   }
 
   &__gchip {
-    padding: 10rpx 24rpx;
+    padding: 10rpx 26rpx;
     border-radius: 999rpx;
     background: rgba(255, 255, 255, 0.85);
     color: $text-1;
