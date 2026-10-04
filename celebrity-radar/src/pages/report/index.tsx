@@ -290,7 +290,9 @@ export default function ReportPage() {
 
           {report.analysis && (
             <View className='card'>
-              <View className='card-title'>AI 点评</View>
+              <View className='card-title'>
+                {report.degraded ? 'AI 点评（简版降级：结构化生成暂不可用）' : 'AI 点评'}
+              </View>
               <View className='page-report__text'>{report.analysis}</View>
             </View>
           )}

@@ -6,6 +6,7 @@ import { parsePersonKey } from '@/config/domains'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { todayKey } from './time'
+import { cooldownMinutesLeft } from './cooldown'
 import { diagLog } from './workbuddy-cloud-diagnostics'
 import type { ReportCacheRow, FeedCacheRow, RefreshQuotaRow } from '@/types/db'
 
@@ -109,6 +110,14 @@ export async function getOrBuildReport(
   const parsed = parsePersonKey(personKey)
   if (!parsed) return { kind: 'error', message: `非法 personKey：${personKey}` }
   const { name } = parsed
+
+  // 0. 冷却检查（§5.4 用例 9）：搜索源 / LLM 超配额或连续失败后 10 分钟内不再发起
+  for (const label of ['search', 'llm'] as const) {
+    const left = cooldownMinutesLeft(label)
+    if (left > 0) {
+      return { kind: 'error', message: `服务繁忙（约 ${left} 分钟后恢复），请稍后再试` }
+    }
+  }
 
   // 1. 缓存命中（TTL 内）
   let row = await getRow(personKey)

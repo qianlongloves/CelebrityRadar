@@ -56,6 +56,36 @@ export function extractJSONText(raw: string): string | null {
 export type ChatJSONResult<T> = { ok: true; data: T } | { ok: false; error: string }
 
 /**
+ * 纯文本生成（无 JSON 约束）：报告降级路径用（§5.4 用例 9）。
+ * 失败即失败（调用方已重试过 JSON 路径，不再叠加重试）。
+ */
+export async function chatText(system: string, user: string): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  if (!isCloudConfigured) {
+    return { ok: false, error: '云服务未配置（endpoint / publishableKey）' }
+  }
+  const model = await getChatModel()
+  if (!model) {
+    return { ok: false, error: '无可用 LLM 模型' }
+  }
+  try {
+    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    const stream = (cloud.llm.chat.completions.create as any)({
+      model,
+      stream: true,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ]
+    }) as AsyncIterable<{ choices?: Array<{ delta?: { content?: string } }> }>
+    const text = (await aggregateStream(stream)).trim()
+    if (!text) return { ok: false, error: 'LLM 返回为空' }
+    return { ok: true, text }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
  * 调 LLM 并解析为 JSON（zod 校验）。
  * 非法 JSON / 校验失败自动重试一次（§2.4）；仍失败返回错误。
  */

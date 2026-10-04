@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { NewsItem, heatValue } from './search'
-import { chatJSON, ChatJSONResult } from './llm'
+import { chatJSON, chatText, ChatJSONResult } from './llm'
+import { setCooldown } from './cooldown'
 import { diagLog } from './workbuddy-cloud-diagnostics'
 
 /**
@@ -80,6 +81,8 @@ export interface Report {
   timeline: Array<z.infer<typeof TimelineSchema>>
   sources: Array<z.infer<typeof SourceSchema>>
   disclaimer: string
+  /** 降级标记：结构化生成失败后由纯文本降级产出（§5.4 用例 9），UI 呈现降级提示 */
+  degraded?: true
 }
 
 export const DISCLAIMER = '内容由 AI 基于公开网络信息生成，仅供参考，不代表本平台立场。'
@@ -107,6 +110,13 @@ const SYSTEM_KNOWLEDGE = [
   '5. 只输出 JSON，格式：{"intro":string,"dynamics":[],"quotes":[],"analysis":string,"timeline":[],"sources":[]}'
 ].join('\n')
 
+/** 降级纯文本提示词（结构化 JSON 两次失败后，§5.4 用例 9） */
+const SYSTEM_FALLBACK = [
+  '你是名人动态分析师。结构化生成暂时不可用，请用不超过 150 字的纯文本，',
+  '基于已有知识客观概述该名人的身份与近期公开动向要点。',
+  '要求：不编造具体日期与来源；不输出 JSON；措辞中性；若不确定的信息直接略过。'
+].join('\n')
+
 /** 素材 → user 消息（附录 B） */
 function buildUserMessage(name: string, news: NewsItem[]): string {
   return [
@@ -130,7 +140,33 @@ export async function buildReport(
   const user = realtime ? buildUserMessage(name, news) : `名人：${name}（无联网素材，知识模式）`
 
   const result = await chatJSON(system, user, LlmReportSchema)
-  if (!result.ok) return result
+  if (!result.ok) {
+    // 降级：纯文本简版（§5.4 用例 9），不再套结构化 Schema
+    setCooldown('llm')
+    diagLog('warn', 'auth', `报告结构化生成失败，降级纯文本：${result.error}`)
+    const fallback = await chatText(SYSTEM_FALLBACK, `名人：${name}`)
+    if (fallback.ok) {
+      return {
+        ok: true,
+        data: {
+          personKey,
+          name,
+          mode: realtime ? 'realtime' : 'knowledge',
+          generatedAt: new Date().toISOString(),
+          heat: 0,
+          intro: '',
+          dynamics: [],
+          quotes: [],
+          analysis: fallback.text,
+          timeline: [],
+          sources: [],
+          disclaimer: DISCLAIMER,
+          degraded: true
+        }
+      }
+    }
+    return { ok: false, error: fallback.error }
+  }
 
   if (isRefusedResult(result.data)) {
     diagLog('info', 'auth', `报告 LLM 拒答：${personKey}`)
