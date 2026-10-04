@@ -3,7 +3,7 @@
 .page-report {
   /* ===== 头部紫色横幅 ===== */
   &__banner {
-    margin: 24rpx;
+    margin: 24rpx 32rpx;
     padding: 36rpx 32rpx;
     border-radius: 48rpx;
     background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
@@ -121,7 +121,7 @@
 
   /* ===== AI 点评强调卡（紫色渐变） ===== */
   &__analysis {
-    margin: 16rpx 24rpx;
+    margin: 16rpx 32rpx;
     padding: 36rpx 32rpx;
     border-radius: $radius-lg;
     background: linear-gradient(135deg, $brand-weak 0%, #f6f2ff 100%);

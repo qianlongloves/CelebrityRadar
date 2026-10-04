@@ -9,13 +9,15 @@ export default defineAppConfig({
     'pages/agreement/index'
   ],
   tabBar: {
-    color: '#999999',
+    custom: true,
+    color: '#9b97ab',
     selectedColor: '#5F33E1',
-    backgroundColor: '#ffffff',
-    borderStyle: 'black',
+    backgroundColor: '#EEE9FF',
+    borderStyle: 'white',
     list: [
       { pagePath: 'pages/index/index', text: '发现' },
       { pagePath: 'pages/feed/index', text: '关注流' },
+      { pagePath: 'pages/collection/index', text: '收藏' },
       { pagePath: 'pages/mine/index', text: '我的' }
     ]
   },

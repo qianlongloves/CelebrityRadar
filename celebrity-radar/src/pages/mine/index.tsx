@@ -5,6 +5,7 @@ import { AtButton, AtList, AtListItem } from 'taro-ui'
 import { useAuth } from '@/stores/auth'
 import { getTavilyKey, setTavilyKey, isKnowledgeModeEnabled, setKnowledgeMode } from '@/utils/settings'
 import { clearAllMyData } from '@/utils/data-deletion'
+import { setPendingCollectionTab } from '@/utils/tab-target'
 import './index.scss'
 
 export default function Mine() {
@@ -57,14 +58,20 @@ export default function Mine() {
       iconBg: 'brand',
       title: '我的收藏',
       note: '名言 / 报告',
-      onTap: () => Taro.navigateTo({ url: '/pages/collection/index?tab=favorites' })
+      onTap: () => {
+        setPendingCollectionTab('favorites')
+        Taro.switchTab({ url: '/pages/collection/index' })
+      }
     },
     {
       icon: '🕘',
       iconBg: 'blue',
       title: '查询历史',
       note: '最近 50 条',
-      onTap: () => Taro.navigateTo({ url: '/pages/collection/index?tab=history' })
+      onTap: () => {
+        setPendingCollectionTab('history')
+        Taro.switchTab({ url: '/pages/collection/index' })
+      }
     },
     {
       icon: '🛡',
@@ -76,7 +83,7 @@ export default function Mine() {
   ]
 
   return (
-    <View className='page-mine glow-page safe-bottom'>
+    <View className='page-mine glow-page safe-tab'>
       <View className='page-mine__banner'>
         <View
           className='page-mine__avatar'

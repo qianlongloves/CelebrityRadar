@@ -70,7 +70,7 @@ export default function Feed() {
   }
 
   return (
-    <View className='page-feed glow-page safe-bottom'>
+    <View className='page-feed glow-page safe-tab'>
       {loading && <AtActivityIndicator mode='center' content='加载中…' className='page-feed__loading' />}
 
       {!loading && entries.length === 0 && (

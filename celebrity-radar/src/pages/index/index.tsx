@@ -9,6 +9,7 @@ import { useAuth } from '@/stores/auth'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
 import { track } from '@/utils/events'
+import { openRandomPerson } from '@/utils/explore'
 import './index.scss'
 
 /** 热门运营位（§2.1 M1：MVP 仅静态运营位，V1.5 数据化） */
@@ -73,7 +74,7 @@ export default function Index() {
   }
 
   return (
-    <View className='page-index glow-page safe-bottom'>
+    <View className='page-index glow-page safe-tab'>
       {/* 问候区（参照样例 Hello + 用户名） */}
       <View className='page-index__header'>
         <View className='page-index__greet'>
@@ -88,8 +89,8 @@ export default function Index() {
         <View className='page-index__banner-body'>
           <Text className='page-index__banner-title'>今日名人雷达</Text>
           <Text className='page-index__banner-desc'>AI 联网整理公开动态\n生成可溯源的深度报告</Text>
-          <View className='page-index__banner-btn' onClick={() => setKeyword('')}>
-            开始探索
+          <View className='page-index__banner-btn' onClick={() => openRandomPerson()}>
+            随机探索一位
           </View>
         </View>
         <View className='page-index__ring'>

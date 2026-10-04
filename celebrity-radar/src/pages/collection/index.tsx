@@ -6,10 +6,11 @@ import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
 import { listFavorites, removeFavorite, FavoriteRow } from '@/utils/favorites'
 import { listHistory, clearHistory, HistoryRow } from '@/utils/history'
+import { takePendingCollectionTab } from '@/utils/tab-target'
 import { fromNow } from '@/utils/time'
 import './index.scss'
 
-/** 收藏 / 历史（我的 → 二级页，双 Tab） */
+/** 收藏 / 历史（tab 页，双 Tab；其他入口经 eventCenter 指定落地 Tab） */
 export default function Collection() {
   const router = useRouter()
   const [tab, setTab] = useState(router.params.tab === 'history' ? 1 : 0)
@@ -26,6 +27,10 @@ export default function Collection() {
   }
 
   useDidShow(() => {
+    /* 我的页菜单经 switchTab 进入时无法带参，用模块变量传目标 Tab（一次性消费） */
+    const target = takePendingCollectionTab()
+    if (target === 'history') setTab(1)
+    if (target === 'favorites') setTab(0)
     void load()
   })
 
@@ -52,7 +57,7 @@ export default function Collection() {
   }
 
   return (
-    <View className='page-collection glow-page safe-bottom'>
+    <View className='page-collection glow-page safe-tab'>
       {loading && <AtActivityIndicator mode='center' content='加载中…' className='page-collection__loading' />}
 
       {!loading && (

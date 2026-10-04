@@ -43,10 +43,10 @@ page {
 
 /* ===== 通用卡片 ===== */
 .card {
-  background: #fff;
+  background: rgba(255, 255, 255, 0.86);
   border-radius: $radius-lg;
   padding: 28rpx;
-  margin: 16rpx 24rpx;
+  margin: 16rpx 32rpx;
   box-shadow: $shadow-card;
 }
 
@@ -214,7 +214,7 @@ page {
   display: flex;
   align-items: center;
   gap: 10rpx;
-  margin: 16rpx 24rpx 0;
+  margin: 16rpx 32rpx 0;
   padding: 16rpx 24rpx;
   border-radius: $radius-md;
   background: $knowledge-warn-bg;
@@ -229,3 +229,6 @@ page {
 
 /* ===== 安全区 ===== */
 .safe-bottom { padding-bottom: calc(24rpx + env(safe-area-inset-bottom)); }
+
+/* tab 页：为自定义底栏（112rpx + 凸起余量）留空间 */
+.safe-tab { padding-bottom: calc(160rpx + env(safe-area-inset-bottom)); }
