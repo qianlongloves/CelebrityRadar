@@ -7,15 +7,105 @@
     padding: 96rpx 0;
   }
 
+  /* ===== 统计双列卡 ===== */
+  &__stats {
+    display: flex;
+    gap: 20rpx;
+    padding: 24rpx 24rpx 0;
+  }
+
+  &__stat {
+    flex: 1;
+    border-radius: 38rpx;
+    padding: 26rpx 30rpx;
+    display: flex;
+    flex-direction: column;
+    gap: 8rpx;
+
+    &--brand { background: $brand-weak; }
+    &--blue { background: $accent-blue-bg; }
+
+    &-label {
+      font-size: 22rpx;
+      color: $text-2;
+    }
+
+    &-value {
+      font-size: 40rpx;
+      font-weight: 600;
+      color: $text-1;
+    }
+  }
+
+  /* ===== 列表卡（左侧圆底头像 + 日期胶囊） ===== */
   &__item {
     &-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 16rpx;
+    }
+
+    &-person {
+      display: flex;
+      align-items: center;
+      gap: 16rpx;
+      min-width: 0;
+    }
+
+    &-icon {
+      flex-shrink: 0;
+      width: 64rpx;
+      height: 64rpx;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 26rpx;
+      font-weight: 600;
+      color: #fff;
+
+      &--tech { background: $domain-tech; }
+      &--business { background: $domain-business; }
+      &--ent { background: $domain-ent; }
+      &--sports { background: $domain-sports; }
+      &--academia { background: $domain-academia; }
+      &--other { background: $domain-other; }
+    }
+
+    &-person-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2rpx;
+      min-width: 0;
+    }
+
+    &-name {
+      font-size: 28rpx;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    &-domain {
+      font-size: 20rpx;
+      color: $text-3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 260rpx;
+    }
+
+    &-date {
+      flex-shrink: 0;
+      font-size: 20rpx;
+      color: $text-2;
+      background: $bg;
+      padding: 6rpx 16rpx;
+      border-radius: 999rpx;
     }
 
     &-title {
-      margin-top: 14rpx;
+      margin-top: 16rpx;
       font-size: 30rpx;
       font-weight: 600;
       line-height: 1.5;
@@ -30,11 +120,12 @@
       overflow: hidden;
     }
 
-    &-src {
-      margin-top: 14rpx;
+    &-foot {
+      margin-top: 16rpx;
+      padding-top: 14rpx;
+      border-top: 1rpx solid $line;
       display: flex;
-      align-items: center;
-      gap: 16rpx;
+      justify-content: flex-end;
     }
   }
 

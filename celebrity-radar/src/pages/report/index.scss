@@ -1,8 +1,68 @@
 @import '../../styles/variables.scss';
 
 .page-report {
-  &__header {
-    margin-top: 24rpx;
+  /* ===== 头部紫色横幅 ===== */
+  &__banner {
+    margin: 24rpx;
+    padding: 36rpx 32rpx;
+    border-radius: 48rpx;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 16rpx 48rpx rgba(95, 51, 225, 0.28);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24rpx;
+  }
+
+  &__banner-left {
+    display: flex;
+    flex-direction: column;
+    gap: 12rpx;
+    min-width: 0;
+  }
+
+  &__banner-chip {
+    padding: 6rpx 18rpx;
+    border-radius: 999rpx;
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    font-size: 22rpx;
+    flex-shrink: 0;
+  }
+
+  /* 热度环（conic-gradient 白描边） */
+  &__ring {
+    width: 152rpx;
+    height: 152rpx;
+    border-radius: 50%;
+    background: conic-gradient(#fff 0 var(--heat-turn, 75%), rgba(255, 255, 255, 0.22) var(--heat-turn, 75%) 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  &__ring-inner {
+    width: 118rpx;
+    height: 118rpx;
+    border-radius: 50%;
+    background: $brand-soft;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__ring-value {
+    color: #fff;
+    font-size: 40rpx;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+
+  &__ring-label {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 20rpx;
   }
 
   &__title-row {
@@ -17,19 +77,37 @@
     align-items: center;
     gap: 12rpx;
     min-width: 0;
+    flex-wrap: wrap;
   }
 
   &__name {
     font-size: 38rpx;
     font-weight: 700;
+    color: #fff;
   }
 
   &__meta {
-    margin-top: 12rpx;
+    margin-top: 4rpx;
+  }
+
+  &__refresh {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 24rpx;
   }
 
   &__refresh-link {
-    color: $brand;
+    color: #fff;
+    font-weight: 600;
+    text-decoration: underline;
+  }
+
+  &__fresh {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 24rpx;
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 999rpx;
+    padding: 6rpx 20rpx;
+    align-self: flex-start;
   }
 
   &__loading {
@@ -39,6 +117,90 @@
       text-align: center;
       margin-top: 20rpx;
     }
+  }
+
+  /* ===== AI 点评强调卡（紫色渐变） ===== */
+  &__analysis {
+    margin: 16rpx 24rpx;
+    padding: 36rpx 32rpx;
+    border-radius: $radius-lg;
+    background: linear-gradient(135deg, $brand-weak 0%, #f6f2ff 100%);
+    border: 2rpx solid rgba(95, 51, 225, 0.12);
+
+    &-title {
+      font-size: 30rpx;
+      font-weight: 600;
+      color: $brand-dark;
+      margin-bottom: 16rpx;
+      display: flex;
+      align-items: center;
+
+      &::before {
+        content: '';
+        width: 8rpx;
+        height: 28rpx;
+        border-radius: 4rpx;
+        background: $brand;
+        margin-right: 14rpx;
+      }
+    }
+
+    &-text {
+      font-size: 28rpx;
+      line-height: 1.8;
+      color: $text-1;
+    }
+  }
+
+  /* ===== 时间线（圆点 + 竖线） ===== */
+  &__timeline-item {
+    display: flex;
+    gap: 20rpx;
+    position: relative;
+    padding-bottom: 28rpx;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 9rpx;
+      top: 24rpx;
+      bottom: 0;
+      width: 2rpx;
+      background: $line;
+    }
+
+    &:last-child {
+      padding-bottom: 4rpx;
+
+      &::before {
+        display: none;
+      }
+    }
+  }
+
+  &__timeline-dot {
+    flex-shrink: 0;
+    width: 20rpx;
+    height: 20rpx;
+    border-radius: 50%;
+    background: $brand-weak;
+    border: 5rpx solid $brand-soft;
+    box-sizing: content-box;
+    margin-top: 4rpx;
+  }
+
+  &__timeline-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  &__timeline-event {
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
   }
 
   &__text {

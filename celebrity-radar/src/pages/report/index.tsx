@@ -149,7 +149,7 @@ export default function ReportPage() {
     state.phase === 'ready' ? { report: state.report, fromCache: state.fromCache } : { report: null, fromCache: false }
 
   return (
-    <View className='page-report safe-bottom'>
+    <View className='page-report glow-page safe-bottom'>
       {report?.mode === 'knowledge' && (
         <View className='warn-bar'>
           <AtIcon value='alert-circle' size='16' color='#b45309' />
@@ -158,22 +158,32 @@ export default function ReportPage() {
       )}
 
       {report && (
-        <View className='card page-report__header'>
-          <View className='page-report__title-row'>
+        <View className='page-report__banner'>
+          <View className='page-report__banner-left'>
             <View className='page-report__name-row'>
               <Text className='page-report__name'>{report.name}</Text>
-              <View className={`chip chip--${domain}`}>{DOMAIN_META[domain]?.label ?? '其他'}</View>
+              <View className='page-report__banner-chip'>{DOMAIN_META[domain]?.label ?? '其他'}</View>
             </View>
-            <View className='chip'>热度 {report.heat}</View>
+            <View className='page-report__meta' onClick={() => void load(true)}>
+              {fromCache ? (
+                <Text className='page-report__refresh'>
+                  生成于 {fromNow(report.generatedAt)} · <Text className='page-report__refresh-link'>查看最新</Text>
+                </Text>
+              ) : (
+                <Text className='page-report__fresh'>刚刚生成</Text>
+              )}
+            </View>
           </View>
-          <View className='page-report__meta' onClick={() => void load(true)}>
-            {fromCache ? (
-              <Text className='page-report__refresh'>
-                生成于 {fromNow(report.generatedAt)} · <Text className='page-report__refresh-link'>查看最新</Text>
-              </Text>
-            ) : (
-              <Text className='text-tertiary'>刚刚生成 · {fromNow(report.generatedAt)}</Text>
-            )}
+          <View
+            className='page-report__ring'
+            style={{
+              background: `conic-gradient(#fff 0 ${Math.max(4, Math.min(100, report.heat))}%, rgba(255,255,255,0.22) ${Math.max(4, Math.min(100, report.heat))}% 100%)`
+            }}
+          >
+            <View className='page-report__ring-inner'>
+              <Text className='page-report__ring-value'>{report.heat}</Text>
+              <Text className='page-report__ring-label'>热度</Text>
+            </View>
           </View>
         </View>
       )}
@@ -289,11 +299,11 @@ export default function ReportPage() {
           )}
 
           {report.analysis && (
-            <View className='card'>
-              <View className='card-title'>
+            <View className='page-report__analysis'>
+              <View className='page-report__analysis-title'>
                 {report.degraded ? 'AI 点评（简版降级：结构化生成暂不可用）' : 'AI 点评'}
               </View>
-              <View className='page-report__text'>{report.analysis}</View>
+              <View className='page-report__analysis-text'>{report.analysis}</View>
             </View>
           )}
 
@@ -302,8 +312,11 @@ export default function ReportPage() {
               <View className='card-title'>时间线</View>
               {report.timeline.map((t, i) => (
                 <View key={i} className='page-report__timeline-item'>
-                  <Text className='page-report__item-date'>{t.date}</Text>
-                  <Text className='page-report__timeline-event'>{t.event}</Text>
+                  <View className='page-report__timeline-dot' />
+                  <View className='page-report__timeline-body'>
+                    <Text className='page-report__item-date'>{t.date}</Text>
+                    <Text className='page-report__timeline-event'>{t.event}</Text>
+                  </View>
                 </View>
               ))}
             </View>

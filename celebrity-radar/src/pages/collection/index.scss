@@ -1,3 +1,5 @@
+@import '../../styles/variables.scss';
+
 .page-collection {
   min-height: 100vh;
 
@@ -5,22 +7,80 @@
     padding: 96rpx 0;
   }
 
-  &__tabs {
-    margin-top: 0;
+  /* ===== 筛选 chips（参照样例筛选条） ===== */
+  &__chips {
+    display: flex;
+    gap: 16rpx;
+    padding: 24rpx 24rpx 8rpx;
   }
 
-  &__quote,
-  &__report,
-  &__hist {
-    display: block;
+  &__chip {
+    padding: 12rpx 32rpx;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $brand;
+    font-size: 26rpx;
+    box-shadow: $shadow-card;
+
+    &--active {
+      background: $brand;
+      color: #fff;
+      font-weight: 600;
+    }
   }
 
-  &__quote-person {
+  /* ===== 列表行（左侧圆底图标 + 信息 + 右侧操作） ===== */
+  &__row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 20rpx;
   }
 
+  &__row-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  &__row-name {
+    font-size: 28rpx;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  &__icon {
+    flex-shrink: 0;
+    width: 72rpx;
+    height: 72rpx;
+    border-radius: 24rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28rpx;
+    font-weight: 600;
+
+    &--quote { background: $brand-weak; color: $brand; font-size: 40rpx; }
+    &--report { background: $accent-blue-bg; }
+    &--tech { background: rgba(0, 135, 255, 0.12); color: $domain-tech; }
+    &--business { background: rgba(255, 125, 83, 0.12); color: $domain-business; }
+    &--ent { background: rgba(236, 72, 153, 0.1); color: $domain-ent; }
+    &--sports { background: rgba(16, 185, 129, 0.1); color: $domain-sports; }
+    &--academia { background: rgba(95, 51, 225, 0.1); color: $domain-academia; }
+    &--other { background: rgba(110, 106, 124, 0.1); color: $domain-other; }
+  }
+
+  &__time {
+    flex-shrink: 0;
+    font-size: 20rpx;
+    color: $text-2;
+    background: $bg;
+    padding: 6rpx 16rpx;
+    border-radius: 999rpx;
+  }
+
+  /* ===== 名言卡 ===== */
   &__quote-text {
     margin-top: 14rpx;
     font-size: 30rpx;
@@ -42,14 +102,9 @@
     padding: 8rpx 24rpx;
   }
 
-  &__hist {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
   &__op {
-    color: #64748b;
+    color: $text-3;
     font-size: 24rpx;
+    flex-shrink: 0;
   }
 }

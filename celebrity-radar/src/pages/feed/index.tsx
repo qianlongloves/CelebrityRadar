@@ -89,16 +89,40 @@ export default function Feed() {
 
       {!loading && entries.length > 0 && (
         <View>
+          {/* 统计双列卡（参照样例 In Progress 双列小卡） */}
+          <View className='page-feed__stats'>
+            <View className='page-feed__stat page-feed__stat--brand'>
+              <Text className='page-feed__stat-label'>已关注</Text>
+              <Text className='page-feed__stat-value'>{followCount} 人</Text>
+            </View>
+            <View className='page-feed__stat page-feed__stat--blue'>
+              <Text className='page-feed__stat-label'>近期动态</Text>
+              <Text className='page-feed__stat-value'>{entries.length} 条</Text>
+            </View>
+          </View>
+
+          <View className='section-head'>
+            <Text className='section-head__title'>最新动态</Text>
+            <Text className='section-head__extra'>下拉刷新 · 每日 10 次</Text>
+          </View>
+
           {entries.map((e, i) => (
             <View key={`${e.personKey}-${i}`} className='card page-feed__item' onClick={() => openPerson(e.personKey)}>
               <View className='page-feed__item-head'>
-                <View className={`chip chip--${e.domain}`}>{e.personName}</View>
-                <Text className='text-tertiary'>{e.publishedDate?.slice(0, 10) ?? ''}</Text>
+                <View className='page-feed__item-person'>
+                  <View className={`page-feed__item-icon page-feed__item-icon--${e.domain}`}>
+                    {e.personName.slice(0, 1)}
+                  </View>
+                  <View className='page-feed__item-person-info'>
+                    <Text className='page-feed__item-name'>{e.personName}</Text>
+                    <Text className='page-feed__item-domain'>{e.source}</Text>
+                  </View>
+                </View>
+                <Text className='page-feed__item-date'>{e.publishedDate?.slice(0, 10) ?? '近期'}</Text>
               </View>
               <View className='page-feed__item-title'>{e.title}</View>
               <View className='text-secondary page-feed__item-summary'>{e.content}</View>
-              <View className='page-feed__item-src text-tertiary'>
-                来源：{e.source}
+              <View className='page-feed__item-foot'>
                 <Text
                   className='page-feed__copy'
                   onClick={(ev) => {
@@ -106,7 +130,7 @@ export default function Feed() {
                     Taro.setClipboardData({ data: e.url })
                   }}
                 >
-                  复制链接
+                  复制原文链接
                 </Text>
               </View>
             </View>

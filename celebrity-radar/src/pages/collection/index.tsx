@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import Taro, { useDidShow, useRouter } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
-import { AtTabs, AtActivityIndicator, AtButton } from 'taro-ui'
+import { AtActivityIndicator } from 'taro-ui'
 import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
 import { listFavorites, removeFavorite, FavoriteRow } from '@/utils/favorites'
@@ -56,15 +56,23 @@ export default function Collection() {
       {loading && <AtActivityIndicator mode='center' content='加载中…' className='page-collection__loading' />}
 
       {!loading && (
-        <AtTabs
-          current={tab}
-          tabList={[
-            { title: `收藏 (${favorites.length})` },
-            { title: `历史 (${history.length})` }
-          ]}
-          onClick={setTab}
-          className='page-collection__tabs'
-        >
+        <View>
+          {/* 筛选 chips（参照样例 All / To do / In Progress） */}
+          <View className='page-collection__chips'>
+            <View
+              className={`page-collection__chip ${tab === 0 ? 'page-collection__chip--active' : ''}`}
+              onClick={() => setTab(0)}
+            >
+              收藏 {favorites.length}
+            </View>
+            <View
+              className={`page-collection__chip ${tab === 1 ? 'page-collection__chip--active' : ''}`}
+              onClick={() => setTab(1)}
+            >
+              历史 {history.length}
+            </View>
+          </View>
+
           {tab === 0 ? (
             favorites.length === 0 ? (
               <EmptyState
@@ -80,21 +88,30 @@ export default function Collection() {
                   const domain = (parsePersonKey(f.person_key)?.domain ?? 'other') as DomainCode
                   return f.type === 'quote' ? (
                     <View key={f.id} className='card page-collection__quote'>
+                      <View className='page-collection__row'>
+                        <View className={`page-collection__icon page-collection__icon--quote`}>「</View>
+                        <View
+                          className='page-collection__row-info'
+                          onClick={() => openPerson(f.person_key)}
+                        >
+                          <Text className='page-collection__row-name'>{f.name}</Text>
+                          <Text className='text-tertiary'>{DOMAIN_META[domain].label} · 名言</Text>
+                        </View>
+                        <Text
+                          className='page-collection__op'
+                          onClick={() => void onRemoveFavorite(f.id)}
+                        >
+                          取消收藏
+                        </Text>
+                      </View>
                       <View
-                        className='page-collection__quote-person'
+                        className='page-collection__quote-text'
                         onClick={() => openPerson(f.person_key)}
                       >
-                        <View className={`chip chip--${domain}`}>{f.name}</View>
-                        <Text className='text-tertiary'>{DOMAIN_META[domain].label}</Text>
-                      </View>
-                      <View className='page-collection__quote-text'>
                         「{String(f.payload?.text ?? '')}」
                       </View>
                       <View className='page-collection__foot'>
                         <Text className='text-tertiary'>{String(f.payload?.context || '公开场合')}</Text>
-                        <Text className='page-collection__op' onClick={() => void onRemoveFavorite(f.id)}>
-                          取消收藏
-                        </Text>
                       </View>
                     </View>
                   ) : (
@@ -103,12 +120,12 @@ export default function Collection() {
                       className='card page-collection__report'
                       onClick={() => openPerson(f.person_key)}
                     >
-                      <View className='page-collection__quote-person'>
-                        <View className={`chip chip--${domain}`}>{f.name}</View>
-                        <Text className='text-tertiary'>报告 · 热度 {String(f.payload?.heat ?? '-')}</Text>
-                      </View>
-                      <View className='page-collection__foot'>
-                        <Text className='text-tertiary'>收藏于 {fromNow(f.created_at)}</Text>
+                      <View className='page-collection__row'>
+                        <View className={`page-collection__icon page-collection__icon--report`}>📄</View>
+                        <View className='page-collection__row-info'>
+                          <Text className='page-collection__row-name'>{f.name}</Text>
+                          <Text className='text-tertiary'>报告 · 热度 {String(f.payload?.heat ?? '-')}</Text>
+                        </View>
                         <Text
                           className='page-collection__op'
                           onClick={(e) => {
@@ -118,6 +135,9 @@ export default function Collection() {
                         >
                           取消收藏
                         </Text>
+                      </View>
+                      <View className='page-collection__foot'>
+                        <Text className='text-tertiary'>收藏于 {fromNow(f.created_at)}</Text>
                       </View>
                     </View>
                   )
@@ -148,17 +168,22 @@ export default function Collection() {
                     className='card page-collection__hist'
                     onClick={() => openPerson(h.person_key)}
                   >
-                    <View className='page-collection__quote-person'>
-                      <View className={`chip chip--${domain}`}>{h.name}</View>
-                      <Text className='text-tertiary'>{DOMAIN_META[domain].label}</Text>
+                    <View className='page-collection__row'>
+                      <View className={`page-collection__icon page-collection__icon--${domain}`}>
+                        {h.name.slice(0, 1)}
+                      </View>
+                      <View className='page-collection__row-info'>
+                        <Text className='page-collection__row-name'>{h.name}</Text>
+                        <Text className='text-tertiary'>{DOMAIN_META[domain].label}</Text>
+                      </View>
+                      <Text className='page-collection__time'>{fromNow(h.ts)}</Text>
                     </View>
-                    <Text className='text-tertiary'>{fromNow(h.ts)}</Text>
                   </View>
                 )
               })}
             </View>
           )}
-        </AtTabs>
+        </View>
       )}
 
       <View className='disclaimer'>收藏与历史仅自己可见；可随时清空</View>

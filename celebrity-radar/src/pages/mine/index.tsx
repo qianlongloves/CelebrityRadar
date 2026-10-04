@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import Taro, { useDidShow } from '@tarojs/taro'
 import { View, Text, Button } from '@tarojs/components'
-import { AtButton, AtList, AtListItem, AtAvatar } from 'taro-ui'
+import { AtButton, AtList, AtListItem } from 'taro-ui'
 import { useAuth } from '@/stores/auth'
 import { getTavilyKey, setTavilyKey, isKnowledgeModeEnabled, setKnowledgeMode } from '@/utils/settings'
 import { clearAllMyData } from '@/utils/data-deletion'
@@ -53,16 +53,22 @@ export default function Mine() {
 
   const menus = [
     {
+      icon: '⭐',
+      iconBg: 'brand',
       title: '我的收藏',
       note: '名言 / 报告',
       onTap: () => Taro.navigateTo({ url: '/pages/collection/index?tab=favorites' })
     },
     {
+      icon: '🕘',
+      iconBg: 'blue',
       title: '查询历史',
       note: '最近 50 条',
       onTap: () => Taro.navigateTo({ url: '/pages/collection/index?tab=history' })
     },
     {
+      icon: '🛡',
+      iconBg: 'orange',
       title: '隐私与免责声明',
       note: '隐私清单 · 免责文案',
       onTap: () => Taro.navigateTo({ url: '/pages/agreement/index' })
@@ -70,9 +76,13 @@ export default function Mine() {
   ]
 
   return (
-    <View className='page-mine safe-bottom'>
-      <View className='page-mine__header'>
-        <AtAvatar circle text={userId ? (nickname || '微').slice(0, 1) : '?'} size='large' className='page-mine__avatar' />
+    <View className='page-mine glow-page safe-bottom'>
+      <View className='page-mine__banner'>
+        <View
+          className='page-mine__avatar'
+        >
+          {userId ? (nickname || '微').slice(0, 1) : '?'}
+        </View>
         <View className='page-mine__info'>
           <Text className='page-mine__hello'>Hello!</Text>
           <Text className='page-mine__name'>{userId ? nickname || '名人观察员' : '名人观察员'}</Text>
@@ -111,17 +121,20 @@ export default function Mine() {
               Taro.showToast({ title: v ? '已开启（结果带警示条）' : '已关闭', icon: 'none' })
             }}
           />
-          {menus.map((m) => (
-            <AtListItem
-              key={m.title}
-              title={m.title}
-              note={m.note || undefined}
-              hasBorder
-              arrow='right'
-              onClick={m.onTap}
-            />
-          ))}
         </AtList>
+      </View>
+
+      <View className='card page-mine__menus'>
+        {menus.map((m) => (
+          <View key={m.title} className='page-mine__menu' onClick={m.onTap}>
+            <View className={`page-mine__menu-icon page-mine__menu-icon--${m.iconBg}`}>{m.icon}</View>
+            <View className='page-mine__menu-info'>
+              <Text className='page-mine__menu-title'>{m.title}</Text>
+              <Text className='page-mine__menu-note'>{m.note}</Text>
+            </View>
+            <Text className='page-mine__menu-arrow'>›</Text>
+          </View>
+        ))}
       </View>
 
       <View className='card' style={{ padding: '8rpx 0' }}>

@@ -21,12 +21,15 @@ const DISCLAIMER_ITEMS: Array<{ title: string; desc: string }> = [
 
 export default function Agreement() {
   return (
-    <View className='page-agreement safe-bottom'>
+    <View className='page-agreement glow-page safe-bottom'>
       <View className='card'>
         <View className='card-title'>隐私清单</View>
-        {PRIVACY_ITEMS.map((it) => (
+        {PRIVACY_ITEMS.map((it, i) => (
           <View key={it.title} className='page-agreement__item'>
-            <Text className='page-agreement__item-title'>{it.title}</Text>
+            <View className='page-agreement__item-head'>
+              <View className='page-agreement__item-no'>{i + 1}</View>
+              <Text className='page-agreement__item-title'>{it.title}</Text>
+            </View>
             <Text className='page-agreement__item-desc'>{it.desc}</Text>
           </View>
         ))}
@@ -34,9 +37,12 @@ export default function Agreement() {
 
       <View className='card'>
         <View className='card-title'>免责声明</View>
-        {DISCLAIMER_ITEMS.map((it) => (
+        {DISCLAIMER_ITEMS.map((it, i) => (
           <View key={it.title} className='page-agreement__item'>
-            <Text className='page-agreement__item-title'>{it.title}</Text>
+            <View className='page-agreement__item-head'>
+              <View className='page-agreement__item-no'>{i + 1}</View>
+              <Text className='page-agreement__item-title'>{it.title}</Text>
+            </View>
             <Text className='page-agreement__item-desc'>{it.desc}</Text>
           </View>
         ))}

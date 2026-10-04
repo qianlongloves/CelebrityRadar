@@ -1,15 +1,37 @@
+@import '../../styles/variables.scss';
+
 .page-agreement {
   min-height: 100vh;
+  padding-top: 24rpx;
 
   &__item {
     display: flex;
     flex-direction: column;
-    gap: 6rpx;
-    padding: 16rpx 0;
-    border-bottom: 1rpx solid rgba(0, 0, 0, 0.04);
+    gap: 8rpx;
+    padding: 20rpx 0;
+    border-bottom: 1rpx solid $line;
 
     &:last-child {
       border-bottom: none;
+    }
+
+    &-head {
+      display: flex;
+      align-items: center;
+      gap: 14rpx;
+    }
+
+    &-no {
+      flex-shrink: 0;
+      width: 36rpx;
+      height: 36rpx;
+      border-radius: 50%;
+      background: $brand-weak;
+      color: $brand;
+      font-size: 22rpx;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     &-title {
@@ -20,7 +42,7 @@
     &-desc {
       font-size: 26rpx;
       line-height: 1.7;
-      color: #64748b;
+      color: $text-2;
     }
   }
 }
