@@ -1,74 +1,273 @@
+import { useCallback, useEffect, useState } from 'react'
+import Taro, { useRouter } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
-import { AtButton, AtIcon } from 'taro-ui'
-import { useRouter } from '@tarojs/taro'
+import { AtButton, AtIcon, AtActivityIndicator } from 'taro-ui'
+import { DOMAIN_META, DomainCode } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
+import { getOrBuildReport, ReportOutcome } from '@/utils/cache'
+import { Report } from '@/utils/report'
+import { fromNow } from '@/utils/time'
 import './index.scss'
 
-/** 深度报告页（六段卡片化渲染骨架，§2.3 Schema v2）
- *  数据生成与缓存接入在阶段 4；本页先落布局与状态位。 */
-export default function Report() {
-  const router = useRouter()
-  const personKey = router.params.personKey || ''
-  const name = decodeURIComponent(personKey.split('#')[0] || '名人')
+/** 深度报告页（§2.3 六段渲染 + §2.4 全部边界态） */
+type PageState =
+  | { phase: 'loading' }
+  | { phase: 'waiting' } // 他人 building，轮询中
+  | { phase: 'coldstart' }
+  | { phase: 'nonews' }
+  | { phase: 'refused' }
+  | { phase: 'error'; message: string }
+  | { phase: 'ready'; report: Report; fromCache: boolean }
 
-  // 阶段 4 接入后由报告数据驱动（knowledge = 橙色警示条，§2.4）
-  const isKnowledgeMode = false
+const SENTIMENT_META: Record<string, { label: string; cls: string }> = {
+  positive: { label: '积极', cls: 'positive' },
+  neutral: { label: '中性', cls: 'neutral' },
+  negative: { label: '消极', cls: 'negative' }
+}
+
+export default function ReportPage() {
+  const router = useRouter()
+  const personKey = decodeURIComponent(router.params.personKey || '')
+  const [state, setState] = useState<PageState>({ phase: 'loading' })
+
+  const name = personKey.split('#')[0] || '名人'
+  const domain = (personKey.split('#')[1] || 'other') as DomainCode
+
+  const load = useCallback(
+    async (force = false) => {
+      if (!personKey) {
+        setState({ phase: 'error', message: '缺少 personKey 参数' })
+        return
+      }
+      setState({ phase: 'loading' })
+      const outcome: ReportOutcome = await getOrBuildReport(personKey, { force })
+      switch (outcome.kind) {
+        case 'report':
+          setState({ phase: 'ready', report: outcome.report, fromCache: outcome.fromCache })
+          break
+        case 'coldstart':
+          setState({ phase: 'coldstart' })
+          break
+        case 'nonews':
+          setState({ phase: 'nonews' })
+          break
+        case 'refused':
+          setState({ phase: 'refused' })
+          break
+        case 'error':
+          if (outcome.message.includes('正在生成')) {
+            setState({ phase: 'waiting' })
+          } else {
+            setState({ phase: 'error', message: outcome.message })
+          }
+          break
+      }
+    },
+    [personKey]
+  )
+
+  useEffect(() => {
+    void load(false)
+  }, [load])
+
+  const copyQuote = (text: string, source: string) => {
+    Taro.setClipboardData({ data: `${text}\n—— 来源：${source}` })
+  }
+
+  const copyAll = (report: Report) => {
+    const lines = [
+      `【${report.name} · 深度报告】`,
+      report.intro,
+      '',
+      '■ 近期动态',
+      ...report.dynamics.map((d) => `- ${d.date} ${d.title}（${d.source}）`),
+      '',
+      '■ 经典名言',
+      ...report.quotes.map((q) => `- ${q.text}（${q.context}）`),
+      '',
+      '■ AI 点评',
+      report.analysis,
+      '',
+      report.disclaimer
+    ]
+    Taro.setClipboardData({ data: lines.join('\n') })
+  }
+
+  const { report, fromCache } =
+    state.phase === 'ready' ? { report: state.report, fromCache: state.fromCache } : { report: null, fromCache: false }
 
   return (
     <View className='page-report safe-bottom'>
-      {isKnowledgeMode && (
+      {report?.mode === 'knowledge' && (
         <View className='warn-bar'>
           <AtIcon value='alert-circle' size='16' color='#b45309' />
           <Text>知识模式结果：无实时来源，内容可能不准确（可在设置中关闭）</Text>
         </View>
       )}
 
-      <View className='card page-report__header'>
-        <View className='page-report__title-row'>
-          <Text className='page-report__name'>{name}</Text>
-          <View className='chip'>深度报告</View>
+      {report && (
+        <View className='card page-report__header'>
+          <View className='page-report__title-row'>
+            <View className='page-report__name-row'>
+              <Text className='page-report__name'>{report.name}</Text>
+              <View className={`chip chip--${domain}`}>{DOMAIN_META[domain]?.label ?? '其他'}</View>
+            </View>
+            <View className='chip'>热度 {report.heat}</View>
+          </View>
+          <View className='page-report__meta' onClick={() => void load(true)}>
+            {fromCache ? (
+              <Text className='page-report__refresh'>
+                生成于 {fromNow(report.generatedAt)} · <Text className='page-report__refresh-link'>查看最新</Text>
+              </Text>
+            ) : (
+              <Text className='text-tertiary'>刚刚生成 · {fromNow(report.generatedAt)}</Text>
+            )}
+          </View>
         </View>
-        <View className='page-report__meta'>
-          {/* 缓存命中时显示「生成于 xx 前 · 查看最新」双入口（§2.4） */}
-          <Text className='text-tertiary'>生成于 -- · 内容随缓存更新</Text>
+      )}
+
+      {state.phase === 'loading' && (
+        <View className='page-report__loading'>
+          <AtActivityIndicator mode='center' content='正在检索与生成报告…' />
+          <View className='text-tertiary page-report__loading-tip'>首次生成约需 30 秒，缓存后秒开</View>
         </View>
-      </View>
+      )}
 
-      <View className='card'>
-        <View className='card-title'>简介</View>
-        <View className='text-secondary'>一句话简介（AI 生成）</View>
-      </View>
+      {state.phase === 'waiting' && (
+        <View className='page-report__loading'>
+          <AtActivityIndicator mode='center' content='其他用户正在生成同一份报告，排队等待…' />
+        </View>
+      )}
 
-      <View className='card'>
-        <View className='card-title'>近期动态</View>
-        <View className='text-secondary'>带日期 / 摘要 / 来源 / 情绪标签的动态列表</View>
-      </View>
+      {state.phase === 'coldstart' && (
+        <EmptyState
+          icon='🔑'
+          title='暂无报告'
+          desc='该名人还没有生成过报告。联网生成需配置搜索源 key（仅存本地），配置后即可生成'
+          actionText='去配置（我的 → 搜索源设置）'
+          onAction={() => Taro.switchTab({ url: '/pages/mine/index' })}
+        />
+      )}
 
-      <View className='card'>
-        <View className='card-title'>经典名言</View>
-        <View className='text-secondary'>逐条带出处的语录，可单独复制（自动附来源）</View>
-      </View>
+      {state.phase === 'nonews' && (
+        <EmptyState
+          icon='📭'
+          title='暂未检索到近期公开信息'
+          desc='该名人近 30 天无公开新闻动态。可在设置中显式开启「知识模式」（无实时来源，结果可能不准确）'
+          actionText='去设置'
+          onAction={() => Taro.switchTab({ url: '/pages/mine/index' })}
+        />
+      )}
 
-      <View className='card'>
-        <View className='card-title'>AI 点评</View>
-        <View className='text-secondary'>风格 / 近期态度 / 热点综合点评</View>
-      </View>
+      {state.phase === 'refused' && (
+        <EmptyState icon='🚫' title='暂不支持查询该人物' desc='本工具仅覆盖科技、商业、文娱、体育、学术领域公众名人' />
+      )}
 
-      <View className='card'>
-        <View className='card-title'>时间线</View>
-        <View className='text-secondary'>关键事件时间轴</View>
-      </View>
+      {state.phase === 'error' && (
+        <EmptyState
+          icon='⚠️'
+          title='生成失败'
+          desc={state.message}
+          actionText='重试'
+          onAction={() => void load(false)}
+        />
+      )}
 
-      <View className='card'>
-        <View className='card-title'>信息来源</View>
-        <View className='text-secondary'>全部来源可溯源（审核核心材料，§六.2）</View>
-      </View>
+      {report && (
+        <View>
+          {report.intro && (
+            <View className='card'>
+              <View className='card-title'>简介</View>
+              <View className='page-report__text'>{report.intro}</View>
+            </View>
+          )}
 
-      <View className='page-report__actions'>
-        <AtButton type='primary' circle>生成 / 刷新报告</AtButton>
-      </View>
+          {report.dynamics.length > 0 && (
+            <View className='card'>
+              <View className='card-title'>近期动态</View>
+              {report.dynamics.map((d, i) => (
+                <View key={i} className='page-report__item'>
+                  <View className='page-report__item-head'>
+                    <Text className='page-report__item-date'>{d.date}</Text>
+                    <View className={`page-report__sentiment ${SENTIMENT_META[d.sentiment]?.cls ?? 'neutral'}`}>
+                      {SENTIMENT_META[d.sentiment]?.label ?? '中性'}
+                    </View>
+                  </View>
+                  <View className='page-report__item-title'>{d.title}</View>
+                  {d.summary && <View className='text-secondary'>{d.summary}</View>}
+                  <View className='page-report__item-src text-tertiary'>
+                    来源：{d.source || '网络'}（长按复制链接）
+                    <Text
+                      className='page-report__copy-link'
+                      onClick={() => Taro.setClipboardData({ data: d.url })}
+                    >
+                      复制链接
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
 
-      <EmptyState icon='🗂' title='报告数据待接入' desc='阶段 4：缓存查询 → Tavily 检索 → LLM 生成 → 白名单校验 → 落库' />
+          {report.quotes.length > 0 && (
+            <View className='card'>
+              <View className='card-title'>经典名言</View>
+              {report.quotes.map((q, i) => (
+                <View key={i} className='page-report__quote'>
+                  <View className='page-report__quote-text'>「{q.text}」</View>
+                  <View className='page-report__quote-foot'>
+                    <Text className='text-tertiary'>{q.context || '公开场合'}</Text>
+                    <Text className='page-report__copy-link' onClick={() => copyQuote(q.text, q.source)}>
+                      复制这句
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {report.analysis && (
+            <View className='card'>
+              <View className='card-title'>AI 点评</View>
+              <View className='page-report__text'>{report.analysis}</View>
+            </View>
+          )}
+
+          {report.timeline.length > 0 && (
+            <View className='card'>
+              <View className='card-title'>时间线</View>
+              {report.timeline.map((t, i) => (
+                <View key={i} className='page-report__timeline-item'>
+                  <Text className='page-report__item-date'>{t.date}</Text>
+                  <Text className='page-report__timeline-event'>{t.event}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          <View className='card'>
+            <View className='card-title'>信息来源（{report.sources.length}）</View>
+            {report.sources.length === 0 && <View className='text-secondary'>知识模式：无实时来源</View>}
+            {report.sources.map((s, i) => (
+              <View key={i} className='page-report__item-src text-tertiary'>
+                · {s.title}
+                <Text className='page-report__copy-link' onClick={() => Taro.setClipboardData({ data: s.url })}>
+                  复制链接
+                </Text>
+              </View>
+            ))}
+          </View>
+
+          <View className='page-report__actions'>
+            <AtButton type='secondary' circle onClick={() => copyAll(report)}>
+              复制全文
+            </AtButton>
+            <AtButton type='primary' circle loading={state.phase === 'loading'} onClick={() => void load(true)}>
+              刷新最新
+            </AtButton>
+          </View>
+        </View>
+      )}
 
       <View className='disclaimer'>
         内容由 AI 基于公开网络信息生成，仅供参考，不代表本平台立场；来源 URL 均来自公开检索结果

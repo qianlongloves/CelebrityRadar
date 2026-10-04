@@ -12,6 +12,13 @@
     gap: 16rpx;
   }
 
+  &__name-row {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    min-width: 0;
+  }
+
   &__name {
     font-size: 38rpx;
     font-weight: 700;
@@ -19,11 +26,122 @@
 
   &__meta {
     margin-top: 12rpx;
+  }
+
+  &__refresh-link {
+    color: $brand;
+  }
+
+  &__loading {
+    padding: 64rpx 0 32rpx;
+
+    &-tip {
+      text-align: center;
+      margin-top: 20rpx;
+    }
+  }
+
+  &__text {
+    font-size: 28rpx;
+    line-height: 1.8;
+    color: $text-1;
+  }
+
+  &__item {
+    padding: 20rpx 0;
+    border-bottom: 1rpx solid $line;
+
+    &:last-child {
+      border-bottom: none;
+      padding-bottom: 4rpx;
+    }
+
+    &-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    &-date {
+      font-size: 22rpx;
+      color: $text-3;
+    }
+
+    &-title {
+      font-size: 28rpx;
+      font-weight: 500;
+      margin-top: 8rpx;
+      line-height: 1.5;
+    }
+
+    &-src {
+      margin-top: 10rpx;
+      display: flex;
+      align-items: center;
+      gap: 16rpx;
+      flex-wrap: wrap;
+    }
+  }
+
+  &__sentiment {
+    font-size: 20rpx;
+    padding: 2rpx 14rpx;
+    border-radius: 999rpx;
+
+    &.positive { background: rgba(16, 185, 129, 0.1); color: $success; }
+    &.neutral { background: rgba(107, 114, 128, 0.1); color: $domain-other; }
+    &.negative { background: rgba(239, 68, 68, 0.1); color: $danger; }
+  }
+
+  &__quote {
+    padding: 20rpx 0;
+    border-bottom: 1rpx solid $line;
+
+    &:last-child {
+      border-bottom: none;
+      padding-bottom: 4rpx;
+    }
+
+    &-text {
+      font-size: 30rpx;
+      line-height: 1.7;
+      font-weight: 500;
+    }
+
+    &-foot {
+      margin-top: 12rpx;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+  }
+
+  &__timeline-item {
     display: flex;
-    justify-content: space-between;
+    gap: 20rpx;
+    padding: 12rpx 0;
+    align-items: baseline;
+
+    &-event {
+      flex: 1;
+      font-size: 26rpx;
+      line-height: 1.6;
+    }
+  }
+
+  &__copy-link {
+    color: $brand;
+    font-size: 22rpx;
+    flex-shrink: 0;
   }
 
   &__actions {
+    display: flex;
+    gap: 20rpx;
     margin: 24rpx;
+
+    .at-button {
+      flex: 1;
+    }
   }
 }

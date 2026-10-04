@@ -1,5 +1,6 @@
 import Taro from '@tarojs/taro'
 import { cloud, isCloudConfigured } from './cloud'
+import { table } from './db'
 import { useAuth } from '@/stores/auth'
 import { diagLog } from './workbuddy-cloud-diagnostics'
 
@@ -44,11 +45,7 @@ export async function ensureLogin(): Promise<void> {
     const now = new Date().toISOString()
 
     // users 幂等初始化：写失败不阻断登录（表未建/RLS 由 G2 联调暴露）
-    // 注：SDK 的 Database 泛型默认 unknown，from() 退化为 never[]；
-    // 阶段 4 会统一定义 DB Schema 类型并消除该断言
-    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-    const usersTable: any = (cloud.database.from as (t: string) => any)('users')
-    const { error: dbError } = await usersTable.upsert(
+    const { error: dbError } = await table('users').upsert(
       {
         id: userId,
         nickname: null,
