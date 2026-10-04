@@ -37,6 +37,15 @@
     margin-top: 20rpx;
   }
 
+  &__status {
+    padding: 48rpx 0;
+  }
+
+  &__fallback {
+    text-align: center;
+    padding: 20rpx 0 8rpx;
+  }
+
   &__chips {
     display: flex;
     flex-wrap: wrap;
