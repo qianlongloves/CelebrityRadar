@@ -1,0 +1,55 @@
+@import '../../styles/variables.scss';
+
+.person-card {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding: 24rpx;
+  background: #fff;
+  border-radius: $radius-lg;
+  margin: 12rpx 24rpx;
+  box-shadow: 0 2rpx 12rpx rgba(17, 24, 39, 0.04);
+
+  &__avatar {
+    flex-shrink: 0;
+    width: 88rpx;
+    height: 88rpx;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #dbeafe, #eff6ff);
+    color: $brand;
+    font-size: 36rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__name-row {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  &__name {
+    font-size: 30rpx;
+    font-weight: 600;
+  }
+
+  &__brief {
+    margin-top: 8rpx;
+    font-size: 24rpx;
+    color: $text-2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__action {
+    flex-shrink: 0;
+  }
+}

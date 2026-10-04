@@ -1,3 +1,29 @@
+@import '../../styles/variables.scss';
+
 .page-report {
-  padding: 24rpx;
+  &__header {
+    margin-top: 24rpx;
+  }
+
+  &__title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+  }
+
+  &__name {
+    font-size: 38rpx;
+    font-weight: 700;
+  }
+
+  &__meta {
+    margin-top: 12rpx;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  &__actions {
+    margin: 24rpx;
+  }
 }

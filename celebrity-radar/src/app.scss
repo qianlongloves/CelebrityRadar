@@ -1,23 +1,136 @@
-/* 全局样式：浅色卡片风（§4.3） */
+/* ===== taro-ui 主题覆盖（必须在 taro-ui 样式引入之前赋值） ===== */
+$color-brand: #3b82f6;
+$color-success: #10b981;
+$color-warning: #f59e0b;
+$color-error: #ef4444;
+@import 'taro-ui/dist/style/index.scss';
+
+@import './styles/variables.scss';
+
+/* ===== 全局基础 ===== */
 page {
-  background: #f6f7f9;
+  background: $bg;
   font-size: 28rpx;
-  color: #1f2933;
+  color: $text-1;
+  -webkit-font-smoothing: antialiased;
 }
 
+/* ===== 通用卡片 ===== */
 .card {
-  background: #ffffff;
-  border-radius: 24rpx;
-  padding: 24rpx;
+  background: #fff;
+  border-radius: $radius-lg;
+  padding: 28rpx;
   margin: 16rpx 24rpx;
-  box-shadow: 0 2rpx 8rpx rgba(31, 41, 51, 0.04);
+  box-shadow: 0 2rpx 12rpx rgba(17, 24, 39, 0.04);
 }
 
-.page-padding {
-  padding: 24rpx;
+.card-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  margin-bottom: 16rpx;
+  display: flex;
+  align-items: center;
+
+  &::before {
+    content: '';
+    width: 8rpx;
+    height: 28rpx;
+    border-radius: 4rpx;
+    background: $brand;
+    margin-right: 14rpx;
+  }
 }
 
-.text-secondary {
-  color: #7b8794;
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 32rpx 8rpx;
+
+  &__title {
+    font-size: 30rpx;
+    font-weight: 600;
+  }
+
+  &__extra {
+    font-size: 24rpx;
+    color: $text-3;
+  }
+}
+
+/* ===== 领域标签（§1.6 领域码） ===== */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6rpx 18rpx;
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  background: $brand-weak;
+  color: $brand;
+
+  &--tech { background: rgba(59, 130, 246, 0.1); color: $domain-tech; }
+  &--business { background: rgba(245, 158, 11, 0.12); color: $domain-business; }
+  &--ent { background: rgba(236, 72, 153, 0.1); color: $domain-ent; }
+  &--sports { background: rgba(16, 185, 129, 0.1); color: $domain-sports; }
+  &--academia { background: rgba(139, 92, 246, 0.1); color: $domain-academia; }
+  &--other { background: rgba(107, 114, 128, 0.1); color: $domain-other; }
+}
+
+/* ===== 热度 ===== */
+.heat {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+
+  &__bar {
+    flex: 1;
+    height: 12rpx;
+    border-radius: 6rpx;
+    background: $line;
+    overflow: hidden;
+
+    &-fill {
+      height: 100%;
+      border-radius: 6rpx;
+      background: linear-gradient(90deg, #93c5fd, $brand);
+    }
+  }
+
+  &__value {
+    font-size: 24rpx;
+    color: $brand;
+    font-weight: 600;
+    min-width: 96rpx;
+    text-align: right;
+  }
+}
+
+/* ===== 免责 / 提示 ===== */
+.disclaimer {
+  text-align: center;
+  font-size: 22rpx;
+  color: $text-3;
+  padding: 24rpx 48rpx 48rpx;
+  line-height: 1.6;
+}
+
+.warn-bar {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  margin: 16rpx 24rpx 0;
+  padding: 16rpx 24rpx;
+  border-radius: $radius-md;
+  background: $knowledge-warn-bg;
+  color: $knowledge-warn-text;
   font-size: 24rpx;
+  line-height: 1.5;
 }
+
+/* ===== 文字工具类 ===== */
+.text-secondary { color: $text-2; font-size: 24rpx; }
+.text-tertiary { color: $text-3; font-size: 22rpx; }
+
+/* ===== 安全区 ===== */
+.safe-bottom { padding-bottom: calc(24rpx + env(safe-area-inset-bottom)); }

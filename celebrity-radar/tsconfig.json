@@ -13,7 +13,8 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["src/*"],
+      "@tencent-ai/workbuddy-cloud-sdk/miniprogram": ["node_modules/@tencent-ai/workbuddy-cloud-sdk/lib/miniprogram"]
     },
     "types": ["@types/webpack-env", "@types/node"]
   },
