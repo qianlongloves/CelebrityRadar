@@ -35,11 +35,6 @@
     gap: 6rpx;
   }
 
-  &__hello {
-    font-size: 24rpx;
-    color: rgba(255, 255, 255, 0.75);
-  }
-
   &__name {
     font-size: 34rpx;
     font-weight: 600;
@@ -51,9 +46,129 @@
     color: rgba(255, 255, 255, 0.65);
   }
 
-  &__status {
+  /* 未登录：banner 转为纵向引导布局（覆盖 __banner 的横排 flex） */
+  &__banner--guest {
+    display: block;
+    padding: 44rpx 32rpx;
+  }
+
+  &__login {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10rpx;
+  }
+
+  &__login-title {
+    font-size: 36rpx;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  &__login-desc {
+    font-size: 24rpx;
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  &__login-btn {
+    width: 100%;
+    height: 88rpx;
+    line-height: 88rpx;
+    margin: 28rpx 0 0;
+    padding: 0;
+    background: #fff;
+    border: none;
+    border-radius: 999rpx;
+    color: $brand;
+    font-size: 30rpx;
+    font-weight: 600;
+
+    &::after {
+      border: none;
+    }
+  }
+
+  &__login-tip {
     font-size: 22rpx;
-    color: rgba(255, 255, 255, 0.85);
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  /* 头像按钮：清空 Button 默认样式，仅作 open-type=chooseAvatar 的点击容器 */
+  &__avatar-btn {
+    flex-shrink: 0;
+    width: 108rpx;
+    height: 108rpx;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    line-height: 1;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+
+    &::after {
+      border: none;
+    }
+  }
+
+  &__avatar-img {
+    width: 108rpx;
+    height: 108rpx;
+    border-radius: 50%;
+    border: 3rpx solid rgba(255, 255, 255, 0.4);
+  }
+
+  &__name-row {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  &__edit {
+    flex-shrink: 0;
+    padding: 2rpx 14rpx;
+    border-radius: 999rpx;
+    background: rgba(255, 255, 255, 0.22);
+    font-size: 20rpx;
+    color: #fff;
+  }
+
+  /* 昵称编辑浮层 */
+  &__editor {
+    margin: 0 32rpx 16rpx;
+    padding: 24rpx;
+    background: #fff;
+    border-radius: $radius-lg;
+    box-shadow: $shadow-card;
+  }
+
+  &__editor-input {
+    height: 84rpx;
+    padding: 0 24rpx;
+    background: $bg;
+    border-radius: $radius-sm;
+    font-size: 28rpx;
+    color: $text-1;
+  }
+
+  &__editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 20rpx;
+    margin-top: 20rpx;
+  }
+
+  &__editor-btn {
+    padding: 12rpx 36rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    font-size: 26rpx;
+    color: $text-2;
+
+    &--primary {
+      background: $brand;
+      color: #fff;
+    }
   }
 
   /* ===== 菜单列表（圆底图标 + 箭头） ===== */
@@ -84,6 +199,14 @@
       &--brand { background: $brand-weak; }
       &--blue { background: $accent-blue-bg; }
       &--orange { background: $accent-orange-bg; }
+      &--danger { background: $danger-weak; }
+    }
+
+    /* 破坏性操作：标题用警示色，与常规入口拉开视觉分级 */
+    &--danger {
+      .page-mine__menu-title {
+        color: $danger;
+      }
     }
 
     &-info {
@@ -110,6 +233,69 @@
       color: $text-3;
       font-size: 40rpx;
       line-height: 1;
+    }
+  }
+
+  /* ===== 联网能力配置（博查搜索 + 大模型，仅存本机） ===== */
+  &__keys {
+    padding: 28rpx;
+  }
+
+  &__keys-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+  }
+
+  &__keys-title {
+    font-size: 30rpx;
+    font-weight: 600;
+  }
+
+  &__keys-badge {
+    flex-shrink: 0;
+    padding: 4rpx 16rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    font-size: 20rpx;
+    color: $text-3;
+
+    &--on {
+      background: $brand-weak;
+      color: $brand;
+    }
+  }
+
+  &__keys-desc {
+    display: block;
+    margin-top: 10rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__key-field {
+    margin-top: 24rpx;
+  }
+
+  &__key-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-bottom: 12rpx;
+    font-size: 26rpx;
+    color: $text-2;
+  }
+
+  &__key-state {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    color: $text-3;
+
+    &--on {
+      color: $brand;
     }
   }
 
@@ -158,6 +344,16 @@
 
   &__version {
     margin-top: 16rpx;
+    text-align: center;
+  }
+
+  /* 可选授权说明（回应隐私清单「昵称/头像为可选」） */
+  &__tip {
+    display: block;
+    margin: 20rpx 40rpx 0;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
     text-align: center;
   }
 }

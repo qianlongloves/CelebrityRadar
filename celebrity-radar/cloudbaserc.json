@@ -1,0 +1,34 @@
+{
+  "version": "2.0",
+  "envId": "<your-env-id>",
+  "functionRoot": "cloudfunctions",
+  "functions": [
+    {
+      "name": "aiProxy",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
+        "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}"
+      }
+    },
+    {
+      "name": "notifyFollowUpdates",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
+        "SUBSCRIBE_TEMPLATE_ID": "${env.SUBSCRIBE_TEMPLATE_ID}"
+      },
+      "triggers": [
+        {
+          "name": "dailyNotify",
+          "type": "timer",
+          "config": "0 0 9 * * * *"
+        }
+      ]
+    }
+  ]
+}

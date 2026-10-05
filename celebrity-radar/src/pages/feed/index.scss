@@ -3,8 +3,47 @@
 .page-feed {
   min-height: 100vh;
 
-  &__loading {
-    padding: 96rpx 0;
+  /* ===== 部分读取失败提示（可点重试） ===== */
+  &__notice {
+    margin: 24rpx 32rpx 0;
+    padding: 18rpx 24rpx;
+    border-radius: 20rpx;
+    background: rgba(255, 125, 83, 0.1);
+  }
+
+  &__notice-text {
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $domain-business;
+  }
+
+  /* ===== 按人物筛选（横向滚动芯片） ===== */
+  &__chips {
+    width: 100%;
+    white-space: nowrap;
+    padding: 24rpx 0 0;
+  }
+
+  &__chips-inner {
+    display: inline-flex;
+    gap: 16rpx;
+    padding: 0 32rpx;
+  }
+
+  &__chip {
+    flex-shrink: 0;
+    padding: 12rpx 28rpx;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $brand;
+    font-size: 24rpx;
+    box-shadow: $shadow-card;
+
+    &--active {
+      background: $brand;
+      color: #fff;
+      font-weight: 600;
+    }
   }
 
   /* ===== 统计双列卡 ===== */
@@ -92,7 +131,22 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 260rpx;
+      max-width: 300rpx;
+    }
+
+    &-meta {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      gap: 10rpx;
+    }
+
+    &-today {
+      font-size: 20rpx;
+      color: #fff;
+      background: $brand;
+      padding: 6rpx 14rpx;
+      border-radius: 999rpx;
     }
 
     &-date {

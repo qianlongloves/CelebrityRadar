@@ -40,16 +40,41 @@
     display: flex;
     align-items: center;
     gap: 12rpx;
+    min-width: 0;
   }
 
+  /* 名字允许收缩并省略：右侧多了关注按钮后，长名字（尤其英文名）会挤压按钮 */
   &__name {
+    min-width: 0;
+    overflow: hidden;
     font-size: 30rpx;
     font-weight: 600;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
-  /* 简介两行截断 */
-  &__brief {
+  /* 简介行：动态标签 + 简介两行截断 */
+  &__brief-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
     margin-top: 8rpx;
+  }
+
+  &__tag {
+    flex-shrink: 0;
+    margin-top: 2rpx;
+    padding: 2rpx 14rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 20rpx;
+    line-height: 1.6;
+  }
+
+  &__brief {
+    flex: 1;
+    min-width: 0;
     font-size: 24rpx;
     color: $text-2;
     line-height: 1.5;
@@ -59,7 +84,74 @@
     overflow: hidden;
   }
 
+  /* 热度条（仅热门位传 heat 时渲染） */
+  &__heat {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    margin-top: 12rpx;
+  }
+
+  &__heat-bar {
+    flex: 1;
+    height: 10rpx;
+    border-radius: 5rpx;
+    background: $line;
+    overflow: hidden;
+  }
+
+  &__heat-fill {
+    height: 100%;
+    border-radius: 5rpx;
+    background: $brand;
+
+    &--tech { background: $domain-tech; }
+    &--business { background: $domain-business; }
+    &--ent { background: $domain-ent; }
+    &--sports { background: $domain-sports; }
+    &--academia { background: $domain-academia; }
+    &--other { background: $domain-other; }
+  }
+
+  &__heat-num {
+    flex-shrink: 0;
+    font-size: 20rpx;
+    font-weight: 600;
+    color: $text-3;
+
+    &::after {
+      content: ' 热度';
+      font-weight: 400;
+    }
+  }
+
   &__action {
     flex-shrink: 0;
+  }
+
+  /* 卡片内直接关注：描边式小胶囊，与主操作按钮（实心）拉开主次 */
+  &__follow {
+    flex-shrink: 0;
+    padding: 4rpx 16rpx;
+    border: 1rpx solid $brand;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $brand;
+    font-size: 20rpx;
+    line-height: 1.9;
+
+    /* 已关注：弱化为中性色，不再是「可点关注」的强暗示 */
+    &--on {
+      border-color: $line;
+      color: $text-3;
+    }
+
+    &--tap {
+      opacity: 0.6;
+    }
+
+    &--pending {
+      opacity: 0.35;
+    }
   }
 }

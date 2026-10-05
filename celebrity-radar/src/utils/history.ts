@@ -1,6 +1,6 @@
 import { table } from './db'
 import { useAuth } from '@/stores/auth'
-import { diagLog } from './workbuddy-cloud-diagnostics'
+import { diagLog } from './cloud-diagnostics'
 
 /** 查询历史（§3.8 history）：主键 = openid#ts，每账号仅保留最近 50 条，写入时裁剪 */
 

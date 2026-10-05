@@ -4,43 +4,53 @@
 .page-index {
   min-height: 100vh;
 
-  /* ===== 问候区（头像 + Hello + 铃铛，参照样例） ===== */
+  /* 轻点击态：小程序按压时注入该类，H5 端由 :active 兜底 */
+  &__tap,
+  &__tap:active {
+    opacity: 0.72;
+  }
+
+  /* ===== 问候区（头像 + 昵称 + 铃铛） ===== */
   &__header {
     display: flex;
     align-items: center;
-    gap: 20rpx;
-    padding: 28rpx 44rpx 0;
+    gap: 16rpx;
+    padding: 24rpx 44rpx 0;
   }
 
+  /* 头像：未登录的「?」与已登录的昵称首字同盒同字号（视觉等大） */
   &__avatar {
     flex-shrink: 0;
-    width: 92rpx;
-    height: 92rpx;
+    width: 72rpx;
+    height: 72rpx;
     border-radius: 50%;
     background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
     color: #fff;
-    font-size: 36rpx;
+    font-size: 30rpx;
+    line-height: 1;
     font-weight: 600;
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
+  /* 已设头像：撑满圆形容器（圆角由图片自身裁剪，无需父层 overflow） */
+  &__avatar-img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+  }
+
   &__greet {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 6rpx;
+    gap: 4rpx;
     min-width: 0;
   }
 
-  &__hello {
-    font-size: 28rpx;
-    color: $text-2;
-  }
-
   &__username {
-    font-size: 38rpx;
+    font-size: 32rpx;
     font-weight: 600;
     color: $text-1;
     white-space: nowrap;
@@ -74,113 +84,430 @@
 
   /* ===== 主横幅卡（紫色，参照样例） ===== */
   &__banner {
+    position: relative;
+    overflow: hidden;
     margin: 40rpx 44rpx 0;
     padding: 36rpx 32rpx;
-    border-radius: 48rpx;
+    border-radius: 40rpx;
     background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
     box-shadow: 0 16rpx 48rpx rgba(95, 51, 225, 0.28);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 24rpx;
+
+    /* 右上高光 + 左下柔光：给纯渐变卡补一点体积感（伪元素不参与布局） */
+    &::before {
+      content: '';
+      position: absolute;
+      right: -80rpx;
+      top: -120rpx;
+      width: 320rpx;
+      height: 320rpx;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.28), transparent 66%);
+    }
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: -60rpx;
+      bottom: -140rpx;
+      width: 280rpx;
+      height: 280rpx;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255, 255, 255, 0.16), transparent 68%);
+    }
   }
 
+  /* 内容需压在装饰伪元素之上 */
   &__banner-body {
+    position: relative;
+    z-index: 1;
     display: flex;
     flex-direction: column;
     gap: 10rpx;
     flex: 1;
+    min-width: 0;
+  }
+
+  &__banner-top {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12rpx;
   }
 
   &__banner-title {
     color: #fff;
-    font-size: 34rpx;
+    font-size: 36rpx;
     font-weight: 600;
+  }
+
+  /* 日期做成半透明小胶囊，替代原先塞在标题里的长串 */
+  &__banner-date {
+    padding: 4rpx 14rpx;
+    border-radius: 999rpx;
+    background: rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 20rpx;
+    line-height: 1.6;
   }
 
   &__banner-desc {
     color: rgba(255, 255, 255, 0.85);
     font-size: 24rpx;
-    line-height: 1.6;
-    white-space: pre-line;
+    line-height: 1.5;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
   }
 
-  /* 浅紫底紫字按钮（参照样例 View Task） */
+  /* 白底紫字按钮：比浅紫底在紫色卡上更跳，点击热区也更大 */
   &__banner-btn {
-    margin-top: 16rpx;
+    margin-top: 20rpx;
     align-self: flex-start;
     display: flex;
     align-items: center;
     gap: 10rpx;
     padding: 12rpx 30rpx;
     border-radius: 999rpx;
-    background: $brand-weak;
+    background: #fff;
     color: $brand;
     font-size: 26rpx;
     font-weight: 600;
+    box-shadow: 0 8rpx 24rpx rgba(36, 37, 44, 0.16);
 
     &::after {
       content: '→';
       font-size: 26rpx;
     }
+
+    &--tap,
+    &--tap:active {
+      opacity: 0.82;
+    }
   }
 
-  /* 双环装饰（#8764FF 外环 + #EEE9FF 内环 + 百分比） */
-  &__ring {
-    width: 152rpx;
-    height: 152rpx;
-    border-radius: 50%;
-    background: $brand-soft;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  /* ===== 横幅右侧：今日名人头像（替代原 AI 双环；沿用人物卡的首字 + 领域渐变） ===== */
+  &__hero {
+    position: relative;
+    z-index: 1;
     flex-shrink: 0;
+    width: 152rpx;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8rpx;
   }
 
-  &__ring-inner {
-    width: 112rpx;
-    height: 112rpx;
+  &__hero-avatar {
+    position: relative;
+    width: 132rpx;
+    height: 132rpx;
     border-radius: 50%;
-    background: $brand-weak;
     display: flex;
     align-items: center;
     justify-content: center;
     color: #fff;
-    font-size: 32rpx;
+    font-size: 48rpx;
     font-weight: 600;
+    border: 4rpx solid rgba(255, 255, 255, 0.72);
+    box-shadow: 0 10rpx 28rpx rgba(36, 37, 44, 0.2);
+
+    /* 领域渐变（与 person-card 头像同源配色） */
+    &--tech {
+      background: linear-gradient(135deg, #33a3ff 0%, $domain-tech 100%);
+    }
+
+    &--business {
+      background: linear-gradient(135deg, #ff9d7c 0%, $domain-business 100%);
+    }
+
+    &--ent {
+      background: linear-gradient(135deg, #f472b6 0%, $domain-ent 100%);
+    }
+
+    &--sports {
+      background: linear-gradient(135deg, #34d399 0%, $domain-sports 100%);
+    }
+
+    &--academia {
+      background: linear-gradient(135deg, $brand-soft 0%, $domain-academia 100%);
+    }
+
+    &--other {
+      background: linear-gradient(135deg, $text-3 0%, $domain-other 100%);
+    }
   }
 
-  /* ===== 搜索模块卡 ===== */
+  /* 换一位（⟳）：头像右上角小圆钮 */
+  &__hero-shuffle {
+    position: absolute;
+    right: -6rpx;
+    top: -6rpx;
+    width: 46rpx;
+    height: 46rpx;
+    border-radius: 50%;
+    background: #fff;
+    color: $brand;
+    font-size: 26rpx;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4rpx 16rpx rgba(36, 37, 44, 0.16);
+  }
+
+  &__hero-name {
+    max-width: 152rpx;
+    color: #fff;
+    font-size: 26rpx;
+    font-weight: 600;
+    text-shadow: 0 2rpx 8rpx rgba(36, 37, 44, 0.24);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__hero-tag {
+    color: rgba(255, 255, 255, 0.75);
+    font-size: 20rpx;
+  }
+
+  /* ===== 搜索卡（输入 + 行业 / 关注 双组筛选） ===== */
   &__search {
     margin: 40rpx 44rpx 0;
-    padding: 20rpx;
-    border-radius: 38rpx;
-    background: rgba(255, 255, 255, 0.66);
+    padding: 28rpx 28rpx 24rpx;
+    border-radius: 40rpx;
+    background: rgba(255, 255, 255, 0.86);
     box-shadow: $shadow-card;
 
+    /* 组件默认尺寸是 30PX 高 + 15PX 胶囊底，这里整体收敛为 76rpx 圆角矩形 */
     .at-search-bar {
       background: transparent;
       padding: 0;
+      overflow: visible;
 
-      .at-search-bar__input {
-        background: #fff !important;
+      /* 去掉组件默认的底部发丝线（边框由输入框自己画） */
+      &::after {
+        display: none;
+      }
+
+      /* 输入框：白底 + 品牌紫描边。
+         两个坑：① input-cnt 默认 width:100% 且为 flex 子项，会与右侧 action 叠加后被 .at-search-bar 的
+         overflow:hidden 裁掉右描边 ⇒ 改 width:auto；② input 本体是 absolute 铺满父层，背景必须透明，
+         否则会盖住画在 input-cnt 上的描边 */
+      .at-search-bar__input-cnt {
+        flex: 1;
+        width: auto;
+        height: 76rpx;
+        background: #fff;
+        border: 2rpx solid rgba(95, 51, 225, 0.24);
         border-radius: $radius-md;
       }
 
+      /* 占位文字区（放大镜 + 提示语）与输入框同高。
+         注意组件在「未聚焦且无输入」时会内联 flex-grow:1 把本元素撑满整行，而默认样式是
+         justify-content:center ⇒ 放大镜会飘到输入框中间；这里强制靠左，与聚焦后位置一致 */
+      .at-search-bar__placeholder-wrap {
+        height: 76rpx;
+        padding: 0 20rpx;
+        justify-content: flex-start;
+
+        .at-icon {
+          font-size: 28rpx;
+        }
+      }
+
+      /* 间距统一用 rpx（组件默认 12PX 不随屏宽换算，易与 rpx 混用错位）：
+         左内距 20 + 放大镜 28 + 本间距 24 = 72rpx，与 input 的 padding-left 严格对齐 */
+      .at-search-bar__placeholder {
+        margin-left: 24rpx;
+        flex-shrink: 1;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .at-search-bar__input {
+        height: 76rpx !important;
+        font-size: 28rpx !important;
+        padding: 0 72rpx;
+        background: transparent;
+        border-radius: $radius-md;
+      }
+
+      .at-search-bar__clear {
+        right: 20rpx;
+        width: 48rpx;
+        height: 76rpx;
+      }
+
+      /* 卡内已有「搜索名人」主按钮（键盘亦可确认），隐藏行内 action：
+         它是 flex:none 的在流元素，即便 opacity:0 也会占位挤压输入框 */
       .at-search-bar__action {
-        background: $brand-weak;
-        color: $brand;
+        display: none;
       }
     }
   }
 
+  /* 卡头：标题 + 能力标签 */
+  &__search-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18rpx;
+  }
+
+  &__search-title {
+    font-size: 32rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__search-tag {
+    padding: 6rpx 18rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 20rpx;
+  }
+
+  /* 热搜词：一行轻量胶囊，点击「填词 + 搜索」 */
+  &__hot-words {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12rpx;
+    margin-top: 18rpx;
+  }
+
+  &__hot-words-label {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__hot-word {
+    padding: 6rpx 20rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 22rpx;
+    line-height: 1.6;
+
+    &--tap,
+    &--tap:active {
+      opacity: 0.7;
+    }
+
+    /* 「最近」是低权重的复访入口：中性色胶囊，与品牌紫的「热搜」区分开 */
+    &--recent {
+      background: #fff;
+      color: $text-2;
+      box-shadow: $shadow-card;
+    }
+  }
+
+  /* 筛选分组：左侧竖排标签 + 右侧单行横滑 chips（不换行，避免撑高首屏） */
+  &__filter-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16rpx;
+    margin-top: 24rpx;
+  }
+
+  &__filter-label {
+    flex-shrink: 0;
+    width: 56rpx;
+    padding-top: 14rpx;
+    font-size: 24rpx;
+    line-height: 1;
+    color: $text-3;
+  }
+
+  &__filter-chips {
+    flex: 1;
+    min-width: 0;
+    height: 60rpx;
+    /* 右侧出血：滑到末端时 chip 贴住卡片内边，不留突兀空档 */
+    margin-right: -28rpx;
+    padding-right: 28rpx;
+    /* 关键：scroll-view 内部默认不是 flex 容器（要在标签上加 enable-flex，基础库 2.7.3+），
+       直接写 display:flex 在小程序里不生效 ⇒ 每个 chip 退化成块级元素各占一行。
+       故改用 scroll-view 亲儿子方案：nowrap + inline-block 子项 */
+    white-space: nowrap;
+  }
+
+  &__fchip {
+    display: inline-block;
+    vertical-align: top;
+    margin-right: 16rpx;
+    padding: 10rpx 24rpx;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $text-2;
+    font-size: 24rpx;
+    line-height: 1.4;
+
+    &--active {
+      background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 8rpx 24rpx rgba(95, 51, 225, 0.24);
+    }
+  }
+
+  /* 当前关注方向的解释文案（与 chips 左对齐） */
+  &__focus-desc {
+    margin: 14rpx 0 0 72rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 条件摘要 + 重置 */
+  &__search-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 24rpx;
+    padding-top: 20rpx;
+    border-top: 2rpx solid $line;
+  }
+
+  &__search-summary {
+    font-size: 24rpx;
+    font-weight: 500;
+    color: $brand;
+  }
+
+  &__search-reset {
+    font-size: 24rpx;
+    color: $text-3;
+
+    &::after {
+      content: ' ✕';
+    }
+  }
+
   &__search-btn {
-    margin-top: 20rpx;
+    margin-top: 22rpx;
     border-radius: 999rpx;
   }
 
   &__status {
-    padding: 48rpx 0;
+    padding: 48rpx 0 0;
+  }
+
+  /* AI 识别中：用文案说明在做什么，下面用骨架屏预演候选列表的版面 */
+  &__status-text {
+    text-align: center;
+    font-size: 26rpx;
+    color: $text-2;
+    margin-bottom: 8rpx;
   }
 
   &__fallback {
@@ -217,105 +544,33 @@
     padding: 40rpx 44rpx;
   }
 
-  /* ===== 热门领域：一行一卡（全宽，参照样例 Task Groups 列表节奏） ===== */
-  &__groups {
-    display: flex;
-    flex-direction: column;
-    gap: 24rpx;
-    padding: 20rpx 44rpx 0;
+  /* ===== 热门名人：一人一卡（复用 person-card，卡片自带 44rpx 横向边距） ===== */
+  &__hot {
+    padding-top: 12rpx;
   }
 
-  &__group {
-    width: 100%;
-    box-sizing: border-box;
-    border-radius: 38rpx;
-    padding: 30rpx 32rpx;
-    display: flex;
-    flex-direction: column;
-    gap: 18rpx;
-
-    &--tech { background: rgba(0, 135, 255, 0.1); }
-    &--business { background: rgba(255, 125, 83, 0.12); }
-    &--ent { background: rgba(236, 72, 153, 0.1); }
-    &--sports { background: rgba(16, 185, 129, 0.1); }
-
-    &-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 16rpx;
-    }
-
-    &-titlewrap {
-      display: flex;
-      flex-direction: column;
-      gap: 6rpx;
-      min-width: 0;
-    }
-
-    &-label {
-      font-size: 30rpx;
-      font-weight: 600;
-      color: $text-1;
-    }
-
-    &-desc {
-      font-size: 22rpx;
-      color: $text-2;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    /* 右侧热度数值 */
-    &-heat {
-      flex-shrink: 0;
-      font-size: 26rpx;
-      font-weight: 600;
-      color: $text-1;
-      &::after {
-        content: '%';
-        font-size: 20rpx;
-        color: $text-3;
-      }
-    }
-
-    /* 进度条：白底 + 领域色填充 */
-    &-bar {
-      height: 12rpx;
-      border-radius: 6rpx;
-      background: rgba(255, 255, 255, 0.9);
-      overflow: hidden;
-    }
-
-    &-fill {
-      height: 100%;
-      border-radius: 6rpx;
-    }
-
-    &--tech &-fill { background: $domain-tech; }
-    &--business &-fill { background: $domain-business; }
-    &--ent &-fill { background: $domain-ent; }
-    &--sports &-fill { background: $domain-sports; }
+  /* 热门榜领域 chips：与搜索卡内的行业 chips 同款，横滑单行、不换行 */
+  &__hot-filters {
+    margin-top: 20rpx;
+    padding: 0 44rpx;
+    white-space: nowrap;
   }
 
-  &__group-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 14rpx;
-  }
-
-  &__gchip {
-    padding: 10rpx 26rpx;
+  /* 展开/收起热门榜 */
+  &__hot-more {
+    margin: 16rpx 44rpx 0;
+    padding: 22rpx 0;
+    text-align: center;
     border-radius: 999rpx;
-    background: rgba(255, 255, 255, 0.85);
-    color: $text-1;
-    font-size: 24rpx;
-    box-shadow: 0 4rpx 20rpx rgba(36, 37, 44, 0.04);
+    background: #fff;
+    color: $brand;
+    font-size: 26rpx;
+    font-weight: 600;
+    box-shadow: $shadow-card;
   }
 }
 
-/* 热门领域分区头与页面边距对齐（44rpx） */
+/* 热门名人分区头与页面边距对齐（44rpx） */
 .page-index .section-head {
   padding: 48rpx 44rpx 0;
 }

@@ -65,6 +65,40 @@
     font-size: 20rpx;
   }
 
+  /* ===== 关注侧重提示条 ===== */
+  &__focus {
+    display: flex;
+    align-items: center;
+    gap: 14rpx;
+    margin: 16rpx 32rpx 0;
+    padding: 16rpx 24rpx;
+    border-radius: $radius-md;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 24rpx;
+    line-height: 1.5;
+  }
+
+  &__focus-tag {
+    flex-shrink: 0;
+    padding: 4rpx 16rpx;
+    border-radius: 999rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 20rpx;
+  }
+
+  &__focus-text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__focus-link {
+    color: $brand-dark;
+    font-weight: 600;
+    text-decoration: underline;
+  }
+
   &__title-row {
     display: flex;
     align-items: center;
@@ -110,46 +144,55 @@
     align-self: flex-start;
   }
 
-  &__loading {
-    padding: 64rpx 0 32rpx;
+  /* 关注按钮：与横幅同色系（半透明白描边），已关注态转实底以便一眼区分 */
+  &__follow {
+    margin-top: 4rpx;
+    align-self: flex-start;
+    padding: 8rpx 26rpx;
+    border-radius: 999rpx;
+    border: 2rpx solid rgba(255, 255, 255, 0.55);
+    color: #fff;
+    font-size: 24rpx;
+    line-height: 1.5;
 
-    &-tip {
-      text-align: center;
-      margin-top: 20rpx;
+    &--on {
+      background: rgba(255, 255, 255, 0.22);
+      border-color: transparent;
+      color: rgba(255, 255, 255, 0.9);
     }
   }
 
-  /* ===== AI 点评强调卡（紫色渐变） ===== */
-  &__analysis {
-    margin: 16rpx 32rpx;
-    padding: 36rpx 32rpx;
-    border-radius: $radius-lg;
-    background: linear-gradient(135deg, $brand-weak 0%, #f6f2ff 100%);
-    border: 2rpx solid rgba(95, 51, 225, 0.12);
+  /* 刷新结果条：点「刷新最新」后告诉用户到底刷出了什么 */
+  &__diff {
+    margin: 16rpx 32rpx 0;
+    padding: 20rpx 24rpx;
+    border-radius: $radius-md;
+    background: $brand-weak;
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+  }
 
-    &-title {
-      font-size: 30rpx;
-      font-weight: 600;
-      color: $brand-dark;
-      margin-bottom: 16rpx;
-      display: flex;
-      align-items: center;
+  &__diff-head {
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand-dark;
+  }
 
-      &::before {
-        content: '';
-        width: 8rpx;
-        height: 28rpx;
-        border-radius: 4rpx;
-        background: $brand;
-        margin-right: 14rpx;
-      }
-    }
+  &__diff-body {
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $brand;
+  }
 
-    &-text {
-      font-size: 28rpx;
-      line-height: 1.8;
-      color: $text-1;
-    }
+  /*
+    AI 点评：原先独占一张紫色渐变强调卡，与其余白卡并列时像另一个体系的组件。
+    现改为复用全局 .card 背景，标题用 .card-title（其紫色竖条与旧样式一致），此处只留正文排版。
+  */
+  &__analysis-text {
+    font-size: 28rpx;
+    line-height: 1.8;
+    color: $text-1;
   }
 
   /* ===== 时间线（圆点 + 竖线） ===== */
@@ -305,6 +348,16 @@
       font-size: 26rpx;
       line-height: 1.6;
     }
+  }
+
+  /* 来源域名徽章：小程序内打不开外部网页，域名是用户判断该条可信度的主要线索 */
+  &__domain {
+    padding: 2rpx 12rpx;
+    border-radius: 999rpx;
+    background: $line;
+    color: $text-3;
+    font-size: 20rpx;
+    flex-shrink: 0;
   }
 
   &__copy-link {

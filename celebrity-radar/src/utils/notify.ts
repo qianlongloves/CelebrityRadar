@@ -1,0 +1,67 @@
+import Taro from '@tarojs/taro'
+import { publicConfig } from '@/config/public'
+import { useAuth } from '@/stores/auth'
+import { setSubscribeOptIn } from './auth'
+import { diagLog } from './cloud-diagnostics'
+
+/**
+ * 关注更新提醒（微信订阅消息）。
+ *
+ * 微信「一次性订阅」的规则决定了这个功能的产品形态：**授权一次只够推一条**，
+ * 推送后授权即消耗，用户想再收到提醒必须再点一次授权。所以：
+ *   - 界面上它是「开启一次提醒」而不是一个常亮开关，文案不能承诺持续推送；
+ *   - 客户端只做「请求授权 + 落库置位」；
+ *   - 真正的发送由云函数 notifyFollowUpdates 在定时任务里检测到新动态时执行，
+ *     发完把 subscribe_ok 复位。
+ */
+
+/** 模板 ID 是否已配置（未配置时入口只给指引，不发一个必然失败的授权请求） */
+export function notifyConfigured(): boolean {
+  return Boolean(publicConfig.subscribeTemplateId)
+}
+
+/**
+ * 请求订阅授权并落库。
+ *
+ * requestSubscribeMessage 必须由用户点击直接触发（微信要求），因此第一次 await
+ * 必须就是它本身——本函数在调用 Taro.requestSubscribeMessage 之前不做任何异步操作，
+ * 调用方直接把本函数挂到 onClick 上即可满足该约束。
+ */
+export async function requestNotify(): Promise<{ ok: boolean; message: string }> {
+  if (!useAuth.getState().userId) return { ok: false, message: '请先登录' }
+  if (!notifyConfigured()) {
+    return { ok: false, message: '提醒功能未配置：请先在小程序后台创建订阅消息模板' }
+  }
+
+  const tmplId: string = publicConfig.subscribeTemplateId
+  /**
+   * Taro 3.6 给 requestSubscribeMessage 的类型定义走的是新版订阅消息（要求 entityIds），
+   * 与微信现行的 tmplIds 写法不兼容，断言到实际调用签名。
+   */
+  const subscribe = Taro.requestSubscribeMessage as unknown as (
+    o: { tmplIds: string[] }
+  ) => Promise<Record<string, string>>
+
+  let status: string | undefined
+  try {
+    const res = await subscribe({ tmplIds: [tmplId] })
+    status = res[tmplId]
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    diagLog('warn', 'auth', `订阅授权失败：${msg}`)
+    return { ok: false, message: `授权失败：${msg}` }
+  }
+
+  if (status !== 'accept') {
+    diagLog('info', 'auth', `订阅授权未通过：${status ?? '无返回'}`)
+    /* ban = 用户曾在设置里关掉过该模板的提醒，普通拒绝与它要给不同指引 */
+    return {
+      ok: false,
+      message: status === 'ban' ? '提醒已被关闭，请到小程序设置里开启' : '已取消，未开启提醒'
+    }
+  }
+
+  const saved = await setSubscribeOptIn(true)
+  if (!saved) return { ok: false, message: '授权成功但记录失败，请重试' }
+  return { ok: true, message: '已开启：关注的人有新动态时会提醒你一次' }
+}

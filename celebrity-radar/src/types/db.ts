@@ -6,7 +6,7 @@ import type { Report } from '@/utils/report'
  * 通过 utils/db.ts 的 table() 访问，行类型在此集中维护。
  */
 
-/** report_cache：全局共享报告缓存，TTL 24h；state=building 作生成互斥锁 */
+/** report_cache：全局共享报告缓存（ready 后长期复用，不自动过期）；state=building 作生成互斥锁 */
 export interface ReportCacheRow {
   id: string // personKey
   report: Report | null
@@ -16,7 +16,7 @@ export interface ReportCacheRow {
   search_meta: { news_count: number } | null
 }
 
-/** feed_cache：Tavily 结果结构化映射（不存 LLM 产物） */
+/** feed_cache：检索结果结构化映射（不存 LLM 产物） */
 export interface FeedCacheRow {
   id: string // personKey
   items: NewsItem[]

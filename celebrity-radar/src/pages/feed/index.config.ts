@@ -1,4 +1,4 @@
 export default definePageConfig({
-  navigationBarTitleText: '关注流',
+  navigationBarTitleText: '关注',
   enablePullDownRefresh: true
 })

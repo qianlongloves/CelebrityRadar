@@ -1,6 +1,6 @@
 import { table } from './db'
 import { useAuth } from '@/stores/auth'
-import { diagLog } from './workbuddy-cloud-diagnostics'
+import { diagLog } from './cloud-diagnostics'
 
 /**
  * 「清空我的数据」（§六.6）：本地设置 + 云端用户数据（follows / favorites / history）。

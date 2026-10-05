@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import Taro, { useDidShow, useRouter } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
-import { AtTabs, AtButton, AtActivityIndicator } from 'taro-ui'
+import { AtTabs, AtButton } from 'taro-ui'
+import Skeleton from '@/components/skeleton'
 import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
 import { getCachedReport } from '@/utils/cache'
@@ -40,7 +41,9 @@ export default function Profile() {
   }
 
   const onToggleFollow = async () => {
-    const next = await toggleFollow(personKey)
+    const next = await toggleFollow(personKey, 'profile')
+    /* null = 失败或未登录：follows.ts 已给出原因 toast，不更新按钮态（原先会误报取关成功） */
+    if (next === null) return
     setFollowed(next)
     Taro.showToast({ title: next ? '已关注' : '已取消关注', icon: 'none' })
   }
@@ -84,7 +87,7 @@ export default function Profile() {
         </View>
       </View>
 
-      {loading && <AtActivityIndicator mode='center' content='加载中…' className='page-profile__loading' />}
+      {loading && <Skeleton variant='card' rows={3} />}
 
       {!loading && !report && (
         <EmptyState

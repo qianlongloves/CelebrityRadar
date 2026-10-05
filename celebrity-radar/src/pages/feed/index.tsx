@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import Taro, { useDidShow, usePullDownRefresh } from '@tarojs/taro'
-import { View, Text } from '@tarojs/components'
-import { AtActivityIndicator } from 'taro-ui'
+import { View, Text, ScrollView } from '@tarojs/components'
 import EmptyState from '@/components/empty-state'
+import Skeleton from '@/components/skeleton'
 import { listFollows, FollowRow } from '@/utils/follows'
-import { getFeed, refreshAllFeeds } from '@/utils/cache'
+import { getFeedDetail, refreshAllFeeds } from '@/utils/cache'
 import { NewsItem } from '@/utils/search'
-import { DomainCode, parsePersonKey } from '@/config/domains'
+import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { fromNow } from '@/utils/time'
+import { useTabBarSync } from '@/utils/tabbar'
 import './index.scss'
 
 /** 流条目：新闻 + 归属人 */
@@ -22,23 +24,49 @@ function sortByDate(a: FeedEntry, b: FeedEntry): number {
   return tb - ta
 }
 
+/** 今天发布的动态给一枚徽标，让「有没有新东西」一眼可见 */
+function isToday(date?: string): boolean {
+  if (!date) return false
+  const t = Date.parse(date)
+  if (Number.isNaN(t)) return false
+  const d = new Date(t)
+  const now = new Date()
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  )
+}
+
 export default function Feed() {
+  useTabBarSync()
   const [loading, setLoading] = useState(true)
   const [entries, setEntries] = useState<FeedEntry[]>([])
-  const [followCount, setFollowCount] = useState(0)
+  const [follows, setFollows] = useState<FollowRow[]>([])
+  /** 读失败的关注人数：>0 时结果不完整，必须显式告知，不能当成「暂无动态」 */
+  const [failedCount, setFailedCount] = useState(0)
+  /** 所有关注人里最近一次抓取时间，用于表达数据新鲜度 */
+  const [lastFetchedAt, setLastFetchedAt] = useState<string | null>(null)
+  /** 按人物筛选，'' = 全部 */
+  const [personFilter, setPersonFilter] = useState('')
 
   const load = async () => {
     setLoading(true)
-    const follows = await listFollows()
-    setFollowCount(follows.length)
+    const rows = await listFollows()
+    setFollows(rows)
 
     // 归并：每个关注人的 feed_cache → 统一列表，按时间倒序
     const merged: FeedEntry[] = []
+    let failed = 0
+    let latest: string | null = null
+
     await Promise.all(
-      follows.map(async (f: FollowRow) => {
-        const items = await getFeed(f.person_key)
+      rows.map(async (f: FollowRow) => {
+        const detail = await getFeedDetail(f.person_key)
+        if (!detail.ok) failed++
+        if (detail.fetchedAt && (!latest || detail.fetchedAt > latest)) latest = detail.fetchedAt
         const parsed = parsePersonKey(f.person_key)
-        for (const it of items) {
+        for (const it of detail.items) {
           merged.push({
             ...it,
             personKey: f.person_key,
@@ -48,7 +76,10 @@ export default function Feed() {
         }
       })
     )
+
     merged.sort(sortByDate)
+    setFailedCount(failed)
+    setLastFetchedAt(latest)
     setEntries(merged)
     setLoading(false)
   }
@@ -58,8 +89,8 @@ export default function Feed() {
   })
 
   usePullDownRefresh(async () => {
-    const follows = await listFollows()
-    const res = await refreshAllFeeds(follows)
+    const rows = await listFollows()
+    const res = await refreshAllFeeds(rows)
     await load()
     Taro.stopPullDownRefresh()
     Taro.showToast({ title: res.message, icon: 'none', duration: 2000 })
@@ -69,16 +100,34 @@ export default function Feed() {
     Taro.navigateTo({ url: `/pages/profile/index?personKey=${encodeURIComponent(personKey)}` })
   }
 
+  /* 每个人物的动态条数，供筛选芯片展示 */
+  const countByPerson: Record<string, number> = {}
+  for (const e of entries) countByPerson[e.personKey] = (countByPerson[e.personKey] ?? 0) + 1
+
+  const shown = personFilter ? entries.filter((e) => e.personKey === personFilter) : entries
+  const filterName = follows.find((f) => f.person_key === personFilter)?.name ?? ''
+
   return (
     <View className='page-feed glow-page safe-tab'>
-      {loading && <AtActivityIndicator mode='center' content='加载中…' className='page-feed__loading' />}
+      {loading && <Skeleton variant='feed' rows={3} withStats />}
 
-      {!loading && entries.length === 0 && (
+      {/* 读取失败：与「确实没有动态」是两回事，分开呈现 */}
+      {!loading && entries.length === 0 && failedCount > 0 && (
+        <EmptyState
+          icon='⚠️'
+          title='动态没能加载出来'
+          desc={`${failedCount} 位关注人的动态读取失败，可能是网络或权限问题`}
+          actionText='重新加载'
+          onAction={() => void load()}
+        />
+      )}
+
+      {!loading && entries.length === 0 && failedCount === 0 && (
         <EmptyState
           icon='📡'
-          title={followCount === 0 ? '还没有关注动态' : '关注的人暂无公开动态'}
+          title={follows.length === 0 ? '还没有关注动态' : '关注的人暂无公开动态'}
           desc={
-            followCount === 0
+            follows.length === 0
               ? '关注名人后，这里会聚合展示 TA 的近期公开动态；下拉刷新每日限 10 次'
               : '下拉刷新可联网抓取最新动态（每日限 10 次）'
           }
@@ -93,7 +142,7 @@ export default function Feed() {
           <View className='page-feed__stats'>
             <View className='page-feed__stat page-feed__stat--brand'>
               <Text className='page-feed__stat-label'>已关注</Text>
-              <Text className='page-feed__stat-value'>{followCount} 人</Text>
+              <Text className='page-feed__stat-value'>{follows.length} 人</Text>
             </View>
             <View className='page-feed__stat page-feed__stat--blue'>
               <Text className='page-feed__stat-label'>近期动态</Text>
@@ -101,13 +150,62 @@ export default function Feed() {
             </View>
           </View>
 
+          {failedCount > 0 && (
+            <View className='page-feed__notice' onClick={() => void load()}>
+              <Text className='page-feed__notice-text'>
+                {failedCount} 位关注人的动态读取失败，以下结果可能不完整 · 点此重试
+              </Text>
+            </View>
+          )}
+
+          {/* 按人物筛选：流是按时间混排的，关注多了想只看某人会非常费劲 */}
+          {follows.length > 1 && (
+            <ScrollView scrollX className='page-feed__chips' showScrollbar={false}>
+              <View className='page-feed__chips-inner'>
+                <View
+                  className={`page-feed__chip ${personFilter === '' ? 'page-feed__chip--active' : ''}`}
+                  onClick={() => setPersonFilter('')}
+                >
+                  全部 {entries.length}
+                </View>
+                {follows.map((f) => (
+                  <View
+                    key={f.person_key}
+                    className={`page-feed__chip ${
+                      personFilter === f.person_key ? 'page-feed__chip--active' : ''
+                    }`}
+                    onClick={() => setPersonFilter(f.person_key)}
+                  >
+                    {f.name} {countByPerson[f.person_key] ?? 0}
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+          )}
+
           <View className='section-head'>
-            <Text className='section-head__title'>最新动态</Text>
-            <Text className='section-head__extra'>下拉刷新 · 每日 10 次</Text>
+            <Text className='section-head__title'>{personFilter ? `${filterName} 的动态` : '最新动态'}</Text>
+            <Text className='section-head__extra'>
+              {lastFetchedAt ? `抓取于 ${fromNow(lastFetchedAt)}` : '下拉刷新 · 每日 10 次'}
+            </Text>
           </View>
 
-          {entries.map((e, i) => (
-            <View key={`${e.personKey}-${i}`} className='card page-feed__item' onClick={() => openPerson(e.personKey)}>
+          {shown.length === 0 && (
+            <EmptyState
+              icon='📭'
+              title={`${filterName}暂无动态`}
+              desc='下拉刷新可联网抓取最新动态，或切回「全部」看看其他人'
+              actionText='查看全部'
+              onAction={() => setPersonFilter('')}
+            />
+          )}
+
+          {shown.map((e, i) => (
+            <View
+              key={`${e.personKey}-${e.url || i}`}
+              className='card page-feed__item'
+              onClick={() => openPerson(e.personKey)}
+            >
               <View className='page-feed__item-head'>
                 <View className='page-feed__item-person'>
                   <View className={`page-feed__item-icon page-feed__item-icon--${e.domain}`}>
@@ -115,10 +213,15 @@ export default function Feed() {
                   </View>
                   <View className='page-feed__item-person-info'>
                     <Text className='page-feed__item-name'>{e.personName}</Text>
-                    <Text className='page-feed__item-domain'>{e.source}</Text>
+                    <Text className='page-feed__item-domain'>
+                      {DOMAIN_META[e.domain].label} · {e.source}
+                    </Text>
                   </View>
                 </View>
-                <Text className='page-feed__item-date'>{e.publishedDate?.slice(0, 10) ?? '近期'}</Text>
+                <View className='page-feed__item-meta'>
+                  {isToday(e.publishedDate) && <Text className='page-feed__item-today'>今日</Text>}
+                  <Text className='page-feed__item-date'>{e.publishedDate?.slice(0, 10) ?? '近期'}</Text>
+                </View>
               </View>
               <View className='page-feed__item-title'>{e.title}</View>
               <View className='text-secondary page-feed__item-summary'>{e.content}</View>

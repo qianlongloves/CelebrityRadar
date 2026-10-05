@@ -1,0 +1,9 @@
+{
+  "name": "notifyFollowUpdates",
+  "version": "1.0.0",
+  "description": "关注更新提醒：定时核对关注人物是否有新动态，用订阅消息提醒已授权用户",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

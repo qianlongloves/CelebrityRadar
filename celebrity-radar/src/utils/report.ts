@@ -1,8 +1,9 @@
 import { z } from 'zod'
 import { NewsItem, heatValue } from './search'
+import { FocusCode } from '@/config/filters'
 import { chatJSON, chatText, ChatJSONResult } from './llm'
 import { setCooldown } from './cooldown'
-import { diagLog } from './workbuddy-cloud-diagnostics'
+import { diagLog } from './cloud-diagnostics'
 
 /**
  * AI 报告 Schema v2（§2.3）与生成/校验（附录 B）。
@@ -71,7 +72,7 @@ export interface LlmReportFields {
 export interface Report {
   personKey: string
   name: string
-  mode: 'realtime' | 'knowledge'
+  mode: 'realtime'
   generatedAt: string
   heat: number
   intro: string
@@ -81,6 +82,8 @@ export interface Report {
   timeline: Array<z.infer<typeof TimelineSchema>>
   sources: Array<z.infer<typeof SourceSchema>>
   disclaimer: string
+  /** 生成时的关注侧重（发现页「关注」筛选，'all' = 六段完整） */
+  focus?: FocusCode
   /** 降级标记：结构化生成失败后由纯文本降级产出（§5.4 用例 9），UI 呈现降级提示 */
   degraded?: true
 }
@@ -100,16 +103,6 @@ const SYSTEM_REALTIME = [
   '8. 只输出 JSON，格式：{"intro":string,"dynamics":[],"quotes":[],"analysis":string,"timeline":[],"sources":[]}'
 ].join('\n')
 
-const SYSTEM_KNOWLEDGE = [
-  '你是名人动态分析师。当前无联网素材，基于你已有的公开知识为指定名人整理简版信息。',
-  '硬约束：',
-  '1. 不编造日期与来源；quotes 的 source 一律写「据公开资料」。',
-  '2. 只输出 intro（一句话简介）、quotes（经典语录）、analysis（风格与立场点评，措辞中性）。',
-  '3. dynamics、timeline、sources 一律空数组（无实时素材，宁缺毋滥）。',
-  '4. 若该人物属政治、军事类敏感人物，仅返回 {"refused": true}。',
-  '5. 只输出 JSON，格式：{"intro":string,"dynamics":[],"quotes":[],"analysis":string,"timeline":[],"sources":[]}'
-].join('\n')
-
 /** 降级纯文本提示词（结构化 JSON 两次失败后，§5.4 用例 9） */
 const SYSTEM_FALLBACK = [
   '你是名人动态分析师。结构化生成暂时不可用，请用不超过 150 字的纯文本，',
@@ -118,26 +111,48 @@ const SYSTEM_FALLBACK = [
 ].join('\n')
 
 /** 素材 → user 消息（附录 B） */
-function buildUserMessage(name: string, news: NewsItem[]): string {
+function buildUserMessage(name: string, news: NewsItem[], focus: FocusCode): string {
   return [
     `名人：${name}`,
+    `关注侧重：${focus === 'all' ? '综合（六段完整）' : FOCUS_LABEL[focus]}`,
     '素材：',
     ...news.map((n) => `- ${n.title}（${n.source}）${n.url}\n${n.content}`)
   ].join('\n')
 }
 
+/* ===== 发现页「关注」筛选 → 生成侧重（§2.3 六段中的可聚焦段） ===== */
+
+const FOCUS_LABEL: Record<FocusCode, string> = {
+  all: '综合',
+  dynamics: '近期动态',
+  quotes: '言论观点',
+  timeline: '经历履历'
+}
+
+/** 有素材时，按侧重调整各段篇幅 */
+const FOCUS_HINT_REALTIME: Record<FocusCode, string> = {
+  all: '',
+  dynamics:
+    '补充要求（优先满足）：本次用户侧重「近期动态」，dynamics 不少于 3 条且优先最新事件，summary 写足信息量；quotes 可精简至 1~2 条。',
+  quotes:
+    '补充要求（优先满足）：本次用户侧重「言论观点」，quotes 不少于 3 条并写清 context 出处场合；dynamics 可精简至 1~2 条。',
+  timeline:
+    '补充要求（优先满足）：本次用户侧重「经历履历」，timeline 尽量补全可确认的关键节点，analysis 需串联其成长与职业脉络；dynamics 可精简至 1~2 条。'
+}
+
 /**
- * 生成报告（实时素材 or 知识模式）。
+ * 生成报告（基于实时素材，无素材时由 utils/cache.ts 直接进引导态、不调用本函数）。
  * 只负责调 LLM + 校验；缓存互斥由 utils/cache.ts 负责。
  */
 export async function buildReport(
   personKey: string,
   name: string,
-  news: NewsItem[] | null
+  news: NewsItem[],
+  focus: FocusCode = 'all'
 ): Promise<ChatJSONResult<Report | { refused: true }>> {
-  const realtime = news !== null && news.length > 0
-  const system = realtime ? SYSTEM_REALTIME : SYSTEM_KNOWLEDGE
-  const user = realtime ? buildUserMessage(name, news) : `名人：${name}（无联网素材，知识模式）`
+  const focusHint = FOCUS_HINT_REALTIME[focus]
+  const system = focusHint ? `${SYSTEM_REALTIME}\n${focusHint}` : SYSTEM_REALTIME
+  const user = buildUserMessage(name, news, focus)
 
   const result = await chatJSON(system, user, LlmReportSchema)
   if (!result.ok) {
@@ -151,7 +166,7 @@ export async function buildReport(
         data: {
           personKey,
           name,
-          mode: realtime ? 'realtime' : 'knowledge',
+          mode: 'realtime',
           generatedAt: new Date().toISOString(),
           heat: 0,
           intro: '',
@@ -161,6 +176,7 @@ export async function buildReport(
           timeline: [],
           sources: [],
           disclaimer: DISCLAIMER,
+          focus,
           degraded: true
         }
       }
@@ -173,7 +189,7 @@ export async function buildReport(
     return { ok: true, data: { refused: true } }
   }
 
-  const report = sanitizeReport(personKey, name, result.data, news, realtime ? 'realtime' : 'knowledge')
+  const report = sanitizeReport(personKey, name, result.data, news, focus)
   return { ok: true, data: report }
 }
 
@@ -187,10 +203,10 @@ export function sanitizeReport(
   personKey: string,
   name: string,
   llm: LlmReportFields,
-  news: NewsItem[] | null,
-  mode: Report['mode']
+  news: NewsItem[],
+  focus: FocusCode = 'all'
 ): Report {
-  const urlSet = new Set((news ?? []).map((n) => n.url))
+  const urlSet = new Set(news.map((n) => n.url))
 
   const normSentiment = (s?: string): 'positive' | 'neutral' | 'negative' =>
     s === 'positive' || s === 'negative' ? s : 'neutral'
@@ -222,29 +238,27 @@ export function sanitizeReport(
   }
 
   // 热度（§1.6）：N30 = 全部素材数（查询窗口 30 天）；N7 = publishedDate 在 7 天内
-  let heat = 0
-  if (mode === 'realtime' && news) {
-    const weekAgo = Date.now() - 7 * 24 * 3600 * 1000
-    const n7 = news.filter((n) => {
-      if (!n.publishedDate) return false
-      const t = Date.parse(n.publishedDate)
-      return Number.isFinite(t) && t >= weekAgo
-    }).length
-    heat = heatValue(news.length, n7)
-  }
+  const weekAgo = Date.now() - 7 * 24 * 3600 * 1000
+  const n7 = news.filter((n) => {
+    if (!n.publishedDate) return false
+    const t = Date.parse(n.publishedDate)
+    return Number.isFinite(t) && t >= weekAgo
+  }).length
+  const heat = heatValue(news.length, n7)
 
   return {
     personKey,
     name,
-    mode,
+    mode: 'realtime',
     generatedAt: new Date().toISOString(),
     heat,
     intro: llm.intro ?? '',
     dynamics,
     quotes,
     analysis: llm.analysis ?? '',
-    timeline: mode === 'realtime' ? timeline : [],
+    timeline,
     sources,
-    disclaimer: DISCLAIMER
+    disclaimer: DISCLAIMER,
+    focus
   }
 }

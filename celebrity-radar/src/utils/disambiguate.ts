@@ -1,7 +1,7 @@
 import { z } from 'zod'
-import { DOMAIN_CODES, DomainCode } from '@/config/domains'
+import { DOMAIN_CODES, DOMAIN_META, DomainCode } from '@/config/domains'
 import { chatJSON, ChatJSONResult } from './llm'
-import { diagLog } from './workbuddy-cloud-diagnostics'
+import { diagLog } from './cloud-diagnostics'
 
 /** 消歧候选（§1.6：领域 + 国籍 + 一句代表事件） */
 export interface PersonCandidate {
@@ -25,7 +25,7 @@ const DisambiguationSchema = z.union([
 ])
 
 /** 敏感过滤第二级（LLM 兜底）与消歧共用一套提示词（§六.7） */
-const SYSTEM_PROMPT = [
+const BASE_RULES = [
   '你是名人消歧助手。用户输入一个名字，你返回同名公众人物的候选列表，供用户选择具体是哪一位。',
   '规则：',
   '1. 只收录真实存在的公众名人（科技、商业、文娱、体育、学术等领域）。',
@@ -33,16 +33,33 @@ const SYSTEM_PROMPT = [
   '3. 若该名字对应政治、军事类人物，或存在此类同名人物，直接返回 {"refused": true}，不要返回任何候选。',
   '4. 若查无此公众名人，返回 {"refused": false, "candidates": []}。',
   '5. 只输出 JSON，不要输出任何其他文字。'
-].join('\n')
+]
+
+/** 领域筛选（用户在发现页选定行业）：限定候选领域，避免同名跨行业干扰 */
+const DOMAIN_RULE = (label: string) =>
+  `6. 用户已限定行业为「${label}」：只返回属于该行业的候选；若该名字在该行业没有公众人物，返回 {"refused": false, "candidates": []}。`
+
+function buildSystemPrompt(domainHint: DomainCode | 'all'): string {
+  const rules = [...BASE_RULES]
+  if (domainHint !== 'all') rules.push(DOMAIN_RULE(DOMAIN_META[domainHint].label))
+  return rules.join('\n')
+}
 
 /**
  * LLM 消歧（§4.2 关键交互流第一步）。
  * 返回：refused（敏感拒答）或候选列表（可能为空 = 未识别，需补充领域关键词）。
+ * @param opts.domainHint 发现页行业筛选：限定候选领域（'all' = 不限）
  */
 export async function disambiguate(
-  name: string
+  name: string,
+  opts: { domainHint?: DomainCode | 'all' } = {}
 ): Promise<ChatJSONResult<{ refused: boolean; candidates: PersonCandidate[] }>> {
-  const result = await chatJSON(SYSTEM_PROMPT, `名字：${name.trim()}`, DisambiguationSchema)
+  const domainHint = opts.domainHint ?? 'all'
+  const userMessage =
+    domainHint === 'all'
+      ? `名字：${name.trim()}`
+      : `名字：${name.trim()}\n限定行业：${DOMAIN_META[domainHint].label}`
+  const result = await chatJSON(buildSystemPrompt(domainHint), userMessage, DisambiguationSchema)
   if (!result.ok) return result
 
   const data = result.data

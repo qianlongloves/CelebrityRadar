@@ -1,0 +1,122 @@
+@import '../../styles/variables.scss';
+
+.page-following {
+  min-height: 100vh;
+
+  &__loading {
+    padding: 96rpx 0;
+  }
+
+  /* ===== 变化筛选：仅当存在「有新内容」时渲染 =====
+     左右 32rpx 与 .card 的 margin 对齐（见 src/app.scss） */
+  &__filters {
+    display: flex;
+    gap: 16rpx;
+    padding: 0 32rpx 8rpx;
+  }
+
+  &__chip {
+    padding: 10rpx 28rpx;
+    border: 2rpx solid $line;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $text-2;
+    font-size: 24rpx;
+
+    &--on {
+      border-color: $brand;
+      background: $brand-weak;
+      color: $brand;
+      font-weight: 600;
+    }
+  }
+
+  /* ===== 列表项：圆形领域头像 + 姓名/领域 + 右侧取关 ===== */
+  &__item {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+  }
+
+  /* 领域实色圆底（与关注流条目同源配色，此处放大到 80rpx 做列表主视觉） */
+  &__icon {
+    flex-shrink: 0;
+    width: 80rpx;
+    height: 80rpx;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #fff;
+
+    &--tech { background: $domain-tech; }
+    &--business { background: $domain-business; }
+    &--ent { background: $domain-ent; }
+    &--sports { background: $domain-sports; }
+    &--academia { background: $domain-academia; }
+    &--other { background: $domain-other; }
+  }
+
+  &__info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  /* 名字与徽标同排：徽标不该把名字挤到换行 */
+  &__title {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    min-width: 0;
+  }
+
+  &__name {
+    flex: 1;
+    min-width: 0;
+    font-size: 30rpx;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 「关注以来有新内容」徽标 */
+  &__badge {
+    flex-shrink: 0;
+    padding: 2rpx 12rpx;
+    border-radius: 6rpx;
+    background: $success;
+    color: #fff;
+    font-size: 18rpx;
+    line-height: 1.7;
+  }
+
+  &__meta {
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__time {
+    font-size: 22rpx;
+    color: $text-3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 取关做成描边胶囊：比纯文字更像「可点的操作」，也与危险的红色区分开 */
+  &__op {
+    flex-shrink: 0;
+    padding: 8rpx 24rpx;
+    border: 2rpx solid $line;
+    border-radius: 999rpx;
+    color: $text-2;
+    font-size: 22rpx;
+  }
+}

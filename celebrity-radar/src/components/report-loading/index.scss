@@ -1,0 +1,163 @@
+@import '../../styles/variables.scss';
+
+/* ===== 等待动画：双环反向旋转 + 中心脉冲 ===== */
+@keyframes rl-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes rl-pulse {
+  0% { transform: scale(0.94); }
+  50% { transform: scale(1.06); }
+  100% { transform: scale(0.94); }
+}
+
+/* 骨架扫光 / 排队进度条流动共用 */
+@keyframes rl-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+.report-loading {
+  padding: 56rpx 32rpx 40rpx;
+
+  &__orbit {
+    position: relative;
+    width: 180rpx;
+    height: 180rpx;
+    margin: 0 auto;
+  }
+
+  &__ring {
+    position: absolute;
+    border-radius: 50%;
+    box-sizing: border-box;
+
+    &--outer {
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      border: 8rpx solid $brand-weak;
+      border-top-color: $brand;
+      border-right-color: $brand-soft;
+      animation: rl-spin 1.5s linear infinite;
+    }
+
+    &--inner {
+      top: 26rpx;
+      left: 26rpx;
+      right: 26rpx;
+      bottom: 26rpx;
+      border: 6rpx solid rgba(135, 100, 255, 0.16);
+      border-bottom-color: $brand-soft;
+      animation: rl-spin 2.2s linear infinite reverse;
+    }
+  }
+
+  /* margin 定位而非 transform，避免与脉冲动画的 scale 相互覆盖 */
+  &__core-wrap {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 104rpx;
+    height: 104rpx;
+    margin: -52rpx 0 0 -52rpx;
+    animation: rl-pulse 2.2s ease-in-out infinite;
+  }
+
+  &__core {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 10rpx 28rpx rgba(95, 51, 225, 0.3);
+    color: #fff;
+    font-size: 32rpx;
+    font-weight: 700;
+    letter-spacing: 2rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__stage {
+    margin-top: 44rpx;
+    text-align: center;
+    font-size: 28rpx;
+    font-weight: 500;
+    color: $text-1;
+  }
+
+  &__bar {
+    margin: 22rpx auto 0;
+    width: 320rpx;
+    height: 8rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    overflow: hidden;
+  }
+
+  &__bar-fill {
+    height: 100%;
+    border-radius: 999rpx;
+    background: linear-gradient(90deg, $brand-soft 0%, $brand 100%);
+    transition: width 0.6s ease;
+
+    &--waiting {
+      background-image: linear-gradient(90deg, $brand-soft 0%, $brand 50%, $brand-soft 100%);
+      background-size: 200% 100%;
+      animation: rl-shimmer 1.2s linear infinite;
+    }
+  }
+
+  &__hint {
+    display: block;
+    margin-top: 18rpx;
+    text-align: center;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__skeleton {
+    margin-top: 52rpx;
+    display: flex;
+    flex-direction: column;
+    gap: 20rpx;
+  }
+}
+
+/* ===== 报告骨架屏（预告六段结构） ===== */
+.rl-sk {
+  display: flex;
+  flex-direction: column;
+  gap: 18rpx;
+  padding: 32rpx;
+  border-radius: $radius-lg;
+  background: #fff;
+  box-shadow: $shadow-card;
+
+  &--brand {
+    background: linear-gradient(135deg, $brand-weak 0%, #f6f2ff 100%);
+    border: 2rpx solid rgba(95, 51, 225, 0.12);
+    box-shadow: none;
+  }
+
+  &__line {
+    height: 26rpx;
+    border-radius: 8rpx;
+    background-image: linear-gradient(90deg, rgba(95, 51, 225, 0.06) 25%, rgba(95, 51, 225, 0.16) 37%, rgba(95, 51, 225, 0.06) 63%);
+    background-size: 400% 100%;
+    animation: rl-shimmer 1.4s ease infinite;
+
+    &--title {
+      width: 30%;
+      height: 30rpx;
+      background-image: linear-gradient(90deg, rgba(95, 51, 225, 0.14) 25%, rgba(95, 51, 225, 0.28) 37%, rgba(95, 51, 225, 0.14) 63%);
+    }
+
+    &--mid {
+      width: 62%;
+    }
+  }
+}

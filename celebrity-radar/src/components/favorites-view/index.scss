@@ -1,0 +1,157 @@
+@import '../../styles/variables.scss';
+
+.favorites-view {
+  min-height: 100vh;
+
+  /* ===== 类型筛选 =====
+     选中用浅紫底紫字（而非紫实底）：它是页面的分类开关，不是主导航。
+     计数缩小并降透明度，颜色继承父级，选中时自动跟着变紫。 */
+  &__filters {
+    display: flex;
+    align-items: center;
+    /* 「全部 + 四类」共五个开关，窄屏一行放不下，允许换行 */
+    flex-wrap: wrap;
+    gap: 14rpx;
+    padding: 24rpx 32rpx 8rpx;
+  }
+
+  &__filter {
+    display: flex;
+    align-items: center;
+    gap: 8rpx;
+    padding: 8rpx 24rpx;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $text-2;
+    font-size: 24rpx;
+
+    &--active {
+      background: $brand-weak;
+      color: $brand;
+      font-weight: 600;
+    }
+  }
+
+  &__filter-count {
+    font-size: 20rpx;
+    opacity: 0.65;
+  }
+
+  /* ===== 列表行（左侧圆底图标 + 信息） ===== */
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+  }
+
+  &__row-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  &__row-name {
+    font-size: 28rpx;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  &__icon {
+    flex-shrink: 0;
+    width: 72rpx;
+    height: 72rpx;
+    border-radius: 24rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28rpx;
+    font-weight: 600;
+
+    &--quote { background: $brand-weak; color: $brand; font-size: 40rpx; }
+    &--report { background: $accent-blue-bg; }
+    &--dynamic { background: $accent-orange-bg; }
+    &--timeline { background: $brand-weak; }
+  }
+
+  /* ===== 卡片主文（名言引文 / 动态标题 / 履历事件共用） =====
+     缩进到与姓名同一起点（图标 72 + 间距 20），
+     让「图标 → 姓名 → 主文」落在同一条竖线上，比顶格更整齐 */
+  &__body-text {
+    margin-top: 16rpx;
+    padding-left: 92rpx;
+    font-size: 30rpx;
+    line-height: 1.7;
+    font-weight: 500;
+  }
+
+  /* ===== 备注行 =====
+     它既是展示位也是入口，所以整行可点；无备注时用虚线框明示「这里能填」 */
+  &__note {
+    margin-top: 16rpx;
+    margin-left: 92rpx;
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    padding: 10rpx 16rpx;
+    border: 2rpx dashed $line;
+    border-radius: $radius-sm;
+  }
+
+  &__note-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $text-2;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+
+    &--empty {
+      color: $text-3;
+    }
+  }
+
+  &__note-edit {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    color: $brand;
+  }
+
+  /* ===== 卡片底部：左侧元信息 + 右侧操作 =====
+     「取消收藏」若挂在卡片头部紧挨姓名，误触率高（虽有二次确认兜底）；
+     放在与内容分离的底线处，左侧文案做成可省略单行以免挤掉按钮。 */
+  &__foot {
+    margin-top: 16rpx;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20rpx;
+  }
+
+  &__foot-main {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__remove {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    color: $text-3;
+    padding: 8rpx 0 8rpx 20rpx;
+  }
+
+  /* 列表收尾：说明当前显示范围，比压在列表顶部的条数提示更少干扰 */
+  &__foot-note {
+    text-align: center;
+    font-size: 22rpx;
+    color: $text-3;
+    padding: 24rpx 48rpx 8rpx;
+    line-height: 1.6;
+  }
+}

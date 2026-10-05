@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import Taro from '@tarojs/taro'
+import Taro, { eventCenter } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
 import { openRandomPerson } from '../utils/explore'
+import { TABBAR_SYNC_EVENT } from '../utils/tabbar'
 import './index.scss'
 
 /** 自定义底部菜单（参照 Figma：半透明浅紫底栏 + 中央凸起紫色圆钮 + 四图标槽位） */
@@ -14,21 +15,33 @@ interface TabItem {
 
 const TABS: TabItem[] = [
   { path: '/pages/index/index', label: '发现', icon: 'home' },
-  { path: '/pages/feed/index', label: '关注流', icon: 'calendar' },
+  { path: '/pages/feed/index', label: '关注', icon: 'calendar' },
   { path: '/pages/collection/index', label: '收藏', icon: 'doc' },
   { path: '/pages/mine/index', label: '我的', icon: 'user' }
 ]
 
+/** 归一化路由：个别基础库给的是带前导斜杠的完整路径，不统一就一个都匹配不上、恒亮首项 */
+function currentRoute(): string {
+  const pages = Taro.getCurrentPages()
+  const cur = pages[pages.length - 1]
+  const raw = cur && cur.route ? cur.route : ''
+  return raw.startsWith('/') ? raw : `/${raw}`
+}
+
 export default function CustomTabBar() {
   const [selected, setSelected] = useState('')
 
-  /* 每个页面的 tabbar 实例独立挂载：mount 时读当前路由确定选中态 */
   useEffect(() => {
-    const pages = Taro.getCurrentPages()
-    const current = pages[pages.length - 1]
-    const route = current ? `/${current.route}` : ''
-    const hit = TABS.find((t) => t.path === route)
-    setSelected(hit ? hit.path : TABS[0].path)
+    const sync = () => {
+      const route = currentRoute()
+      const hit = TABS.find((t) => t.path === route)
+      setSelected(hit ? hit.path : TABS[0].path)
+    }
+    sync()
+    eventCenter.on(TABBAR_SYNC_EVENT, sync)
+    return () => {
+      eventCenter.off(TABBAR_SYNC_EVENT, sync)
+    }
   }, [])
 
   const switchTo = (path: string) => {

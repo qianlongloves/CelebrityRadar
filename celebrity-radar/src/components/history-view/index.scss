@@ -1,35 +1,28 @@
 @import '../../styles/variables.scss';
 
-.page-collection {
+.history-view {
   min-height: 100vh;
 
-  &__loading {
-    padding: 96rpx 0;
-  }
-
-  /* ===== 筛选 chips（参照样例筛选条） ===== */
-  &__chips {
+  /* ===== 工具栏：条数说明 + 清空 ===== */
+  &__toolbar {
     display: flex;
-    gap: 16rpx;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20rpx;
     padding: 24rpx 32rpx 8rpx;
   }
 
-  &__chip {
-    padding: 12rpx 32rpx;
+  /* 破坏性批量操作：沿用描边胶囊（与关注页「取关」同构），用危险色明示后果 */
+  &__danger {
+    flex-shrink: 0;
+    padding: 8rpx 24rpx;
+    border: 2rpx solid $danger-weak;
     border-radius: 999rpx;
-    background: #fff;
-    color: $brand;
-    font-size: 26rpx;
-    box-shadow: $shadow-card;
-
-    &--active {
-      background: $brand;
-      color: #fff;
-      font-weight: 600;
-    }
+    color: $danger;
+    font-size: 22rpx;
   }
 
-  /* ===== 列表行（左侧圆底图标 + 信息 + 右侧操作） ===== */
+  /* ===== 列表行（领域首字圆底 + 姓名/领域 + 相对时间） ===== */
   &__row {
     display: flex;
     align-items: center;
@@ -61,8 +54,6 @@
     font-size: 28rpx;
     font-weight: 600;
 
-    &--quote { background: $brand-weak; color: $brand; font-size: 40rpx; }
-    &--report { background: $accent-blue-bg; }
     &--tech { background: rgba(0, 135, 255, 0.12); color: $domain-tech; }
     &--business { background: rgba(255, 125, 83, 0.12); color: $domain-business; }
     &--ent { background: rgba(236, 72, 153, 0.1); color: $domain-ent; }
@@ -78,33 +69,5 @@
     background: $bg;
     padding: 6rpx 16rpx;
     border-radius: 999rpx;
-  }
-
-  /* ===== 名言卡 ===== */
-  &__quote-text {
-    margin-top: 14rpx;
-    font-size: 30rpx;
-    line-height: 1.7;
-    font-weight: 500;
-  }
-
-  &__foot {
-    margin-top: 14rpx;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  &__toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 8rpx 32rpx;
-  }
-
-  &__op {
-    color: $text-3;
-    font-size: 24rpx;
-    flex-shrink: 0;
   }
 }
