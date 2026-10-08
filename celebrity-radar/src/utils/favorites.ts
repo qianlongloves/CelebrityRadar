@@ -3,6 +3,7 @@ import { table } from './db'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { diagLog } from './cloud-diagnostics'
+import type { Report } from './report'
 
 /**
  * 收藏（§3.8 favorites）：主键 = openid#type#hash（hash = 内容摘要散列前 8 位，天然防重）。
@@ -16,7 +17,9 @@ import { diagLog } from './cloud-diagnostics'
  * dynamic / timeline 刻意不用标题或事件描述做键：那两处措辞每次生成都会漂移，
  * 报告刷新一次，同一条新闻就会变成两条收藏。这与页面「刷新对比」的判同口径一致。
  *
- * note 是用户自写的备注，与内容快照分开存：它不属于「收藏了什么」，而是「为什么收藏」。
+ * 曾经的 note（用户自写备注）已于 2026-10-06 随收藏页改版删除：它是本项目唯一入库的
+ * 用户自由文本，列表上却只是一行 22rpx 小字，收益远小于它带来的表达/审核成本。
+ * 老数据里残留的 note 字段不再读取，也不做清理。
  */
 
 export type FavoriteType = 'quote' | 'report' | 'dynamic' | 'timeline'
@@ -29,6 +32,20 @@ export const FAVORITE_TYPE_LABEL: Record<FavoriteType, string> = {
   timeline: '时间线'
 }
 
+/**
+ * 动态情绪 → 卡片上的小标记（收藏卡改版新增）。
+ *
+ * 措辞沿用报告页「近期动态」那一组（积极 / 中性 / 消极，见 pages/report 的 SENTIMENT_META），
+ * 免得上游标「积极」、收藏页标「正面」，同一件事两个说法。
+ *
+ * 只列**偏离中性**的两档：「中性」是默认值（favoriteDynamic 落库时缺省即 neutral），
+ * 每张卡都挂一个「中性」只是噪音，标了也传递不了信息。
+ */
+export const SENTIMENT_TAG: Record<string, string> = {
+  positive: '积极',
+  negative: '消极'
+}
+
 export interface FavoriteRow {
   id: string
   openid: string
@@ -37,12 +54,7 @@ export interface FavoriteRow {
   person_key: string
   name: string
   created_at: string
-  /** 用户备注（可空；本次改动前的老数据没有这个字段） */
-  note?: string
 }
-
-/** 备注长度上限：列表上它只是一行小字，再长也只会被省略号截掉 */
-export const NOTE_MAX = 40
 
 /**
  * 收藏列表一次拉取上限。db.ts 内部按 20 条/页自动续取，100 条 = 5 次请求，
@@ -87,8 +99,8 @@ interface FavoriteDraft {
  * 就复制一遍，第四份拷贝里漏埋点或漏校验只是时间问题。
  *
  * 用 update + insert 两步而非 upsert：CloudBase 无 upsert，db.ts 落到 doc(id).set()，
- * 那是**全量覆盖** —— 用户已写的备注会被下一次收藏抹掉。这里 update 不携带 note
- * 与 created_at，重复收藏只刷新内容快照，备注与首次收藏时间都留着。
+ * 那是**全量覆盖** —— 重复收藏会把「首次收藏时间」冲成现在。这里 update 不携带
+ * created_at，重复收藏只刷新内容快照，首次收藏时间留着。
  */
 async function writeFavorite(
   draft: FavoriteDraft,
@@ -114,8 +126,7 @@ async function writeFavorite(
   if (!exists) {
     const { error } = await table('favorites').insert({
       ...row,
-      created_at: new Date().toISOString(),
-      note: ''
+      created_at: new Date().toISOString()
     })
     if (error) {
       diagLog('warn', 'db', `favorites(${draft.type}) 写入失败：${error.message ?? error}`)
@@ -127,11 +138,23 @@ async function writeFavorite(
   return true
 }
 
-/** 收藏名言（同句重复收藏幂等） */
+/**
+ * 收藏名言（同句重复收藏幂等）。
+ *
+ * 本轮把 `background` / `note` 一并落进 payload（此前只存 text / context / source）：
+ * 收藏页改版后名言卡要展示「这句话在什么场合说的、意味着什么」——
+ * 只存原句的话，卡片就只是一句悬空的话，收藏的理由（当时读到的判断）全丢了。
+ *
+ * ⚠ 别与已删除的**顶层 `note` 列**混淆（那是用户自写备注，见文件头注释）：
+ * 这里的 `note` 是报告里模型给的「注解」，属于内容快照的一部分，两者只是重名。
+ *
+ * 两者都是 optional（老缓存里没有这两个键，见 report.ts 的 QuoteSchema），
+ * 归一成空串后卡片自然少一行 —— 不编造「背景」。
+ */
 export async function favoriteQuote(
   personKey: string,
   name: string,
-  quote: { text: string; context?: string; source?: string }
+  quote: { text: string; context?: string; background?: string; note?: string; source?: string }
 ): Promise<boolean> {
   return writeFavorite(
     {
@@ -140,6 +163,8 @@ export async function favoriteQuote(
       payload: {
         text: quote.text,
         context: quote.context ?? '',
+        background: quote.background ?? '',
+        note: quote.note ?? '',
         source: quote.source ?? '据公开资料'
       }
     },
@@ -230,24 +255,76 @@ export async function listFavorites(type?: FavoriteType): Promise<FavoriteRow[]>
   return (data as FavoriteRow[]) ?? []
 }
 
-/**
- * 写备注。返回 false 表示库里那行已不存在（例如在另一台设备取消了收藏），
- * 调用方据此提示，不让用户误以为备注保存成功。
- */
-export async function setFavoriteNote(id: string, note: string): Promise<boolean> {
-  const userId = useAuth.getState().userId
-  if (!userId) return false
-  const { data, error } = await table('favorites')
-    .update({ note: note.trim().slice(0, NOTE_MAX) })
-    .eq('id', id)
-    .select()
-  if (error || !Array.isArray(data) || data.length === 0) {
-    if (error) diagLog('warn', 'db', `favorites 备注写入失败：${error.message ?? error}`)
-    return false
-  }
-  return true
-}
-
 export async function removeFavorite(id: string): Promise<void> {
   await table('favorites').delete().eq('id', id)
+}
+
+/** 报告卡的内容摘要（收藏卡改版新增）：卡片从「只有一条热度刻度」变成能看出「里面有什么」 */
+export interface ReportDigest {
+  /** 最新报道的标题；空串表示这份报告既无素材画像也无动态 */
+  latest: string
+  /** 该条的前缀信息（素材画像给媒体名，动态给「日期 · 媒体名」），与 latest 同生共死 */
+  latestMeta: string
+  /** 素材画像，如「素材 40 条 · 近 7 天 12 条」；老报告没有 coverage 时为空串 */
+  coverage: string
+}
+
+/**
+ * 从**缓存报告**里摘出报告卡要显示的两行（收藏卡改版新增）。
+ *
+ * 为什么不能从 payload 取：收藏存的是一份快照，report 类只落了 heat / mode / generatedAt
+ * —— 动态列表与素材画像都没有落库（同 utils/trend.ts 的处境）。所以和热度走势一样，
+ * 内容摘要是**回源 report_cache** 取的，调用方必须**版本一致**才用它
+ * （favorites-view 里与 buildHeatTrend 同一处判断），否则卡片上会出现
+ * 「快照的热度 + 另一版报告的内容」这种张冠李戴的组合。
+ *
+ * 两行的取值优先级刻意反过来：最新的**报道**优先取 coverage.latest（博查原值，事实），
+ * 取不到才退回模型写的动态首条 —— 这也与报告页速览卡的「最新报道」同一口径。
+ *
+ * 纯函数：两条都取不到返回 null，卡片退化成原来的样子（只显示热度），而不是显示占位文案。
+ */
+export function reportDigestOf(report: Report): ReportDigest | null {
+  const latest = latestLineOf(report)
+  const coverage = coverageLineOf(report?.coverage)
+  if (!latest.title && !coverage) return null
+  return { latest: latest.title, latestMeta: latest.meta, coverage }
+}
+
+/** 最新一行：coverage.latest（原样素材）优先，退回最新日期的动态 */
+function latestLineOf(report: Report): { title: string; meta: string } {
+  const raw = report?.coverage?.latest
+  const rawTitle = String(raw?.title ?? '').trim()
+  if (rawTitle) return { title: rawTitle, meta: String(raw?.source ?? '').trim() }
+  return newestDynamicOf(report)
+}
+
+/**
+ * 日期最新的一条动态。日期是 yyyy-mm-dd 字面量，字典序即时序，无需 Date.parse。
+ * 没有日期的条目不参与比较（模型漏字段时，不能让它顶掉真正最新的那条）。
+ */
+function newestDynamicOf(report: Report): { title: string; meta: string } {
+  const list = Array.isArray(report?.dynamics) ? report.dynamics : []
+  let title = ''
+  let meta = ''
+  let bestDate = ''
+  list.forEach((d) => {
+    const t = String(d?.title ?? '').trim()
+    const date = String(d?.date ?? '').trim()
+    if (!t || !date || date < bestDate) return
+    bestDate = date
+    title = t
+    meta = [date, String(d?.source ?? '').trim()].filter(Boolean).join(' · ')
+  })
+  return { title, meta }
+}
+
+/** 「素材 N 条 · 近 7 天 M 条」；无画像或两数皆缺返回空串（老报告就是这种情况） */
+function coverageLineOf(coverage: Report['coverage'] | undefined): string {
+  if (!coverage) return ''
+  const items = Number(coverage.items)
+  const recent = Number(coverage.recent)
+  const parts: string[] = []
+  if (Number.isFinite(items) && items > 0) parts.push(`素材 ${items} 条`)
+  if (Number.isFinite(recent) && recent > 0) parts.push(`近 7 天 ${recent} 条`)
+  return parts.join(' · ')
 }

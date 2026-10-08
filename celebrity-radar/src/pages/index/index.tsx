@@ -1,8 +1,7 @@
 import { useState } from 'react'
-import Taro, { useDidShow } from '@tarojs/taro'
+import Taro, { useDidShow, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text, ScrollView, Image } from '@tarojs/components'
 import { AtSearchBar, AtButton } from 'taro-ui'
-import Skeleton from '@/components/skeleton'
 import { DOMAIN_CODES, DOMAIN_META, DomainCode, buildPersonKey } from '@/config/domains'
 import {
   DOMAIN_FILTER_CODES,
@@ -16,27 +15,24 @@ import {
 import PersonCard, { PersonInfo } from '@/components/person-card'
 import EmptyState from '@/components/empty-state'
 import { useAuth } from '@/stores/auth'
-import { HOT_PERSONS } from '@/config/hot'
+import { HOT_PERSONS, HotPerson } from '@/config/hot'
+import { loadHotBoard } from '@/utils/hot-board'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
 import { track } from '@/utils/events'
-import { openRandomPerson, pickRandomPerson, todayPerson } from '@/utils/explore'
-import { listHistory, HistoryRow } from '@/utils/history'
+import { exploreRandomPerson, pickRandomPerson, todayPerson } from '@/utils/explore'
+import { listRecentHistory, HistoryRow } from '@/utils/history'
 import { listFollows, toggleFollow } from '@/utils/follows'
+import { loadMessages } from '@/utils/messages'
+import { personShareTitle, reportSharePath } from '@/utils/share'
 import { useTabBarSync } from '@/utils/tabbar'
 import './index.scss'
 
-/** 热门名人默认展示条数（超出由「展开全部」控制，避免首屏过长） */
-const HOT_PREVIEW = 6
+/** 热搜词位数：取热门位前 4 位，点击即「填词 + 直接搜索」，省去手输 */
+const HOT_WORD_COUNT = 4
 
-/** 热搜词：取热门位前 4 位，点击即「填词 + 直接搜索」，省去手输 */
-const HOT_WORDS = HOT_PERSONS.slice(0, 4)
-
-/** 「最近搜索」最多展示条数（history 存上限 50 条，这里只取最近几条做快捷入口） */
+/** 「最近搜索」最多展示条数（history 存上限 50 条，这里只取最近几位名人做快捷入口，同一人只出现一次） */
 const RECENT_LIMIT = 6
-
-/** 热门榜里有名人数据的领域：空领域不进筛选 chips */
-const HOT_DOMAINS = DOMAIN_CODES.filter((d) => HOT_PERSONS.some((p) => p.domain === d))
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 
@@ -59,8 +55,12 @@ export default function Index() {
   const [domainFilter, setDomainFilter] = useState<DomainCode | 'all'>('all')
   /** 横幅右侧「今日名人」（同一天稳定，可点 ⟳ 随机换一位） */
   const [hero, setHero] = useState(() => todayPerson())
-  /** 热门名人是否展开全部 */
-  const [hotExpanded, setHotExpanded] = useState(false)
+  /**
+   * 热门榜：初始值为静态种子（首屏零等待），进页后由 utils/hot-board 换成
+   * AI 每日榜（hot_board）；没有 AI 榜时回落真实热度，读取失败则就是这份静态榜单。
+   * 卡片刻意不再展示热度数值 —— 榜位由榜单顺序表达。
+   */
+  const [board, setBoard] = useState<HotPerson[]>(HOT_PERSONS)
   /** 热门榜的领域筛选：此前只能按 heat 平铺，无法「选领域 → 看该领域名人」 */
   const [hotDomain, setHotDomain] = useState<DomainCode | 'all'>('all')
   /** 最近搜索：由报告页写入 history，回到发现页可一键复访 */
@@ -73,13 +73,41 @@ export default function Index() {
   const [followedKeys, setFollowedKeys] = useState<Set<string>>(() => new Set())
   /** 正在切换关注态的 personKey（空串=空闲）：用于置灰按钮、防连点 */
   const [followPending, setFollowPending] = useState('')
+  /**
+   * 消息中心未读数（铃铛红点）。
+   * 只统计「关注之后有新内容」与「本周周报待生成」等同机可算的提醒，
+   * 与消息中心页共用 utils/messages 同一套判定，避免两处口径不一致。
+   */
+  const [unread, setUnread] = useState(0)
   const { nickname, userId, avatarUrl } = useAuth()
+
+  /**
+   * 转发（优化建议 O-13）。
+   *
+   * 本页此前没注册分享回调：右上角「转发」带出的是不含参数的地址，对方点开只会落在
+   * 发现页，分享方想表达的「今天该看这个人」完全丢失。
+   *
+   * 本页是 tabBar 页、不能作分享落地页，所以落到**横幅上的今日名人报告** ——
+   * 分享出去的是「一个今天值得看的人」，对方点开就是完整报告（tabBar 页作落地页是微信限制）。
+   * 标题与报告页 / 名人主页 / 提问页同源（utils/share.ts）。
+   */
+  const sharePath = reportSharePath(hero.personKey)
+  const shareTitle = personShareTitle(hero.name, hero.domain)
+  useShareAppMessage(() => ({ title: shareTitle, path: sharePath }))
+  useShareTimeline(() => ({ title: shareTitle, query: sharePath.split('?')[1] ?? '' }))
 
   /* 每次显示发现页都重取：首次进入、从报告页返回（刚查过的人要出现在「最近」），
      以及从名人主页 / 关注列表返回（那边的关注变更要同步到卡片按钮上） */
   useDidShow(() => {
-    void listHistory().then((rows) => setRecent(rows.slice(0, RECENT_LIMIT)))
+    /* 走 listRecentHistory：按名人去重，避免 A→B→A 回访让同一个人在「最近」里占两格 */
+    void listRecentHistory(RECENT_LIMIT).then(setRecent)
     void listFollows().then((rows) => setFollowedKeys(new Set(rows.map((r) => r.person_key))))
+    /* 榜单带 TTL 内存缓存：重复进页不重复打云；命中缓存时返回同一数组引用，不触发重渲染 */
+    void loadHotBoard().then(setBoard)
+    /* 仅取未读数点亮铃铛：不阻塞首屏，也不带 force —— watch 的 60s 内存缓存与关注流页共用，
+       从关注流切回发现页时基本命中，冷启动最多多打 2×关注数 次缓存读（默认缓存可读，无写扩散） */
+    void loadMessages().then((feed) => setUnread(feed.unread))
+    /* 本页不再读会员态：热门榜自 2026-10-08 起全员可见全部位数（见 utils/member.ts） */
   })
 
   const now = new Date()
@@ -90,9 +118,18 @@ export default function Index() {
     void Taro.switchTab({ url: '/pages/mine/index' })
   }
 
-  /** 铃铛：消息中心未上线，给个明确反馈，避免「点了没反应」的错觉 */
+  /**
+   * 关注流入口：2026-10-07 底部菜单第二格换成「AI 提问」，关注流改二级页，
+   * 落到发现页顶部（原本它自己占一格 tab，撤掉后必须有明确落点，
+   * 否则「关注了人却找不到动态」—— 关注是留存主线，入口不能靠猜）。
+   */
+  const goFeed = () => {
+    void Taro.navigateTo({ url: '/pages/feed/index' })
+  }
+
+  /** 铃铛：进消息中心（关注更新 / 周报提醒 / 平台公告，见 utils/messages） */
   const onBellTap = () => {
-    void Taro.showToast({ title: '暂无新消息', icon: 'none' })
+    void Taro.navigateTo({ url: '/pages/messages/index' })
   }
 
   /**
@@ -199,9 +236,18 @@ export default function Index() {
   const filteredCandidates =
     domainFilter === 'all' ? candidates : candidates.filter((c) => c.domain === domainFilter)
 
-  /* 热门榜领域筛选（派生值） */
-  const hotOfDomain = hotDomain === 'all' ? HOT_PERSONS : HOT_PERSONS.filter((p) => p.domain === hotDomain)
-  const shownHot = hotExpanded ? hotOfDomain : hotOfDomain.slice(0, HOT_PREVIEW)
+  /* 热门榜派生值：热搜词 / 领域 chips / 领域筛选都跟着当前榜单走（榜单已数据化，不再写死） */
+  const hotOfDomain = hotDomain === 'all' ? board : board.filter((p) => p.domain === hotDomain)
+  /*
+   * 榜单**全部渲染**，页面这一层不再截断位数。
+   *
+   * 2026-10-08 撤销原 O-19 的「免费 6 位 / 会员 24 位」分档：榜单一次渲染多少条由数据层
+   * 单独决定（utils/hot-board.ts 的 BOARD_LIMIT，AI 榜与热度兜底都在那里截断），页面再截一次
+   * 就变成两处各写一个数 —— 而它们本来就会漂。这里直接吃上游给多少显示多少。
+   */
+  const shownHot = hotOfDomain
+  const hotDomains = DOMAIN_CODES.filter((d) => board.some((p) => p.domain === d))
+  const hotWords = board.slice(0, HOT_WORD_COUNT)
 
   return (
     <View className='page-index glow-page safe-tab'>
@@ -219,8 +265,15 @@ export default function Index() {
         <View className='page-index__greet'>
           <Text className='page-index__username'>{userId ? nickname || '名人观察员' : '名人观察员'}</Text>
         </View>
+        {/* 关注流入口：带关注人数，让「有没有关注人」一眼可见（0 人也保留入口，点了才知道怎么用） */}
+        <View className='page-index__feed' onClick={goFeed} hoverClass='page-index__tap'>
+          <Text className='page-index__feed-text'>
+            {followedKeys.size > 0 ? `关注 ${followedKeys.size}` : '关注流'}
+          </Text>
+        </View>
         <View className='page-index__bell' onClick={onBellTap} hoverClass='page-index__tap'>
-          <View className='page-index__bell-dot' />
+          {/* 红点按未读数显隐：铃铛图标自带的那颗紫点是装饰，这里才是「有消息」 */}
+          {unread > 0 && <View className='page-index__bell-dot' />}
         </View>
       </View>
 
@@ -232,8 +285,15 @@ export default function Index() {
             <Text className='page-index__banner-date'>{dateLabel}</Text>
           </View>
           <Text className='page-index__banner-desc'>AI 联网整理公开动态，生成可溯源的深度报告</Text>
-          <View className='page-index__banner-btn' onClick={() => openRandomPerson()} hoverClass='page-index__banner-btn--tap'>
-            随机探索一位
+          {/* 与底部中央按钮同一个入口：人选都由 AI 决定（见 utils/explore） */}
+          <View
+            className='page-index__banner-btn'
+            hoverClass='page-index__banner-btn--tap'
+            onClick={() => void exploreRandomPerson()}
+          >
+            {/* 箭头放在 JSX 里：写在 scss 的 content 会让 dart-sass 给 wxss 注入 @charset */}
+            <Text>随机探索一位</Text>
+            <Text>→</Text>
           </View>
         </View>
 
@@ -277,27 +337,30 @@ export default function Index() {
           onConfirm={() => void doSearch()}
         />
 
-        {/* 最近搜索：报告页持续写入 history，这里一键复访（未登录或无记录时整行不渲染） */}
+        {/* 最近搜索：报告页持续写入 history，这里一键复访（未登录或无记录时整行不渲染）。
+            固定占一行：6 条 chip 平铺会折成两行把首屏顶长，故与下方「行业 / 关注」同一套写法横滑。 */}
         {recent.length > 0 && (
           <View className='page-index__hot-words'>
             <Text className='page-index__hot-words-label'>最近</Text>
-            {recent.map((r) => (
-              <View
-                key={r.id}
-                className='page-index__hot-word page-index__hot-word--recent'
-                hoverClass='page-index__hot-word--tap'
-                onClick={() => openHistory(r)}
-              >
-                {r.name}
-              </View>
-            ))}
+            <ScrollView className='page-index__recent-chips' scrollX>
+              {recent.map((r) => (
+                <View
+                  key={r.id}
+                  className='page-index__hot-word page-index__hot-word--recent'
+                  hoverClass='page-index__hot-word--tap'
+                  onClick={() => openHistory(r)}
+                >
+                  {r.name}
+                </View>
+              ))}
+            </ScrollView>
           </View>
         )}
 
         {/* 热搜词：一键「填词 + 搜索」，降低首屏输入成本 */}
         <View className='page-index__hot-words'>
           <Text className='page-index__hot-words-label'>热搜</Text>
-          {HOT_WORDS.map((w) => (
+          {hotWords.map((w) => (
             <View
               key={w.name}
               className='page-index__hot-word'
@@ -350,7 +413,7 @@ export default function Index() {
           <Text className='page-index__search-summary'>{summarizeFilters(domainHint, focus)}</Text>
           {(domainHint !== 'all' || focus !== 'all') && (
             <Text className='page-index__search-reset' onClick={resetFilters}>
-              重置
+              {'重置 ✕'}
             </Text>
           )}
         </View>
@@ -364,101 +427,125 @@ export default function Index() {
         >
           搜索名人
         </AtButton>
-      </View>
 
-      {state.phase === 'loading' && (
-        <View className='page-index__status'>
-          <Text className='page-index__status-text'>
-            {domainHint === 'all'
-              ? 'AI 正在识别同名人物…'
-              : `AI 正在「${domainFilterLabel(domainHint)}」行业中识别同名人物…`}
-          </Text>
-          <Skeleton variant='list' rows={3} />
-        </View>
-      )}
-
-      {state.phase === 'candidates' && (
-        <View>
-          <View className='section-head'>
-            <Text className='section-head__title'>
-              TA 是哪一位？
-              <Text className='count-badge'>{state.candidates.length}</Text>
-            </Text>
-          </View>
-
-          {/* 领域筛选（多于一个领域时展示） */}
-          {candidateDomains.length > 1 && (
-            <View className='page-index__filters'>
-              <View
-                className={`page-index__filter ${domainFilter === 'all' ? 'page-index__filter--active' : ''}`}
-                onClick={() => setDomainFilter('all')}
-              >
-                全部
-              </View>
-              {candidateDomains.map((d) => (
-                <View
-                  key={d}
-                  className={`page-index__filter ${domainFilter === d ? 'page-index__filter--active' : ''}`}
-                  onClick={() => setDomainFilter(d)}
-                >
-                  {DOMAIN_META[d].label}
-                </View>
-              ))}
+        {/*
+          以下是这张卡的「输出区」：加载态 / 候选 / 各种空态。
+          它们原先渲染在卡外，搜完之后视觉上是另起一块，和上面的搜索框像两个孤立组件；
+          收进同一张卡后，输入 → 输出才是一条连续的动线（用 &__output 顶部分隔线断开控制台）。
+        */}
+        {state.phase === 'loading' && (
+          <View className='page-index__output page-index__status'>
+            {/* 雷达扫描：与「名人雷达」的产品比喻对上，比原先一行灰字更有「正在搜索」的实感 */}
+            <View className='page-index__radar'>
+              <View className='page-index__radar-ring' />
+              <View className='page-index__radar-ring page-index__radar-ring--mid' />
+              <View className='page-index__radar-sweep' />
+              <View className='page-index__radar-dot' />
             </View>
-          )}
-
-          {filteredCandidates.map((c) => {
-            const personKey = buildPersonKey(c.name, c.domain)
-            return (
-              <PersonCard
-                key={personKey}
-                person={{
-                  personKey,
-                  name: c.name,
-                  domain: c.domain,
-                  brief: c.brief,
-                  followed: followedKeys.has(personKey)
-                }}
-                followPending={followPending === personKey}
-                onToggleFollow={(p) => void onToggleFollow(p, 'candidate_card')}
-                actionText='查看'
-                onAction={(p) => openPerson(p.name, p.domain)}
-                onClick={(p) => openPerson(p.name, p.domain)}
-              />
-            )
-          })}
-
-          {filteredCandidates.length === 0 && (
-            <View className='page-index__filter-empty text-tertiary'>该领域暂无候选，试试其他筛选</View>
-          )}
-
-          <View className='page-index__fallback text-tertiary' onClick={() => setState({ phase: 'notfound' })}>
-            都不是 TA？补充领域关键词再试 →
+            <Text className='page-index__status-text'>
+              {domainHint === 'all'
+                ? 'AI 正在识别同名人物…'
+                : `AI 正在「${domainFilterLabel(domainHint)}」行业中识别同名人物…`}
+            </Text>
+            {/* 说明这一步到底在做什么，等待才有边界（这也是最慢的一次请求） */}
+            <Text className='page-index__status-sub'>联网检索 · 同名消歧 · 结构化候选</Text>
+            {/* 这里不再放骨架屏：雷达动画下面再叠两张灰卡，会读成「已经在出结果」，
+                而此刻连候选数量都还不知道；只留动画，加载态才干净 */}
           </View>
-        </View>
-      )}
+        )}
 
-      {state.phase === 'refused' && (
-        <EmptyState icon='🚫' title='暂不支持查询该人物' desc='本工具仅覆盖科技、商业、文娱、体育、学术领域公众名人' />
-      )}
+        {state.phase === 'candidates' && (
+          <View className='page-index__output'>
+            <View className='page-index__result-head'>
+              <Text className='page-index__result-title'>
+                TA 是哪一位？
+                <Text className='count-badge'>{state.candidates.length}</Text>
+              </Text>
+            </View>
 
-      {state.phase === 'notfound' && domainHint === 'all' && (
-        <EmptyState
-          icon='🤔'
-          title='未识别到该名人'
-          desc='试试补充领域关键词，如「雷军 科技」；或从下方热门推荐开始'
-        />
-      )}
+            {/* 领域筛选（多于一个领域时展示） */}
+            {candidateDomains.length > 1 && (
+              <View className='page-index__filters'>
+                <View
+                  className={`page-index__filter ${domainFilter === 'all' ? 'page-index__filter--active' : ''}`}
+                  onClick={() => setDomainFilter('all')}
+                >
+                  全部
+                </View>
+                {candidateDomains.map((d) => (
+                  <View
+                    key={d}
+                    className={`page-index__filter ${domainFilter === d ? 'page-index__filter--active' : ''}`}
+                    onClick={() => setDomainFilter(d)}
+                  >
+                    {DOMAIN_META[d].label}
+                  </View>
+                ))}
+              </View>
+            )}
 
-      {state.phase === 'notfound' && domainHint !== 'all' && (
-        <EmptyState
-          icon='🤔'
-          title='该行业下未识别到该名人'
-          desc={`已限定行业为「${domainFilterLabel(domainHint)}」，该行业没有找到同名公众人物；可能是行业选错了，清除后重试`}
-          actionText='清除行业筛选'
-          onAction={() => setDomainHint('all')}
-        />
-      )}
+            {/* 候选卡嵌在搜索卡内，person-card 自带的 44rpx 页边距由 &__output-cards 清零 */}
+            <View className='page-index__output-cards'>
+              {filteredCandidates.map((c) => {
+                const personKey = buildPersonKey(c.name, c.domain)
+                return (
+                  <PersonCard
+                    key={personKey}
+                    person={{
+                      personKey,
+                      name: c.name,
+                      domain: c.domain,
+                      brief: c.brief,
+                      followed: followedKeys.has(personKey)
+                    }}
+                    followPending={followPending === personKey}
+                    onToggleFollow={(p) => void onToggleFollow(p, 'candidate_card')}
+                    actionText='查看'
+                    onAction={(p) => openPerson(p.name, p.domain)}
+                    onClick={(p) => openPerson(p.name, p.domain)}
+                  />
+                )
+              })}
+            </View>
+
+            {filteredCandidates.length === 0 && (
+              <View className='page-index__filter-empty text-tertiary'>该领域暂无候选，试试其他筛选</View>
+            )}
+
+            <View className='page-index__fallback text-tertiary' onClick={() => setState({ phase: 'notfound' })}>
+              都不是 TA？补充领域关键词再试 →
+            </View>
+          </View>
+        )}
+
+        {state.phase === 'refused' && (
+          <View className='page-index__output'>
+            <EmptyState icon='🚫' title='暂不支持查询该人物' desc='本工具仅覆盖科技、商业、文娱、体育、学术领域公众名人' />
+          </View>
+        )}
+
+        {state.phase === 'notfound' && domainHint === 'all' && (
+          <View className='page-index__output'>
+            <EmptyState
+              icon='🤔'
+              title='未识别到该名人'
+              desc='试试补充领域关键词，如「雷军 科技」；或从下方热门推荐开始'
+            />
+          </View>
+        )}
+
+        {state.phase === 'notfound' && domainHint !== 'all' && (
+          <View className='page-index__output'>
+            <EmptyState
+              icon='🤔'
+              title='该行业下未识别到该名人'
+              desc={`已限定行业为「${domainFilterLabel(domainHint)}」，该行业没有找到同名公众人物；可能是行业选错了，清除后重试`}
+              actionText='清除行业筛选'
+              onAction={() => setDomainHint('all')}
+            />
+          </View>
+        )}
+      </View>
 
       {/* 热门名人：一人一卡（头像 + 领域 + 动态速览 + 热度），点击直达 AI 报告 */}
       <View className='section-head'>
@@ -469,26 +556,19 @@ export default function Index() {
       </View>
 
       {/* 领域筛选：把「搜索前选行业」扩展为「先选领域，再看该领域有哪些名人」 */}
-      {HOT_DOMAINS.length > 1 && (
+      {hotDomains.length > 1 && (
         <ScrollView className='page-index__hot-filters' scrollX>
           <View
             className={`page-index__fchip ${hotDomain === 'all' ? 'page-index__fchip--active' : ''}`}
-            onClick={() => {
-              setHotDomain('all')
-              setHotExpanded(false)
-            }}
+            onClick={() => setHotDomain('all')}
           >
             全部
           </View>
-          {HOT_DOMAINS.map((d) => (
+          {hotDomains.map((d) => (
             <View
               key={d}
               className={`page-index__fchip ${hotDomain === d ? 'page-index__fchip--active' : ''}`}
-              onClick={() => {
-                setHotDomain(d)
-                /* 切领域回到折叠态，避免上一领域的「展开」状态带过来 */
-                setHotExpanded(false)
-              }}
+              onClick={() => setHotDomain(d)}
             >
               {DOMAIN_META[d].label}
             </View>
@@ -508,7 +588,6 @@ export default function Index() {
                 domain: p.domain,
                 brief: p.trend,
                 tag: p.tag,
-                heat: p.heat,
                 followed: followedKeys.has(personKey)
               }}
               followPending={followPending === personKey}
@@ -519,11 +598,6 @@ export default function Index() {
             />
           )
         })}
-        {hotOfDomain.length > HOT_PREVIEW && (
-          <View className='page-index__hot-more' onClick={() => setHotExpanded((v) => !v)}>
-            {hotExpanded ? '收起' : `展开全部 ${hotOfDomain.length} 位`}
-          </View>
-        )}
       </View>
     </View>
   )

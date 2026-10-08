@@ -37,94 +37,280 @@
     opacity: 0.65;
   }
 
-  /* ===== 列表行（左侧圆底图标 + 信息） ===== */
-  &__row {
+  /* ===== 卡片头部：名人头像 + 姓名 / 元信息 + 类型胶囊 ===== */
+  &__head {
     display: flex;
     align-items: center;
     gap: 20rpx;
   }
 
-  &__row-info {
+  &__head-info {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 4rpx;
+    gap: 6rpx;
   }
 
-  &__row-name {
-    font-size: 28rpx;
+  &__name {
+    font-size: 30rpx;
     font-weight: 600;
     line-height: 1.4;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
-  &__icon {
+  &__meta {
+    font-size: 22rpx;
+    line-height: 1.4;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* 「建议刷新」标记（O-14）：嵌在元信息行内，用暖色小胶囊跟右边的类型胶囊（冷色）区分开 ——
+     类型说的是「这是什么」，这一枚说的是「该动手了」，两者不能长得一样 */
+  &__stale {
+    margin-left: 12rpx;
+    padding: 2rpx 10rpx;
+    border-radius: 6rpx;
+    background: rgba(245, 158, 11, 0.14);
+    color: #b45309;
+    font-size: 20rpx;
+    font-weight: 600;
+  }
+
+  /* 名人头像：全项目没有真实头像素材，统一「姓名首字 + 领域色」。
+     此处比关注列表的 88rpx 略小（卡片信息更密），仍保持圆形。
+     注：这是本项目里第一处「首字 + 渐变」的圆头像，与 pages/compare 的 __avatar 同源。 */
+  &__avatar {
     flex-shrink: 0;
-    width: 72rpx;
-    height: 72rpx;
-    border-radius: 24rpx;
+    width: 88rpx;
+    height: 88rpx;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 36rpx;
+    font-weight: 600;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 28rpx;
-    font-weight: 600;
 
-    &--quote { background: $brand-weak; color: $brand; font-size: 40rpx; }
-    &--report { background: $accent-blue-bg; }
-    &--dynamic { background: $accent-orange-bg; }
-    &--timeline { background: $brand-weak; }
+    &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+    &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+    &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+    &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+    &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+    &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
+    /* 取不到姓名首字：中性灰 + 「?」，明示「这里本该是头像」而不是渲染一个空圆 */
+    &--unknown { background: $text-3; }
   }
 
-  /* ===== 卡片主文（名言引文 / 动态标题 / 履历事件共用） =====
-     缩进到与姓名同一起点（图标 72 + 间距 20），
-     让「图标 → 姓名 → 主文」落在同一条竖线上，比顶格更整齐 */
-  &__body-text {
+  /* 类型胶囊。头像让位给「人」之后，类型少了视觉载体，用姓名右端的小胶囊补回来；
+     沿用原图标底色，四类在同一位置一眼可辨 */
+  &__type {
+    flex-shrink: 0;
+    padding: 4rpx 14rpx;
+    border-radius: 999rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+
+    &--quote { background: $brand-weak; color: $brand; }
+    &--report { background: $accent-blue-bg; color: $accent-blue; }
+    &--dynamic { background: $accent-orange-bg; color: $accent-orange; }
+    &--timeline { background: $bg; color: $text-2; }
+  }
+
+  /* ===== 卡片正文 =====
+     统一缩进到与姓名同一起点（头像 88 + 间距 20），
+     让「头像 → 姓名 → 正文」落在同一条竖线上，比顶格更整齐 */
+  &__body {
     margin-top: 16rpx;
-    padding-left: 92rpx;
+    padding-left: 108rpx;
+  }
+
+  &__body-text {
     font-size: 30rpx;
     line-height: 1.7;
     font-weight: 500;
   }
 
-  /* ===== 备注行 =====
-     它既是展示位也是入口，所以整行可点；无备注时用虚线框明示「这里能填」 */
-  &__note {
-    margin-top: 16rpx;
-    margin-left: 92rpx;
-    display: flex;
-    align-items: center;
-    gap: 12rpx;
-    padding: 10rpx 16rpx;
-    border: 2rpx dashed $line;
-    border-radius: $radius-sm;
+  /* 动态摘要：收藏动机多是「这条要跟进」，只有标题不足以回想当时为什么存它。
+     限两行，保证卡片高度可预期 */
+  &__summary {
+    margin-top: 8rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
   }
 
-  &__note-text {
+  /* 情绪小标记（本轮改版）：只标积极 / 消极两档（中性是默认值，标了是噪音）。
+     横向自收缩（align-self）而不是撑满：它是标题前的标记，不是一条分隔带。
+     配色与报告页「近期动态」的情绪标签同源（积极=蓝，消极=橙） */
+  &__sentiment {
+    align-self: flex-start;
+    margin-bottom: 8rpx;
+    padding: 2rpx 12rpx;
+    border-radius: 6rpx;
+    font-size: 20rpx;
+    font-weight: 600;
+
+    &--positive { background: $accent-blue-bg; color: $accent-blue; }
+    &--negative { background: $accent-orange-bg; color: $accent-orange; }
+  }
+
+  /* 名言的「背景 / 注解」（本轮改版）：与摘要同样限两行，老收藏没有这两个键就不渲染。
+     用「标签 + 正文」两段而不是一句拼接：这两段是不同性质的信息（场合 / 含义），
+     拼成一句读起来会像报告正文而不是卡片的补充说明 */
+  &__extra {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+    margin-top: 10rpx;
+  }
+
+  &__extra-label {
+    flex-shrink: 0;
+    margin-top: 4rpx;
+    padding: 0 10rpx;
+    border-radius: 6rpx;
+    background: $bg;
+    color: $text-3;
+    font-size: 20rpx;
+    line-height: 1.8;
+  }
+
+  &__extra-text {
     flex: 1;
     min-width: 0;
     font-size: 24rpx;
-    line-height: 1.5;
+    line-height: 1.6;
+    color: $text-2;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+
+  /* 报告卡没有正文，给它一条热度刻度补上视觉重量（口径同热门榜，0~100） */
+  &__heat {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+  }
+
+  &__heat-bar {
+    flex: 1;
+    min-width: 0;
+    height: 16rpx;
+    border-radius: 8rpx;
+    background: $line;
+    overflow: hidden;
+  }
+
+  &__heat-fill {
+    height: 100%;
+    border-radius: 8rpx;
+    background: linear-gradient(90deg, $brand-soft, $brand);
+  }
+
+  &__heat-num {
+    flex-shrink: 0;
+    min-width: 60rpx;
+    text-align: right;
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  /* 走势条（O-16③）：热度刻度说明「现在多热」，走势说明「最近是密还是疏」。
+     用 6 根小柱而不是折线：卡片高度只有几十 rpx，折线的斜率会被压平到看不出差别。
+     容器必须有确定高度，柱子的百分比高度才有参照物。 */
+  &__spark {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    margin-top: 14rpx;
+  }
+
+  &__spark-label {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__spark-bars {
+    flex: 1;
+    min-width: 0;
+    height: 36rpx;
+    display: flex;
+    align-items: flex-end;
+    gap: 8rpx;
+  }
+
+  &__spark-slot {
+    flex: 1;
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  /* 空桶也留 6rpx 的桩：否则「这一格是 0」与「这一格没数据」在视觉上分不出来 */
+  &__spark-fill {
+    width: 100%;
+    min-height: 6rpx;
+    border-radius: 4rpx;
+    background: $brand-soft;
+  }
+
+  /* 报告卡的内容摘要（本轮改版）：热度刻度与走势条都是「数字」，这里是「内容」。
+     两行等宽排布（标签固定宽 + 正文限一行）而不是自由换行：
+     摘要要的是「扫一眼知道写了什么」，多行会把卡片高度拉开，列表里反而不好扫 */
+  &__digest {
+    margin-top: 14rpx;
+    display: flex;
+    flex-direction: column;
+    gap: 8rpx;
+  }
+
+  &__digest-line {
+    display: flex;
+    align-items: baseline;
+    gap: 12rpx;
+  }
+
+  &__digest-label {
+    flex-shrink: 0;
+    padding: 0 10rpx;
+    border-radius: 6rpx;
+    background: $bg;
+    color: $text-3;
+    font-size: 20rpx;
+    line-height: 1.8;
+  }
+
+  &__digest-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.6;
     color: $text-2;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-
-    &--empty {
-      color: $text-3;
-    }
   }
 
-  &__note-edit {
-    flex-shrink: 0;
-    font-size: 22rpx;
-    color: $brand;
-  }
-
-  /* ===== 卡片底部：左侧元信息 + 右侧操作 =====
-     「取消收藏」若挂在卡片头部紧挨姓名，误触率高（虽有二次确认兜底）；
-     放在与内容分离的底线处，左侧文案做成可省略单行以免挤掉按钮。 */
+  /* ===== 卡片底线：左侧收藏时间 + 右侧动作 =====
+     上边线把「内容」与「操作」分开 —— 此前操作行直接贴在正文下方，
+     四类卡片的正文长短不一，删除按钮的纵向位置在列表里是飘的。 */
   &__foot {
-    margin-top: 16rpx;
+    margin-top: 20rpx;
+    padding-top: 18rpx;
+    border-top: 1rpx solid $line;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -139,11 +325,36 @@
     text-overflow: ellipsis;
   }
 
-  &__remove {
+  /* 右侧动作组：卡片内动作与星标并排，从此处开始不再被左侧文案挤压缩放 */
+  &__foot-ops {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  /* 卡片内动作：名言卡出图（quote）/ 原文预览（dynamic）。同一处位置、同一套样式，
+     两个类名分开是为了在 JSX 里读得出来它是哪类卡的动作 */
+  &__poster,
+  &__link {
     flex-shrink: 0;
     font-size: 22rpx;
-    color: $text-3;
+    font-weight: 600;
+    color: $brand;
+    padding: 8rpx 20rpx 8rpx 0;
+  }
+
+  /* 取消收藏：实心星标（与报告页语录的 ★/☆ 同一套符号），点按后二次确认再删。
+     36rpx 的点击区比原先一整行文字小得多，误触概率随之下降。 */
+  &__star {
+    flex-shrink: 0;
+    font-size: 36rpx;
+    line-height: 1;
+    color: $brand;
     padding: 8rpx 0 8rpx 20rpx;
+
+    &--tap {
+      opacity: 0.5;
+    }
   }
 
   /* 列表收尾：说明当前显示范围，比压在列表顶部的条数提示更少干扰 */

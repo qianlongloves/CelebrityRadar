@@ -1,0 +1,331 @@
+@import '../../styles/variables.scss';
+
+/* 会员中心（付费转化页）：Hero → 权益对比 → 真实示例 → 选档位 → 说明，支付按钮吸底。
+   底部留白 = 吸底栏高度 + 安全区，避免最后一条说明被按钮压住。 */
+.page-member {
+  padding-bottom: calc(200rpx + env(safe-area-inset-bottom));
+
+  /* ===== Hero：与「我的」页横幅同一套紫色视觉语言，跨页有连续感 ===== */
+  &__hero {
+    margin: 16rpx 32rpx;
+    padding: 32rpx;
+    border-radius: $radius-lg;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 12rpx 40rpx rgba(95, 51, 225, 0.24);
+  }
+
+  &__hero-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+  }
+
+  &__hero-title {
+    font-size: 36rpx;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  /* 身份徽章：与「我的」页顶部卡片的会员标识同源同款（金底 = 生效中） */
+  &__hero-tag {
+    flex-shrink: 0;
+    padding: 4rpx 16rpx;
+    border-radius: 999rpx;
+    border: 2rpx solid rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.2);
+    font-size: 20rpx;
+    color: #fff;
+
+    &--on {
+      border-color: rgba(255, 255, 255, 0.6);
+      background: linear-gradient(135deg, #ffe9a8 0%, #f5c451 100%);
+      color: #7a4a00;
+      font-weight: 600;
+    }
+  }
+
+  &__hero-sub {
+    display: block;
+    margin-top: 16rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: rgba(255, 255, 255, 0.88);
+  }
+
+  /* ===== 区块标题 ===== */
+  &__section {
+    display: block;
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__section-note {
+    display: block;
+    margin: 8rpx 0 2rpx;
+    font-size: 22rpx;
+    line-height: 1.55;
+    color: $text-3;
+  }
+
+  /* ===== 权益对比表（三列：能力 / 免费版 / 会员） ===== */
+  &__row {
+    display: flex;
+    align-items: center;
+    padding: 18rpx 0;
+    border-bottom: 2rpx solid $line;
+
+    &--head {
+      padding: 12rpx 0 14rpx;
+
+      .page-member__cell {
+        font-size: 20rpx;
+        color: $text-3;
+      }
+    }
+  }
+
+  &__cell {
+    flex: 1;
+    font-size: 24rpx;
+    color: $text-2;
+    text-align: center;
+
+    &--name {
+      flex: 1.7;
+      text-align: left;
+      color: $text-1;
+    }
+
+    /* 会员列高亮：整张表要回答的是「买了能得到什么」，视线应落在这一列 */
+    &--on {
+      color: $brand;
+      font-weight: 600;
+    }
+  }
+
+  &__foot {
+    display: block;
+    margin-top: 20rpx;
+    padding-top: 18rpx;
+    border-top: 2rpx solid $line;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* ===== 真实示例（O-22）：紧接对比表，用平台真实产出回答「专享内容长什么样」 =====
+     排版与报告页那张专享卡同源（标签胶囊 + 正文），跨页认得出是同一段东西；
+     卡身的底部小字给出处，示例与营销文案的分界就在这一行。 */
+  &__sample-block {
+    margin-top: 18rpx;
+  }
+
+  &__sample-block + &__sample-block {
+    margin-top: 20rpx;
+  }
+
+  &__sample-label {
+    display: inline-block;
+    padding: 4rpx 16rpx;
+    border-radius: 999rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $brand-dark;
+    background: $brand-weak;
+
+    /* 风险提示换暖色：与报告页同一语义色（$accent-orange 系列），不新造颜色 */
+    &--risk {
+      color: $accent-orange;
+      background: $accent-orange-bg;
+    }
+  }
+
+  &__sample-text {
+    display: block;
+    margin-top: 10rpx;
+    font-size: 26rpx;
+    line-height: 1.75;
+    color: $text-1;
+  }
+
+  &__sample-foot {
+    display: block;
+    margin-top: 20rpx;
+    padding-top: 18rpx;
+    border-top: 2rpx solid $line;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* ===== 档位（各时长的会员等级） ===== */
+  &__plan {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-top: 16rpx;
+    padding: 22rpx 24rpx;
+    border: 2rpx solid rgba($brand, 0.16);
+    border-radius: 20rpx;
+    background: rgba($brand, 0.04);
+
+    &--tap {
+      opacity: 0.85;
+    }
+
+    /* 选中态：紫描边 + 浅紫底 + 实心对勾 —— 支付前必须让用户确认「买的是哪一档」 */
+    &--on {
+      border-color: $brand;
+      background: $brand-weak;
+      box-shadow: 0 8rpx 24rpx rgba(95, 51, 225, 0.14);
+    }
+  }
+
+  &__plan-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__plan-head {
+    display: flex;
+    align-items: center;
+    gap: 10rpx;
+  }
+
+  &__plan-name {
+    font-size: 28rpx;
+    font-weight: 600;
+  }
+
+  /* 角标（「省 16%」「最划算」）：文案由服务端下发 */
+  &__plan-badge {
+    padding: 2rpx 12rpx;
+    border-radius: 999rpx;
+    font-size: 18rpx;
+    line-height: 1.6;
+    color: #fff;
+    background: $accent-orange;
+  }
+
+  &__plan-note {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__plan-right {
+    display: flex;
+    flex-shrink: 0;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8rpx;
+  }
+
+  &__plan-price {
+    font-size: 32rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  /* 未选中时字色透明（只留一个空圈），避免出现「未选却有对勾」的误读 */
+  &__plan-check {
+    width: 32rpx;
+    height: 32rpx;
+    line-height: 30rpx;
+    text-align: center;
+    border: 2rpx solid rgba($brand, 0.3);
+    border-radius: 50%;
+    font-size: 20rpx;
+    color: transparent;
+
+    &--on {
+      border-color: $brand;
+      background: $brand;
+      color: #fff;
+    }
+  }
+
+  /* ===== 说明（支付与口径，小字，不抢视线） ===== */
+  &__notes {
+    margin: 24rpx 40rpx 0;
+  }
+
+  &__note {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* ===== 吸底支付条（全页唯一的支付按钮） ===== */
+  &__bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20rpx;
+    /* 只写三边：底边交给全局 .safe-bottom 补安全区 */
+    padding-top: 16rpx;
+    padding-left: 32rpx;
+    padding-right: 32rpx;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 -8rpx 32rpx rgba(36, 37, 44, 0.08);
+  }
+
+  &__bar-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__bar-price {
+    font-size: 36rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__bar-note {
+    display: block;
+    margin-top: 2rpx;
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  &__bar-btn {
+    flex-shrink: 0;
+    min-width: 280rpx;
+    height: 84rpx;
+    line-height: 84rpx;
+    padding: 0 40rpx;
+    border: none;
+    border-radius: 999rpx;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 10rpx 28rpx rgba(95, 51, 225, 0.28);
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #fff;
+
+    /* 去掉小程序 Button 的默认边框 */
+    &::after {
+      border: none;
+    }
+
+    &--tap {
+      opacity: 0.9;
+    }
+
+    &[disabled] {
+      opacity: 0.5;
+      color: #fff;
+    }
+  }
+}

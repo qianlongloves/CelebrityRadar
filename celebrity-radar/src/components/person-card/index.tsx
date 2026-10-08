@@ -11,8 +11,6 @@ export interface PersonInfo {
   brief?: string
   /** 动态关键词标签（热门位用） */
   tag?: string
-  /** 静态热门指数（传入才渲染热度条） */
-  heat?: number
   followed?: boolean
 }
 
@@ -53,17 +51,6 @@ export default function PersonCard({
           <View className='person-card__brief-row'>
             {person.tag && <View className='person-card__tag'>{person.tag}</View>}
             {person.brief && <View className='person-card__brief'>{person.brief}</View>}
-          </View>
-        )}
-        {typeof person.heat === 'number' && (
-          <View className='person-card__heat'>
-            <View className='person-card__heat-bar'>
-              <View
-                className={`person-card__heat-fill person-card__heat-fill--${person.domain}`}
-                style={{ width: `${Math.min(100, Math.max(0, person.heat))}%` }}
-              />
-            </View>
-            <Text className='person-card__heat-num'>{person.heat}</Text>
           </View>
         )}
       </View>

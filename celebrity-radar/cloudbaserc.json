@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "envId": "<your-env-id>",
+  "envId": "${env.TCB_ENV_ID}",
   "functionRoot": "cloudfunctions",
   "functions": [
     {
@@ -12,6 +12,12 @@
         "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
         "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}"
       }
+    },
+    {
+      "name": "contentCheck",
+      "timeout": 10,
+      "runtime": "Nodejs16.13",
+      "installDependency": true
     },
     {
       "name": "notifyFollowUpdates",
@@ -29,6 +35,73 @@
           "config": "0 0 9 * * * *"
         }
       ]
+    },
+    {
+      "name": "keywordAlert",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
+        "ALERT_TEMPLATE_ID": "${env.ALERT_TEMPLATE_ID}"
+      },
+      "triggers": [
+        {
+          "name": "dailyKeywordAlert",
+          "type": "timer",
+          "config": "0 20 9 * * * *"
+        }
+      ]
+    },
+    {
+      "name": "hotBoardRefresh",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
+        "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}"
+      },
+      "triggers": [
+        {
+          "name": "dailyHotBoard",
+          "type": "timer",
+          "config": "0 30 6 * * * *"
+        }
+      ]
+    },
+    {
+      "name": "quotaGuard",
+      "timeout": 20,
+      "runtime": "Nodejs16.13",
+      "installDependency": true
+    },
+    {
+      "name": "payCreate",
+      "timeout": 20,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "WX_PAY_SUB_MCH_ID": "${env.WX_PAY_SUB_MCH_ID}",
+        "PAY_CALLBACK_ENV_ID": "${env.PAY_CALLBACK_ENV_ID}"
+      }
+    },
+    {
+      "name": "payCallback",
+      "timeout": 20,
+      "runtime": "Nodejs16.13",
+      "installDependency": true
+    },
+    {
+      "name": "dbInit",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "DB_ADMIN_TOKEN": "${env.DB_ADMIN_TOKEN}",
+        "WX_APPID": "${env.WX_APPID}",
+        "WX_APPSECRET": "${env.WX_APPSECRET}"
+      }
     }
   ]
 }

@@ -1,0 +1,23 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./.build",
+    "rootDir": "../src",
+    "baseUrl": "..",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    "declaration": false,
+    "sourceMap": false,
+    "incremental": false,
+    "removeComments": false
+  },
+  "include": [
+    "../src/utils/**/*.ts",
+    "../src/config/**/*.ts",
+    "../src/stores/**/*.ts",
+    "../src/types/**/*.ts",
+    "../global.d.ts"
+  ]
+}

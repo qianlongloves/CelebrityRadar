@@ -99,3 +99,24 @@ export async function callCloudFunction(name: string, data: unknown): Promise<un
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   return (res as any)?.result
 }
+
+/**
+ * 识别「云函数执行超时被平台掐断」，是则返回一句可照做的指引，否则返回 null。
+ *
+ * 为什么要单列这一类：云函数超时是**平台在函数进程之外**杀的，函数自身没有任何机会
+ * 返回结构化错误 —— aiProxy 里那些 kind / error 一个都传不回来，端上只能拿到
+ * errCode -504003（FUNCTIONS_TIME_LIMIT_EXCEEDED）。这与「上游报错」「网络抖动」是两回事：
+ * 重试必然再撞同一道墙，只会让用户白等一个超时周期。
+ *
+ * 最容易反复踩的一处：微信云开发给云函数配的默认超时是 **20 秒**，而云函数目录里 config.json
+ * 写的 timeout **不随上传生效**，必须在控制台手动改（云函数 → 配置 → 超时时间）。
+ * 排查口径见 doc/联调手册.md §六。
+ */
+export function cloudTimeoutHint(msg: string): string | null {
+  if (!/-504003|FUNCTIONS_TIME_LIMIT_EXCEEDED|Invoking task timed out/i.test(msg)) return null
+  return (
+    '云端执行超时：云函数 aiProxy 的超时时间太短（微信云开发默认为 20 秒，' +
+    'cloudfunctions 里的 config.json 不生效）。请到 云开发控制台 → 云函数 → aiProxy → ' +
+    '配置 → 超时时间 改为 60 秒并保存后重试'
+  )
+}

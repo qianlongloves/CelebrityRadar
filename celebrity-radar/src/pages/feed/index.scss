@@ -46,6 +46,60 @@
     }
   }
 
+  /* ===== 周报入口卡 ===== */
+  &__weekly {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+    margin: 24rpx 32rpx 0;
+    padding: 26rpx 28rpx;
+    border-radius: $radius-lg;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 12rpx 48rpx rgba(95, 51, 225, 0.24);
+
+    &-icon {
+      flex-shrink: 0;
+      width: 68rpx;
+      height: 68rpx;
+      border-radius: 20rpx;
+      background: rgba(255, 255, 255, 0.22);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 32rpx;
+    }
+
+    &-info {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 6rpx;
+      min-width: 0;
+    }
+
+    &-title {
+      font-size: 30rpx;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    &-desc {
+      font-size: 22rpx;
+      line-height: 1.5;
+      color: rgba(255, 255, 255, 0.82);
+    }
+
+    &-cta {
+      flex-shrink: 0;
+      font-size: 24rpx;
+      font-weight: 600;
+      color: #fff;
+      padding: 10rpx 24rpx;
+      border-radius: 999rpx;
+      background: rgba(255, 255, 255, 0.22);
+    }
+  }
+
   /* ===== 统计双列卡 ===== */
   &__stats {
     display: flex;

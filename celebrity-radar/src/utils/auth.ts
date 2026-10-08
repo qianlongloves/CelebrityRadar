@@ -23,6 +23,12 @@ export interface UserRow {
    */
   subscribe_ok?: boolean
   subscribe_at?: string | null
+  /**
+   * 会员权益（买断时长制）：由微信支付回调云函数 `payCallback` 写入，客户端只读。
+   * expires_at 未过期即生效（判定见 utils/quota.ts 的 isMembershipActive）。
+   * last_order_id 是回调侧的幂等标记（同一订单只发一次货），端上不用。
+   */
+  membership?: { plan: string; expires_at: string; last_order_id?: string } | null
 }
 
 /**
@@ -30,7 +36,7 @@ export interface UserRow {
  * users 集合权限须为「仅创建者可读写」：此时 get() 只返回本人记录，
  * 这也是客户端唯一能取得自己 _openid 的途径（云开发不提供客户端换 openid 的 API）。
  */
-async function readSelf(): Promise<UserRow | null> {
+export async function readSelf(): Promise<UserRow | null> {
   const { data, error } = await table('users').select('*').limit(1)
   if (error) throw new Error(error.message)
   return (data as UserRow[] | null)?.[0] ?? null
@@ -196,6 +202,32 @@ export async function setSubscribeOptIn(ok: boolean): Promise<boolean> {
     return true
   } catch (err) {
     diagLog('error', 'auth', `订阅授权落库失败：${err instanceof Error ? err.message : String(err)}`)
+    return false
+  }
+}
+
+/**
+ * 记录「关键词预警」推送的订阅授权（2026-10-08）。
+ *
+ * 为什么不复用 setSubscribeOptIn：一次性订阅的授权是**按模板**消耗的，
+ * 关注提醒与关键词预警用的是两枚不同的模板（见 config/public.ts#alertTemplateId），
+ * 共用一个布尔位会让两个定时任务互相吃掉对方的授权。故这里是独立的一位。
+ * 语义与关注提醒一致：端上只置位，复位由云函数推送成功后执行。
+ */
+export async function setAlertOptIn(ok: boolean): Promise<boolean> {
+  const userId = useAuth.getState().userId
+  if (!userId) return false
+  try {
+    const row = await readSelf()
+    if (!row?.id) return false
+    const { error } = await table('users')
+      .update({ alert_ok: ok })
+      .eq('id', row.id)
+    if (error) throw new Error(error.message)
+    diagLog('info', 'auth', `预警订阅授权标记：${ok ? '已开启' : '已复位'}`)
+    return true
+  } catch (err) {
+    diagLog('error', 'auth', `预警订阅授权落库失败：${err instanceof Error ? err.message : String(err)}`)
     return false
   }
 }

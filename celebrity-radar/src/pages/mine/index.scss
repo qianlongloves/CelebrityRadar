@@ -133,6 +133,25 @@
     color: #fff;
   }
 
+  /* 会员标识：贴在昵称右侧（横幅是白字紫底，故徽章也用浅色系，不与背景打架） */
+  &__vip {
+    flex-shrink: 0;
+    padding: 2rpx 14rpx;
+    border-radius: 999rpx;
+    border: 2rpx solid rgba(255, 255, 255, 0.38);
+    background: rgba(255, 255, 255, 0.22);
+    font-size: 20rpx;
+    color: #fff;
+  }
+
+  /* 生效中的会员用金色实底 + 深棕字：一眼可辨，且与「免费版」的素色形成对照 */
+  &__vip--on {
+    border-color: rgba(255, 255, 255, 0.6);
+    background: linear-gradient(135deg, #ffe9a8 0%, #f5c451 100%);
+    color: #7a4a00;
+    font-weight: 600;
+  }
+
   /* 昵称编辑浮层 */
   &__editor {
     margin: 0 32rpx 16rpx;
@@ -236,38 +255,33 @@
     }
   }
 
-  /* ===== 联网能力配置（博查搜索 + 大模型，仅存本机） ===== */
-  &__keys {
+  /* ===== 今日生成配额（freemium 免费层透明展示） ===== */
+  &__quota {
     padding: 28rpx;
   }
 
-  &__keys-head {
+  &__quota-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16rpx;
   }
 
-  &__keys-title {
+  &__quota-title {
     font-size: 30rpx;
     font-weight: 600;
   }
 
-  &__keys-badge {
-    flex-shrink: 0;
-    padding: 4rpx 16rpx;
-    border-radius: 999rpx;
-    background: $bg;
-    font-size: 20rpx;
-    color: $text-3;
+  &__quota-value {
+    font-size: 24rpx;
+    color: $brand;
 
-    &--on {
-      background: $brand-weak;
-      color: $brand;
+    &--out {
+      color: $text-3;
     }
   }
 
-  &__keys-desc {
+  &__quota-note {
     display: block;
     margin-top: 10rpx;
     font-size: 22rpx;
@@ -275,28 +289,279 @@
     color: $text-3;
   }
 
-  &__key-field {
+  /* 档位标签（免费版 / 会员版）：与横幅上的会员标识同源，两处不会打架 */
+  &__quota-tag {
+    flex-shrink: 0;
+    padding: 2rpx 16rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    font-size: 20rpx;
+    color: $brand;
+  }
+
+  /* 标题行右侧：档位标签 + 折叠开关，同属「卡片状态」，一起靠右 */
+  &__quota-head-right {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 8rpx;
+  }
+
+  /* 「展开说明 / 收起」：折叠的只是口径说明与权益清单这类解释性长文，
+     用量数字与开通入口任何状态下都在。22rpx 的小字本身太窄，
+     补 padding 撑大热区，避免点偏落到卡片上（hoverClass 只认 View，故外层是 View）。 */
+  &__quota-fold {
+    padding: 8rpx 0 8rpx 8rpx;
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  &__quota-fold-text {
+    font-size: 22rpx;
+    color: $brand;
+  }
+
+  /* ===== 套餐用量（每项一行：名称 + 已用/上限 + 进度条 + 口径说明） ===== */
+  &__usage {
     margin-top: 24rpx;
   }
 
-  &__key-label {
+  &__usage-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16rpx;
-    margin-bottom: 12rpx;
-    font-size: 26rpx;
-    color: $text-2;
   }
 
-  &__key-state {
-    flex-shrink: 0;
-    font-size: 22rpx;
+  &__usage-name {
+    font-size: 26rpx;
+    color: $text-1;
+  }
+
+  &__usage-value {
+    font-size: 24rpx;
+    color: $brand;
+
+    /* 用完时转灰：数值本身已是「已用 x / x」，再配高亮紫会像还在可用的状态 */
+    &--out {
+      color: $text-3;
+    }
+  }
+
+  &__usage-bar {
+    height: 10rpx;
+    margin-top: 12rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    overflow: hidden;
+  }
+
+  &__usage-fill {
+    height: 100%;
+    border-radius: 999rpx;
+    background: linear-gradient(90deg, $brand 0%, $brand-soft 100%);
+  }
+
+  &__usage-note {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
     color: $text-3;
+  }
+
+  /* ===== 会员权益（紧贴档位列表上方） ===== */
+  &__benefits {
+    margin-top: 26rpx;
+    padding: 24rpx;
+    border-radius: $radius-md;
+    background: $brand-weak;
+  }
+
+  &__benefits-title {
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__benefit {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+    margin-top: 18rpx;
+  }
+
+  &__benefit-dot {
+    flex-shrink: 0;
+    width: 32rpx;
+    height: 32rpx;
+    line-height: 32rpx;
+    text-align: center;
+    border-radius: 50%;
+    background: $brand;
+    color: #fff;
+    font-size: 20rpx;
+  }
+
+  &__benefit-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  &__benefit-title {
+    font-size: 26rpx;
+    font-weight: 600;
+  }
+
+  &__benefit-note {
+    font-size: 22rpx;
+    line-height: 1.55;
+    color: $text-3;
+  }
+
+  /* 免费开放说明：用一条细线与会员权益分开，避免被读成第三条付费权益 */
+  &__benefits-foot {
+    display: block;
+    margin-top: 20rpx;
+    padding-top: 16rpx;
+    border-top: 2rpx solid rgba(95, 51, 225, 0.12);
+    font-size: 20rpx;
+    line-height: 1.55;
+    color: $text-3;
+  }
+
+  /* ===== 会员中心入口（档位与支付都在 pages/member，本页只留一行） ===== */
+  &__member-entry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-top: 20rpx;
+    padding: 24rpx;
+    border: 2rpx solid rgba($brand, 0.16);
+    border-radius: $radius-md;
+    background: linear-gradient(135deg, rgba($brand, 0.08) 0%, rgba($brand-soft, 0.16) 100%);
+
+    &--tap {
+      opacity: 0.85;
+    }
+  }
+
+  &__member-entry-main {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    gap: 6rpx;
+  }
+
+  &__member-entry-title {
+    font-size: 28rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__member-entry-note {
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__member-entry-arrow {
+    flex-shrink: 0;
+    font-size: 32rpx;
+    color: $brand-soft;
+  }
+
+  /* ===== 生成模型（M7-4）：独立卡片，一组可选模型，选中项高亮 ===== */
+  &__model {
+    padding: 28rpx;
+  }
+
+  &__model-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-bottom: 14rpx;
+  }
+
+  &__model-title {
+    font-size: 30rpx;
+    font-weight: 600;
+  }
+
+  &__model-current {
+    font-size: 22rpx;
+    color: $brand;
+  }
+
+  &__model-options {
+    display: flex;
+    flex-direction: column;
+    gap: 14rpx;
+  }
+
+  &__model-option {
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+    padding: 18rpx 20rpx;
+    border-radius: 14rpx;
+    background: $bg;
+    border: 2rpx solid transparent;
 
     &--on {
-      color: $brand;
+      background: $brand-weak;
+      border-color: $brand;
     }
+  }
+
+  /* 会员专属档位：标题与「会员」小标同一行，未解锁时整体略压暗（仍可点，点了给开通引导） */
+  &__model-option--locked {
+    opacity: 0.75;
+  }
+
+  &__model-option-head {
+    display: flex;
+    align-items: center;
+    gap: 10rpx;
+  }
+
+  &__model-lock {
+    padding: 2rpx 10rpx;
+    border-radius: 8rpx;
+    font-size: 18rpx;
+    line-height: 1.6;
+    color: $brand;
+    background: $brand-weak;
+  }
+
+  &__model-option-label {
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__model-option--on &__model-option-label {
+    color: $brand;
+  }
+
+  &__model-option-desc {
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__model-note {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 20rpx;
+    color: $text-3;
   }
 
   &__error {

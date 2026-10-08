@@ -1,16 +1,30 @@
 import { useEffect, useState } from 'react'
 import Taro from '@tarojs/taro'
-import { View, Text } from '@tarojs/components'
+import { ScrollView, View, Text } from '@tarojs/components'
 import Skeleton from '@/components/skeleton'
 import EmptyState from '@/components/empty-state'
 import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { getCachedReports } from '@/utils/cache'
 import { listHistory, clearHistory, HistoryRow, HISTORY_LIMIT } from '@/utils/history'
-import { fromNow } from '@/utils/time'
+import { fromNow, isStaleReport } from '@/utils/time'
 import './index.scss'
 
 interface HistoryViewProps {
   /** 变化即重新拉取（由页面的 onShow 递增） */
   reloadKey?: number
+}
+
+/** 「继续看」卡片数：只用最近的 3 位 —— 再多就退化成下面那列列表本身了 */
+const CONTINUE_MAX = 3
+
+interface ContinueCard {
+  personKey: string
+  name: string
+  domain: DomainCode
+  /** 缓存报告的生成时间（'' = 该人没有可用缓存） */
+  generatedAt: string
+  /** 是否已陈旧（≥ STALE_REPORT_DAYS 天，见 utils/time） */
+  stale: boolean
 }
 
 /**
@@ -23,6 +37,8 @@ interface HistoryViewProps {
 export default function HistoryView({ reloadKey }: HistoryViewProps) {
   const [loading, setLoading] = useState(true)
   const [history, setHistory] = useState<HistoryRow[]>([])
+  /** 「继续看」卡片（O-15）：报告信息在历史表里没有，见下方注释 */
+  const [recent, setRecent] = useState<ContinueCard[]>([])
 
   useEffect(() => {
     let alive = true
@@ -36,6 +52,42 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
       alive = false
     }
   }, [reloadKey])
+
+  /**
+   * 「继续看」卡片上的报告时间（O-14 的历史页落点）。
+   *
+   * `history` 表只存「谁、什么时候看过」，**不存报告版本** —— 而这一行卡片的价值恰恰在于
+   * 「昨天那份还能接着用吗」，所以这里用一次 `getCachedReports` 批量读回最近 3 位的缓存报告
+   * （`in` 一次往返，只读不触发生成）。这是全项目唯一为本功能新增的一次云读，
+   * 换来的是历史页第一次能说清「你手上的这份报告是哪一版」；读不到就退化成「未生成报告」，
+   * 不阻塞列表渲染。
+   */
+  useEffect(() => {
+    const picks = history.slice(0, CONTINUE_MAX)
+    if (picks.length === 0) {
+      setRecent([])
+      return
+    }
+    let alive = true
+    void getCachedReports(picks.map((h) => h.person_key)).then((reports) => {
+      if (!alive) return
+      setRecent(
+        picks.map((h, i) => {
+          const generatedAt = reports[i]?.generatedAt ?? ''
+          return {
+            personKey: h.person_key,
+            name: h.name,
+            domain: (parsePersonKey(h.person_key)?.domain ?? 'other') as DomainCode,
+            generatedAt,
+            stale: isStaleReport(generatedAt)
+          }
+        })
+      )
+    })
+    return () => {
+      alive = false
+    }
+  }, [history])
 
   const openPerson = (personKey: string) => {
     Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}` })
@@ -86,6 +138,41 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
           清空历史
         </Text>
       </View>
+
+      {/*
+        「继续看」（O-15）：最近 3 位横滑卡片，顺序直接沿用 history 的既有顺序（时间倒序）。
+        列表是「流水」，这一行才是「动作」—— 用户回历史页的真实意图是「接着看昨天那份」，
+        而不是重读一遍时间线；卡片上的报告时间还顺带回答「这份还新吗」（O-14）。
+      */}
+      {recent.length > 0 && (
+        <View className='history-view__continue'>
+          <Text className='history-view__continue-title'>继续看</Text>
+          <ScrollView className='history-view__continue-row' scrollX>
+            {recent.map((c) => (
+              <View
+                key={c.personKey}
+                className='history-view__continue-card'
+                hoverClass='history-view__continue-card--tap'
+                onClick={() => openPerson(c.personKey)}
+              >
+                <View className={`history-view__continue-avatar history-view__continue-avatar--${c.domain}`}>
+                  {c.name.slice(0, 1)}
+                </View>
+                <Text className='history-view__continue-name'>{c.name}</Text>
+                <Text
+                  className={`history-view__continue-age${
+                    c.stale ? ' history-view__continue-age--stale' : ''
+                  }`}
+                >
+                  {c.generatedAt
+                    ? `${fromNow(c.generatedAt)}${c.stale ? ' · 建议刷新' : ''}`
+                    : '未生成报告'}
+                </Text>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {history.map((h) => {
         const domain = (parsePersonKey(h.person_key)?.domain ?? 'other') as DomainCode

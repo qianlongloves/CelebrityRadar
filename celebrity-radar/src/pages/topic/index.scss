@@ -1,0 +1,266 @@
+@import '../../styles/variables.scss';
+
+/* 主题知识库页（pages/topic）。版面沿用全站的「白卡浅阴影 + 大圆角」，
+   不引入任何新的视觉语言：这是把已有字段重新编排的一页，不是新功能入口。 */
+
+.page-topic {
+  min-height: 100vh;
+  background: $bg;
+  padding-top: 16rpx;
+  box-sizing: border-box;
+}
+
+/* ===== 概览 ===== */
+.page-topic__head-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.page-topic__name {
+  flex: 1;
+  font-size: 44rpx;
+  font-weight: 700;
+  color: $text-1;
+  line-height: 1.3;
+  word-break: break-all;
+}
+
+.page-topic__heat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 120rpx;
+}
+
+.page-topic__heat-num {
+  font-size: 44rpx;
+  font-weight: 700;
+  color: $brand;
+  line-height: 1.2;
+}
+
+.page-topic__heat-label {
+  font-size: 20rpx;
+  color: $text-3;
+}
+
+.page-topic__heatbar {
+  margin-top: 20rpx;
+}
+
+.page-topic__summary {
+  display: block;
+  margin-top: 16rpx;
+  font-size: 26rpx;
+  color: $text-2;
+  line-height: 1.6;
+}
+
+.page-topic__asof {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: $text-3;
+}
+
+/* ===== 相关名人 ===== */
+.page-topic__member {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding: 20rpx 0;
+
+  & + & {
+    border-top: 1rpx solid $line;
+  }
+
+  &--tap {
+    background: $line;
+  }
+}
+
+.page-topic__avatar {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #fff;
+  background: $domain-other;
+
+  &--tech { background: $domain-tech; }
+  &--business { background: $domain-business; }
+  &--ent { background: $domain-ent; }
+  &--sports { background: $domain-sports; }
+  &--academia { background: $domain-academia; }
+  &--other { background: $domain-other; }
+}
+
+.page-topic__member-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.page-topic__member-head {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.page-topic__member-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-topic__member-meta {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: $text-3;
+}
+
+.page-topic__member-arrow {
+  font-size: 32rpx;
+  color: $text-3;
+  flex-shrink: 0;
+}
+
+/* 卡片内的小字说明（口径 / 补充提示），与正文有明确层级差 */
+.page-topic__note {
+  display: block;
+  margin-top: 16rpx;
+  padding-top: 16rpx;
+  border-top: 1rpx solid $line;
+  font-size: 22rpx;
+  color: $text-3;
+  line-height: 1.6;
+}
+
+/* ===== 立场 ===== */
+.page-topic__stance {
+  padding: 18rpx 0;
+
+  & + & {
+    border-top: 1rpx solid $line;
+  }
+}
+
+.page-topic__stance-head {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.page-topic__stance-name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-topic__stance-badge {
+  padding: 4rpx 16rpx;
+  border-radius: 999rpx;
+  font-size: 20rpx;
+  line-height: 1.5;
+
+  &--positive { background: rgba(16, 185, 129, 0.1); color: $success; }
+  &--neutral { background: $brand-weak; color: $brand-soft; }
+  &--negative { background: $accent-orange-bg; color: $accent-orange; }
+  &--mixed { background: $accent-blue-bg; color: $accent-blue; }
+}
+
+.page-topic__stance-note {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: $text-2;
+  line-height: 1.6;
+}
+
+/* ===== 相关言论 ===== */
+.page-topic__quote {
+  padding: 20rpx 0;
+
+  & + & {
+    border-top: 1rpx solid $line;
+  }
+}
+
+.page-topic__quote-text {
+  display: block;
+  font-size: 28rpx;
+  color: $text-1;
+  line-height: 1.7;
+}
+
+.page-topic__quote-from {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: $brand;
+}
+
+/* ===== 相关报道 ===== */
+.page-topic__news {
+  display: flex;
+  flex-direction: column;
+  padding: 20rpx;
+  margin-top: 16rpx;
+  border-radius: $radius-sm;
+  background: $bg;
+
+  &--tap {
+    opacity: 0.7;
+  }
+}
+
+.page-topic__news-name {
+  font-size: 22rpx;
+  color: $brand;
+  margin-bottom: 6rpx;
+}
+
+.page-topic__news-title {
+  font-size: 28rpx;
+  color: $text-1;
+  line-height: 1.5;
+}
+
+.page-topic__news-meta {
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: $text-3;
+}
+
+/* ===== 时间线（按天聚合的讨论分布） ===== */
+.page-topic__tl-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 12rpx 0;
+}
+
+.page-topic__tl-date {
+  width: 90rpx;
+  flex-shrink: 0;
+  font-size: 22rpx;
+  color: $text-2;
+}
+
+.page-topic__tl-names {
+  width: 280rpx;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 22rpx;
+  color: $text-3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

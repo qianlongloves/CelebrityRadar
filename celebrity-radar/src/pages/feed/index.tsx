@@ -8,7 +8,6 @@ import { getFeedDetail, refreshAllFeeds } from '@/utils/cache'
 import { NewsItem } from '@/utils/search'
 import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
 import { fromNow } from '@/utils/time'
-import { useTabBarSync } from '@/utils/tabbar'
 import './index.scss'
 
 /** 流条目：新闻 + 归属人 */
@@ -38,8 +37,11 @@ function isToday(date?: string): boolean {
   )
 }
 
+/**
+ * 关注动态（原底部菜单第二格，2026-10-07 改为二级页，入口在发现页顶部）。
+ * 本页不再挂 tab 高亮，也不需要 tabBar 底部占位（safe-tab）。
+ */
 export default function Feed() {
-  useTabBarSync()
   const [loading, setLoading] = useState(true)
   const [entries, setEntries] = useState<FeedEntry[]>([])
   const [follows, setFollows] = useState<FollowRow[]>([])
@@ -108,8 +110,28 @@ export default function Feed() {
   const filterName = follows.find((f) => f.person_key === personFilter)?.name ?? ''
 
   return (
-    <View className='page-feed glow-page safe-tab'>
+    <View className='page-feed glow-page'>
       {loading && <Skeleton variant='feed' rows={3} withStats />}
+
+      {/*
+        周报入口（§2.2 M5-2）：关注了人就有意义，故不依赖 entries 是否有内容——
+        周报素材正是本页缓存，空动态时点进去也会给出「先去下拉刷新」的引导。
+      */}
+      {!loading && follows.length > 0 && (
+        <View
+          className='page-feed__weekly'
+          onClick={() => Taro.navigateTo({ url: '/pages/weekly/index' })}
+        >
+          <View className='page-feed__weekly-icon'>📰</View>
+          <View className='page-feed__weekly-info'>
+            <Text className='page-feed__weekly-title'>本周周报</Text>
+            <Text className='page-feed__weekly-desc'>
+              汇总最近 7 天的关注动态，生成一份可复制、可分享的周报
+            </Text>
+          </View>
+          <Text className='page-feed__weekly-cta'>生成 ›</Text>
+        </View>
+      )}
 
       {/* 读取失败：与「确实没有动态」是两回事，分开呈现 */}
       {!loading && entries.length === 0 && failedCount > 0 && (

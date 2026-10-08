@@ -11,11 +11,20 @@
  *   thing1  提醒内容（≤20 个字符）
  *   date2   更新时间
  *
- * 两个设计取舍：
+ * 权限：本函数用**云调用**发消息，必须靠同目录 config.json 的
+ *   permissions.openapi: ["subscribeMessage.send"]
+ * 声明授权，且随「上传并部署」一起生效（与 contentCheck 的 security.msgSecCheck 同理）。
+ * ⚠ 缺这条声明时平台会直接拒绝 openapi 调用（报 openapi permission denied，而**不是** 43101），
+ * 表现是日志里天天 failed、用户一条提醒都收不到 —— 排查先看 config.json。
+ *
+ * 三个设计取舍：
  * 1. 主动检索而非只读现成缓存。feed_cache / report_cache 只在用户手动触发时才更新，
  *    若纯读缓存，「关注了一个月没打开过的人」永远不会有可推的更新，提醒也就永不发生。
  * 2. 一次授权一条。微信一次性订阅的规则如此，故推送成功后立刻把 subscribe_ok 复位；
  *    不复位的话下一次发送会拿到 43101（用户未授权），日志里天天报错却没有提醒送达。
+ * 3. 写回 feed_cache 的条目必须与端上 utils/search.ts 的 NewsItem **同构**（含 content）：
+ *    这张缓存是端上关注流卡片与 utils/weekly.ts 的数据源，定时任务若只写「标题 + 链接」，
+ *    同一个人会出现「端上刷过就有摘要、云端刷过就变空」的脏数据，周报读 e.content 还会直接抛错。
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
@@ -76,12 +85,30 @@ function postJson(target, headers, payload, timeoutMs) {
   })
 }
 
-/** 博查检索（定时任务只需近一周的条目，取回标题与链接即可） */
+/** 博查 {url} 的主机名，用作 source 的兜底（与端上 utils/search.ts#hostOf 同口径） */
+function hostOf(url) {
+  return String(url || '')
+    .replace(/^https?:\/\//, '')
+    .split('/')[0]
+}
+
+/** 统一成 ISO（端上写入的 publishedDate 也是 ISO，pickWindowEntries 用 Date.parse 比较） */
+function normDate(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined
+  const t = Date.parse(raw)
+  return Number.isFinite(t) ? new Date(t).toISOString() : undefined
+}
+
+/**
+ * 博查检索 → NewsItem[]（与端上 utils/search.ts#toNewsItem 字段完全一致）。
+ * ⚠ summary 必须为 true：内容要随条目一起写回 feed_cache，不然关注流卡片摘要为空、
+ * 周报读 e.content 抛 undefined.slice（见文件头设计取舍 3）。
+ */
 async function searchPerson(name, key) {
   const res = await postJson(
     BOCHA_ENDPOINT,
     { Authorization: `Bearer ${key}` },
-    { query: `${name} 最新动态`, freshness: 'oneWeek', summary: false, count: 10 },
+    { query: `${name} 最新动态`, freshness: 'oneWeek', summary: true, count: 10 },
     TIMEOUT_MS
   )
   const code = Number((res.data && res.data.code) ?? res.status)
@@ -91,12 +118,19 @@ async function searchPerson(name, key) {
   const inner = res.data && res.data.data
   const pages = (inner && inner.webPages && inner.webPages.value) || []
   return pages
-    .map((p) => ({
-      title: String(p.name || '').trim(),
-      url: String(p.url || '').trim(),
-      source: String(p.siteName || '').trim(),
-      publishedDate: p.datePublished || ''
-    }))
+    .map((p) => {
+      const url = String(p.url || '').trim()
+      const item = {
+        title: String(p.name || '').trim(),
+        url,
+        /* summary 是详细摘要、snippet 是短摘，与端上「前者优先」的取值一致 */
+        content: String(p.summary || p.snippet || '').trim(),
+        source: String(p.siteName || '').trim() || hostOf(url)
+      }
+      const publishedDate = normDate(p.datePublished) || normDate(p.dateLastCrawled)
+      if (publishedDate) item.publishedDate = publishedDate
+      return item
+    })
     .filter((x) => x.url && x.title)
 }
 

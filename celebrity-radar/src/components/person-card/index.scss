@@ -1,5 +1,16 @@
 @import '../../styles/variables.scss';
 
+/*
+  卡片右侧两枚胶囊的共用尺寸。关注是自绘 View、主操作是 taro-ui 的 AtButton
+  （size='small' 编译后是 60rpx 高 / 28rpx 字 / min-width 100rpx / 圆角 30rpx），
+  两边各用各的一套数值时并排必然一高一矮 —— 之前关注是 48rpx 高配 20rpx 字，
+  主操作是 60rpx 高配 28rpx 字，看上去像两个不同层级的组件拼在一起。
+  这里收敛成一组令牌；60rpx 与全站其它 at-button--small（如名人主页）同高。
+*/
+$pill-height: 60rpx;
+$pill-font: 24rpx;
+$pill-pad: 22rpx;
+
 .person-card {
   display: flex;
   align-items: center;
@@ -84,61 +95,41 @@
     overflow: hidden;
   }
 
-  /* 热度条（仅热门位传 heat 时渲染） */
-  &__heat {
+  /*
+    主操作（taro-ui AtButton，size='small' + circle）。
+    选择器写成三级 `.at-button.at-button--small` 是为了稳过 taro-ui 自带的
+    `.at-button--small`(0,1,0) 与 `.at-button--small.at-button--circle`(0,2,0)，
+    不靠「谁写在后面」这种一改就崩的巧合。
+    min-width 必须显式归零：taro-ui 给了 100rpx，短文案（如「查看」）会被撑成方砖。
+  */
+  &__action.at-button.at-button--small {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    margin: 0;
+    min-width: 0;
+    height: $pill-height;
+    padding: 0 $pill-pad;
+    border-radius: 999rpx;
+    font-size: $pill-font;
+    line-height: $pill-height - 2;
+  }
+
+  /* 卡片内直接关注：描边式小胶囊，与主操作按钮（实心）拉开主次，但**同高同胖** */
+  &__follow {
+    box-sizing: border-box;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 12rpx;
-    margin-top: 12rpx;
-  }
-
-  &__heat-bar {
-    flex: 1;
-    height: 10rpx;
-    border-radius: 5rpx;
-    background: $line;
-    overflow: hidden;
-  }
-
-  &__heat-fill {
-    height: 100%;
-    border-radius: 5rpx;
-    background: $brand;
-
-    &--tech { background: $domain-tech; }
-    &--business { background: $domain-business; }
-    &--ent { background: $domain-ent; }
-    &--sports { background: $domain-sports; }
-    &--academia { background: $domain-academia; }
-    &--other { background: $domain-other; }
-  }
-
-  &__heat-num {
-    flex-shrink: 0;
-    font-size: 20rpx;
-    font-weight: 600;
-    color: $text-3;
-
-    &::after {
-      content: ' 热度';
-      font-weight: 400;
-    }
-  }
-
-  &__action {
-    flex-shrink: 0;
-  }
-
-  /* 卡片内直接关注：描边式小胶囊，与主操作按钮（实心）拉开主次 */
-  &__follow {
-    flex-shrink: 0;
-    padding: 4rpx 16rpx;
-    border: 1rpx solid $brand;
+    justify-content: center;
+    height: $pill-height;
+    padding: 0 $pill-pad;
+    /* 用 1PX（不随设计稿换算）与隔壁 taro-ui 按钮的描边保持同一物理粗细 */
+    border: 1PX solid $brand;
     border-radius: 999rpx;
     background: #fff;
     color: $brand;
-    font-size: 20rpx;
-    line-height: 1.9;
+    font-size: $pill-font;
+    line-height: 1;
 
     /* 已关注：弱化为中性色，不再是「可点关注」的强暗示 */
     &--on {

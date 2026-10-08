@@ -1,0 +1,147 @@
+@import '../../styles/variables.scss';
+
+.share-poster {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48rpx;
+
+  &__mask {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    background: rgba(20, 16, 40, 0.62);
+  }
+
+  /*
+   * 离屏画布：不能用 display:none（节点查询会拿不到 node，出图直接失败），
+   * 也不该用 opacity:0 —— 放到屏幕外是唯一既「存在」又「不可见」的写法。
+   * 元素的 px 尺寸由 JS 按设计稿常量给定（canvas 只认 px，rpx 会让导出尺寸不可控）。
+   */
+  &__canvas {
+    position: fixed;
+    left: -9999px;
+    top: 0;
+  }
+
+  &__panel {
+    position: relative;
+    width: 100%;
+    max-width: 620rpx;
+    background: #fff;
+    border-radius: $radius-lg;
+    padding: 32rpx 28rpx 24rpx;
+    box-shadow: 0 24rpx 80rpx rgba(20, 16, 40, 0.28);
+  }
+
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24rpx;
+  }
+
+  &__title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__close {
+    font-size: 30rpx;
+    color: $text-3;
+    padding: 8rpx 12rpx;
+  }
+
+  /* 预览区：按屏高收口，动作按钮始终留在屏幕内 */
+  &__stage {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 400rpx;
+    max-height: 60vh;
+    overflow: hidden;
+    border-radius: $radius-md;
+    background: $bg;
+  }
+
+  &__preview {
+    width: 100%;
+    max-height: 60vh;
+  }
+
+  &__loading,
+  &__error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 64rpx 32rpx;
+    color: $text-2;
+    font-size: 26rpx;
+  }
+
+  &__error-title {
+    font-size: 28rpx;
+    font-weight: 600;
+    color: $text-1;
+    margin-bottom: 12rpx;
+  }
+
+  &__error-msg {
+    font-size: 23rpx;
+    color: $text-3;
+    line-height: 1.6;
+    text-align: center;
+  }
+
+  &__actions {
+    display: flex;
+    gap: 20rpx;
+    margin-top: 28rpx;
+  }
+
+  &__btn {
+    flex: 1;
+    height: 84rpx;
+    border-radius: 42rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28rpx;
+
+    &--primary {
+      background: $brand;
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 10rpx 26rpx rgba(95, 51, 225, 0.32);
+    }
+
+    &--ghost {
+      background: $brand-weak;
+      color: $brand;
+      font-weight: 600;
+    }
+
+    /* 出图未完成 / 动作进行中：置灰并挡住连点（保存相册连点会弹两次授权） */
+    &--disabled {
+      opacity: 0.45;
+    }
+  }
+
+  &__hint {
+    display: block;
+    margin-top: 18rpx;
+    text-align: center;
+    font-size: 21rpx;
+    color: $text-3;
+  }
+}

@@ -81,6 +81,28 @@ export async function listHistory(): Promise<HistoryRow[]> {
   return (data as HistoryRow[]) ?? []
 }
 
+/**
+ * 「最近搜索」快捷入口用的精简列表：按名人去重 + 截断。
+ *
+ * 为什么读侧还要再去一次重：写入侧的「连续同一人跳过」只挡相邻的重复，
+ * A → B → A 这种回访仍会留下两条同名记录，直接铺进首屏就是同一个人并排两个胶囊。
+ * 按 person_key（名字#领域）保留最近一次：同名不同领域的两人是两份报告，仍各占一条。
+ *
+ * 历史页走的是 listHistory，保留完整流水，不受这里影响。
+ */
+export async function listRecentHistory(limit: number): Promise<HistoryRow[]> {
+  const rows = await listHistory()
+  const seen = new Set<string>()
+  const out: HistoryRow[] = []
+  for (const row of rows) {
+    if (seen.has(row.person_key)) continue
+    seen.add(row.person_key)
+    out.push(row)
+    if (out.length >= limit) break
+  }
+  return out
+}
+
 export async function clearHistory(): Promise<void> {
   const userId = useAuth.getState().userId
   if (!userId) return

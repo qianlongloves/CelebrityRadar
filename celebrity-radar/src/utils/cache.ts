@@ -1,12 +1,16 @@
 import { table } from './db'
 import { Report, buildReport, isRefusedResult } from './report'
 import { FocusCode } from '@/config/filters'
-import { fetchNews, hasSearchChannel, NewsItem } from './search'
+import { fetchNews, hasSearchChannel, DEEP_MAIN_COUNT, DEEP_SOCIAL_COUNT, NewsItem } from './search'
 import { parsePersonKey } from '@/config/domains'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { todayKey } from './time'
 import { cooldownMinutesLeft } from './cooldown'
+import { peekGenerateQuota, consumeGenerateQuota } from './quota'
+import { quotaExhaustedMessage } from './member'
+import { incrQuotaViaCloud } from './quota-guard'
+import { REFRESH_QUOTA_DISABLED } from './debug'
 import { diagLog } from './cloud-diagnostics'
 import type { ReportCacheRow, FeedCacheRow, RefreshQuotaRow } from '@/types/db'
 
@@ -98,8 +102,15 @@ async function release(personKey: string, userId: string): Promise<void> {
 }
 
 /**
- * 落库并置 ready。必须校验命中行数：静默 0 行会让 state 永久停在 building，
- * 表现为缓存永不命中（每次进入都重新生成），且全程没有任何报错。
+ * 落库并置 ready。
+ *
+ * 用 upsert（等价 doc(id).set，整篇替换）而非 where().update()：
+ * CloudBase 的 update 对嵌套对象走「点号路径」语义，而 acquire 占位时写入的 report 是 null，
+ * 往 null 上写 report.analysis 这类子字段会被数据库直接拒绝：
+ *   [FailedOperation] Cannot create field 'analysis' in element {report: null}
+ * 后果是落库恒失败 → state 永久停在 building → 缓存永不命中（每次进入都重新生成），
+ * 且只有一条 warn 日志，极易被误判成「LLM 通道坏了」。
+ * doc(id).set 是整篇替换，对 report / search_meta 的初值没有任何要求，从根上绕开该差异。
  */
 async function saveReady(
   personKey: string,
@@ -107,17 +118,16 @@ async function saveReady(
   newsCount: number,
   userId: string
 ): Promise<boolean> {
-  const { data, error } = await table('report_cache')
-    .update({ report, state: 'ready', generated_at: report.generatedAt, search_meta: { news_count: newsCount } })
-    .eq('id', personKey)
-    .select()
-  if (error) {
-    diagLog('error', 'db', `报告落库失败：${error.message ?? error}`)
-  } else if (((data as unknown[]) ?? []).length === 0) {
-    diagLog('error', 'db', `报告落库未命中任何行：${personKey}`)
-  } else {
-    return true
-  }
+  const { error } = await table('report_cache').upsert({
+    id: personKey,
+    report,
+    state: 'ready',
+    generated_at: report.generatedAt,
+    builder: null,
+    search_meta: { news_count: newsCount }
+  })
+  if (!error) return true
+  diagLog('error', 'db', `报告落库失败：${error.message ?? error}`)
   // 落库失败时必须清掉自己的 building 脏行：否则该行会以 state=building 残留，
   // 在 BUILDING_TIMEOUT_MS 内让**所有**查询该人物的请求都只能排队等待，且全程零报错。
   // 报告本身仍返回给本次用户，只是这一次不进缓存（下次重新生成，但不会再排队）。
@@ -155,19 +165,46 @@ export async function getOrBuildReport(
   if (!parsed) return { kind: 'error', message: `非法 personKey：${personKey}` }
   const { name } = parsed
 
-  // 0. 冷却检查（§5.4 用例 9）：搜索源 / LLM 超配额或连续失败后 10 分钟内不再发起
-  for (const label of ['search', 'llm'] as const) {
-    const left = cooldownMinutesLeft(label)
-    if (left > 0) {
-      return { kind: 'error', message: `服务繁忙（约 ${left} 分钟后恢复），请稍后再试` }
-    }
-  }
-
-  // 1. 缓存命中（已就绪即复用；force=true 时跳过，进入重新生成）
+  // 0. 缓存命中优先（随用随查）：已生成的报告读取零成本，不受冷却影响。
+  //    冷却检查后置到第 1.5 步，只拦「重新生成」，不拦「看已有报告」。
   let row = await getRow(personKey)
   if (!opts.force && isUsable(row)) {
     track('report_hit_cache', { personKey })
     return { kind: 'report', report: row.report, fromCache: true }
+  }
+
+  // 1. 冷却检查（§5.4 用例 9）：仅拦截需要真实发起搜索/生成的路径。
+  //    注意 setCooldown 现在只由「限流 / 网络 / 上游 5xx」触发（见 report.ts、search.ts），
+  //    密钥/额度类错误不再进入冷却，修好配置即可立刻重试。
+  for (const label of ['search', 'llm'] as const) {
+    const left = cooldownMinutesLeft(label)
+    if (left > 0) {
+      const what = label === 'search' ? '搜索源' : '生成服务'
+      return { kind: 'error', message: `${what}限流冷却中（约 ${left} 分钟），已生成的报告不受影响；可先浏览其他名人` }
+    }
+  }
+
+  /**
+   * 本次生成是否走「深度模式」（O-11）：会员的素材加厚 + 报告多两段专属文字。
+   * 会员态**顺带**取自上方的配额检查（peekGenerateQuota 已带回 member），不额外读一次库；
+   * 检查失败（catch 分支）时保持 false —— 放行的是免费口径，宁可少给不可误给。
+   */
+  let memberDeep = false
+
+  // 1.5 生成配额检查（freemium 免费层）：只拦「真实发起生成」的路径。
+  //     缓存命中已在上方返回（不计数、不受限）；配额用完仍可浏览所有已生成报告。
+  try {
+    const quota = await peekGenerateQuota(userId)
+    if (!quota.allowed) {
+      return {
+        kind: 'error',
+        message: quotaExhaustedMessage(quota.member, quota.limit, '已生成的报告仍可正常浏览')
+      }
+    }
+    memberDeep = quota.member
+  } catch (err) {
+    /* 配额服务异常不拦生成：宁可少量超发，不可让所有人无法生成（与冷却的降级哲学一致） */
+    diagLog('warn', 'db', `配额检查失败，放行本次生成：${err instanceof Error ? err.message : String(err)}`)
   }
 
   /**
@@ -202,7 +239,16 @@ export async function getOrBuildReport(
 
   // 4. 我是构建者：博查检索 → LLM → 校验 → 落库
   try {
-    const news = await fetchNews(name)
+    /*
+     * 深度模式（O-11）：会员的报告生成走加厚检索，主线 / 支线各加厚一档（见 search.ts 的 DEEP_*）。
+     * ⚠ 全文件**只有这一处**加厚：下面 refreshAllFeeds / refreshFeed 的两处 fetchNews 是每日
+     *   10 次的常态动作，放大等于常态成本翻倍而用户几乎无感，刻意维持免费口径。
+     * 真闸门在云函数（非会员改包要 40 也会被钳回 20），这里只是「要多少」。
+     */
+    const news = await fetchNews(
+      name,
+      memberDeep ? { maxResults: DEEP_MAIN_COUNT, socialCount: DEEP_SOCIAL_COUNT } : {}
+    )
 
     if (news === null || news.length === 0) {
       // 无联网素材（搜索源不可用 / 抓取为空）：不生成，进引导态（§2.4）
@@ -210,7 +256,7 @@ export async function getOrBuildReport(
       return { kind: news === null ? 'coldstart' : 'nonews' }
     }
 
-    const res = await buildReport(personKey, name, news, focus)
+    const res = await buildReport(personKey, name, news, focus, { member: memberDeep })
     if (!res.ok) {
       await release(personKey, userId)
       return { kind: 'error', message: res.error }
@@ -222,6 +268,14 @@ export async function getOrBuildReport(
     const report = res.data
     await saveReady(personKey, report, news.length, userId)
     track('report_generate', { personKey, mode: 'realtime' })
+    /*
+     * 配额只在「用户真的拿到报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
+     *   上方的 refused / error / coldstart / nonews 分支均已提前 return，不计数；
+     *   缓存命中（第 0 步 / 抢锁失败等待他人构建）也在上方返回，同样不计数。
+     *   ⚠ 本行位于 saveReady 之后：落库失败会抛到下面的 catch，此时用户拿不到报告 → 不计数。
+     *   best-effort：计数写失败不影响本次返回，少量丢失可接受（宁可少算不多算）。
+     */
+    void consumeGenerateQuota(userId)
     return { kind: 'report', report, fromCache: false, prev: prevReport }
   } catch (err) {
     await release(personKey, userId).catch(() => undefined)
@@ -235,6 +289,35 @@ export async function getOrBuildReport(
 export async function getCachedReport(personKey: string): Promise<Report | null> {
   const row = await getRow(personKey)
   return row?.state === 'ready' ? row.report : null
+}
+
+/**
+ * 批量只读缓存：一次 `in` 取回多人的报告，供「候选列表」这类**进来就要筛一遍**的场景用
+ * （当前调用方是底部菜单「AI 提问」页，见 pages/ask）。
+ *
+ * 为什么不让调用方循环 getCachedReport：`report_cache` 以 personKey 为主键，逐个查是 N 次
+ * 云数据库往返；而这个页面是 tabBar 页，每次切回来都会重跑 —— 8 个人就是 8 次往返，纯浪费。
+ *
+ * 命中判定与 getCachedReport **完全一致**（state=ready 且有 report），返回数组与入参一一对应、
+ * 缺位为 null（调用方可直接 filter），读失败时同样退化为全 null 而不是抛错。
+ */
+export async function getCachedReports(personKeys: string[]): Promise<Array<Report | null>> {
+  const keys = personKeys.filter(Boolean)
+  if (keys.length === 0) return personKeys.map(() => null)
+
+  const { data, error } = await table('report_cache').select('*').in('id', keys)
+  if (error) {
+    diagLog('warn', 'db', `report_cache 批量读取失败：${error.message ?? error}`)
+    return personKeys.map(() => null)
+  }
+
+  const byId = new Map<string, ReportCacheRow>()
+  for (const row of (data as ReportCacheRow[]) ?? []) byId.set(row.id, row)
+
+  return personKeys.map((k) => {
+    const row = byId.get(k)
+    return row?.state === 'ready' && row.report ? row.report : null
+  })
 }
 
 export async function getFeed(personKey: string): Promise<NewsItem[]> {
@@ -262,9 +345,31 @@ export async function getFeedDetail(
 
 /**
  * 检查并消耗一次刷新配额（每账号/日 ≤10，§3.8）。
- * MVP 用读-改-写（竞态可接受，少量超发无害）；原子自增待 rpc 优化。
+ *
+ * 计数优先走云函数 `quotaGuard` 原子自增；未部署时回退本地读-改-写。
+ * 注意云端是「先自增、再由本函数判定」：已超限时再刷新会让计数多涨 1
+ * （只影响展示，`remaining` 已夹到 0），闸门是否放行不受影响。
  */
 export async function consumeRefreshQuota(userId: string): Promise<{ allowed: boolean; remaining: number }> {
+  const real = await tallyRefreshQuota(userId)
+  /*
+   * 调试开关（见 utils/debug.ts）：关闭额度时不拦请求，但计数照记 ——
+   * 计数是排查问题时最直接的证据，不该因为调试而丢失。
+   * remaining 一并报成满额，避免出现「剩余 0 次」却仍能刷新的矛盾展示。
+   */
+  return REFRESH_QUOTA_DISABLED ? { allowed: true, remaining: DAILY_REFRESH_LIMIT } : real
+}
+
+/** 刷新额度的真实口径：自增计数并据此判定（不感知调试开关） */
+async function tallyRefreshQuota(userId: string): Promise<{ allowed: boolean; remaining: number }> {
+  const cloudCount = await incrQuotaViaCloud('refresh')
+  if (cloudCount !== null) {
+    return {
+      allowed: cloudCount <= DAILY_REFRESH_LIMIT,
+      remaining: Math.max(0, DAILY_REFRESH_LIMIT - cloudCount)
+    }
+  }
+
   const id = `${userId}#${todayKey()}`
   const { data, error } = await table('refresh_quota').select('*').eq('id', id).maybeSingle()
   if (error) diagLog('warn', 'db', `refresh_quota 读取失败：${error.message ?? error}`)
@@ -288,7 +393,7 @@ export async function refreshAllFeeds(
   const userId = useAuth.getState().userId
   if (!userId) return { ok: false, message: '未登录', refreshed: 0 }
   if (follows.length === 0) return { ok: true, message: '暂无关注', refreshed: 0 }
-  /* 无本机 Key 也已可用（走平台代付），故这里判「有无通道」而非「有无 Key」 */
+  /* 客户端不持有任何 Key，故这里判「云环境配了没」而非「用户填了没」 */
   if (!hasSearchChannel()) return { ok: false, message: '联网素材不可用，展示缓存动态', refreshed: 0 }
 
   const quota = await consumeRefreshQuota(userId)

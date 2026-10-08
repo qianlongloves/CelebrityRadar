@@ -1,0 +1,180 @@
+@import '../../styles/variables.scss';
+
+.quote-detail {
+  /* 脚注行：出处占满剩余宽度，「查证」与调用方给的附加动作（报告页的收藏星标）各自固定宽度 */
+  &__foot {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+  }
+
+  &__src {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $text-3;
+    /* 出处是给一眼扫的小字：过长就省略，别把「查证」挤到下一行去 */
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* 「查证」：小胶囊；展开后变「收起」并弱化 —— 面板都打开了，按钮不该再抢注意力 */
+  &__toggle {
+    flex: none;
+    padding: 6rpx 20rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 22rpx;
+    line-height: 1.4;
+  }
+
+  &__toggle--tap {
+    opacity: 0.7;
+  }
+
+  &__toggle--on {
+    background: $line;
+    color: $text-3;
+  }
+
+  /* 展开面板：浅底小圆角，与上面的引文正文拉开层级 */
+  &__panel {
+    margin-top: 16rpx;
+    padding: 20rpx 24rpx;
+    border-radius: $radius-md;
+    background: $bg;
+  }
+
+  /* 背景 / 注解：左标签（两字固定宽）右正文 */
+  &__line {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+  }
+
+  &__line + &__line {
+    margin-top: 12rpx;
+  }
+
+  &__label {
+    flex: none;
+    width: 60rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $brand-soft;
+  }
+
+  &__text {
+    flex: 1;
+    min-width: 0;
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* 出处核对：与「背景 / 注解」之间加一条分隔线，否则注解和判定会连成一段读 */
+  &__check {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__check-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+  }
+
+  &__badge {
+    flex: none;
+    padding: 4rpx 14rpx;
+    border-radius: 999rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+  }
+
+  /* 三档都不给「绿 = 真 / 红 = 假」这类颜色：平台只摊开出处，不做真伪判定 */
+  &__badge--matched {
+    background: $brand-weak;
+    color: $brand;
+  }
+
+  &__badge--linked {
+    background: $line;
+    color: $text-2;
+  }
+
+  &__badge--no-source {
+    background: $knowledge-warn-bg;
+    color: $knowledge-warn-text;
+  }
+
+  &__desc {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  /* 出处 / 旁证条目：整行可点，进原文预览 */
+  &__row {
+    margin-top: 16rpx;
+    padding: 16rpx 20rpx;
+    border-radius: $radius-sm;
+    background: #fff;
+  }
+
+  &__row--tap {
+    opacity: 0.7;
+  }
+
+  &__row-head {
+    display: block;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__row-title {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 26rpx;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  &__row-meta {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__echoes {
+    margin-top: 16rpx;
+  }
+
+  &__acts {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 20rpx;
+  }
+
+  &__act {
+    padding: 8rpx 24rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 24rpx;
+    line-height: 1.4;
+  }
+
+  &__act--tap {
+    opacity: 0.7;
+  }
+}

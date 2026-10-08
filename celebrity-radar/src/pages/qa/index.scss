@@ -1,0 +1,10 @@
+@import '../../styles/variables.scss';
+
+/* 整页 flex 布局：只负责「加载 / 缺报告 / 会话」三态与外层高度，
+   会话本身的样式在 components/qa-panel（与底部菜单「AI 提问」页共用）。 */
+.page-qa {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  box-sizing: border-box;
+}

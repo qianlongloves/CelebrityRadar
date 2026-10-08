@@ -1,0 +1,74 @@
+@import '../../styles/variables.scss';
+
+.page-link-preview {
+  min-height: 100vh;
+  padding-top: 8rpx;
+
+  /* 内嵌态：WebView 是原生层，外层只负责给它一个满屏容器 */
+  &__embed {
+    width: 100%;
+    height: 100vh;
+  }
+
+  /* 来源站点：首字色块 + 域名，替代拿不到的 favicon */
+  &__site {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    margin-bottom: 20rpx;
+  }
+
+  &__mark {
+    flex-shrink: 0;
+    width: 56rpx;
+    height: 56rpx;
+    border-radius: $radius-sm;
+    background: linear-gradient(135deg, $brand-soft, $brand);
+    color: #fff;
+    font-size: 30rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__host {
+    /* 域名可以很长，独占一行时按单行省略，不挤压右侧 */
+    flex: 1;
+    min-width: 0;
+    font-size: 26rpx;
+    color: $text-2;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__title {
+    font-size: 34rpx;
+    font-weight: 600;
+    line-height: 1.45;
+    margin-bottom: 12rpx;
+  }
+
+  &__meta {
+    margin-bottom: 16rpx;
+  }
+
+  &__summary {
+    padding: 20rpx 24rpx;
+    border-radius: $radius-md;
+    background: $bg;
+    line-height: 1.6;
+  }
+
+  &__note {
+    line-height: 1.6;
+    margin-bottom: 24rpx;
+  }
+
+  &__ops {
+    display: flex;
+    flex-direction: column;
+    gap: 20rpx;
+  }
+}

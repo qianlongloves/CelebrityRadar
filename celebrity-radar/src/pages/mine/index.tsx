@@ -3,20 +3,38 @@ import Taro, { useDidShow } from '@tarojs/taro'
 import { View, Text, Button, Input, Image } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { ensureLogin, updateProfile } from '@/utils/auth'
-import { clearSearchKey, getBochaKey, getLlmKey, setBochaKey, setLlmKey } from '@/utils/settings'
-import { fetchNews } from '@/utils/search'
-import { chatText, hasLlmChannel } from '@/utils/llm'
-import { probeAiProxy } from '@/utils/ai-proxy'
+import { clearLocalSettings, setPreferredModel } from '@/utils/settings'
+import { resolveChatModel } from '@/utils/llm'
+import { publicConfig } from '@/config/public'
 import { notifyConfigured, requestNotify } from '@/utils/notify'
 import { clearAllMyData } from '@/utils/data-deletion'
 import { listFollows } from '@/utils/follows'
 import { listFavorites } from '@/utils/favorites'
 import { listHistory, HISTORY_LIMIT } from '@/utils/history'
+import { peekGenerateQuota, GenerateQuotaSummary } from '@/utils/quota'
+import {
+  FREE_FEATURES_NOTE,
+  MEMBER_BENEFIT_POINTS,
+  MEMBER_DAILY_ASK_LIMIT,
+  MEMBER_DAILY_GENERATE_LIMIT
+} from '@/utils/member'
+import { clearWeeklyCache } from '@/utils/weekly'
+import { clearMessageState } from '@/utils/messages'
+import { clearQaUsage, qaUsageToday, refreshQaUsage } from '@/utils/qa'
+import type { QaUsage } from '@/utils/qa'
 import { useTabBarSync } from '@/utils/tabbar'
 import './index.scss'
 
 /** 昵称长度上限（与 utils/auth.ts 的 NICKNAME_MAX 对齐） */
 const NICKNAME_MAX = 20
+
+/** 会员到期日展示：ISO → yyyy-mm-dd（按本地时区取日期，避免 toISOString 跨时区差一天） */
+function formatDay(iso: string): string {
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return iso
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
 
 export default function Mine() {
   useTabBarSync()
@@ -30,26 +48,92 @@ export default function Mine() {
   const [logging, setLogging] = useState(false)
   /** 菜单概览计数：三个列表接口都是「上限 50 条全量拉取」，此处只取 length 做概览 */
   const [counts, setCounts] = useState({ follows: 0, favorites: 0, history: 0 })
-  /** 联网能力（博查搜索 / 大模型）配置态：仅存本机 storage，是报告生成链路的前置条件 */
-  const [keys, setKeys] = useState({ bocha: false, llm: false })
-  const [bochaDraft, setBochaDraft] = useState('')
-  const [llmDraft, setLlmDraft] = useState('')
-  const [testing, setTesting] = useState(false)
+  /** 今日生成配额（freemium 免费层）：null = 未登录或读取中 */
+  const [genQuota, setGenQuota] = useState<GenerateQuotaSummary | null>(null)
+  /**
+   * 今日 AI 提问用量（云端 `ask_quota` 计数的本机镜像，见 utils/qa.ts#qaUsageToday）：
+   * 与生成额度不同池，仅供用量展示。上限随会员状态变化（免费版与会员两档），
+   * 故与已用次数一起从 qaUsageToday 取（口径收口在 utils/qa.ts，页面不自己相减）。
+   */
+  const [qaUsage, setQaUsage] = useState<QaUsage>(() => qaUsageToday(false))
+  /**
+   * 当前生效模型（M7-4 模型选择）。初值按**非会员**口径解析（配额还没读回来，
+   * 此时确实只能走免费档），loadCounts 拿到会员态后再按真实身份重算一次。
+   * 与生成时 utils/llm.ts#resolveChatModel 同源，页面展示不会和实际调用打架。
+   */
+  const [model, setModel] = useState<string>(() => resolveChatModel(false))
+  /**
+   * 套餐用量卡是否展开：默认折叠。
+   *
+   * 折叠态只留「档位 + 两条用量数字 + 开通入口」，口径说明与会员权益清单在展开态。
+   * 不落库也不记本机：这是「这次想看详情」的临时态，下次进页面回到折叠，
+   * 否则上次的展开会变成所有人的默认首屏长度（用户反馈本卡文字太多、把「我的」撑得很长）。
+   */
+  const [quotaOpen, setQuotaOpen] = useState(false)
 
-  const syncKeys = () => setKeys({ bocha: getBochaKey() !== null, llm: getLlmKey() !== null })
+  /** 会员态：与生成上限出自同一次读数（见 loadCounts），模型档位解锁判定用它 */
+  const isMember = !!genQuota?.member
 
-  const loadCounts = async () => {
-    if (!useAuth.getState().userId) {
-      setCounts({ follows: 0, favorites: 0, history: 0 })
+  /**
+   * 切换模型（M7-4）：只写本机偏好，下次生成生效；已缓存的报告不受影响。
+   *
+   * 会员专属档位对免费用户不做「静默失败」：说清为什么不能用，并把人送到会员中心 ——
+   * 这是「质」权益最直接的转化触点（用户正是在这里第一次发现「更强的模型要付费」）。
+   * 真正的闸门在云函数 aiProxy（改包也绕不过），这里只负责把话说清楚。
+   */
+  const chooseModel = async (m: (typeof publicConfig.llm.models)[number]) => {
+    if (m.id === model) return
+    if (m.memberOnly && !isMember) {
+      const res = await Taro.showModal({
+        title: '会员专属模型',
+        content: `${m.label}仅会员可用：开通后即可用它生成更完整的报告，已生成的报告不受影响`,
+        confirmText: '去开通',
+        cancelText: '再想想'
+      })
+      if (res.confirm) Taro.navigateTo({ url: '/pages/member/index' })
       return
     }
-    const [f, fav, h] = await Promise.all([listFollows(), listFavorites(), listHistory()])
-    setCounts({ follows: f.length, favorites: fav.length, history: h.length })
+    setPreferredModel(m.id)
+    setModel(m.id)
+    Taro.showToast({ title: '已切换模型', icon: 'none' })
   }
 
-  /* 每次显示本页都重算：从关注列表取关、或在收藏页取消收藏后返回，数字要跟着变 */
+  const loadCounts = async () => {
+    const uid = useAuth.getState().userId
+    if (!uid) {
+      setCounts({ follows: 0, favorites: 0, history: 0 })
+      setGenQuota(null)
+      /* 未登录按免费版口径展示：此时确实只能走免费额度 */
+      setQaUsage(qaUsageToday(false))
+      /* 模型展示同步回免费档：未登录时残留的强模型偏好不该被显示成「当前生效」 */
+      setModel(resolveChatModel(false))
+      return
+    }
+    /* 配额与列表并行取：配额失败不拖累列表展示（catch 内静默，卡片显示占位） */
+    const quotaP = peekGenerateQuota(uid).catch(() => null)
+    /* 提问用量也在云端（`ask_quota`）：先把本机镜像对齐，卡里两个数字才是同一时刻的读数。
+       它内部读 auth store 的 userId、不依赖上面几个请求，故一并并行 */
+    const askP = refreshQaUsage().catch(() => undefined)
+    const [f, fav, h, quota] = await Promise.all([
+      listFollows(),
+      listFavorites(),
+      listHistory(),
+      quotaP,
+      askP
+    ])
+    setCounts({ follows: f.length, favorites: fav.length, history: h.length })
+    setGenQuota(quota)
+    /* 上限按**同一份** quota 判定会员态：生成上限来自云端、提问上限来自会员权益表，
+       两个数字必须出自同一次会员判定，否则会出现「卡里一半是会员口径、一半是免费口径」 */
+    const askMember = !!quota?.member
+    /* 会员态到手后重算模型展示：非会员即使本机残留强模型偏好，也要显示回落到免费档 */
+    setModel(resolveChatModel(askMember))
+    /* qaUsageToday 读的是刚被 askP 对齐过的镜像 ⇒ 这里已是云端口径 */
+    setQaUsage(qaUsageToday(askMember))
+  }
+
+  /* 每次显示本页都重算：从关注列表取关、取消收藏、生成消耗配额后返回，数字都要跟着变 */
   useDidShow(() => {
-    syncKeys()
     void loadCounts()
   })
 
@@ -87,81 +171,18 @@ export default function Mine() {
     })
     if (!res.confirm) return
     const ok = await clearAllMyData()
-    /* 本机联网凭据一并清理（含旧 Tavily 残留），避免旧设备读到陈旧 key */
-    clearSearchKey()
-    setLlmKey(null)
-    syncKeys()
+    /* 清理本机设置（历史遗留密钥 + 模型偏好）；周报含关注画像且不在云端删除范围，一并清掉 */
+    clearLocalSettings()
+    /* 模型偏好刚被清掉，界面同步回落到默认模型 */
+    setModel(resolveChatModel(isMember))
+    clearWeeklyCache()
+    /* 消息已读基线也是本机数据：留着会让「清空后」的首页铃铛按旧基线判定未读 */
+    clearMessageState()
+    /* 问答用量同理：清掉本机镜像与连点时间。⚠ 云端 `ask_quota` 不清 ——
+       额度挂在账号上，清本机数据不会重置今日提问次数（与生成配额同一口径） */
+    clearQaUsage()
     void loadCounts()
     Taro.showToast({ title: ok ? '已清空全部数据' : '本地已清空，云端删除失败请稍后重试', icon: 'none' })
-  }
-
-  /** 保存联网 Key：只写入非空项（留空 = 不改动），清除统一走「清除」按钮，避免误清另一枚 */
-  const saveKeys = () => {
-    const nextBocha = bochaDraft.trim()
-    const nextLlm = llmDraft.trim()
-    if (!nextBocha && !nextLlm) {
-      Taro.showToast({ title: '请先粘贴需要保存的 Key', icon: 'none' })
-      return
-    }
-    if (nextBocha) setBochaKey(nextBocha)
-    if (nextLlm) setLlmKey(nextLlm)
-    setBochaDraft('')
-    setLlmDraft('')
-    syncKeys()
-    Taro.showToast({ title: '已保存到本机', icon: 'success' })
-  }
-
-  /** 清除本机联网凭据：报告生成会随之不可用，故二次确认 */
-  const clearKeys = async () => {
-    const res = await Taro.showModal({
-      title: '清除联网 Key',
-      content:
-        '将删除本机保存的博查搜索 Key 与大模型 Key。两项都会回落到平台额度（若平台已配置）。',
-      confirmText: '清除',
-      confirmColor: '#EF4444'
-    })
-    if (!res.confirm) return
-    setBochaKey(null)
-    setLlmKey(null)
-    setBochaDraft('')
-    setLlmDraft('')
-    syncKeys()
-    Taro.showToast({ title: '已清除', icon: 'none' })
-  }
-
-  /**
-   * 连通性自检：两条链路各真实发一次请求。
-   * 必要性：博查 401/403（密钥无效 / 未绑资源包）与大模型 401 在报告页只表现为一句「生成失败」，
-   * 在这里提前暴露具体原因，避免误判成「报告功能坏了」。博查只取 3 条以省额度。
-   *
-   * 两行走的都是报告页的真实链路（配了本机 Key 就直连，否则走平台代付），
-   * 所以它们是「报告能不能生成」的直接预演；行首按实际走的通道标「本机 / 平台」，
-   * 免得看到「失败」时误以为该去改 Key，其实只是平台额度没配。
-   */
-  const testConnectivity = async () => {
-    if (testing) return
-    setTesting(true)
-    Taro.showLoading({ title: '测试中', mask: true })
-    const lines: string[] = []
-    /* 通道名必须前置取值：fetchNews 内部自行选通道，调用后无法从返回值反推 */
-    const via = getBochaKey() !== null ? '本机' : '平台'
-    try {
-      const news = await fetchNews('雷军', { maxResults: 3 })
-      lines.push(news === null ? `${via}·博查：通道不可用` : `${via}·博查：可用（返回 ${news.length} 条）`)
-    } catch (err) {
-      lines.push(`${via}·博查：失败 —— ${err instanceof Error ? err.message : String(err)}`)
-    }
-    const llmVia = getLlmKey() !== null ? '本机' : '平台'
-    const llm = await chatText('你是连通性测试助手，只回复两个字：正常', '连通性测试')
-    lines.push(
-      llm.ok
-        ? `${llmVia}·大模型：可用（返回「${llm.text.slice(0, 12)}」）`
-        : `${llmVia}·大模型：失败 —— ${llm.error}`
-    )
-    lines.push(...(await probeAiProxy()))
-    Taro.hideLoading()
-    setTesting(false)
-    await Taro.showModal({ title: '连通性测试结果', content: lines.join('\n'), showCancel: false })
   }
 
   /**
@@ -235,6 +256,20 @@ export default function Mine() {
     danger?: boolean
     onTap: () => void
   }
+
+  /** 用量卡的分母与百分比：上限取配额摘要，未登录时用会员上限占位（仅用于渲染进度条） */
+  const genLimit = genQuota?.limit ?? MEMBER_DAILY_GENERATE_LIMIT
+  const genUsed = genQuota?.used ?? 0
+  const genPct = genLimit > 0 ? Math.min(100, Math.round((genUsed / genLimit) * 100)) : 0
+  const qaPct = qaUsage.limit > 0 ? Math.min(100, Math.round((qaUsage.used / qaUsage.limit) * 100)) : 0
+  /**
+   * AI 提问用量那一行的数字。
+   * 开挂态（调试开关）报「已用 N 次」而不报分母 —— 此时次数不设限，
+   * 照旧写 `已用 7 / 5 次` 会像是额度算错了；数字本身仍如实取真实用量。
+   */
+  const qaUsageText = qaUsage.unlimited
+    ? `已用 ${qaUsage.used} 次（调试不限次）`
+    : `已用 ${qaUsage.used} / ${qaUsage.limit} 次`
 
   const menus: MenuItem[] = [
     {
@@ -311,9 +346,25 @@ export default function Mine() {
             <View className='page-mine__info'>
               <View className='page-mine__name-row' onClick={openNickEditor}>
                 <Text className='page-mine__name'>{nickname || '名人观察员'}</Text>
+                {/*
+                  会员标识贴在昵称右侧（就是用户要求的「最上面卡片」）。
+                  判定与下方用量卡同源（peekGenerateQuota → utils/member.ts），
+                  所以两处显示的档位必然一致，不会出现「上面写会员、下面写免费」。
+                */}
+                <Text className={`page-mine__vip${genQuota?.member ? ' page-mine__vip--on' : ''}`}>
+                  {genQuota?.member
+                    ? genQuota.daysLeft > 0
+                      ? `会员 · 剩 ${genQuota.daysLeft} 天`
+                      : '会员'
+                    : '免费版'}
+                </Text>
                 <Text className='page-mine__edit'>编辑</Text>
               </View>
-              <Text className='page-mine__uid'>ID {userId.slice(0, 10)}…</Text>
+              <Text className='page-mine__uid'>
+                {genQuota?.member && genQuota.expiresAt
+                  ? `会员有效期至 ${formatDay(genQuota.expiresAt)}`
+                  : `ID ${userId.slice(0, 10)}…`}
+              </Text>
             </View>
           </>
         ) : (
@@ -368,6 +419,137 @@ export default function Mine() {
         </View>
       )}
 
+      {/*
+        当前套餐用量：透明展示「这个档位给了什么、今天用了多少」，
+        是免费转付费的关键触点——配额用完时的报错文案与此处口径一致（utils/member.ts）。
+
+        为什么按「用量」而不是「剩余」：剩余次数会让用户下意识去算「我还剩几次」，
+        而用量（已用 / 上限）才是套餐的口径，也才能和续费 / 升级的预期对齐（用户要求）。
+        两行分开而不是合并：报告生成的权威计数在云函数 quotaGuard（跨设备一致），
+        AI 提问的权威计数在云端 `ask_quota`（见 utils/qa.ts，上限与生成不同池），
+        合并成一个数字会让「换了手机额度变了」变成莫名其妙的 bug。
+
+        折叠（用户反馈）：本卡此前把两条口径说明 + 会员权益清单全量铺开，长度接近一屏。
+        现改为默认折叠 —— 折叠态是「档位 + 两条用量数字 + 开通入口」，说明与权益留在展开态。
+        数字与入口在任何状态下都在，折叠的只是解释性长文，透明展示的口径一条没删。
+      */}
+      {userId && (
+        <View className='card page-mine__quota'>
+          <View className='page-mine__quota-head'>
+            <Text className='page-mine__quota-title'>当前套餐用量</Text>
+            <View className='page-mine__quota-head-right'>
+              <Text className='page-mine__quota-tag'>{genQuota?.member ? '会员版' : '免费版'}</Text>
+              {/* 折叠开关放在标题行：说明散在卡内多处，逐条挂「展开」会让每项都长出一个按钮。
+                  用 View 而不是 Text：hoverClass 只在 View 上生效，小字热区靠 padding 撑开 */}
+              <View
+                className='page-mine__quota-fold'
+                hoverClass='page-mine__quota-fold--tap'
+                onClick={() => setQuotaOpen((v) => !v)}
+              >
+                <Text className='page-mine__quota-fold-text'>{quotaOpen ? '收起' : '展开说明'}</Text>
+              </View>
+            </View>
+          </View>
+          <Text className='page-mine__quota-note'>
+            {genQuota?.member
+              ? `会员权益生效中${
+                  genQuota.expiresAt ? ` · 有效期至 ${formatDay(genQuota.expiresAt)}` : ''
+                }${genQuota.daysLeft > 0 ? `（剩 ${genQuota.daysLeft} 天）` : ''}`
+              : `免费版每日 ${genLimit} 次主动生成，开通会员提到 ${MEMBER_DAILY_GENERATE_LIMIT} 次`}
+          </Text>
+
+          <View className='page-mine__usage'>
+            <View className='page-mine__usage-head'>
+              <Text className='page-mine__usage-name'>报告生成</Text>
+              <Text className={`page-mine__usage-value${genQuota && genQuota.remaining === 0 ? ' page-mine__usage-value--out' : ''}`}>
+                {genQuota ? `已用 ${genUsed} / ${genLimit} 次` : '读取中…'}
+              </Text>
+            </View>
+            <View className='page-mine__usage-bar'>
+              <View className='page-mine__usage-fill' style={{ width: `${genPct}%` }} />
+            </View>
+            {quotaOpen && (
+              <Text className='page-mine__usage-note'>
+                每日 0 点重置；缓存命中与生成失败都不计数，只有真拿到新报告才 +1（周报生成同样计入）
+              </Text>
+            )}
+          </View>
+
+          <View className='page-mine__usage'>
+            <View className='page-mine__usage-head'>
+              <Text className='page-mine__usage-name'>AI 提问</Text>
+              <Text className='page-mine__usage-value'>{qaUsageText}</Text>
+            </View>
+            <View className='page-mine__usage-bar'>
+              <View className='page-mine__usage-fill' style={{ width: `${qaPct}%` }} />
+            </View>
+            {/*
+              两条都要与实现对齐，账目类文案说错，用户会认定是额度算错：
+              ① 计数在**云端**（`ask_quota`，云函数 quotaGuard 的 ask 类）—— 不是「本机统计」了，
+                 换设备后数字会跟着账号走；此处展示的是它的本机镜像（进页面已 refreshQaUsage 对齐）。
+              ② 口径是「**成功拿到回答才计数**」：被额度拦下、机审命中、模型报错都不计数
+                 （utils/qa.ts 只在成功分支 await noteQaUsed()）。此前这里写的是
+                 「本机统计（发起即计，失败也算）」，两条都说反，已修正。
+            */}
+            {quotaOpen && (
+              <Text className='page-mine__usage-note'>
+                云端计数（回答成功才计数，被拦或失败不扣）· 与报告生成额度分开，不消耗生成次数；上限按会员等级区分
+              </Text>
+            )}
+          </View>
+
+          {/*
+            会员权益介绍：紧跟在用量数字之后、开通入口之上 —— 用户刚看完「今天用了多少」，
+            下一个问题必然是「会员到底多给什么」，所以介绍与入口之间不隔任何内容。
+            权益点全部取自 utils/member.ts（单一事实源），页面里不手写数字，
+            改额度只改权益表（此前这里只有一行 planNote，说不清买的是什么）。
+
+            随口径说明一起折叠：四点权益逐条带说明，是本卡最长的一段。
+            免费版不点「展开说明」时，升级理由由下面的「开通会员」入口那行承担
+            （生成 / 提问两档上限 + 「查看等级权益与价格」），入口本身始终可见。
+          */}
+          {quotaOpen && !genQuota?.member && (
+            <View className='page-mine__benefits'>
+              <Text className='page-mine__benefits-title'>会员权益</Text>
+              {MEMBER_BENEFIT_POINTS.map((b) => (
+                <View key={b.title} className='page-mine__benefit'>
+                  <Text className='page-mine__benefit-dot'>✓</Text>
+                  <View className='page-mine__benefit-body'>
+                    <Text className='page-mine__benefit-title'>{b.title}</Text>
+                    <Text className='page-mine__benefit-note'>{b.note}</Text>
+                  </View>
+                </View>
+              ))}
+              <Text className='page-mine__benefits-foot'>{FREE_FEATURES_NOTE}</Text>
+            </View>
+          )}
+
+          {/*
+            会员中心入口：档位、价格、权益对比与支付按钮**全部搬到 pages/member**。
+            本页只留一行入口 —— 三个档位铺在这里会把「我的」撑长，而真正要说清的
+            「免费版 vs 会员」对比没有地方放（用户信息不足时不该被要求付钱）。
+            会员态也保留入口（续费走同一个页面），只是文案改成「顺延」口径。
+          */}
+          <View
+            className='page-mine__member-entry'
+            hoverClass='page-mine__member-entry--tap'
+            onClick={() => Taro.navigateTo({ url: '/pages/member/index' })}
+          >
+            <View className='page-mine__member-entry-main'>
+              <Text className='page-mine__member-entry-title'>
+                {genQuota?.member ? '续费会员' : '开通会员'}
+              </Text>
+              <Text className='page-mine__member-entry-note'>
+                {genQuota?.member
+                  ? '到期前续费按天顺延，不浪费剩余时长'
+                  : `生成 ${MEMBER_DAILY_GENERATE_LIMIT} 次 / 提问 ${MEMBER_DAILY_ASK_LIMIT} 次 · 查看等级权益与价格`}
+              </Text>
+            </View>
+            <Text className='page-mine__member-entry-arrow'>›</Text>
+          </View>
+        </View>
+      )}
+
       <View className='card page-mine__menus'>
         {menus.map((m) => (
           <View
@@ -386,66 +568,37 @@ export default function Mine() {
       </View>
 
       {/*
-        联网能力配置：报告 = 「博查搜索取素材 + 大模型按模板生成」。
-        两步都已支持平台代付（云函数 aiProxy，用户零配置），故两个 Key 都是「可选」：
-        不填就用平台额度，填了就走自己账号直连（BYOK，费用自负）。
-        「是否就绪」看的是通道而不是本机 Key —— 一个 Key 都没填也能生成报告。
+        生成模型（M7-4）：只写本机偏好（utils/settings.ts），仅影响此后新生成的报告。
+        两枚 key（博查 + 大模型）都在服务端 aiProxy 的环境变量里，端上不持有任何凭据，
+        因此这里没有任何配置项，也不需要连通性自检 —— 这只是一份「用哪个模型生成」的偏好。
       */}
-      <View className='card page-mine__keys'>
-        <View className='page-mine__keys-head'>
-          <Text className='page-mine__keys-title'>联网能力</Text>
-          <Text
-            className={`page-mine__keys-badge${hasLlmChannel() ? ' page-mine__keys-badge--on' : ''}`}
-          >
-            {hasLlmChannel() ? '已就绪' : '待配置'}
+      <View className='card page-mine__model'>
+        <View className='page-mine__model-head'>
+          <Text className='page-mine__model-title'>生成模型</Text>
+          <Text className='page-mine__model-current'>
+            {publicConfig.llm.models.find((m) => m.id === model)?.label ?? model}
           </Text>
         </View>
-        <Text className='page-mine__keys-desc'>
-          报告由「博查搜索取公开素材 + 大模型按模板生成」两步完成。两步默认都使用平台额度，无需配置；
-          填入自己的 Key 则改走本机直连 —— 以下 Key 仅存本机，不上传云端。
-        </Text>
-
-        <View className='page-mine__key-field'>
-          <View className='page-mine__key-label'>
-            <Text>博查搜索 Key（可选）</Text>
-            <Text className={`page-mine__key-state${keys.bocha ? ' page-mine__key-state--on' : ''}`}>
-              {keys.bocha ? '已配置' : '使用平台额度'}
-            </Text>
-          </View>
-          <Input
-            className='page-mine__editor-input'
-            value={bochaDraft}
-            placeholder='留空即用平台额度；填入则走自己的博查账号'
-            onInput={(e) => setBochaDraft(e.detail.value)}
-          />
+        <View className='page-mine__model-options'>
+          {publicConfig.llm.models.map((m) => {
+            /* 会员专属档位对免费用户显示「会员」标：先说清门槛，点了再给开通引导 */
+            const locked = m.memberOnly && !isMember
+            return (
+              <View
+                key={m.id}
+                className={`page-mine__model-option${m.id === model ? ' page-mine__model-option--on' : ''}${locked ? ' page-mine__model-option--locked' : ''}`}
+                onClick={() => void chooseModel(m)}
+              >
+                <View className='page-mine__model-option-head'>
+                  <Text className='page-mine__model-option-label'>{m.label}</Text>
+                  {locked && <Text className='page-mine__model-lock'>会员</Text>}
+                </View>
+                <Text className='page-mine__model-option-desc'>{m.desc}</Text>
+              </View>
+            )
+          })}
         </View>
-
-        <View className='page-mine__key-field'>
-          <View className='page-mine__key-label'>
-            <Text>大模型 Key（可选）</Text>
-            <Text className={`page-mine__key-state${keys.llm ? ' page-mine__key-state--on' : ''}`}>
-              {keys.llm ? '本机直连' : '使用平台额度'}
-            </Text>
-          </View>
-          <Input
-            className='page-mine__editor-input'
-            value={llmDraft}
-            placeholder='留空即用平台额度；填入则走自己的模型账号'
-            onInput={(e) => setLlmDraft(e.detail.value)}
-          />
-        </View>
-
-        <View className='page-mine__editor-actions'>
-          <View className='page-mine__editor-btn' onClick={() => void clearKeys()}>
-            <Text>清除</Text>
-          </View>
-          <View className='page-mine__editor-btn' onClick={() => void testConnectivity()}>
-            <Text>{testing ? '测试中…' : '测试连通性'}</Text>
-          </View>
-          <View className='page-mine__editor-btn page-mine__editor-btn--primary' onClick={saveKeys}>
-            <Text>保存</Text>
-          </View>
-        </View>
+        <Text className='page-mine__model-note'>切换后仅影响之后新生成的报告，已生成的报告不会重算</Text>
       </View>
 
       <View className='card' style={{ padding: '8rpx 0' }}>

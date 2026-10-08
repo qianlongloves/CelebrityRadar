@@ -1,7 +1,7 @@
 import Taro from '@tarojs/taro'
 import { publicConfig } from '@/config/public'
 import { useAuth } from '@/stores/auth'
-import { setSubscribeOptIn } from './auth'
+import { setAlertOptIn, setSubscribeOptIn } from './auth'
 import { diagLog } from './cloud-diagnostics'
 
 /**
@@ -64,4 +64,55 @@ export async function requestNotify(): Promise<{ ok: boolean; message: string }>
   const saved = await setSubscribeOptIn(true)
   if (!saved) return { ok: false, message: '授权成功但记录失败，请重试' }
   return { ok: true, message: '已开启：关注的人有新动态时会提醒你一次' }
+}
+
+/* ── 关键词舆情预警的推送（2026-10-08）──────────────────────────────
+   与关注提醒是**两枚模板、两位授权**（原因见 config/public.ts#alertTemplateId）：
+   一次性订阅按模板消耗，共用一枚就会出现「一个任务把授权吃掉、另一个必得 43101」。
+   除此之外两条链路完全同构：端上只负责授权 + 置位，发送由云函数
+   keywordAlert 在定时任务里做，发完复位。 */
+
+/** 预警模板是否已配置（未配置时预警页只做站内预警，不出现授权按钮） */
+export function alertNotifyConfigured(): boolean {
+  return Boolean(publicConfig.alertTemplateId)
+}
+
+/**
+ * 请求预警推送授权并落库。
+ *
+ * 与 requestNotify 一样，第一次 await 必须就是 requestSubscribeMessage 本身
+ * （微信要求授权由用户点击直接触发），调用方直接挂到 onClick 上即可。
+ */
+export async function requestAlertNotify(): Promise<{ ok: boolean; message: string }> {
+  if (!useAuth.getState().userId) return { ok: false, message: '请先登录' }
+  if (!alertNotifyConfigured()) {
+    return { ok: false, message: '预警推送未配置：请先在小程序后台创建订阅消息模板' }
+  }
+
+  const tmplId: string = publicConfig.alertTemplateId
+  const subscribe = Taro.requestSubscribeMessage as unknown as (
+    o: { tmplIds: string[] }
+  ) => Promise<Record<string, string>>
+
+  let status: string | undefined
+  try {
+    const res = await subscribe({ tmplIds: [tmplId] })
+    status = res[tmplId]
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    diagLog('warn', 'auth', `预警订阅授权失败：${msg}`)
+    return { ok: false, message: `授权失败：${msg}` }
+  }
+
+  if (status !== 'accept') {
+    diagLog('info', 'auth', `预警订阅授权未通过：${status ?? '无返回'}`)
+    return {
+      ok: false,
+      message: status === 'ban' ? '提醒已被关闭，请到小程序设置里开启' : '已取消，未开启提醒'
+    }
+  }
+
+  const saved = await setAlertOptIn(true)
+  if (!saved) return { ok: false, message: '授权成功但记录失败，请重试' }
+  return { ok: true, message: '已开启：订阅的关键词有新增报道时提醒你一次' }
 }

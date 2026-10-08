@@ -44,6 +44,7 @@
     transition: transform 0.2s ease;
 
     &--home { background-image: $icon-home; }
+    &--chat { background-image: $icon-chat; }
     &--calendar { background-image: $icon-calendar; }
     &--doc { background-image: $icon-doc; }
     &--user { background-image: $icon-user; }
@@ -69,37 +70,38 @@
     /* 凸出底栏（Figma：直径 88rpx、上探 44rpx） */
     position: relative;
 
-    &-plus {
+    /*
+     * 骰子图标 = 随机探索。原先的「+」是「新建 / 添加」的语义，与这个按钮真正做的事不符；
+     * 这里由 AI 挑人，骰子的「掷一次」隐喻正好对上。
+     * 图标只有这一处用，就直接写成背景图，不往 tabbar-icons.scss 里加一条专属令牌。
+     */
+    &-icon {
       width: 88rpx;
       height: 88rpx;
       border-radius: 50%;
-      background: $brand;
+      background-color: $brand;
+      background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSIyLjYiIHk9IjIuNiIgd2lkdGg9IjE4LjgiIGhlaWdodD0iMTguOCIgcng9IjUuNCIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIxLjciLz48Y2lyY2xlIGN4PSI4LjMiIGN5PSI4LjMiIHI9IjEuNzUiIGZpbGw9IndoaXRlIi8+PGNpcmNsZSBjeD0iMTUuNyIgY3k9IjguMyIgcj0iMS43NSIgZmlsbD0id2hpdGUiLz48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIxLjc1IiBmaWxsPSJ3aGl0ZSIvPjxjaXJjbGUgY3g9IjguMyIgY3k9IjE1LjciIHI9IjEuNzUiIGZpbGw9IndoaXRlIi8+PGNpcmNsZSBjeD0iMTUuNyIgY3k9IjE1LjciIHI9IjEuNzUiIGZpbGw9IndoaXRlIi8+PC9zdmc+");
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: 46rpx 46rpx;
       box-shadow: 0 10rpx 26rpx rgba(95, 51, 225, 0.45);
-      position: relative;
       transform: translateY(-32rpx);
 
-      /* 白色 + 号（两条圆头线） */
-      &::before,
-      &::after {
-        content: '';
-        position: absolute;
-        left: 50%;
-        top: 50%;
-        background: #fff;
-        border-radius: 4rpx;
-      }
-
-      &::before {
-        width: 32rpx;
-        height: 4rpx;
-        transform: translate(-50%, -50%);
-      }
-
-      &::after {
-        width: 4rpx;
-        height: 32rpx;
-        transform: translate(-50%, -50%);
+      /* 挑选中：AI 往返要 1~3 秒，骰子转起来才不像点空了 */
+      .tabbar__center--busy & {
+        animation: tabbar-dice-roll 1.1s linear infinite;
       }
     }
+  }
+}
+
+/* 转的是图标，凸起位移必须一并写进关键帧，否则动画期间按钮会掉回底栏 */
+@keyframes tabbar-dice-roll {
+  from {
+    transform: translateY(-32rpx) rotate(0deg);
+  }
+
+  to {
+    transform: translateY(-32rpx) rotate(360deg);
   }
 }

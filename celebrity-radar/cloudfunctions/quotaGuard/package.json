@@ -1,0 +1,9 @@
+{
+  "name": "quotaGuard",
+  "version": "1.0.0",
+  "description": "配额计数的服务端权威：原子自增 + 服务端日期（防超发与改时间绕过）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

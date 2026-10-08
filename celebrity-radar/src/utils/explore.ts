@@ -1,8 +1,11 @@
 import Taro from '@tarojs/taro'
-import { buildPersonKey, DomainCode } from '@/config/domains'
+import { z } from 'zod'
+import { buildPersonKey, DOMAIN_CODES, DomainCode } from '@/config/domains'
 import { HOT_PERSONS } from '@/config/hot'
+import { chatJSON } from './llm'
+import { diagLog } from './cloud-diagnostics'
 
-/** 热门池唯一来源 = config/hot.ts（发现页热门卡片 / 今日名人 / 随机探索共用） */
+/** 热门池唯一来源 = config/hot.ts（发现页热门卡片 / 今日名人 / 静态兜底共用） */
 const FLAT: Array<{ name: string; domain: DomainCode }> = HOT_PERSONS.map(({ name, domain }) => ({ name, domain }))
 
 export interface PersonPick {
@@ -34,7 +37,68 @@ export function openPerson(pick: PersonPick): void {
   Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(pick.personKey)}` })
 }
 
-/** 中央探索按钮：随机打开一位热门名人报告（复用同一热门池） */
-export function openRandomPerson(): void {
-  openPerson(pickRandomPerson())
+/** AI 选题的输出契约：只认「是谁」和「哪个领域」，多余字段一律忽略 */
+const PickSchema = z.object({
+  name: z.string().min(1),
+  domain: z.enum(DOMAIN_CODES as [DomainCode, ...DomainCode[]])
+})
+
+/**
+ * 让模型现挑一位公众人物（失败返回 null，由调用方兜底）。
+ *
+ * 与 pickRandomPerson 的区别：那个只能在 config/hot.ts 的静态池里循环，连点几次就撞脸，
+ * 也永远在池内。这里由模型选题，覆盖池外的人，并要求领域大致均衡 —— 「随机探索」要的是意外感，
+ * 而榜单前几位恰恰是用户最不需要被推荐的（他们本来就认识）。
+ * 提示词里显式排掉热门池成员，免得模型把「热门」当成「随机」直接复读榜单。
+ */
+async function pickPersonByAi(): Promise<PersonPick | null> {
+  const system = [
+    '你是名人观察产品的选题助手：随机推荐一位值得关注的公众人物，供系统生成深度观察报告。',
+    '规则：',
+    '1. 领域从 tech（科技）、business（商业）、ent（文娱）、sports（体育）、academia（学术）、other（其他）中选一个，各领域机会大致均等，不要总推企业家或当红艺人。',
+    `2. 不要推荐这些高频人物：${HOT_PERSONS.map((p) => p.name).join('、')}。`,
+    '3. 必须是真实存在、且近一年有公开报道的公众人物；不要政治、军事类人物。',
+    '4. 输出字段：name（惯用中文名，外籍人物用通行中文译名）、domain（上列之一）。',
+    '5. 只输出 JSON，不要输出任何其他文字。'
+  ].join('\n')
+
+  const res = await chatJSON(system, `随机种子：${Date.now()}\n请给出一个人名。`, PickSchema)
+  if (!res.ok) {
+    diagLog('warn', 'llm', `AI 随机选题失败，改用静态热门池：${res.error}`)
+    return null
+  }
+  const name = res.data.name.trim()
+  if (!name) return null
+  diagLog('info', 'llm', `AI 随机选题：${name}#${res.data.domain}`)
+  return { name, domain: res.data.domain, personKey: buildPersonKey(name, res.data.domain) }
+}
+
+/**
+ * 「随机探索」唯一入口：AI 挑一位 → 跳报告页。
+ *
+ * loading 与防重入都收在这里，而不是散在各个按钮上：入口有不止一处（底部中央按钮、
+ * 发现页「随机探索一位」），各写一遍必漏一个 —— AI 往返要 1~3 秒，这段时间连点会连开几个报告页。
+ *
+ * 全程无错误分支：静态池人选先备好，AI 失败 / 超时 / 输出不合法都直接用它。
+ * 「随手一按」的入口不该弹报错让用户做决定，最坏情况就是回到改动前的行为。
+ */
+let exploring = false
+
+export async function exploreRandomPerson(): Promise<void> {
+  if (exploring) return
+  exploring = true
+
+  let pick = pickRandomPerson()
+  Taro.showLoading({ title: 'AI 正在挑选…', mask: true })
+  try {
+    pick = (await pickPersonByAi()) ?? pick
+  } catch (err) {
+    /* chatJSON 本身不抛异常，这里只兜住意料之外的链路故障 */
+    diagLog('warn', 'llm', `AI 随机选题异常，改用静态热门池：${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    exploring = false
+    /* 先关 loading 再跳转：loading 是全局的，带进报告页会盖住那边的生成动画 */
+    Taro.hideLoading()
+  }
+  openPerson(pick)
 }

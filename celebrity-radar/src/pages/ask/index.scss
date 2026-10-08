@@ -1,0 +1,140 @@
+@import '../../styles/variables.scss';
+
+/* 底部菜单页：上半屏是「选名人」，下半屏是会话区（components/qa-panel 自撑满）。
+   整页 flex 列 + 固定屏高，保证输入框常驻可见；safe-tab 给自定义底栏留出空间。 */
+.page-ask {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  box-sizing: border-box;
+
+  &__picker {
+    /* card 自带外边距；这里只收敛底部间距，避免与下方会话头部之间空太多 */
+    margin-bottom: 6rpx;
+  }
+
+  /* 标题行（O-26 瘦身）：字号降一档、下间距收紧。
+     右端那句「N 位有报告 · 提问不消耗生成额度」原先独占一行写在卡片底部，现在并到这里 ——
+     同一件事说两遍、还多占一行高度，是这一页此前最明显的浪费。 */
+  &__picker-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12rpx;
+    margin-bottom: 10rpx;
+  }
+
+  &__picker-title {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__picker-count {
+    flex: 1;
+    min-width: 0;
+    font-size: 20rpx;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: $text-3;
+  }
+
+  &__people {
+    width: 100%;
+    white-space: nowrap;
+  }
+
+  &__people-inner {
+    display: flex;
+    gap: 12rpx;
+    padding-bottom: 4rpx;
+  }
+
+  /* 选人卡片：头像 + 名字 + 「多久前生成 · 素材条数」。
+     原来是纯文字胶囊，横滑时很难区分（同名 / 名字相近尤其明显），也看不出报告有多旧；
+     换成卡片后首字头像 + 领域色一眼可辨，副行直接给出「这份语料有多新」这个关键信息。
+
+     O-26 瘦身：180 → 152rpx（一屏多露出一张）、内边距 16 → 10rpx、头像 48 → 40rpx，
+     整条矮约 20rpx。卡片本身是「多点一下就选完」的过渡控件，不必按正文卡片的规格做。 */
+  &__person {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4rpx;
+    flex-shrink: 0;
+    width: 152rpx;
+    padding: 10rpx;
+    border: 2rpx solid $line;
+    border-radius: $radius-md;
+    background: #fff;
+
+    &--active {
+      border-color: $brand;
+      background: rgba(95, 51, 225, 0.06);
+    }
+
+    &--tap {
+      opacity: 0.75;
+    }
+  }
+
+  /* 头像色与关注流 / 收藏页同一套领域色，跨页面对上同一个人时不会认错 */
+  &__avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40rpx;
+    height: 40rpx;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 22rpx;
+    font-weight: 600;
+
+    &--tech { background: $domain-tech; }
+    &--business { background: $domain-business; }
+    &--ent { background: $domain-ent; }
+    &--sports { background: $domain-sports; }
+    &--academia { background: $domain-academia; }
+    &--other { background: $domain-other; }
+  }
+
+  &__person-name {
+    max-width: 100%;
+    color: $text-1;
+    font-size: 24rpx;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__person-meta {
+    max-width: 100%;
+    color: $text-3;
+    font-size: 18rpx;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 候选较多时的过滤框（见 pages/ask 的 FILTER_FROM） */
+  &__filter {
+    height: 60rpx;
+    margin-bottom: 12rpx;
+    padding: 0 24rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    color: $text-1;
+    font-size: 24rpx;
+  }
+
+  /* 过滤后没人匹配：说清「本页只能问已生成报告的人」，避免被读成「搜不到这个人」 */
+  &__none {
+    padding: 8rpx 0;
+    color: $text-3;
+    font-size: 22rpx;
+  }
+}

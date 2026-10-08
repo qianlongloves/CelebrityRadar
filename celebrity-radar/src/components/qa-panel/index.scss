@@ -1,0 +1,338 @@
+@import '../../styles/variables.scss';
+
+/* 会话面板：头部与输入区固定，只有中间的气泡流滚动 —— 输入框常驻可见，
+   用户不必"翻到底部才能提问"（这也是它不做成弹层的原因）。
+   高度不写死：父容器是 flex 列，本组件 flex:1 撑满剩余空间。 */
+.qa-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0;
+  }
+
+  /* 报告名可点（回报告页）：给按压反馈，否则用户以为点了没反应 */
+  &__head-main {
+    flex: 1;
+    min-width: 0;
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  &__name-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10rpx;
+    /* 单份：名字与「报告 ›」必须同一行 —— 长名字若换行会把「报告 ›」甩到第二行，那才是难看的地方。
+       故默认不换行，靠 __name 收缩省略（与报告页 __title 同一手法，见 pages/report/index.scss）。 */
+    flex-wrap: nowrap;
+
+    /* 对比模式标题是「A × B」两个名字，允许换行而不是把卡片撑破 */
+    &--wrap {
+      flex-wrap: wrap;
+
+      /* 换行态下名字不再省略：两个名字都要看得全，逐字省略等于把对比标题毁掉 */
+      .qa-panel__name {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+      }
+    }
+  }
+
+  &__jump {
+    flex-shrink: 0;
+    color: $brand-soft;
+    font-size: 22rpx;
+  }
+
+  &__name {
+    /* min-width:0 是省略号的前提：flex 子项默认按内容撑，不设它永远不会收缩、也就截不出省略号 */
+    min-width: 0;
+    font-size: 32rpx;
+    font-weight: 600;
+    color: $text-1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__meta {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__left {
+    /* 不收缩、不换行：它只是「剩 N 次」这一枚小标，被名字挤到折行就本末倒置了。
+       字数已在组件里压到最短（O-28），名字省略与它互补 —— 名字让位，用量始终完整可见。 */
+    flex-shrink: 0;
+    margin-left: 16rpx;
+    font-size: 22rpx;
+    color: $text-3;
+    white-space: nowrap;
+  }
+
+  /*
+    紧凑头部（O-26）：底部菜单「AI 提问」页专用（组件里靠 Props.compact 打开）。
+    那页的选人条就在正上方（头像 / 名字 / 生成时间 / 素材条数全给过），头部再复述一遍
+    「多久前生成的报告 · 素材 N 条」是重复信息，还把本来就不多的会话区又挤掉一截。
+    故：名字降一档（32 → 28rpx）、按紧卡片内外边距（上边距 16 → 4rpx、padding 28 → 18rpx）、
+    并省掉 meta 那一行（在组件里条件渲染，不是 display:none —— 省掉的是真实高度）。
+    选择器权重压过 `.card`，否则全局卡片样式会把 padding 改回去。
+  */
+  &--compact {
+    .qa-panel__head {
+      margin-top: 4rpx;
+      padding: 18rpx 24rpx;
+    }
+
+    .qa-panel__name {
+      font-size: 28rpx;
+    }
+  }
+
+  /* 与气泡分开排：它不是说给用户听的一句话，而是本页的口径声明。
+     O-26 压成一行（文案见组件）：20rpx / 行高 1.45，比原先 22rpx / 1.6 矮一档，
+     且上下边距收紧 —— 它每多占一行，会话区就少一行，而真正会被读到的只有第一行。 */
+  &__scope {
+    display: block;
+    margin: 8rpx 32rpx 2rpx;
+    font-size: 20rpx;
+    line-height: 1.45;
+    color: $text-3;
+  }
+
+  /* 陈报告提示：语料是报告快照，生成越久能答的越少。用品牌弱色而非警示色 —— 这不是错误 */
+  &__stale {
+    display: flex;
+    align-items: center;
+    margin: 10rpx 32rpx 0;
+    padding: 12rpx 20rpx;
+    border-radius: $radius-md;
+    background: rgba(95, 51, 225, 0.08);
+
+    &--tap {
+      opacity: 0.75;
+    }
+  }
+
+  &__stale-text {
+    flex: 1;
+    min-width: 0;
+    color: $brand;
+    font-size: 22rpx;
+    line-height: 1.5;
+  }
+
+  &__stale-arrow {
+    flex-shrink: 0;
+    margin-left: 12rpx;
+    color: $brand-soft;
+    font-size: 26rpx;
+  }
+
+  &__stream {
+    flex: 1;
+    min-height: 0;
+  }
+
+  &__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16rpx;
+    margin: 20rpx 32rpx 4rpx;
+  }
+
+  &__chip {
+    padding: 14rpx 24rpx;
+    border: 2rpx solid $brand-weak;
+    border-radius: 999rpx;
+    background: rgba(255, 255, 255, 0.86);
+    color: $brand;
+    font-size: 24rpx;
+
+    &--tap {
+      opacity: 0.7;
+    }
+
+    /* 「换一批」是动作、不是问题：虚线边框 + 次级色，一眼能分开 */
+    &--more {
+      border-style: dashed;
+      background: transparent;
+      color: $text-3;
+    }
+  }
+
+  &__row {
+    display: flex;
+    margin: 18rpx 32rpx;
+
+    &--user {
+      justify-content: flex-end;
+    }
+  }
+
+  &__msg {
+    max-width: 84%;
+    padding: 22rpx 26rpx;
+    border-radius: $radius-md;
+    background: #fff;
+    box-shadow: $shadow-card;
+    color: $text-1;
+    font-size: 27rpx;
+    line-height: 1.7;
+
+    .qa-panel__row--user & {
+      background: $brand;
+      color: #fff;
+      box-shadow: none;
+    }
+
+    /* 失败提示用警示色，避免被读成"AI 的回答" */
+    &--error {
+      background: $danger-weak;
+      color: $danger;
+      box-shadow: none;
+    }
+
+    &--thinking {
+      color: $text-3;
+    }
+  }
+
+  &__msg-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  /*
+   * 引用小标：正文里的 [n]。做成可点的品牌色小块；
+   * 字号刻意比正文小（放大反而会把句子切碎，读不下去）。
+   */
+  &__cite {
+    margin: 0 4rpx;
+    padding: 0 8rpx;
+    border-radius: 6rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 22rpx;
+  }
+
+  /* 来源行：把这条回答真正引用到的素材列出来，点开即可核对 */
+  &__srcs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10rpx;
+    margin-top: 16rpx;
+    padding-top: 14rpx;
+    border-top: 2rpx solid $line;
+  }
+
+  &__src {
+    padding: 6rpx 14rpx;
+    border-radius: 8rpx;
+    background: $bg;
+    color: $text-1;
+    font-size: 21rpx;
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  &__src-none {
+    color: $text-3;
+    font-size: 21rpx;
+  }
+
+  &__end {
+    height: 8rpx;
+  }
+
+  &__notice {
+    padding: 14rpx 32rpx;
+    background: $knowledge-warn-bg;
+    color: $knowledge-warn-text;
+    font-size: 22rpx;
+    line-height: 1.5;
+  }
+
+  /* 免费版额度用尽时的升级入口：贴着通知条出现，紧接用户「想继续问」的那一刻 */
+  &__upsell {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20rpx 32rpx;
+    background: rgba(95, 51, 225, 0.08);
+    border-top: 2rpx solid rgba(95, 51, 225, 0.16);
+
+    &--tap {
+      opacity: 0.75;
+    }
+  }
+
+  &__upsell-text {
+    flex: 1;
+    min-width: 0;
+    color: $brand;
+    font-size: 24rpx;
+    font-weight: 600;
+  }
+
+  &__upsell-arrow {
+    flex-shrink: 0;
+    margin-left: 12rpx;
+    color: $brand-soft;
+    font-size: 28rpx;
+  }
+
+  /* 输入接近上限才出现：常态挂一个「0/120」纯属噪音 */
+  &__count {
+    display: block;
+    padding: 0 32rpx 6rpx;
+    background: #fff;
+    color: $text-3;
+    font-size: 20rpx;
+    text-align: right;
+  }
+
+  &__composer {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    /* 底边自己让开安全区：输入框不能被 iPhone 底部横条压住，白底顺带铺到屏幕最底 */
+    padding: 16rpx 32rpx calc(8rpx + env(safe-area-inset-bottom));
+    background: #fff;
+    border-top: 2rpx solid $line;
+
+    /* 父容器已经留过安全区的页面（底部菜单「AI 提问」的 .safe-tab）不再重复让，
+       否则输入框下方是双份留白 */
+    .qa-panel--no-safe-bottom & {
+      padding-bottom: 8rpx;
+    }
+  }
+
+  &__input {
+    flex: 1;
+    min-width: 0;
+    height: 72rpx;
+    padding: 0 24rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    color: $text-1;
+    font-size: 26rpx;
+  }
+
+  &__send {
+    flex-shrink: 0;
+  }
+}

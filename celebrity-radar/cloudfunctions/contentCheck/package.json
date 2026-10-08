@@ -1,0 +1,9 @@
+{
+  "name": "contentCheck",
+  "version": "1.0.0",
+  "description": "内容安全检测：用户自由文本入库前送 security.msgSecCheck（云调用，无环境变量）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

@@ -12,3 +12,17 @@ $RECYCLE.BIN/
 
 # Node.js
 node_modules/
+
+# 测试产物：test/tsconfig.test.json 把 src 编译到这里，由 tsc 重新生成
+test/.build/
+
+# 本地配置（模板见 src/config/local.example.ts）
+src/config/local.ts
+
+# 微信开发者工具私有配置（模板见 project.private.config.example.json）
+project.private.config.json
+
+# 云函数部署密钥（cloudbaserc.json 以 ${env.XXX} 读取）
+.env
+.env.*
+!.env.example

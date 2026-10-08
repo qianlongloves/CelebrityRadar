@@ -1,0 +1,595 @@
+@import '../../styles/variables.scss';
+
+.page-compare {
+  min-height: 100vh;
+
+  /* ===== 选人阶段 ===== */
+  &__tip {
+    margin-bottom: 8rpx;
+  }
+
+  &__hint {
+    display: block;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /*
+    搜索对比对象（选人阶段的第一张卡）。
+    卡内视觉对齐发现页的搜索卡 —— 同一个 AtSearchBar 在两页长得不一样，用户会当成两个东西。
+    与 index.scss 里那段组件覆盖同源：组件升级后两处要一起改（复制而非抽公共样式，
+    是因为这里只借「观感」，那边还挂了热搜词 / 筛选 chips 等页面专属布局）。
+  */
+  &__search {
+    margin-bottom: 8rpx;
+
+    /* 组件默认 30PX 高 + 15PX 胶囊底，这里收敛为 76rpx 圆角矩形 */
+    .at-search-bar {
+      background: transparent;
+      padding: 0;
+      overflow: visible;
+
+      /* 去掉组件默认的底部发丝线（边框由输入框自己画） */
+      &::after {
+        display: none;
+      }
+
+      /* 输入框：白底 + 品牌紫描边。
+         两个坑：① input-cnt 默认 width:100% 且为 flex 子项，会与右侧 action 叠加后被
+         .at-search-bar 的 overflow:hidden 裁掉右描边 ⇒ 改 width:auto；
+         ② input 本体是 absolute 铺满父层，背景必须透明，否则会盖住画在 input-cnt 上的描边 */
+      .at-search-bar__input-cnt {
+        flex: 1;
+        width: auto;
+        height: 76rpx;
+        background: #fff;
+        border: 2rpx solid rgba(95, 51, 225, 0.24);
+        border-radius: $radius-md;
+      }
+
+      /* 未聚焦且无输入时组件会内联 flex-grow:1 撑满整行，而默认 justify-content:center
+         会把放大镜推到中间；强制靠左，与聚焦后位置一致 */
+      .at-search-bar__placeholder-wrap {
+        height: 76rpx;
+        padding: 0 20rpx;
+        justify-content: flex-start;
+
+        .at-icon {
+          font-size: 28rpx;
+        }
+      }
+
+      /* 左内距 20 + 放大镜 28 + 本间距 24 = 72rpx，与 input 的 padding-left 严格对齐 */
+      .at-search-bar__placeholder {
+        margin-left: 24rpx;
+        flex-shrink: 1;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .at-search-bar__input {
+        height: 76rpx !important;
+        font-size: 28rpx !important;
+        padding: 0 72rpx;
+        background: transparent;
+        border-radius: $radius-md;
+      }
+
+      .at-search-bar__clear {
+        right: 20rpx;
+        width: 48rpx;
+        height: 76rpx;
+      }
+
+      /* 卡内已有「搜索」主按钮（键盘亦可确认），隐藏行内 action：
+         它是 flex:none 的在流元素，即便 opacity:0 也会占位挤压输入框 */
+      .at-search-bar__action {
+        display: none;
+      }
+    }
+  }
+
+  &__search-btn {
+    margin-top: 22rpx;
+    border-radius: 999rpx;
+  }
+
+  /* 搜索输出（加载 / 拒答 / 未识别 / 报错）：与输入区用分隔线断开，位置固定在输入框之下 */
+  &__output-note {
+    display: block;
+    margin-top: 24rpx;
+    padding-top: 24rpx;
+    border-top: 1rpx solid $line;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* 候选卡容器：person-card 自带 44rpx 页边距，嵌进搜索卡后清零；
+     白卡套白卡没有层次，改用描边区分 */
+  &__output-cards {
+    margin-top: 24rpx;
+    padding-top: 24rpx;
+    border-top: 1rpx solid $line;
+
+    .person-card {
+      margin: 0 0 16rpx;
+      background: #fff;
+      box-shadow: none;
+      border: 2rpx solid $line;
+
+      &:last-child {
+        margin-bottom: 0;
+      }
+    }
+  }
+
+  /* 候选名单：PersonCard 自带左右 margin 与投影，此处不再重复包裹样式 */
+
+  /*
+    对比问答（O-18）：QaPanel 内部是 flex:1 撑满父容器，故这里必须给一个**确定高度**，
+    否则它会一直往上撑，整页变成「一个巨大的滚动区里嵌另一个滚动区」，滚动定位会很难受。
+    高度按一屏约 2/3 取（1000rpx）：能同时看见头部、两三条问答与输入框，问完还能顺手往下看底部动作。
+
+    本卡同时负责把面板压平成卡内的一段。面板原本是「整屏会话」的版式
+    （pages/qa、AI 提问页：头部自成一张卡、输入条压在屏幕底边），直接嵌进来会出现三件事：
+    ① 白卡套白卡（头部）看不出层次；② 输入条横穿整页、与卡片两侧的圆角对不齐；
+    ③ 面板内部还带着 32rpx 的整屏外边距，卡内会二次内缩。
+    这里只改版式 —— 闸门口径、失败与回答的分野、引用编号这些都一行没动。
+  */
+  &__qa {
+    display: flex;
+    flex-direction: column;
+    height: 1000rpx;
+
+    /* 头部：本卡已是白底，再叠一张白卡只会让人以为这里还有一层容器 */
+    .qa-panel__head {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .qa-panel__scope {
+      margin: 12rpx 0 4rpx;
+    }
+
+    .qa-panel__stale {
+      margin: 10rpx 0 0;
+    }
+
+    .qa-panel__chips {
+      margin: 20rpx 0 4rpx;
+    }
+
+    .qa-panel__row {
+      margin: 18rpx 0;
+    }
+
+    .qa-panel__count {
+      padding: 0 0 6rpx;
+    }
+
+    /* 通知条与升级入口：整屏版式里是全宽色条，卡内收成一段圆角色块 */
+    .qa-panel__notice {
+      margin-top: 12rpx;
+      padding: 14rpx 20rpx;
+      border-radius: $radius-md;
+    }
+
+    .qa-panel__upsell {
+      margin-top: 12rpx;
+      padding: 20rpx;
+      border-top: none;
+      border-radius: $radius-md;
+    }
+
+    /* 输入条：不再横穿屏幕的固定栏，回到卡内（白底交给本卡） */
+    .qa-panel__composer {
+      padding: 16rpx 0 0;
+      background: transparent;
+    }
+
+    /*
+      气泡：卡内已是白底，白底气泡 + 极淡投影会和卡片糊在一起，改用描边分层
+      （与其它「嵌进卡里」的元素同一处理）。
+      选择器多写一层 .qa-panel__row 是为了压过面板自己的 --user 规则，代价是它连用户与
+      失败气泡一起命中，下面一条把这两种的描边去掉（底色仍是面板给的那套，没改）。
+    */
+    .qa-panel__row .qa-panel__msg {
+      border: 2rpx solid $line;
+      box-shadow: none;
+    }
+
+    .qa-panel__row--user .qa-panel__msg,
+    .qa-panel__row .qa-panel__msg--error {
+      border: none;
+    }
+  }
+
+  /* ===== 对比头部：两方头像 + VS ===== */
+  &__pair {
+    display: flex;
+    align-items: flex-start;
+  }
+
+  &__side {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  /* 领域实色圆底（与关注列表同源配色，放大到 120rpx 做头部主视觉） */
+  &__avatar {
+    width: 120rpx;
+    height: 120rpx;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 48rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+    &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+    &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+    &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+    &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+    &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
+  }
+
+  &__name {
+    max-width: 100%;
+    font-size: 30rpx;
+    font-weight: 600;
+    line-height: 1.4;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* VS 落在两方中轴：整行比两侧矮，居中对齐会浮在上方，故用 align-self 拉回中线 */
+  &__vs {
+    flex: none;
+    align-self: center;
+    width: 68rpx;
+    height: 68rpx;
+    border-radius: 50%;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 26rpx;
+    font-weight: 700;
+    letter-spacing: 1rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* 一句话结论：与头部用分隔线断开，读之前先给判断 */
+  &__summary {
+    display: block;
+    margin-top: 24rpx;
+    padding-top: 24rpx;
+    border-top: 1rpx solid $line;
+    font-size: 26rpx;
+    line-height: 1.7;
+    color: $text-1;
+  }
+
+  &__pair-actions {
+    display: flex;
+    justify-content: center;
+    margin-top: 20rpx;
+  }
+
+  /* ===== 热度对照：两人共用同一根刻度（取二者最大值），差值才看得出来 ===== */
+  &__heat-row {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    margin-top: 20rpx;
+  }
+
+  &__heat-name {
+    flex: none;
+    width: 150rpx;
+    font-size: 24rpx;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__heat-track {
+    flex: 1;
+    min-width: 0;
+    height: 16rpx;
+    border-radius: 8rpx;
+    background: $line;
+    overflow: hidden;
+  }
+
+  /* 两侧同形不同色：条本身即「谁是谁」的图例，不必再标一次名字 */
+  &__heat-fill {
+    height: 100%;
+    border-radius: 8rpx;
+
+    &--a { background: linear-gradient(90deg, $brand-soft, $brand); }
+    &--b { background: linear-gradient(90deg, #ffb59a, $accent-orange); }
+  }
+
+  &__heat-value {
+    flex: none;
+    min-width: 80rpx;
+    text-align: right;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  /* ===== 指标表：只给「同一把尺子」的两项标高亮 ===== */
+  &__table {
+    margin-top: 8rpx;
+  }
+
+  &__tr {
+    display: flex;
+    align-items: center;
+    padding: 16rpx 0;
+    border-top: 1rpx solid $line;
+
+    &--head {
+      padding-top: 0;
+      border-top: none;
+    }
+  }
+
+  &__td {
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+    font-size: 24rpx;
+    color: $text-1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+
+    /* 指标名列：定宽左对齐，让两侧数值列宽一致、可比 */
+    &--label {
+      flex: none;
+      width: 150rpx;
+      text-align: left;
+      font-size: 22rpx;
+      color: $text-3;
+    }
+
+    /* 仅热度与报道量会带上：那是可比的曝光度读数，其余项不加评判 */
+    &.is-higher {
+      color: $brand;
+      font-weight: 600;
+    }
+  }
+
+  &__tr--head &__td {
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* ===== 情绪结构条 ===== */
+  &__senti {
+    margin-top: 24rpx;
+  }
+
+  &__senti-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+
+  &__senti-name {
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__senti-total {
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__senti-bar {
+    display: flex;
+    height: 20rpx;
+    margin-top: 12rpx;
+    border-radius: 999rpx;
+    overflow: hidden;
+    background: $bg;
+  }
+
+  /* 与报告页情绪条同源配色，同一套颜色在两页指向同一含义 */
+  &__senti-seg {
+    height: 100%;
+
+    &--positive { background: $success; }
+    &--neutral { background: $brand-soft; }
+    &--negative { background: $accent-orange; }
+  }
+
+  &__senti-legend {
+    display: flex;
+    gap: 24rpx;
+    margin-top: 12rpx;
+  }
+
+  &__senti-legend-item {
+    font-size: 22rpx;
+    color: $text-2;
+  }
+
+  /* ===== 共同关注点 / 独有话题标签 ===== */
+  &__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16rpx;
+  }
+
+  &__tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 10rpx;
+    padding: 8rpx 20rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 24rpx;
+
+    /* 独有词：一方单独提及，弱化成中性底，不与「共同关注点」抢注意力 */
+    &--plain {
+      background: $bg;
+      color: $text-1;
+    }
+  }
+
+  &__tag-count {
+    font-size: 20rpx;
+    color: $brand-soft;
+  }
+
+  /* ===== 左右两列（各自在讲什么 / 公开立场） ===== */
+  &__cols {
+    display: flex;
+    gap: 20rpx;
+  }
+
+  &__col {
+    flex: 1;
+    min-width: 0;
+    /* 标签按内容宽收缩成胶囊，不因 flex 拉伸成整行 */
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: 12rpx;
+  }
+
+  &__col-name {
+    max-width: 100%;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__empty-inline {
+    display: block;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__stance {
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+    width: 100%;
+    padding: 12rpx 0;
+    border-top: 1rpx solid $line;
+  }
+
+  &__stance-head {
+    display: flex;
+    align-items: center;
+    gap: 10rpx;
+  }
+
+  &__stance-topic {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $text-1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__stance-attitude {
+    flex: none;
+    padding: 2rpx 12rpx;
+    border-radius: 999rpx;
+    font-size: 18rpx;
+    line-height: 1.7;
+
+    &--positive { background: rgba(16, 185, 129, 0.1); color: $success; }
+    &--neutral { background: $brand-weak; color: $brand-soft; }
+    &--negative { background: $accent-orange-bg; color: $accent-orange; }
+    /* 褒贬不一没有对应的情绪色：用中性灰表达「哪边都不占」 */
+    &--mixed { background: $bg; color: $text-2; }
+  }
+
+  &__stance-note {
+    display: block;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* ===== 说明与免责 ===== */
+  &__note {
+    display: block;
+    margin-top: 16rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__disclaimer {
+    display: block;
+    padding: 24rpx 48rpx 8rpx;
+    text-align: center;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* ===== 底部动作（O-18）：关注这两位 / 分享 ===== */
+  &__follow-row {
+    display: flex;
+    gap: 20rpx;
+    margin-top: 24rpx;
+
+    /* 两个人名长短不一，等分两栏比「各按内容宽」整齐；taro-ui 的按钮本身是 inline-block，
+       因此这里让每个按钮各占一份。
+       用 .at-button 而不是通配符 `> *`：WXSS 不正式支持通配符选择器，且 AtButton 的
+       根节点固定带 at-button 类（见 taro-ui/dist/components/button） */
+    > .at-button {
+      flex: 1;
+    }
+  }
+
+  /* 分享：用原生 Button + open-type=share（微信要求由按钮触发转发），
+     排成整行次级样式 —— 它比「关注」弱一档（关注是留在这里，分享是带走内容） */
+  &__share {
+    margin-top: 20rpx;
+    padding: 0;
+    height: 76rpx;
+    line-height: 76rpx;
+    border-radius: 999rpx;
+    border: 2rpx solid $brand-weak;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 26rpx;
+    font-weight: 600;
+
+    &::after {
+      border: none;
+    }
+  }
+}

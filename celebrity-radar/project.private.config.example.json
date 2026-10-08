@@ -1,0 +1,23 @@
+{
+  "description": "微信开发者工具私有配置模板。复制为同目录的 project.private.config.json 并填入自己的 appid —— 该文件已被 .gitignore 忽略，只跟本机走。",
+  "appid": "wx0000000000000000",
+  "libVersion": "3.7.12",
+  "projectname": "celebrity-radar",
+  "setting": {
+    "urlCheck": false,
+    "coverView": true,
+    "lazyloadPlaceholderEnable": false,
+    "skylineRenderEnable": false,
+    "preloadBackgroundData": false,
+    "autoAudits": false,
+    "useApiHook": true,
+    "showShadowRootInWxmlPanel": false,
+    "useStaticServer": false,
+    "useLanDebug": false,
+    "showES6CompileOption": false,
+    "compileHotReLoad": true,
+    "checkInvalidKey": true,
+    "ignoreDevUnusedFiles": true,
+    "bigPackageSizeSupport": false
+  }
+}

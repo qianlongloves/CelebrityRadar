@@ -1,0 +1,9 @@
+{
+  "name": "payCallback",
+  "version": "1.0.0",
+  "description": "微信支付结果通知：金额校验 + 幂等落库 + 会员续期（唯一允许写 users.membership 的地方）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

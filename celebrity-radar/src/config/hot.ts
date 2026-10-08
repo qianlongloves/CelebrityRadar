@@ -1,15 +1,24 @@
 import { DomainCode } from './domains'
 
 /**
- * 热门运营位（§2.1 M1：MVP 为静态运营位，V1.5 数据化）。
- * 单一数据源：发现页「热门名人」卡片、横幅「今日名人」、中央随机探索均由此派生。
- * trend 为动态速览运营文案（一句话，不含实时结论）；heat 为静态热门指数（0~100）。
+ * 热门运营位（§2.1 M1：MVP 为静态运营位，V1.5 数据化，现由 AI 每日生产）。
+ *
+ * 榜单的真实来源是 `hot_board` 集合：`cloudfunctions/hotBoardRefresh` 每天分域联网检索 +
+ * 大模型结构化后落库，端上只读（见 utils/hot-board.ts）。本文件的静态 24 位退化为**种子池**，
+ * 只负责 ① 冷启动 / 云未配置 / 读取失败时兜底（保证运营位永不为空）、
+ * ② 提供 tag / trend 运营文案、③ 作为「今日名人」「随机探索」的稳定池（见 utils/explore.ts）。
  */
 export interface HotPerson {
   name: string
   domain: DomainCode
-  /** 静态热门指数（排序 + 热度条） */
-  heat: number
+  /**
+   * 热门指数（0~100），**可选**：只作排序兜底，卡片上不再展示。
+   *
+   * AI 榜单（hot_board）产出的条目不带这个值 —— 那里**数组顺序即排名**，
+   * 模型给不出可核对的分数口径，硬造一个只会变成第二个「玄学热度」。
+   * 静态种子与 report_cache 条目带值，用于没有 AI 榜单时把真实被查得多的人排到前面。
+   */
+  heat?: number
   /** 动态关键词标签 */
   tag: string
   /** 动态速览（运营文案） */
@@ -17,8 +26,8 @@ export interface HotPerson {
 }
 
 /**
- * 按 heat 降序排列（列表直接渲染即为热度榜）。
- * 覆盖全部 6 个领域（每领域 4 位）：发现页「热门名人」按领域筛选时不会有空领域。
+ * 按 heat 降序排列（无真实数据时即为最终榜单）。
+ * 覆盖全部 6 个领域（每领域 4 位）：种子兜底时按领域筛选不会有空领域。
  */
 export const HOT_PERSONS: HotPerson[] = [
   { name: '雷军', domain: 'tech', heat: 92, tag: '新品发布', trend: '新品发布节奏与年度目标表态持续被讨论' },

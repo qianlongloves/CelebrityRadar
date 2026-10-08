@@ -15,6 +15,10 @@ const config = {
   plugins: [],
   framework: 'react',
   compiler: 'webpack5',
+  // 注意：不要在 scss 的值里写非 ASCII 字符（如 content: '→'）。
+  // dart-sass 会因此给产物头部插入 @charset "UTF-8";，而微信 WXSS 不支持该规则，
+  // 开发者工具会报 WXSS 编译错误；Taro 3.6 + webpack5 不转发 sassLoaderOption，
+  // charset: false 无法生效，这类符号请放到 JSX 文本节点里渲染。
   alias: {
     '@': path.resolve(__dirname, '..', 'src')
   },

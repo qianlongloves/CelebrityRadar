@@ -29,6 +29,28 @@ export interface RefreshQuotaRow {
   count: number
 }
 
+/** generate_quota：每账号每日「主动生成报告」配额（免费 3 / 会员 30，id = openid#yyyy-mm-dd） */
+export interface GenerateQuotaRow {
+  id: string
+  count: number
+}
+
+/**
+ * orders：会员订单（id = outTradeNo）。
+ * 由云函数 `payCreate` 创建、`payCallback` 改状态；端上**只读**（用于对账与客服排查）。
+ */
+export interface OrderRow {
+  id: string // outTradeNo
+  openid: string
+  plan: string
+  /** 实付金额（分）；回调必须与此值一致才落库 */
+  amount_fen: number
+  status: 'pending' | 'paid' | 'failed' | 'refunded'
+  created_at: string
+  paid_at: string | null
+  transaction_id: string | null
+}
+
 /** events：埋点（§3.8 事件枚举，阶段 7 全量接入，阶段 4 起用报告成本事件） */
 export interface EventRow {
   id: string // `${ts}#${rand6}`

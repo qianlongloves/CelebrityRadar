@@ -1,0 +1,198 @@
+@import '../../styles/variables.scss';
+
+/* 消息中心（首页铃铛落点）。条目样式与历史/收藏页同一套卡片语言，
+   消息种类只影响左侧圆形底色的深浅，不引入新的视觉元素。
+
+   已读 / 未读的区分只动三处：左侧色条（未读才有）、卡片底色、标题与正文的灰度 ——
+   不额外加「未读」文字标签，列表要能一眼扫过去。
+   两个类互斥（页面按 m.unread 二选一挂），不靠样式覆盖去猜。 */
+.page-messages {
+  min-height: 100vh;
+  padding-bottom: 60rpx;
+
+  &__head {
+    padding: 28rpx 32rpx 4rpx;
+  }
+
+  &__head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__title {
+    font-size: 40rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__head-ops {
+    display: flex;
+    align-items: center;
+    gap: 28rpx;
+  }
+
+  &__read-all {
+    /* 右侧留出点击区，避免与标题贴在一起误触 */
+    padding: 12rpx 0 12rpx 0;
+    font-size: 24rpx;
+    color: $brand;
+  }
+
+  /* 「关注流 ›」（O-17）：与「全部已读」并排，但用一个描边胶囊把它标成**去向**
+     而不是动作 —— 两者的差别是「跳走」和「就地改状态」，长得一样会点错 */
+  &__feed {
+    padding: 8rpx 22rpx;
+    border: 2rpx solid $brand-weak;
+    border-radius: 999rpx;
+    font-size: 22rpx;
+    color: $brand;
+  }
+
+  &__sub {
+    display: block;
+    margin-top: 10rpx;
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  &__item {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    margin: 16rpx 32rpx;
+    padding: 28rpx;
+    gap: 20rpx;
+    border-radius: $radius-lg;
+    box-shadow: $shadow-card;
+
+    /* 未读：实底白卡 + 左侧品牌色条（用 inset 阴影画，比伪元素稳） */
+    &--unread {
+      background: #fff;
+      box-shadow: inset 6rpx 0 0 0 $brand, $shadow-card;
+    }
+
+    /* 已读：退到背景里 —— 底色变淡 + 文字降两档灰度，视线自然略过 */
+    &--read {
+      background: rgba(255, 255, 255, 0.58);
+
+      .page-messages__icon {
+        opacity: 0.55;
+      }
+
+      .page-messages__name {
+        font-weight: 500;
+        color: $text-2;
+      }
+
+      .page-messages__desc {
+        color: $text-3;
+      }
+    }
+
+    /* 卡片整块可点（展开 / 收起或进详情），故按压反馈常驻 */
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  &__icon {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 64rpx;
+    height: 64rpx;
+    border-radius: 50%;
+    font-size: 30rpx;
+
+    &--follow {
+      background: $brand-weak;
+    }
+
+    &--weekly {
+      background: $accent-blue-bg;
+    }
+
+    &--system {
+      background: $bg;
+    }
+  }
+
+  &__body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  &__name {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__dot {
+    width: 12rpx;
+    height: 12rpx;
+    border-radius: 50%;
+    background: $accent-orange;
+  }
+
+  &__desc {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+    word-break: break-all;
+
+    /* 两行截断（小程序 WebView 与 H5 都走 -webkit-line-clamp）。
+       真机若不支持该属性，退化成「全文铺开」——只影响观感，不丢内容。 */
+    &--clamp {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+    }
+  }
+
+  &__foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10rpx;
+  }
+
+  &__time {
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__acts {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 24rpx;
+  }
+
+  /* 「展开全文 / 收起」与「查看详情」同为品牌色小字：
+     前者是卡片内的状态切换，后者才离开本页。
+     两者都补一点 padding 撑大热区 —— 22rpx 的小字本身太窄，点偏就会落到卡片上，
+     变成「本来想跳转，结果只是收起」。 */
+  &__fold {
+    padding: 10rpx 12rpx 10rpx 0;
+    font-size: 22rpx;
+    color: $brand;
+  }
+
+  &__link {
+    padding: 10rpx 0 10rpx 12rpx;
+    font-size: 22rpx;
+    color: $brand;
+  }
+}

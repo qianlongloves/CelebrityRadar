@@ -101,8 +101,69 @@
     }
   }
 
+  /*
+    ===== Tab 分段控件（自绘，不再用 taro-ui 的 AtTabs）=====
+    原先套 AtTabs：它是「整宽灰条（$color-bg）+ 每格一条满宽紫下划线」的样子，
+    下划线还绝对定位在 __body 里、宽 100% × 格数，页面里没有 positioned 祖先时
+    会挂到视口左上角；四格 flex:1 挤着「时间线 (12)」这类标题还会被 ellipsis 截断。
+    要改对得覆盖 header / item / item-underline / underline / pane 五六条规则，
+    索性自绘一个胶囊分段器：一处定义、与项目紫色主题一致、不依赖组件库内部类名。
+  */
+  &__tab-pane {
+    padding-top: 8rpx;
+  }
+
   &__tabs {
-    margin-top: 8rpx;
+    display: flex;
+    gap: 8rpx;
+    margin: 16rpx 32rpx 0;
+    padding: 8rpx;
+    border-radius: 999rpx;
+    background: rgba(255, 255, 255, 0.86);
+    box-shadow: $shadow-card;
+  }
+
+  &__tab {
+    flex: 1;
+    min-width: 0;
+    height: 68rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6rpx;
+    border-radius: 999rpx;
+    transition: background 0.2s, color 0.2s;
+
+    /* 按下反馈：hoverClass 指向这里（小程序不支持 :active） */
+    &--tap {
+      opacity: 0.7;
+    }
+
+    /* 选中 = 紫色渐变胶囊 + 白字，不用下划线 —— 下划线在小屏上太细，看不清在哪一格 */
+    &--active {
+      background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+      box-shadow: 0 8rpx 20rpx rgba(95, 51, 225, 0.24);
+
+      .page-profile__tab-label {
+        color: #fff;
+        font-weight: 600;
+      }
+
+      .page-profile__tab-count {
+        color: rgba(255, 255, 255, 0.8);
+      }
+    }
+  }
+
+  &__tab-label {
+    font-size: 26rpx;
+    color: $text-2;
+  }
+
+  /* 计数比标题小一号：标题与计数分开渲染，标题才不会被「(12)」挤到省略号 */
+  &__tab-count {
+    font-size: 20rpx;
+    color: $text-3;
   }
 
   &__loading {
@@ -120,31 +181,281 @@
       font-size: 28rpx;
       font-weight: 600;
       line-height: 1.5;
+      /* 标题里可能夹 URL / 无空格英文长串（模型从素材原样复制），必须允许断词换行 */
+      word-break: break-all;
     }
 
     &-summary {
       margin-top: 8rpx;
       line-height: 1.6;
+      word-break: break-all;
     }
   }
 
   &__quote {
+    /* 引文与复制图标同一行：图标占固定宽度，引文占满剩余空间（min-width:0 才允许它换行） */
+    &-body {
+      display: flex;
+      align-items: flex-start;
+      gap: 16rpx;
+    }
+
     &-text {
+      flex: 1;
+      min-width: 0;
       font-size: 30rpx;
       line-height: 1.7;
       font-weight: 500;
+      word-break: break-all;
     }
 
-    &-foot {
-      margin-top: 14rpx;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+    /* 脚注（出处 + 「查证」）由 components/quote-detail 渲染，与报告页同一套，
+       故这里不再留 &-foot：出处 / 背景 / 注解 / 出处核对的口径两页必须一致。 */
+  }
+
+  /*
+    复制按钮：图标 + 热区，不再用「复制」二字。
+    图标是 CSS 自绘（两个圆角方块叠放），不引图标字体 —— 全站图标都是 emoji 或 CSS 绘制，
+    混进一个字体图标就会出现「别人是彩色的、它是紫色的」这种不一致。
+  */
+  &__copy {
+    flex: none;
+    /* 图标本体只有 22×26rpx（此前 28×34rpx + 3rpx 描边，比 30rpx 的引文还抢眼）。
+       热区靠内边距撑到约 48×52rpx：多出来的部分都留给它左上角，图标本身贴住卡片右上角 */
+    padding: 6rpx 6rpx 20rpx 20rpx;
+
+    &--tap {
+      opacity: 0.6;
     }
   }
 
-  &__copy {
+  &__copy-icon {
+    position: relative;
+    width: 22rpx;
+    height: 26rpx;
+    border: 2rpx solid $brand;
+    border-radius: 4rpx;
+
+    /* 前景那块用底色盖掉被压住的边，只剩左上两条线 —— 就是通用的「复制」形状。
+       错位量随图标一起缩小，否则两个方块叠出来的外形会比图标本身还大 */
+    &::after {
+      content: '';
+      position: absolute;
+      left: 7rpx;
+      top: 7rpx;
+      width: 22rpx;
+      height: 26rpx;
+      border: 2rpx solid $brand;
+      border-radius: 4rpx;
+      background: #fff;
+      box-sizing: border-box;
+    }
+  }
+
+  /* ===== 时间线（M2-3 V1.5）：圆点 + 竖线，与报告页同一观感 ===== */
+  &__timeline-item {
+    display: flex;
+    gap: 20rpx;
+    position: relative;
+    padding-bottom: 28rpx;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 9rpx;
+      top: 24rpx;
+      bottom: 0;
+      width: 2rpx;
+      background: $line;
+    }
+
+    &:last-child {
+      padding-bottom: 4rpx;
+
+      &::before {
+        display: none;
+      }
+    }
+  }
+
+  &__timeline-dot {
+    flex-shrink: 0;
+    width: 20rpx;
+    height: 20rpx;
+    border-radius: 50%;
+    background: $brand-weak;
+    border: 5rpx solid $brand-soft;
+    box-sizing: content-box;
+    margin-top: 4rpx;
+  }
+
+  &__timeline-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  &__timeline-event {
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+    word-break: break-all;
+  }
+
+  /* ===== 数据 Tab（M2-4）：纯统计面板；四张卡各有成立门槛（见 utils/stats.ts） ===== */
+  &__stat-grid {
+    display: flex;
+    align-items: flex-end;
+  }
+
+  &__stat {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6rpx;
+  }
+
+  &__stat-value {
+    font-size: 46rpx;
+    font-weight: 700;
+    line-height: 1.1;
     color: $brand;
+  }
+
+  &__stat-label {
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  &__stat-note {
+    display: block;
+    margin-top: 20rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__bar-row {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    margin-top: 20rpx;
+  }
+
+  &__bar-name {
+    flex-shrink: 0;
+    width: 150rpx;
+    font-size: 24rpx;
+    color: $text-2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__bar-track {
+    flex: 1;
+    min-width: 0;
+    height: 18rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    overflow: hidden;
+  }
+
+  &__bar-fill {
+    height: 100%;
+    border-radius: 999rpx;
+    background: linear-gradient(90deg, $brand-soft 0%, $brand 100%);
+  }
+
+  &__bar-value {
+    flex-shrink: 0;
+    width: 56rpx;
+    text-align: right;
     font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 情绪三色条：与报告页「立场与舆情」同一套配色，同一个数字在两处不该是两种颜色 */
+  &__stance-bar {
+    display: flex;
+    height: 20rpx;
+    margin-top: 8rpx;
+    border-radius: 999rpx;
+    overflow: hidden;
+    background: $bg;
+  }
+
+  &__stance-seg {
+    height: 100%;
+
+    &--positive {
+      background: $success;
+    }
+
+    &--neutral {
+      background: $brand-soft;
+    }
+
+    &--negative {
+      background: $accent-orange;
+    }
+  }
+
+  &__stance-legend {
+    display: flex;
+    gap: 24rpx;
+    margin-top: 16rpx;
+  }
+
+  &__stance-legend-item {
+    font-size: 22rpx;
+    color: $text-2;
+  }
+
+  /* 月度柱：容器等高、柱底对齐，柱高按 ratio 百分比给 */
+  &__months {
+    display: flex;
+    align-items: flex-end;
+    gap: 8rpx;
+    margin-top: 8rpx;
+  }
+
+  &__month {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8rpx;
+  }
+
+  &__month-count {
+    font-size: 20rpx;
+    line-height: 1;
+    color: $text-3;
+  }
+
+  &__month-track {
+    width: 100%;
+    height: 150rpx;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+
+  &__month-bar {
+    width: 60%;
+    border-radius: 6rpx 6rpx 0 0;
+    background: linear-gradient(180deg, $brand-soft 0%, $brand 100%);
+  }
+
+  &__month-label {
+    font-size: 20rpx;
+    line-height: 1;
+    color: $text-3;
   }
 }

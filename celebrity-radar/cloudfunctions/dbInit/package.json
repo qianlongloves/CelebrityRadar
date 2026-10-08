@@ -1,0 +1,9 @@
+{
+  "name": "dbInit",
+  "version": "1.0.0",
+  "description": "云数据库运维工具：初始化集合 / 比对字段 / 补字段 / 新建·更新索引（非运行时依赖，运维完可删）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

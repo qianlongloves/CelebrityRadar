@@ -2,7 +2,7 @@
   "miniprogramRoot": "dist/",
   "cloudfunctionRoot": "cloudfunctions/",
   "projectname": "celebrity-radar",
-  "appid": "<your-appid>",
+  "appid": "wx0000000000000000",
   "compileType": "miniprogram",
   "libVersion": "3.7.12",
   "setting": {

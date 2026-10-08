@@ -70,4 +70,87 @@
     padding: 6rpx 16rpx;
     border-radius: 999rpx;
   }
+
+  /* ===== 「继续看」（O-15）：最近 3 位横滑卡片 ===== */
+  &__continue {
+    padding: 8rpx 0 4rpx;
+  }
+
+  &__continue-title {
+    display: block;
+    padding: 16rpx 32rpx 12rpx;
+    color: $text-1;
+    font-size: 28rpx;
+    font-weight: 600;
+  }
+
+  /* 与发现页的横滑区同规矩：宽度必须显式给满 + border-box，
+     否则 scroll-view 会按内容撑开，把整页顶出横向滚动条 */
+  &__continue-row {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0 32rpx;
+    white-space: nowrap;
+  }
+
+  &__continue-card {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: 220rpx;
+    margin-right: 20rpx;
+    padding: 24rpx 20rpx;
+    border-radius: $radius-md;
+    background: #fff;
+    box-shadow: $shadow-card;
+    white-space: normal;
+    vertical-align: top;
+
+    &--tap {
+      opacity: 0.75;
+    }
+  }
+
+  &__continue-avatar {
+    width: 64rpx;
+    height: 64rpx;
+    border-radius: 20rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 28rpx;
+    font-weight: 600;
+
+    &--tech { background: rgba(0, 135, 255, 0.12); color: $domain-tech; }
+    &--business { background: rgba(255, 125, 83, 0.12); color: $domain-business; }
+    &--ent { background: rgba(236, 72, 153, 0.1); color: $domain-ent; }
+    &--sports { background: rgba(16, 185, 129, 0.1); color: $domain-sports; }
+    &--academia { background: rgba(95, 51, 225, 0.1); color: $domain-academia; }
+    &--other { background: rgba(110, 106, 124, 0.1); color: $domain-other; }
+  }
+
+  &__continue-name {
+    margin-top: 16rpx;
+    font-size: 26rpx;
+    font-weight: 600;
+    line-height: 1.3;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+
+  /* 报告版本（O-14）：陈旧时换暖色 —— 与卡片上其它文字同一位置、只换颜色，
+     因为这一行要说的仍只有「多新」，不该多出一枚突兀的徽标 */
+  &__continue-age {
+    margin-top: 6rpx;
+    color: $text-3;
+    font-size: 20rpx;
+    line-height: 1.3;
+
+    &--stale {
+      color: #b45309;
+      font-weight: 600;
+    }
+  }
 }

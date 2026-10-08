@@ -1,6 +1,5 @@
-import Taro from '@tarojs/taro'
-import { getBochaKey } from './settings'
 import { setCooldown } from './cooldown'
+import { debugRaw } from './debug'
 import { diagLog } from './cloud-diagnostics'
 import { callCloudFunction, isCloudConfigured } from './cloud'
 
@@ -14,30 +13,13 @@ export interface NewsItem {
   publishedDate?: string
 }
 
-/** 博查 Web Search 端点（国内备案域名，可直接配进小程序 request 合法域名） */
-const ENDPOINT = 'https://api.bochaai.com/v1/web-search'
-
+/** 博查 {url} 的主机名，用作 NewsItem.source 的兜底（siteName 缺失时） */
 function hostOf(url: string): string {
   try {
     return url.replace(/^https?:\/\//, '').split('/')[0]
   } catch {
     return url
   }
-}
-
-/**
- * 博查错误信息：失败响应的正文在顶层，字段名是 message（不是 msg）。
- * 实测 403 返回 {"message":"...","log_id":"...","code":"403"}——
- * 注意 code 是**字符串**，所以下面统一用 Number() 归一化后再比较。
- * log_id 一并带出，是找博查客服时唯一有用的凭据。
- */
-function errTextOf(data: unknown): string {
-  if (!data || typeof data !== 'object') return ''
-  const d = data as Record<string, unknown>
-  const raw = d.message ?? d.msg
-  const text = typeof raw === 'string' ? raw.trim() : ''
-  const logId = typeof d.log_id === 'string' ? d.log_id : ''
-  return logId ? `${text} (log_id: ${logId})` : text
 }
 
 function sleep(ms: number): Promise<void> {
@@ -86,14 +68,20 @@ function toNewsItem(r: Record<string, unknown>): NewsItem {
 }
 
 const MAX_ATTEMPTS = 3
-const REQUEST_TIMEOUT_MS = 15000
-/** 与云函数 runSearch 的 count 上限对齐，避免两条通道对同一入参给出不同条数 */
-const MAX_RESULTS_CAP = 20
+/**
+ * 与云函数 runSearch 的 count 上限对齐（免费 20 / 会员 40，见 aiProxy 的 FREE_SEARCH_MAX）。
+ *
+ * 端上取的是**两者中大的那个**：这一层只决定「要多少」，真正按身份钳住的是云函数
+ * （免费用户即便改包要 40 也会被钳回 20）。若这里仍写死 20，深度模式就永远要不到加厚的那部分。
+ */
+const MAX_RESULTS_CAP = 40
 
 interface SearchParams {
   query: string
   freshness: string
   count: number
+  /** 站点限定（§1.4 V1.5 多源分域）：仅支线检索使用，主线不传 */
+  include?: string[]
 }
 
 /** 单次尝试的结果：成功给出上游原始 pages，失败标明「是否值得重试」 */
@@ -101,62 +89,17 @@ type PagesAttempt =
   | { ok: true; pages: Array<Record<string, unknown>> }
   | { ok: false; error: string; retryable: boolean }
 
-/**
- * 通道一：本机 Key 直连博查（BYOK）。
+/*
+ * 这里曾有一条「本机 Key 直连博查」通道（BYOK，Taro.request 直打 api.bochaai.com），
+ * 已随大模型本机通道一并移除，全项目只保留云函数代理，用户零配置。
  *
- * 分支顺序与原实现一致，只是把「直接抛出」改成「打上 retryable 标记」，
- * 交给 fetchNews 里唯一的重试循环裁决（原先循环与判断混在一起，加第二条通道会失控）。
+ * 随之退役的上游知识（日后要排查请去云函数侧看）：
+ *   实测 403 最常见成因是账号没绑资源包 / 额度用尽，key 本身是好的；
+ *   失败正文在顶层且字段名是 message（不是 msg），code 是**字符串**；
+ *   正文里的 log_id 是找博查客服时唯一有用的凭据。
+ * 这些现在都由 aiProxy 的 runSearch 解析成 kind / error 后回传，端上不再直接面对上游报文，
+ * 也就不能再靠 HTTP 状态码分流 —— 重试与否统一看云函数给出的 kind。
  */
-async function pagesViaLocalKey(apiKey: string, params: SearchParams): Promise<PagesAttempt> {
-  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-  let res: any
-  try {
-    res = await Taro.request({
-      url: ENDPOINT,
-      method: 'POST',
-      header: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
-      data: { ...params, summary: true },
-      timeout: REQUEST_TIMEOUT_MS
-    })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    diagLog('warn', 'http', `博查网络失败：${msg}`)
-    return { ok: false, error: msg, retryable: true }
-  }
-
-  if (res.statusCode === 429) {
-    setCooldown('search')
-    diagLog('warn', 'http', '博查 429 限流，进入 10 分钟冷却')
-    return { ok: false, error: '搜索源请求过于频繁，请稍后再试', retryable: false }
-  }
-  if (res.statusCode === 401) {
-    diagLog('warn', 'http', `博查 401：${errTextOf(res.data) || '密钥无效'}`)
-    return { ok: false, error: '搜索源密钥无效，请检查 bocha_api_key', retryable: false }
-  }
-  if (res.statusCode === 403) {
-    /* 实测最常见成因：账号没绑资源包 / 额度用尽，key 本身是好的 */
-    diagLog('warn', 'http', `博查 403：${errTextOf(res.data) || '无权限或额度不足'}`)
-    return { ok: false, error: '搜索源额度不足或未开通权限', retryable: false }
-  }
-  if (res.statusCode !== 200) {
-    diagLog('warn', 'http', `博查 ${res.statusCode}`)
-    return { ok: false, error: `搜索源返回 ${res.statusCode}`, retryable: true }
-  }
-
-  // 博查 HTTP 200 仍可能携带业务错误码，需再判一层
-  const body = res.data as { code?: unknown; data?: { webPages?: { value?: unknown } } }
-  const code = Number(body?.code ?? 200)
-  if (code !== 200) {
-    const msg = errTextOf(body) || `搜索源错误码 ${code}`
-    diagLog('warn', 'http', `博查业务错误 ${code}：${msg}`)
-    return { ok: false, error: msg, retryable: true }
-  }
-
-  return { ok: true, pages: (body?.data?.webPages?.value ?? []) as Array<Record<string, unknown>> }
-}
 
 /** 云函数 search 动作的返回结构（对应 cloudfunctions/aiProxy 的 runSearch） */
 interface ProxySearchResult {
@@ -170,13 +113,13 @@ interface ProxySearchResult {
 const RETRYABLE_KINDS = new Set(['upstream', 'network'])
 
 /**
- * 通道二：云函数代理（平台代付）。客户端不持有任何 key，博查由 aiProxy 用服务端环境变量代打。
+ * 唯一的检索通道：云函数代理（平台代付）。
+ * 客户端不持有任何 key，博查由 aiProxy 用服务端环境变量代打，上游失败已被消化成 kind。
  *
- * 返回 null = 「这条通道不存在」，对齐 fetchNews 既有的降级语义（null → 读共享缓存 → 引导态）：
+ * 返回 null = 「通道未就绪」，对齐 fetchNews 的降级语义（null → 读共享缓存 → 引导态）：
  * 函数没部署（-501000）、云环境没配、或函数部署了但环境变量为空，都属于
  * 「平台没把这条通道准备好」，不该让用户看到一句像是故障的报错。
- *
- * 与通道一的关键差别：上游失败由云函数消化成 kind，端上不再解析 HTTP 状态码。
+ * 注意这与「通道可用但请求失败」（返回 ok:false）严格区分：后者要重试、冷却或抛出。
  */
 async function pagesViaPlatform(params: SearchParams): Promise<PagesAttempt | null> {
   let res: ProxySearchResult | null
@@ -185,13 +128,18 @@ async function pagesViaPlatform(params: SearchParams): Promise<PagesAttempt | nu
       action: 'search',
       query: params.query,
       freshness: params.freshness,
-      count: params.count
+      count: params.count,
+      /* 不传 include 时不发该字段：云函数侧据此保持与改造前完全一致的上游请求 */
+      ...(params.include ? { include: params.include } : {})
     })) as ProxySearchResult | null
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('warn', 'http', `平台检索通道不可用：${msg}`)
     return null
   }
+
+  /* 调试打印：云函数 search 动作的完整返回（pages 数组较长，交给 Console 折叠展开） */
+  debugRaw('bocha:proxy', res)
 
   if (!res || res.ok !== true) {
     /*
@@ -214,44 +162,32 @@ async function pagesViaPlatform(params: SearchParams): Promise<PagesAttempt | nu
 }
 
 /**
- * 是否有可用检索通道：本机 Key（BYOK）或平台代付（云函数代理）。
- *
- * 只做保守估计 —— 云函数是否真部署好、环境变量是否真配了，只有调一次才知道。
+ * 是否有可用检索通道。只剩云函数代理一条，故这里只反映「云环境 ID 配了没」——
+ * 函数是否真部署好、环境变量 BOCHA_API_KEY 是否真配了，只有调一次才知道。
  * 调用方（刷新配额的前置检查）用它避免「明明能用却被拦下」，真失败由 fetchNews 的返回值兜住。
  */
 export function hasSearchChannel(): boolean {
-  return getBochaKey() !== null || isCloudConfigured
+  return isCloudConfigured
 }
 
 /**
- * 博查检索适配器（附录 A）。
+ * 单路检索（含重试），对应改造前的整个 fetchNews。
  *
- * 两条通道择优其一：用户自配了 Key 就走本机直连（BYOK，费用自负，开发与内测用），
- * 否则走云函数代理（平台代付，用户零配置，见 cloudfunctions/aiProxy）。
- * 没有本机 Key 的用户因此不再需要自己去申请博查账号 —— 这是「联网能力开箱可用」的关键。
+ * 单一通道：云函数代理（平台代付，用户零配置，见 cloudfunctions/aiProxy 的 runSearch）。
+ * 用户不需要申请博查账号 —— 这是「联网能力开箱可用」的关键。
  *
- * 返回 null 表示「无可用检索通道」（降级：读共享缓存，无则引导态，§2.4），
+ * 返回 null 表示「平台检索通道未就绪」（降级：读共享缓存，无则引导态，§2.4），
  * 与「通道可用但请求失败」（抛出）严格区分，调用方据此走 coldstart 还是报错。
  *
- * 错误策略（§5.4 用例 9）：
- *   网络失败 / 5xx / 业务错误码 → 重试 2 次（1s/2s 指数退避）；
- *   429 限流 → 不重试，进入 10 分钟冷却；
- *   401/403 → key 无效或额度不足，重试无意义，直接抛出。
+ * 错误策略（§5.4 用例 9），全部依据云函数回传的 kind：
+ *   upstream / network → 重试 2 次（1s/2s 指数退避）；
+ *   rate 限流 → 不重试，进入 10 分钟冷却；
+ *   其余（密钥无效 / 额度不足等配置类）→ 重试无意义，直接抛出。
  */
-export async function fetchNews(
-  name: string,
-  opts: { days?: number; maxResults?: number } = {}
-): Promise<NewsItem[] | null> {
-  const apiKey = getBochaKey()
-  const params: SearchParams = {
-    query: `${name} 近期 新闻 动态 言论`,
-    freshness: freshnessOf(opts.days ?? 30),
-    count: Math.min(opts.maxResults ?? 10, MAX_RESULTS_CAP)
-  }
-
+async function requestChannel(params: SearchParams): Promise<NewsItem[] | null> {
   let lastError = '搜索源请求失败'
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const result = apiKey ? await pagesViaLocalKey(apiKey, params) : await pagesViaPlatform(params)
+    const result = await pagesViaPlatform(params)
 
     if (result === null) return null // 无可用通道：降级，不算错误
     if (result.ok) {
@@ -265,6 +201,108 @@ export async function fetchNews(
     if (attempt < MAX_ATTEMPTS) await sleep(1000 * 2 ** (attempt - 1))
   }
   throw new Error(lastError)
+}
+
+/**
+ * 社交源站点白名单（§1.4 V1.5「动态多域名源过滤」）。
+ *
+ * 单条 query 的排序权完全在上游：门户转载的标题更「新闻体」，常把本人微博 / 知乎长文
+ * 挤到十名开外，而名人的一手发声恰恰在后者。这里补一路限定站点的检索把社交源单独捞一遍。
+ * 只列域名、不往 request 合法域名里加东西 —— 过滤发生在博查服务端。
+ */
+const SOCIAL_SITES = ['weibo.com', 'zhihu.com', 'bilibili.com', 'xiaohongshu.com']
+/** 支线条数：够补齐社交维度即可，不为支线付主线的检索成本 */
+const SOCIAL_COUNT = 8
+/** 主线默认条数（免费口径，与改造前一致） */
+const MAIN_COUNT = 10
+
+/**
+ * 深度模式的检索厚度（O-11「质」权益，2026-10-07）：只在**报告生成路径**使用。
+ *
+ * 为什么是 24 + 16：两条链路各自独立过云函数的 count 钳制，合起来正好吃满给会员的
+ * MEMBER_SEARCH_MAX（40），不越界、也留不出「要了却拿不到」的空档。
+ * 为什么只加厚生成：报告是「一次生成、长期缓存」的资产，加厚一次能长期受益；
+ * 关注流刷新是每日 10 次的常态动作，放大等于常态成本翻倍且用户几乎无感（见 cache.ts 的应用点）。
+ */
+export const DEEP_MAIN_COUNT = 24
+export const DEEP_SOCIAL_COUNT = 16
+
+/** 按 url（去锚点）去重合并：主线在前，支线补充在后 */
+function mergeNews(groups: Array<NewsItem[] | null>): NewsItem[] {
+  const seen = new Set<string>()
+  const out: NewsItem[] = []
+  for (const group of groups) {
+    for (const item of group ?? []) {
+      const key = item.url.split('#')[0]
+      if (key === '' || seen.has(key)) continue
+      seen.add(key)
+      out.push(item)
+    }
+  }
+  return out
+}
+
+/**
+ * 博查检索适配器（附录 A）：主线 + 社交支线两路并发，合并去重后交给报告层。
+ *
+ * 两路并发而非串行：单路约 1~2s，串行会把整次生成的等待拉长近一倍。
+ * 支线是「锦上添花」，失败一律吞掉 —— 上游不认 include（报错或空集）、支线被限流，
+ * 都只是拿不到社交维度，结果等价于改造前；只有主线才是判据。
+ * 代价是每次生成由 1 次博查调用变为 2 次（成本相关取舍见《开发计划.md》§七 待办 14）。
+ */
+export async function fetchNews(
+  name: string,
+  opts: { days?: number; maxResults?: number; socialCount?: number } = {}
+): Promise<NewsItem[] | null> {
+  const freshness = freshnessOf(opts.days ?? 30)
+  const main: SearchParams = {
+    query: `${name} 近期 新闻 动态 言论`,
+    freshness,
+    count: Math.min(opts.maxResults ?? MAIN_COUNT, MAX_RESULTS_CAP)
+  }
+  const social: SearchParams = {
+    query: `${name} 近期 动态`,
+    freshness,
+    count: Math.min(opts.socialCount ?? SOCIAL_COUNT, MAX_RESULTS_CAP),
+    include: SOCIAL_SITES
+  }
+
+  const [mainNews, socialNews] = await Promise.all([
+    requestChannel(main),
+    requestChannel(social).catch((err) => {
+      diagLog('warn', 'http', `社交源定向检索跳过：${err instanceof Error ? err.message : String(err)}`)
+      return null
+    })
+  ])
+
+  if (mainNews === null) return null
+  return mergeNews([mainNews, socialNews])
+}
+
+/** 问答联网检索的条数：够补「报告之后发生了什么」即可，不为一次提问付生成级的检索成本 */
+const ASK_COUNT = 8
+/** 问答联网检索的时间窗：用户问的往往是「最近」，而报告可能已经是两周前的快照 */
+const ASK_FRESHNESS_DAYS = 7
+
+/**
+ * 问答的「联网检索」补充（2026-10-08，供 utils/qa.ts 的联网补充调用）。
+ *
+ * 同一条通道、同一套重试与冷却，只是**用量口径不同**：
+ *   - 只走主线，不拆社交支线 —— 问题本身已经带了具体指向（谁 + 问什么），
+ *     再拆一路社交定向只是让每次提问的成本与耗时翻倍，收益远小于生成那条链路；
+ *   - 条数少（8）、时间窗窄（最近 7 天）：这一路补的就是「报告生成之后的新情况」，
+ *     按 30 天去取等于把报告里已有的旧闻再买一遍。
+ *
+ * 降级语义与 fetchNews 完全一致：返回 null = 通道未就绪，失败抛出。
+ * 调用方（utils/qa.ts）一律吞掉并退回「只依据报告作答」—— 联网是加分项，
+ * 不能让一次提问因为检索不通而彻底失败。
+ */
+export async function searchForAsk(query: string): Promise<NewsItem[] | null> {
+  return requestChannel({
+    query,
+    freshness: freshnessOf(ASK_FRESHNESS_DAYS),
+    count: Math.min(ASK_COUNT, MAX_RESULTS_CAP)
+  })
 }
 
 /** 热度计数（§1.6 公式的 N30/N7 输入）：norm(N) = min(1, log10(1+N)/2) */

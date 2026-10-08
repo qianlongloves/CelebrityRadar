@@ -1,0 +1,9 @@
+{
+  "name": "payCreate",
+  "version": "1.0.0",
+  "description": "会员下单：服务端定价 + 建订单 + 云支付统一下单",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

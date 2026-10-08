@@ -3,3 +3,14 @@ dist/
 .DS_Store
 *.local
 .codebuddy/
+
+# 本地配置：环境 ID、订阅模板 ID、本地调试开关（模板见 src/config/local.example.ts）
+celebrity-radar/src/config/local.ts
+
+# 微信开发者工具的私有配置（含本机编译设置 / 个人项目名）
+project.private.config.json
+
+# 云函数部署用的密钥（cloudbaserc.json 以 ${env.XXX} 读取）
+.env
+.env.*
+!.env.example
