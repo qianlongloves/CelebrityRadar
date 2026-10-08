@@ -55,10 +55,16 @@
     font-weight: 600;
 
     &--tech { background: rgba(0, 135, 255, 0.12); color: $domain-tech; }
+    &--internet { background: rgba(6, 182, 212, 0.12); color: $domain-internet; }
     &--business { background: rgba(255, 125, 83, 0.12); color: $domain-business; }
+    &--finance { background: rgba(245, 158, 11, 0.14); color: $domain-finance; }
+    &--auto { background: rgba(99, 102, 241, 0.12); color: $domain-auto; }
     &--ent { background: rgba(236, 72, 153, 0.1); color: $domain-ent; }
+    &--art { background: rgba(168, 85, 247, 0.12); color: $domain-art; }
     &--sports { background: rgba(16, 185, 129, 0.1); color: $domain-sports; }
+    &--health { background: rgba(244, 63, 94, 0.1); color: $domain-health; }
     &--academia { background: rgba(95, 51, 225, 0.1); color: $domain-academia; }
+    &--edu { background: rgba(20, 184, 166, 0.12); color: $domain-edu; }
     &--other { background: rgba(110, 106, 124, 0.1); color: $domain-other; }
   }
 
@@ -122,10 +128,16 @@
     font-weight: 600;
 
     &--tech { background: rgba(0, 135, 255, 0.12); color: $domain-tech; }
+    &--internet { background: rgba(6, 182, 212, 0.12); color: $domain-internet; }
     &--business { background: rgba(255, 125, 83, 0.12); color: $domain-business; }
+    &--finance { background: rgba(245, 158, 11, 0.14); color: $domain-finance; }
+    &--auto { background: rgba(99, 102, 241, 0.12); color: $domain-auto; }
     &--ent { background: rgba(236, 72, 153, 0.1); color: $domain-ent; }
+    &--art { background: rgba(168, 85, 247, 0.12); color: $domain-art; }
     &--sports { background: rgba(16, 185, 129, 0.1); color: $domain-sports; }
+    &--health { background: rgba(244, 63, 94, 0.1); color: $domain-health; }
     &--academia { background: rgba(95, 51, 225, 0.1); color: $domain-academia; }
+    &--edu { background: rgba(20, 184, 166, 0.12); color: $domain-edu; }
     &--other { background: rgba(110, 106, 124, 0.1); color: $domain-other; }
   }
 

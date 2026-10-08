@@ -27,7 +27,11 @@ export interface HotPerson {
 
 /**
  * 按 heat 降序排列（无真实数据时即为最终榜单）。
- * 覆盖全部 6 个领域（每领域 4 位）：种子兜底时按领域筛选不会有空领域。
+ * 覆盖全部 12 个领域（每领域 2~4 位）：种子兜底时按领域筛选不会有空领域。
+ *
+ * 2026-10-08 领域从 6 个扩到 12 个时，给 6 个新领域各补了 2 位 —— 否则云未配置 / 冷启动
+ * 时按「财经」「教育」筛选会是空列表。注意这是一份**兜底与运营**池，不承担榜单配比：
+ * 真实榜单的领域配比在 hotBoardRefresh 的 PER_DOMAIN。
  */
 export const HOT_PERSONS: HotPerson[] = [
   { name: '雷军', domain: 'tech', heat: 92, tag: '新品发布', trend: '新品发布节奏与年度目标表态持续被讨论' },
@@ -53,5 +57,18 @@ export const HOT_PERSONS: HotPerson[] = [
   { name: '潘建伟', domain: 'academia', heat: 63, tag: '量子科技', trend: '量子通信与量子计算进展被反复解读' },
   { name: '樊锦诗', domain: 'other', heat: 62, tag: '文保', trend: '敦煌文物保护与文化遗产话题长期被提及' },
   { name: '单霁翔', domain: 'other', heat: 61, tag: '文博', trend: '文博文创与传统文化的公开分享持续受关注' },
-  { name: '苏炳添', domain: 'sports', heat: 60, tag: '复出', trend: '复出参赛与训练状态成为讨论焦点' }
+  { name: '苏炳添', domain: 'sports', heat: 60, tag: '复出', trend: '复出参赛与训练状态成为讨论焦点' },
+  /* —— 以下为 2026-10-08 领域扩到 12 个后补的种子，heat 接在原有区间之下，不打乱既有排序 —— */
+  { name: '张小龙', domain: 'internet', heat: 59, tag: '微信', trend: '微信公开课与产品理念分享常被引用讨论' },
+  { name: '王兴', domain: 'internet', heat: 58, tag: '本地生活', trend: '本地生活竞争格局相关表态持续被解读' },
+  { name: '沈南鹏', domain: 'finance', heat: 57, tag: '创投', trend: '一级市场投资风向与公开演讲被创投圈关注' },
+  { name: '吴晓波', domain: 'finance', heat: 56, tag: '财经观察', trend: '年度企业观察与财经评论长期保持传播度' },
+  { name: '李想', domain: 'auto', heat: 55, tag: '新势力', trend: '新车交付节奏与产品定义表态被频繁讨论' },
+  { name: '何小鹏', domain: 'auto', heat: 54, tag: '智驾', trend: '智能驾驶路线与出海计划动态受关注' },
+  { name: '刘畊宏', domain: 'health', heat: 53, tag: '健身', trend: '健身直播与健康生活方式内容持续更新' },
+  { name: '张文宏', domain: 'health', heat: 52, tag: '医学科普', trend: '感染科医学科普与公开表达被持续关注' },
+  { name: '俞敏洪', domain: 'edu', heat: 51, tag: '教育', trend: '教育转型与公益助学相关内容被关注' },
+  { name: '李永乐', domain: 'edu', heat: 50, tag: '科普课', trend: '科普课程与物理讲解视频长期被推荐' },
+  { name: '谭盾', domain: 'art', heat: 49, tag: '作曲', trend: '交响乐新作与跨界演出消息被乐迷关注' },
+  { name: '蔡国强', domain: 'art', heat: 48, tag: '当代艺术', trend: '烟花艺术与大型个展动态持续被报道' }
 ]

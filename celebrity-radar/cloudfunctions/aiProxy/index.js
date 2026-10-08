@@ -4,8 +4,13 @@
  * 小程序包可解包、前端一切可见，平台自有 key 一旦下发到客户端即等同公开
  * （见 src/config/public.ts）。故 key 只活在服务端：本函数的环境变量里。
  *   控制台 → 云函数 → aiProxy → 配置 → 环境变量：
- *     BOCHA_API_KEY     博查搜索 key
- *     DEEPSEEK_API_KEY  大模型 key（OpenAI 兼容）
+ *     BOCHA_API_KEY   博查搜索 key
+ *     大模型 key 的变量名**随供应商而变**（DEEPSEEK_API_KEY / QWEN_API_KEY / …）：
+ *     用哪家、去哪取 key 由同目录 llm.config.js 决定，本文件不动。
+ *     2026-10-08 起供应商**由用户在「我的」页自选**，端上把 provider + model 带上来，本函数按
+ *     那家去读对应的环境变量 —— 所以端上清单里列出的每一家都要在这里配好 key（缺一家 = 少一家可用）。
+ *     LLM_PROVIDER 退为兜底（端上没带 / 带了不认识的 id 时才用），
+ *     LLM_BASE_URL / LLM_MODEL / LLM_API_KEY 仍可临时覆盖表内结果（但会锁死所有用户的档位）。
  * 严禁把 key 写进本文件或任何提交进 git 的文件。
  *
  * action：
@@ -16,9 +21,10 @@
  *   'chat'   业务转发：代理一次大模型对话，供端上 llm.ts 在用户未自配 key 时使用
  *
  * ⚠ 本函数同时是**付费闸门**（2026-10-07 起）：chat 的模型档位按会员身份放行，
- * search 的 count 上限同样分档（见 MEMBER_ONLY_MODELS / FREE_SEARCH_MAX 的注释）。
- * 「深度模式」（O-11）也只在这一层放行：search 加厚素材、chat 放宽 max_tokens，
- * 端上那个 deep 标记只是请求，改包绕过不了这里的会员判定。
+ * search 的 count 上限同样分档（见 llm.config.js 的 memberOnlyModels / FREE_SEARCH_MAX 的注释）。
+ * 「深度模式」（O-11）也只在这一层放行 —— 它现在只剩**素材加厚**（search 的 count 分档）：
+ * chat 的输出上限（chatMaxTokens）自 2026-10-08 起对所有请求下发，不再按会员分档，
+ * 理由是它是「这一轮要写多长」的客观需求而不是权益（截断会让整份报告降级，见下方注释）。
  * 端上的会员判定只影响 UI 与请求值，改包即可绕过；凡是要花上游钱的权益都必须在这里拦一次。
  *
  * chat 的耗时约束（务必先读）：
@@ -34,24 +40,23 @@
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
+/* 供应商注册表 + 解析（换一家改它，不改本文件）。⚠ 与 hotBoardRefresh 目录下的副本逐字一致 */
+const { resolveLlm } = require('./llm.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const db = cloud.database()
 
 const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
-const LLM_BASE_URL = 'https://api.deepseek.com/v1'
-const LLM_MODEL = 'deepseek-v4-flash'
 const TIMEOUT_MS = 15000
 const SNIPPET = 200
 
-/**
- * 会员专属模型（「质」权益，2026-10-07）：
- * 与 src/config/public.ts 的 llm.models 里 memberOnly: true 的项一一对应。
- * ⚠ 端上那份清单决定 UI 与请求值，**这一份才是计费闸门** —— 小程序包可解包，
- * 端上判定改包即可绕过，只有这里拦得住「非会员用最贵的那一档」。
+/*
+ * 会员专属模型（「质」权益，2026-10-07）：清单已移到 llm.config.js 的 memberOnlyModels
+ * （每家一份），resolveLlm 返回的 memberOnly 即「本次这个模型要不要卡会员」。
+ * ⚠ 端上 src/config/public.ts 的 llm.models 决定 UI 与请求值，**云函数这份才是计费闸门** ——
+ * 小程序包可解包，端上判定改包即可绕过，只有这里拦得住「非会员用最贵的那一档」。
  */
-const MEMBER_ONLY_MODELS = ['deepseek-v4', 'deepseek-reasoner']
 
 /*
  * 检索条数上限（按会员分档，2026-10-07）：
@@ -64,15 +69,16 @@ const FREE_SEARCH_MAX = 20
 const MEMBER_SEARCH_MAX = 40
 
 /*
- * 会员「深度模式」的输出上限（O-11 第二步，2026-10-07）：
- *   免费版**不传 max_tokens**，用上游默认 —— 与改造前逐字节一致。它是**输出上限**不是额度，
- *   免费用户不该被悄悄削一刀，故这里只对会员放开。
- *   会员由端上带 deep:true 触发（与 search 的 count 分档同一个套路）：deep 只是「请求」，
- *   这里才是闸门，非会员改包带上它也拿不到。
- *   起因：报告正文是多段摘要 + 逐条动态的长 JSON，贴默认上限时尾部字段容易被截断，
- *   表现为「解析失败 → 重试 → 再失败」，代价反而是翻番的生成耗时。
+ * 对话输出上限（O-11 第二步 2026-10-07 只给会员，2026-10-08 起对所有请求下发）。
+ *
+ * 为什么不再按会员分档：「报告有多长」不是权益，而是事实 —— 报告正文是多段摘要 + 逐条动态的长
+ * JSON，第二批（档案 / 关系 / 后续关注 / 名词解释 / 争议）又往**免费**提示词里加了 5 段，
+ * 于是免费报告的 JSON 顶过了上游默认上限（DeepSeek 4096）。贴上限的后果不是「少一段」，
+ * 而是尾部被截断 → JSON 解析不出 → 重试再失败 → 整份报告降级成纯文本简版：
+ * 报告页的结构化卡片成批消失，看着像功能被删了，还白付两次生成的钱。
+ * 它仍是**输出上限**而不是额度：不设时上游用自己的默认值，设了只是把上限抬到「够写完整份报告」。
+ * 上限值随供应商配置（llm.config.js 的 chatMaxTokens，默认 8192）。
  */
-const MEMBER_CHAT_MAX_TOKENS = 8192
 
 /** 控制台上的函数超时时间必须大于它，否则长生成会被平台提前掐断 */
 const LLM_CHAT_TIMEOUT_MS = 50000
@@ -175,12 +181,13 @@ async function probeBocha(key) {
   return { ok: false, detail: `HTTP ${res.status} / code ${code}：${snippet(body) || '无响应体'}` }
 }
 
-async function probeLlm(key, model) {
+/** 探测当前供应商是否可用：端点 / 模型 / key 都取自 resolveLlm，换一家后测的就是换过去的那家 */
+async function probeLlm(llm) {
   const res = await postJson(
-    `${LLM_BASE_URL.replace(/\/+$/, '')}/chat/completions`,
-    { Authorization: `Bearer ${key}` },
+    `${String(llm.baseUrl || '').replace(/\/+$/, '')}/chat/completions`,
+    { Authorization: `Bearer ${llm.apiKey}` },
     {
-      model: model || LLM_MODEL,
+      model: llm.model,
       stream: false,
       messages: [
         { role: 'system', content: '你是连通性测试助手，只回复两个字：正常' },
@@ -215,10 +222,39 @@ function failDetail(err) {
 }
 
 /**
+ * 探针：把上游响应的**结构**（键名 + 条数，不含任何正文）摘一小份回端上。
+ *
+ * 起因：博查的响应是 Bing 兼容结构，图片在 `data.images.value`、视频在 `data.videos.value`，
+ * 与 `webPages` **同级**；而 runSearch 只把 webPages 交给端上，于是「博查到底返不返回图片/视频、
+ * 字段叫什么」这个问题在端上永远看不到答案。要往报告里加图，得先答这个问题。
+ * 端上把它记进诊断日志（search.ts），一次真实检索就能看清，不必再猜。
+ *
+ * 只回键名与计数：正文可能几万字，绝不往这里塞。
+ */
+function probeOf(body) {
+  const d = (body && body.data) || {}
+  const isObj = (v) => !!v && typeof v === 'object'
+  const firstKeys = (list) => {
+    const v = list && Array.isArray(list.value) ? list.value[0] : null
+    return isObj(v) ? Object.keys(v).slice(0, 30) : []
+  }
+  const sizeOf = (list) => (list && Array.isArray(list.value) ? list.value.length : 0)
+  return {
+    dataKeys: Object.keys(d).slice(0, 20),
+    pageKeys: firstKeys(d.webPages),
+    images: sizeOf(d.images),
+    imageKeys: firstKeys(d.images),
+    videos: sizeOf(d.videos),
+    videoKeys: firstKeys(d.videos)
+  }
+}
+
+/**
  * 业务转发：一次博查检索。
  *
  * 刻意只回上游原始 webPages 数组，不在这里做字段映射——
  * 端上 search.ts 的 toNewsItem 是字段兜底的唯一来源，两处各写一份必然漂移。
+ * （probe 是例外：它不回内容，只回「上游响应里有哪些键」，见 probeOf。）
  *
  * 返回值带上 kind：端上据此决定「要不要重试」。
  *   rate / auth / quota / unconfigured / badrequest → 重试无意义
@@ -249,7 +285,8 @@ async function runSearch(key, params) {
   }
 
   const pages = (body.data && body.data.webPages && body.data.webPages.value) || []
-  return { ok: true, pages }
+  /* probe 跟着成功返回一起走，端上只在诊断日志里记一笔（不改任何检索行为） */
+  return { ok: true, pages, probe: probeOf(body) }
 }
 
 /**
@@ -343,21 +380,33 @@ function normalizeMessages(raw) {
  *   upstream / network                              → 可退避重试
  */
 async function handleChat(event) {
-  const key = readEnv('DEEPSEEK_API_KEY')
+  /*
+   * 用哪家、哪个端点、哪把 key、哪个模型，全部由 llm.config.js 裁决（换一家不改这里）。
+   * event.provider 即用户在「我的 → 模型供应商」选的那家，**以它为准**；key 仍是平台自己的
+   * （该家环境变量里的那一枚），用户为零配置 —— 他付的是额度，不是 key。
+   */
+  const llm = resolveLlm(event)
+  if (!llm.baseUrl) {
+    return {
+      ok: false,
+      kind: 'unconfigured',
+      error: `未配置大模型端点（供应商 ${llm.provider}；请设置环境变量 LLM_BASE_URL）`
+    }
+  }
+  const key = llm.apiKey
   if (!key) {
     return {
       ok: false,
       kind: 'unconfigured',
-      error: '平台未配置大模型额度（云函数环境变量 DEEPSEEK_API_KEY）'
+      error: `平台未配置大模型额度（云函数环境变量 ${llm.apiKeyEnv}）`
     }
   }
 
   const norm = normalizeMessages(event.messages)
   if (norm.error) return { ok: false, kind: 'badrequest', error: norm.error }
 
-  /* 模型名由端上传入（与 public.ts 的 llm.model 同源），缺省用本文件常量 */
-  const requested =
-    typeof event.model === 'string' && event.model.trim() ? event.model.trim() : LLM_MODEL
+  /* 模型名已在 resolveLlm 里按「LLM_MODEL > 端上传入（仅同一家）> 该家默认」定好 */
+  const requested = llm.model
 
   /*
    * 会员闸门：端上传的模型名只是「请求」，这里才是裁决点。
@@ -374,23 +423,21 @@ async function handleChat(event) {
     if (memberKnown === null) memberKnown = await isActiveMember(openid)
     return memberKnown
   }
-  if (MEMBER_ONLY_MODELS.includes(requested) && !(await isMember())) {
-    model = LLM_MODEL
+  if (llm.memberOnly && !(await isMember())) {
+    model = llm.defaultModel
     downgraded = true
   }
 
   /*
-   * 深度模式（O-11）：端上只在会员时带 deep:true。非会员带 deep 也拿不到 —— 这里要再查一次身份，
-   * 与 runSearch「要得比免费上限多才查会员」同一取舍：常态请求（不带 deep）不为此多一次读库。
+   * 输出上限对所有请求下发（理由见文件上方 chatMaxTokens 那段）：不给它，上游就用默认上限，
+   * 而报告 JSON 比默认上限长。这里不查会员身份 —— 一次读库留给上面那道「模型档位」闸门就够了。
    */
-  const deep = event.deep === true && (await isMember())
-  const payload = { model, stream: false, messages: norm.messages }
-  if (deep) payload.max_tokens = MEMBER_CHAT_MAX_TOKENS
+  const payload = { model, stream: false, messages: norm.messages, max_tokens: llm.chatMaxTokens }
 
   let res
   try {
     res = await postJson(
-      `${LLM_BASE_URL.replace(/\/+$/, '')}/chat/completions`,
+      `${String(llm.baseUrl).replace(/\/+$/, '')}/chat/completions`,
       { Authorization: `Bearer ${key}` },
       payload,
       LLM_CHAT_TIMEOUT_MS
@@ -403,9 +450,9 @@ async function handleChat(event) {
     return { ok: false, kind: 'rate', error: '大模型请求过于频繁，请稍后再试' }
   }
   if (res.status === 401) {
-    return { ok: false, kind: 'auth', error: '大模型密钥无效（请检查云函数环境变量 DEEPSEEK_API_KEY）' }
+    return { ok: false, kind: 'auth', error: `大模型密钥无效（请检查云函数环境变量 ${llm.apiKeyEnv}）` }
   }
-  /* 402 = DeepSeek 账户余额不足，与 401 是两回事，分开报才定位得到 */
+  /* 402 = 上游账户余额不足（Payment Required），与 401 是两回事，分开报才定位得到 */
   if (res.status === 402) {
     return { ok: false, kind: 'quota', error: '大模型额度不足（上游账户余额）' }
   }
@@ -422,7 +469,12 @@ async function handleChat(event) {
   if (typeof content !== 'string' || !content.trim()) {
     return { ok: false, kind: 'upstream', error: `大模型返回结构异常：${snippet(res.data)}` }
   }
-  return { ok: true, content, model, downgraded, deep }
+  /*
+   * finishReason 原样回传端上：'length' = 输出撞上 max_tokens、被上游截断了。
+   * 报告这类长生成的失败基本都出在这里，端上据此在诊断日志里留一笔，下次不必靠猜。
+   */
+  const finishReason = choices[0].finish_reason || ''
+  return { ok: true, content, model, downgraded, finishReason }
 }
 
 exports.main = async (event) => {
@@ -434,12 +486,9 @@ exports.main = async (event) => {
   }
 
   const bochaKey = readEnv('BOCHA_API_KEY')
-  const llmKey = readEnv('DEEPSEEK_API_KEY')
-
-  /* 探测用的模型名由端上传入（M7-4「模型选择」）：用户在设置页切到哪个模型，就真打哪个，
-     免得「测试通过」测的其实是另一个模型。缺省仍用本文件常量。 */
-  const probeModel =
-    typeof event.model === 'string' && event.model.trim() ? event.model.trim() : LLM_MODEL
+  /* 探测也走同一张供应商表：换一家后，「测试」测的就是换过去的那家 */
+  const llmConf = resolveLlm(event)
+  const llmKey = llmConf.apiKey
 
   const bocha = Object.assign(keyInfo(bochaKey), { ok: false, detail: '' })
   const llm = Object.assign(keyInfo(llmKey), { ok: false, detail: '' })
@@ -453,10 +502,11 @@ exports.main = async (event) => {
     }
   }
 
-  if (!llmKey) llm.detail = '未配置环境变量 DEEPSEEK_API_KEY'
+  if (!llmKey) llm.detail = `未配置环境变量 ${llmConf.apiKeyEnv}`
+  else if (!llmConf.baseUrl) llm.detail = `未配置端点（供应商 ${llmConf.provider}）`
   else {
     try {
-      Object.assign(llm, await probeLlm(llmKey, probeModel))
+      Object.assign(llm, await probeLlm(llmConf))
     } catch (err) {
       llm.detail = failDetail(err)
     }
@@ -465,7 +515,8 @@ exports.main = async (event) => {
   return {
     ok: bocha.ok && llm.ok,
     checked_at: new Date().toISOString(),
-    model: probeModel,
+    provider: llmConf.provider,
+    model: llmConf.model,
     bocha,
     llm
   }

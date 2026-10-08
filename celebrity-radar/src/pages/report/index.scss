@@ -39,10 +39,16 @@
     justify-content: center;
 
     &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+    &--internet { background: linear-gradient(135deg, #67e8f9, $domain-internet); }
     &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+    &--finance { background: linear-gradient(135deg, #fcd34d, $domain-finance); }
+    &--auto { background: linear-gradient(135deg, #a5b4fc, $domain-auto); }
     &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+    &--art { background: linear-gradient(135deg, #d8b4fe, $domain-art); }
     &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+    &--health { background: linear-gradient(135deg, #fda4af, $domain-health); }
     &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+    &--edu { background: linear-gradient(135deg, #5eead4, $domain-edu); }
     &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
   }
 
@@ -317,24 +323,34 @@
   }
 
   /*
-    点评拆条（本轮）：每条「判断 + 依据」两行，字号沿用上面的 __analysis-text ——
-    老报告（整段）与新报告（拆条）是同一张卡的两个分支，阅读节奏不能有落差。
+    点评（本轮修正）：正文是一整段（复用上面的 __analysis-text），句末挂 [n]，
+    出处集中列在段末这里用同号对上。原先每条判断各占一段、下面挂一行「依据：XX」，
+    读起来是论点清单（用户反馈「这不是 AI 点评」）—— 只换排版，对应关系照旧保留。
+
     依据刻意做小做灰：它是判断的附注，不是第二个结论。
   */
-  &__point + &__point {
-    margin-top: 20rpx;
+  &__points {
+    margin-top: 16rpx;
+    padding-top: 14rpx;
+    border-top: 1rpx solid $line;
   }
 
-  &__point-text {
+  &__points-title {
     display: block;
-    font-size: 28rpx;
-    line-height: 1.8;
-    color: $text-1;
+    margin-bottom: 6rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  /* 句末序号：跟着正文读，字号小一号、品牌色，暗示「这句的出处见段末」 */
+  &__point-ref {
+    font-size: 22rpx;
+    color: $brand;
   }
 
   &__point-basis {
     display: block;
-    margin-top: 6rpx;
     font-size: 22rpx;
     line-height: 1.5;
     color: $text-3;
@@ -696,12 +712,144 @@
     }
   }
 
-  &__cloud-note {
+  &__cloud-note,
+  /* 第二批：事实卡的页脚口径小字。与词云卡的口径小字是同一件东西（都说明「这张卡的条目是怎么来的」），
+     故共用一套样式；类名分开只是为了让词云卡里读起来不别扭 */
+  &__entry-foot {
     display: block;
     margin-top: 16rpx;
     font-size: 20rpx;
     line-height: 1.6;
     color: $text-3;
+  }
+
+  /* 空段说明（2026-10-08）：某张卡「本次生成确实没有内容」时写在卡内，代替整卡消失。
+     比 __entry-foot 大一档字号：它替代的是这张卡的正文，而不是页脚口径说明。 */
+  &__empty {
+    display: block;
+    padding: 8rpx 0 4rpx;
+    font-size: 24rpx;
+    line-height: 1.7;
+    color: $text-3;
+  }
+
+  /* ===== 第二批：结构化事实条目（人物档案 / 关系图谱 / 后续关注 / 争议与回应 / 名词解释） =====
+     五张卡的数据形态不同（字段-值 / 人名-关系 / 时间-事件 / 争议-回应 / 词-释义），
+     但排版语言统一为三层：主行 → 说明 → 依据。
+     依据一律做小做灰，与 AI 点评的 __point-basis 同源：它是附注，不是第二个结论 ——
+     事实卡最怕「依据」和「事实」一样醒目，那样读起来像两条并列的信息。 */
+  &__entry {
+    /* 只在条目之间画分隔线（用相邻兄弟选择器）：首条不加，免得卡片标题下多出一道横线 */
+    & + & {
+      margin-top: 22rpx;
+      padding-top: 22rpx;
+      border-top: 1rpx solid $line;
+    }
+  }
+
+  /* 主行：值 / 姓名 / 时间 + 标签。baseline 对齐让不定长的那一段与定宽的字段名坐在同一基线上 */
+  &__entry-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12rpx;
+  }
+
+  /* 字段名定宽（与主页 __info-label 同一手法）：不定宽则「职业」「出生年份」右侧的值凑不成一列 */
+  &__entry-label {
+    flex-shrink: 0;
+    width: 140rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 名词解释里那个词本身是主体（不是「字段名」），故给它正文的字重与品牌色，只借用定宽 */
+  &__entry-label--term {
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $brand-dark;
+  }
+
+  &__entry-name {
+    flex-shrink: 0;
+    font-size: 28rpx;
+    font-weight: 600;
+    line-height: 1.6;
+    color: $text-1;
+  }
+
+  &__entry-value {
+    flex: 1;
+    min-width: 0;
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+  }
+
+  /* 关系标签：四档一律中性配色。关系答的是「是什么」，不是「好不好」——
+     给「对手」染红等于替读者下一个素材没下过的判断 */
+  &__entry-tag {
+    flex-shrink: 0;
+    margin-bottom: 4rpx;
+    padding: 2rpx 14rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand-dark;
+    font-size: 20rpx;
+    line-height: 1.6;
+  }
+
+  &__entry-text {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 26rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  &__entry-basis {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  /* ===== 语录主题：主题词 + 条数 + 代表原文（比语录卡低一级的字号，避免喧宾夺主） ===== */
+  &__qtheme {
+    margin-top: 20rpx;
+
+    /* 首条不再叠加上边距：卡片标题下已经是留白 */
+    &:first-of-type {
+      margin-top: 8rpx;
+    }
+  }
+
+  &__qtheme-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12rpx;
+  }
+
+  &__qtheme-topic {
+    font-size: 28rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__qtheme-count {
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  &__qtheme-quote {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+    /* 引文可能夹无空格英文长串（模型从素材原样复制），必须允许断词 */
+    word-break: break-all;
   }
 
   &__highlights {
@@ -1030,10 +1178,16 @@
     justify-content: center;
 
     &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+    &--internet { background: linear-gradient(135deg, #67e8f9, $domain-internet); }
     &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+    &--finance { background: linear-gradient(135deg, #fcd34d, $domain-finance); }
+    &--auto { background: linear-gradient(135deg, #a5b4fc, $domain-auto); }
     &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+    &--art { background: linear-gradient(135deg, #d8b4fe, $domain-art); }
     &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+    &--health { background: linear-gradient(135deg, #fda4af, $domain-health); }
     &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+    &--edu { background: linear-gradient(135deg, #5eead4, $domain-edu); }
     &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
   }
 

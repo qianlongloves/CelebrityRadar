@@ -95,10 +95,16 @@
   background: $domain-other;
 
   &--tech { background: $domain-tech; }
+  &--internet { background: $domain-internet; }
   &--business { background: $domain-business; }
+  &--finance { background: $domain-finance; }
+  &--auto { background: $domain-auto; }
   &--ent { background: $domain-ent; }
+  &--art { background: $domain-art; }
   &--sports { background: $domain-sports; }
+  &--health { background: $domain-health; }
   &--academia { background: $domain-academia; }
+  &--edu { background: $domain-edu; }
   &--other { background: $domain-other; }
 }
 
@@ -114,9 +120,17 @@
 }
 
 .page-topic__member-name {
+  /*
+    长名字省略而不是折行：同行右侧是「领域标签」（全局 .chip 已设 flex-shrink:0，不会再被压扁），
+    名字若不交出宽度就会折成两行、把整行撑高。min-width:0 才允许它收缩到内容宽度以下。
+  */
+  min-width: 0;
+  overflow: hidden;
   font-size: 30rpx;
   font-weight: 600;
   color: $text-1;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .page-topic__member-meta {

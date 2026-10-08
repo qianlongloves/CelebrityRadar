@@ -52,10 +52,16 @@ const COLOR = {
 /** 领域色（同 variables.scss 的 $domain-*，用于头像底色与领域胶囊） */
 const DOMAIN_COLOR: Record<DomainCode, string> = {
   tech: '#0087FF',
+  internet: '#06B6D4',
   business: '#FF7D53',
+  finance: '#F59E0B',
+  auto: '#6366F1',
   ent: '#EC4899',
+  art: '#A855F7',
   sports: '#10B981',
+  health: '#F43F5E',
   academia: '#5F33E1',
+  edu: '#14B8A6',
   other: '#6E6A7C'
 }
 

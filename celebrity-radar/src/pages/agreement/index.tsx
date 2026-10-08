@@ -1,4 +1,5 @@
 import { View, Text } from '@tarojs/components'
+import { DOMAIN_COVERAGE_TEXT } from '@/config/domains'
 import './index.scss'
 
 /** 隐私与免责声明（§六.3/六.4 静态文案，发版前需按最新合规要求复核） */
@@ -16,7 +17,7 @@ const DISCLAIMER_ITEMS: Array<{ title: string; desc: string }> = [
   { title: '信息来源', desc: '报告中的每条动态与来源链接均来自公开检索结果（博查），可逐条复制链接溯源核查。' },
   { title: '准确性', desc: 'AI 可能产生错误或过时信息；涉及事实请以权威来源为准。' },
   { title: '名誉与纠错', desc: '若你认为某位名人的内容存在错误或侵权，可通过「内容举报 / 反馈」联系我，核实后将下线对应内容。' },
-  { title: '查询范围', desc: '本工具仅覆盖科技、商业、文娱、体育、学术领域公众名人的公开信息。' }
+  { title: '查询范围', desc: `本工具覆盖${DOMAIN_COVERAGE_TEXT}等多个领域公众名人的公开信息。` }
 ]
 
 export default function Agreement() {

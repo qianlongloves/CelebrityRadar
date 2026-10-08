@@ -629,6 +629,15 @@ export default function Compare() {
             </View>
           </View>
 
+          {/* 两边都没立场也出卡并写明原因（原先不成立就整卡消失） */}
+          {result.a.stances.length === 0 && result.b.stances.length === 0 && (
+            <View className='card'>
+              <View className='card-title'>公开立场对照</View>
+              <Text className='page-compare__note'>
+                两份报告都没有命中可对照的公开立场。立场是模型在生成报告时判定的，只有那份报告里正好写到才有 —— 不是本页没取到。
+              </Text>
+            </View>
+          )}
           {(result.a.stances.length > 0 || result.b.stances.length > 0) && (
             <View className='card'>
               <View className='card-title'>公开立场对照</View>

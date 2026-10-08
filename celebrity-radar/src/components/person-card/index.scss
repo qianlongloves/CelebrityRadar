@@ -11,6 +11,18 @@ $pill-height: 60rpx;
 $pill-font: 24rpx;
 $pill-pad: 22rpx;
 
+/*
+  热门位两枚按钮的图标（SVG → base64 data URI，与 custom-tab-bar 的图标同一套做法）。
+  只在这一处用，故不另建令牌文件（沿用 tabbar 里「单处使用的图标就地写成背景图」的约定）。
+  颜色直接烘焙进 SVG：background-image 无法继承 currentColor，而这三枚各自只有一种配色 ——
+    · plus  —— 未关注，品牌紫描边（$brand）
+    · check —— 已关注，弱化为中性灰（$text-3）
+    · ai    —— AI 报告，白色实心，落在品牌紫圆底上
+*/
+$pc-icon-plus: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj48cGF0aCBkPSJNMTIgNS4ydjEzLjZNNS4yIDEyaDEzLjYiIHN0cm9rZT0iIzVmMzNlMSIgc3Ryb2tlLXdpZHRoPSIyLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==");
+$pc-icon-check: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj48cGF0aCBkPSJNNSAxMi44bDQuNiA0LjZMMTkgNy40IiBzdHJva2U9IiM5Yjk3YWIiIHN0cm9rZS13aWR0aD0iMi40IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=");
+$pc-icon-ai: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj48cGF0aCBkPSJNMTIgMmMuNiA1IDUgOS40IDEwIDEwLTUgLjYtOS40IDUtMTAgMTAtLjYtNS01LTkuNC0xMC0xMCA1LS42IDkuNC01IDEwLTEweiIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==");
+
 .person-card {
   display: flex;
   align-items: center;
@@ -35,10 +47,16 @@ $pill-pad: 22rpx;
     justify-content: center;
 
     &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+    &--internet { background: linear-gradient(135deg, #67e8f9, $domain-internet); }
     &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+    &--finance { background: linear-gradient(135deg, #fcd34d, $domain-finance); }
+    &--auto { background: linear-gradient(135deg, #a5b4fc, $domain-auto); }
     &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+    &--art { background: linear-gradient(135deg, #d8b4fe, $domain-art); }
     &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+    &--health { background: linear-gradient(135deg, #fda4af, $domain-health); }
     &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+    &--edu { background: linear-gradient(135deg, #5eead4, $domain-edu); }
     &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
   }
 
@@ -54,7 +72,13 @@ $pill-pad: 22rpx;
     min-width: 0;
   }
 
-  /* 名字允许收缩并省略：右侧多了关注按钮后，长名字（尤其英文名）会挤压按钮 */
+  /* 「领域标签不许被压缩」写在全局 .chip（app.scss）里，此处不再重复一遍 */
+
+  /*
+    名字允许收缩并省略：右侧多了关注 / AI 报告两个入口后，长名字（尤其英文名）会挤压按钮。
+    min-width:0 是关键 —— 不开这扇门，flex 的 min-width:auto 会让名字拒绝收缩到
+    内容宽度以下，压力就全转给了旁边的领域标签，标签于是折行变形。
+  */
   &__name {
     min-width: 0;
     overflow: hidden;
@@ -114,6 +138,30 @@ $pill-pad: 22rpx;
     line-height: $pill-height - 2;
   }
 
+  /*
+    主操作的图标态（热门位）：品牌紫圆底 + 白色 sparkle。
+    与左侧描边的关注圆（白底紫图标）构成实心 / 描边的主次对照，延续原先
+    AtButton primary 的语义 —— 它仍是「点进 AI 报告」这个更强的动作。
+    不复用 AtButton 是因为图标要走 background-image，而 taro-ui 的按钮自带背景色，
+    两套背景叠在一起谁覆盖谁依赖编译顺序；自绘一个圆反而更稳。
+  */
+  &__action-icon {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    width: $pill-height;
+    height: $pill-height;
+    border-radius: 50%;
+    background-color: $brand;
+    background-image: $pc-icon-ai;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 34rpx 34rpx;
+
+    &--tap {
+      opacity: 0.85;
+    }
+  }
+
   /* 卡片内直接关注：描边式小胶囊，与主操作按钮（实心）拉开主次，但**同高同胖** */
   &__follow {
     box-sizing: border-box;
@@ -143,6 +191,26 @@ $pill-pad: 22rpx;
 
     &--pending {
       opacity: 0.35;
+    }
+
+    /*
+      图标态（热门位）：按钮收成一个 60rpx 的圆，文字换成背景图。
+      热门卡右侧同时挂着「关注」与「AI 报告」两个入口，两枚文字胶囊并排会把长名字
+      挤到换行；各收成一个圆后，名字与领域标签才留得出空间。
+      已关注用组合选择器（0,2,0）压住上面的 `--on`，不依赖声明顺序。
+    */
+    &--icon {
+      width: $pill-height;
+      padding: 0;
+      border-radius: 50%;
+      background-image: $pc-icon-plus;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: 30rpx 30rpx;
+
+      &.person-card__follow--on {
+        background-image: $pc-icon-check;
+      }
     }
   }
 }

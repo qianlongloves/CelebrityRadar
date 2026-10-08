@@ -160,12 +160,24 @@ describe('领域码与 personKey utils/domains', () => {
     ok(d.isDomainCode('other'))
     notOk(d.isDomainCode('TECH'))
     notOk(d.isDomainCode('全部'))
-    eq(d.DOMAIN_CODES.length, 6)
+    eq(d.DOMAIN_CODES.length, 12)
   })
 
   it('每个领域码都有中文标签', () => {
     for (const code of d.DOMAIN_CODES) {
       ok(d.DOMAIN_META[code] && d.DOMAIN_META[code].label, `${code} 缺 label`)
+    }
+  })
+
+  it('标签互不重复（两个领域同名会让人分不清筛选结果）', () => {
+    const labels = d.DOMAIN_CODES.map((c) => d.DOMAIN_META[c].label)
+    eq(new Set(labels).size, labels.length)
+  })
+
+  it('种子池覆盖全部领域码（否则种子兜底时按该领域筛选是空列表）', () => {
+    const hot = env.load('config/hot')
+    for (const code of d.DOMAIN_CODES) {
+      ok(hot.HOT_PERSONS.some((p) => p.domain === code), `${code} 在 config/hot.ts 里没有任何一位种子`)
     }
   })
 })
@@ -186,11 +198,12 @@ describe('发现页筛选条件 config/filters', () => {
     eq(f.summarizeFilters('sports', 'timeline'), '体育 · 侧重履历')
   })
 
-  it('行业筛选项 = 全部 + 6 个领域码', () => {
-    eq(f.DOMAIN_FILTER_CODES.length, 7)
+  it('行业筛选项 = 全部 + 12 个领域码', () => {
+    eq(f.DOMAIN_FILTER_CODES.length, 13)
     eq(f.DOMAIN_FILTER_CODES[0], 'all')
     eq(f.domainFilterLabel('all'), '全部')
     eq(f.domainFilterLabel('academia'), '学术')
+    eq(f.domainFilterLabel('edu'), '教育')
   })
 })
 
@@ -233,6 +246,37 @@ describe('关键词云 utils/keywords', () => {
     for (const k of extractKeywords(duplicated)) notOk(k.word.includes('雷军'), `词云出现人名：${k.word}`)
   })
 
+  it('人名碎片也不进词云（搜「陈佩斯」不该出现「陈佩」「佩斯」）', () => {
+    /* 造数据复现真实现象：动态标题几乎条条以人名开头，2-gram 碎片因此命中数极高 */
+    const report = mkReport({
+      name: '陈佩斯',
+      dynamics: [
+        dyn({ title: '陈佩斯新作定档', summary: '陈佩斯主演的舞台剧公布档期' }),
+        dyn({ title: '陈佩斯谈喜剧创作', summary: '陈佩斯认为喜剧要贴着生活' }),
+        dyn({ title: '陈佩斯出席活动', summary: '陈佩斯与观众合影' })
+      ],
+      quotes: [{ text: '陈佩斯说要慢下来', context: '采访' }]
+    })
+    const out = extractKeywords(report)
+    for (const k of out) {
+      notOk(k.word.includes('陈佩') || k.word.includes('佩斯'), `词云出现人名碎片：${k.word}`)
+      notOk('陈佩斯'.includes(k.word), `词云出现人名局部：${k.word}`)
+    }
+  })
+
+  it('话题恰好是人名（或人名局部）时同样不进词云', () => {
+    const report = mkReport({
+      name: '陈佩斯',
+      dynamics: [dyn({ title: '陈佩斯新作定档', summary: '舞台剧公布档期' })],
+      stance: [
+        { topic: '陈佩斯', attitude: 'neutral', note: '报告主角' },
+        { topic: '佩斯', attitude: 'neutral', note: '半截名字' }
+      ]
+    })
+    const out = extractKeywords(report)
+    for (const k of out) notOk('陈佩斯'.includes(k.word), `词云出现人名局部：${k.word}`)
+  })
+
   it('模型判定的话题进入词云且标记 from=topic、字号不为最小档', () => {
     const out = extractKeywords(duplicated)
     const topic = out.find((k) => k.word === '造车')
@@ -264,6 +308,184 @@ describe('关键词云 utils/keywords', () => {
         }
       }
     }
+  })
+})
+
+describe('语录主题 utils/keywords', () => {
+  const { extractQuoteThemes } = env.load('utils/keywords')
+
+  const q = (text, context = '采访') => ({ text, context })
+
+  it('语录少于 4 条不聚类（两三句本就能一眼看完）', () => {
+    const few = mkReport({ quotes: [q('慢下来才能看清'), q('慢下来才有味道'), q('慢下来是种选择')] })
+    deepEq(extractQuoteThemes(few), [])
+  })
+
+  it('按语录原文的高频说法归成两组，且每条语录只归一个主题', () => {
+    const report = mkReport({
+      quotes: [
+        q('喜剧要贴着生活', '访谈'),
+        q('喜剧最怕脱离生活', '论坛'),
+        q('资本进来之后创作就变味了', '专访'),
+        q('资本不该决定创作', '圆桌')
+      ]
+    })
+    const themes = extractQuoteThemes(report)
+    eq(themes.length, 2, '两组话题')
+    const topics = themes.map((t) => t.topic).join(',')
+    ok(topics.includes('喜剧'), `主题词应来自语录原文，实得 ${topics}`)
+    ok(topics.includes('资本'), `主题词应来自语录原文，实得 ${topics}`)
+    /* 互斥归类：各主题条数之和不超过语录总数，且同一句不会出现在两个主题里 */
+    ok(
+      themes.reduce((n, t) => n + t.count, 0) <= report.quotes.length,
+      '归一后条数不该超过语录总数'
+    )
+    const seen = new Set()
+    for (const t of themes) {
+      ok(t.count >= 2, `主题「${t.topic}」至少 2 条才成立`)
+      ok(t.quotes.length <= 2, '代表语录最多 2 条')
+      for (const text of t.quotes) notOk(seen.has(text), `语录重复归入两个主题：${text}`)
+      for (const text of t.quotes) seen.add(text)
+    }
+  })
+
+  it('主题词长版与截断碎片只留一条（不出现「喜剧创作」与「剧创作」并列）', () => {
+    const report = mkReport({
+      quotes: [
+        q('喜剧创作要贴着生活'),
+        q('喜剧创作最怕脱离生活'),
+        q('喜剧创作得慢下来'),
+        q('喜剧创作不是讨好观众')
+      ]
+    })
+    const themes = extractQuoteThemes(report)
+    for (let i = 0; i < themes.length; i++) {
+      for (let j = i + 1; j < themes.length; j++) {
+        const a = themes[i].topic
+        const b = themes[j].topic
+        notOk(a.includes(b) || b.includes(a), `主题词互为子串：${a} / ${b}`)
+      }
+    }
+  })
+
+  it('主题不足 2 个时返回空数组（只有一个「主题」等于没有分类）', () => {
+    const report = mkReport({
+      quotes: [q('喜剧要贴着生活'), q('喜剧创作不是讨好'), q('他最近在读历史'), q('他喜欢安静的地方')]
+    })
+    deepEq(extractQuoteThemes(report), [])
+  })
+
+  it('人名碎片不当主题词', () => {
+    const report = mkReport({
+      name: '陈佩斯',
+      quotes: [
+        q('陈佩斯说喜剧要贴着生活'),
+        q('陈佩斯认为喜剧最怕脱离生活'),
+        q('陈佩斯：喜剧创作得慢下来'),
+        q('陈佩斯谈喜剧创作不是讨好')
+      ]
+    })
+    for (const t of extractQuoteThemes(report)) {
+      notOk(t.topic.includes('陈佩') || t.topic.includes('佩斯'), `主题词出现人名碎片：${t.topic}`)
+    }
+  })
+})
+
+describe('热度趋势 utils/trend', () => {
+  const { buildHeatTrend } = env.load('utils/trend')
+
+  /* 造数：基准日固定，只改动态日期 */
+  const at = (dates, extra = {}) =>
+    mkReport(
+      Object.assign(
+        {
+          generatedAt: '2026-10-08T10:00:00.000Z',
+          dynamics: dates.map((d) => dyn({ date: d, title: `事件 ${d}` }))
+        },
+        extra
+      )
+    )
+
+  it('30 天内够 3 条就用 30 天窗口、6 个桶（窗口起止与生成日对齐）', () => {
+    const t = buildHeatTrend(at(['2026-09-20', '2026-10-01', '2026-10-07']))
+    ok(t, '应出折线')
+    eq(t.windowDays, 30)
+    eq(t.points.length, 6)
+    eq(t.total, 3)
+    eq(t.from, '2026-09-09')
+    eq(t.to, '2026-10-08')
+    eq(t.peak, 1)
+    for (const p of t.points) ok(p.ratio >= 0 && p.ratio <= 1, 'ratio 越界')
+    for (let i = 1; i < t.points.length; i++) ok(t.points[i].x > t.points[i - 1].x, 'x 未递增')
+  })
+
+  it('30 天不够就按阶梯放宽窗口，而不是整卡消失', () => {
+    /* 全都落在 30 天外、60 天内只够 2 条，90 天内才够 3 条 */
+    const t = buildHeatTrend(at(['2026-07-20', '2026-08-15', '2026-08-20']))
+    ok(t, '稀疏报告仍应出折线')
+    eq(t.windowDays, 90, '应放宽到 90 天')
+    eq(t.total, 3)
+    eq(t.from, '2026-07-11')
+    eq(t.points.length, 6, '桶数不随窗口变化')
+  })
+
+  it('显式给 opts.days 时只认这一个窗口、不再放宽', () => {
+    eq(buildHeatTrend(at(['2026-07-20', '2026-08-15', '2026-08-20']), { days: 30 }), null)
+    const t = buildHeatTrend(at(['2026-07-20', '2026-08-15', '2026-08-20']), { days: 90 })
+    ok(t)
+    eq(t.windowDays, 90)
+  })
+
+  it('超出 180 天上限的条目不再救场（履历类节点不该混进近期热度）', () => {
+    eq(buildHeatTrend(at(['2025-01-01', '2025-02-01', '2025-03-01'])), null)
+  })
+
+  it('只有 2 条或更少时不出折线（两个点连不成趋势）', () => {
+    eq(buildHeatTrend(at(['2026-10-01', '2026-10-02'])), null)
+    eq(buildHeatTrend(mkReport()), null)
+  })
+
+  it('日期形态放宽到中文与斜杠点号，但「只到月份」「只有月日」仍不解析', () => {
+    const t = buildHeatTrend(at(['2026年10月1日', '2026/09/25', '2026.09.20']))
+    ok(t, '三种写法都应被认出来')
+    eq(t.total, 3)
+    eq(t.windowDays, 30)
+    /* 「宁可不摆也不猜」：缺年或缺日的写法一律丢弃，因此这 3 条里只剩 2 条 → 不出卡 */
+    eq(buildHeatTrend(at(['2026-09', '9月8日', '2026-10-01', '2026-10-02'])), null)
+  })
+
+  it('同一天同一种说法只算一条（跨动态与时间线也去重），时间线单独也能撑起这张卡', () => {
+    const t = buildHeatTrend(
+      mkReport({
+        generatedAt: '2026-10-08T10:00:00.000Z',
+        dynamics: [
+          dyn({ date: '2026-09-20', title: '同一件事' }),
+          dyn({ date: '2026-09-20', title: '同一件事' }),
+          dyn({ date: '2026-10-01', title: '另一件事' })
+        ],
+        timeline: [
+          { date: '2026-09-20', event: '同一件事' },
+          { date: '2026-10-07', event: '履历节点' }
+        ]
+      })
+    )
+    ok(t, '应出折线')
+    eq(t.total, 3, '同日同说法的重复条目只算一条')
+    eq(t.spanDays, 18)
+    eq(t.peak, 1, '三条落在三个不同的桶')
+
+    const onlyTimeline = buildHeatTrend(
+      mkReport({
+        generatedAt: '2026-10-08T10:00:00.000Z',
+        timeline: [
+          { date: '2026-09-20', event: '甲' },
+          { date: '2026-10-01', event: '乙' },
+          { date: '2026-10-07', event: '丙' }
+        ]
+      })
+    )
+    ok(onlyTimeline, '只有时间线时也该出卡')
+    eq(onlyTimeline.total, 3)
   })
 })
 
@@ -392,6 +614,137 @@ describe('名人主页数据聚合 utils/stats', () => {
       null,
       '带日期条目不足 3 条时不出图'
     )
+  })
+
+  it('来源 × 情绪：与来源分布共用归并，单家条数过少不单列', () => {
+    const tiltReport = mkReport({
+      generatedAt: '2026-10-07T10:00:00.000Z',
+      dynamics: [
+        dyn({ title: '甲一', source: '甲媒体', date: '2026-09-05', sentiment: 'positive' }),
+        dyn({ title: '甲二', source: '甲媒体', date: '2026-09-06', sentiment: 'positive' }),
+        dyn({ title: '乙一', source: '乙媒体', date: '2026-09-07', sentiment: 'negative' }),
+        dyn({ title: '乙二', source: '乙媒体', date: '2026-09-08', sentiment: 'negative' }),
+        /* 只有 1 条的来源不进交叉表 */
+        dyn({ title: '丙一', source: '丙媒体', date: '2026-09-09', sentiment: 'positive' }),
+        /* 来源判不出的条目另外计数，不混进任何一家 */
+        dyn({ title: '丁一', date: '2026-09-10', sentiment: 'negative' })
+      ]
+    })
+    const t = buildProfileStats(tiltReport).tilt
+    ok(t, '两家达到门槛就该出卡')
+    eq(t.items.length, 2)
+    eq(t.total, 5, '来源可判定的 5 条')
+    eq(t.unknown, 1, '无媒体名也无 url 的 1 条')
+    eq(t.families, 3)
+    eq(t.hidden, 1, '丙媒体只有 1 条，不单列')
+    eq(t.hiddenFamilies, 1)
+    eq(t.items.map((x) => x.name).join(','), '甲媒体,乙媒体')
+    eq(t.items[0].positive, 2)
+    eq(t.items[0].tilt, 1, '全正面时净值为 1')
+    eq(t.items[1].negative, 2)
+    eq(t.items[1].tilt, -1)
+    eq(t.items[0].total, t.items[0].positive + t.items[0].neutral + t.items[0].negative)
+    eq(
+      buildProfileStats(tiltReport).sources.families,
+      t.families,
+      '来源分布与交叉卡的家数必须一致（共用同一份归并）'
+    )
+
+    /* 只有一家达到门槛时整卡不出：只列一家没有对照可言 */
+    const single = buildProfileStats(
+      mkReport({
+        dynamics: [
+          dyn({ title: '甲一', source: '甲媒体', sentiment: 'positive' }),
+          dyn({ title: '甲二', source: '甲媒体', sentiment: 'positive' }),
+          dyn({ title: '乙一', source: '乙媒体', sentiment: 'negative' })
+        ]
+      })
+    ).tilt
+    eq(single, null)
+  })
+
+  it('素材可信度：同一标题被多家报道算一件（转载识别），首报取最早日期', () => {
+    const c = buildProfileStats(
+      mkReport({
+        generatedAt: '2026-10-07T10:00:00.000Z',
+        dynamics: [
+          dyn({ title: '同一条新闻的标题', source: '甲媒体', date: '2026-09-05', sentiment: 'positive' }),
+          dyn({ title: '同一条新闻的标题', source: '乙媒体', date: '2026-09-06', sentiment: 'positive' }),
+          dyn({ title: '另一件事', source: '乙媒体', date: '2026-09-20', sentiment: 'negative' }),
+          dyn({ title: '第三件事', date: '2026-09-25', sentiment: 'neutral' })
+        ]
+      })
+    ).credibility
+    ok(c, '可判定来源的条目够 3 条就出卡')
+    eq(c.total, 4)
+    eq(c.sourced, 3)
+    eq(c.families, 2)
+    eq(c.events, 3, '前两条是同一件事（标题归一）')
+    eq(c.shared, 1, '被 2 家报道的事件')
+    eq(c.repeated, 1)
+    eq(c.repeatRatio, 0.25)
+    eq(c.first.date, '2026-09-05')
+    eq(c.first.source, '甲媒体')
+  })
+
+  it('素材可信度：日期都不可解析时不编首报（给 null 而不是取第一条）', () => {
+    const c = buildProfileStats(
+      mkReport({
+        dynamics: [
+          dyn({ title: '甲', source: 'A' }),
+          dyn({ title: '乙', source: 'B' }),
+          dyn({ title: '丙', source: 'C' })
+        ]
+      })
+    ).credibility
+    ok(c)
+    eq(c.first, null, '收录顺序不是时间顺序，不能拿它冒充首报')
+    eq(c.events, 3)
+    eq(c.repeatRatio, 0)
+  })
+
+  it('情绪走势：按月分层统计情绪，与月度分布同一套分桶规则', () => {
+    const s = buildProfileStats(
+      mkReport({
+        generatedAt: '2026-10-07T10:00:00.000Z',
+        dynamics: [
+          dyn({ title: '九月甲', date: '2026-09-05', sentiment: 'positive' }),
+          dyn({ title: '九月乙', date: '2026-09-20', sentiment: 'positive' }),
+          dyn({ title: '十月甲', date: '2026-10-02', sentiment: 'negative' }),
+          /* 未来月份是脏数据，一律丢弃（与月度分布同一规矩） */
+          dyn({ title: '十一月', date: '2026-11-05', sentiment: 'positive' })
+        ]
+      })
+    ).sentimentTrend
+    ok(s, '跨两个月应出走势')
+    eq(s.from, '2026-09')
+    eq(s.to, '2026-10')
+    eq(s.total, 3, '未来月份被丢弃')
+    eq(s.items.length, 2)
+    eq(s.peak, 2)
+    eq(s.items[0].key, '2026-09')
+    eq(s.items[0].label, 9)
+    eq(s.items[0].positive, 2)
+    eq(s.items[0].negative, 0)
+    eq(s.items[0].ratio, 1)
+    eq(s.items[1].label, 10)
+    eq(s.items[1].negative, 1)
+    eq(s.items[1].ratio, 0.5)
+    eq(s.items.reduce((n, x) => n + x.total, 0), s.total, '各月条数之和 = 总数')
+    eq(s.tilt, 1 / 3, '净倾向 (2-1)/3')
+
+    /* 全落在一个月里不出：那只有一根柱子，是「构成」不是「走势」 */
+    const oneMonth = buildProfileStats(
+      mkReport({
+        generatedAt: '2026-10-07T10:00:00.000Z',
+        dynamics: [
+          dyn({ title: '甲', date: '2026-10-01', sentiment: 'positive' }),
+          dyn({ title: '乙', date: '2026-10-02', sentiment: 'negative' }),
+          dyn({ title: '丙', date: '2026-10-03', sentiment: 'neutral' })
+        ]
+      })
+    ).sentimentTrend
+    eq(oneMonth, null)
   })
 
   it('同一份报告多次聚合结果一致（纯函数）', () => {

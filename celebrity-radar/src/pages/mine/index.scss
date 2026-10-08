@@ -500,6 +500,61 @@
     color: $brand;
   }
 
+  /* 档位那一组的标题：与上面的供应商一组之间画一条分界线，
+     否则两行「标题 + 当前值」看起来像同一组，读不出「换家 = 整组换」 */
+  &__model-head--sub {
+    margin-top: 24rpx;
+    padding-top: 24rpx;
+    border-top: 2rpx solid $line;
+  }
+
+  /* ===== 模型供应商（2026-10-08）：两列等宽 chips，一家一枚，选中项高亮 =====
+     早先的写法是「按内容宽度撑开 + flex-wrap」，四家的名字长短差得远
+     （Moonshot Kimi 比「智谱 GLM」宽近一倍），于是排出来是「三家挤一行、
+     第四家孤零零掉到下一行」，两行还右端参差 —— 这就是观感差的来源。
+     改法：每行**固定两家**（50% 减去半个 gap），宽度不再由文字决定。
+     家数增删时只是行数增减（可能出现末行单枚，但始终与第一列对齐），
+     也不用再按最长的那家去调间距。 */
+  &__provider-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12rpx;
+  }
+
+  &__provider-option {
+    /* box-sizing 必须显式给：flex-basis 按 border-box 解释，左右 padding 才不会顶破 50% */
+    box-sizing: border-box;
+    flex: 0 0 calc((100% - 12rpx) / 2);
+    /* 居中 + 定高：名字长的（Moonshot Kimi）与短的（智谱 GLM）占同等的视觉重量 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14rpx 20rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    border: 2rpx solid transparent;
+
+    &--on {
+      background: $brand-weak;
+      border-color: $brand;
+    }
+  }
+
+  &__provider-label {
+    font-size: 26rpx;
+    color: $text-2;
+    /* 固定宽度后，超长名字截断而不是换行 —— 换行会把整行撑高，两列就不齐了 */
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__provider-option--on &__provider-label {
+    color: $brand;
+    font-weight: 600;
+  }
+
   &__model-options {
     display: flex;
     flex-direction: column;

@@ -1420,17 +1420,18 @@ describe('提问流程 utils/qa#askReport', () => {
   })
 })
 
-/* ------------------------- 会员深度模式 O-11（闸门 / deep / 会员段落 / 热度） */
+/* ------------------------- 会员深度模式 O-11（闸门 / 会员段落 / 热度） */
 
-describe('会员深度模式 O-11（模型闸门 / deep / memberNotes / 热度口径）', () => {
+describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）', () => {
   const cfg = (load) => load('config/public').publicConfig
 
-  /** 会员专属档位的 id 取自公共配置：写死会在运营调整清单时变成假失败 */
-  const memberOnlyModel = (load) => {
+  /** 默认供应商的会员专属档位：id / 档位标识都取自公共配置（写死会在运营调整清单时变成假失败） */
+  const memberOnlyTier = (load) => {
     const m = cfg(load).llm.models.find((x) => x.memberOnly)
     ok(m, '前提：公共配置里应有 memberOnly 档位，否则本组用例失去意义')
-    return m.id
+    return m
   }
+  const memberOnlyModel = (load) => memberOnlyTier(load).id
 
   const seedMember = (db) =>
     db.__seed('users', [
@@ -1453,7 +1454,8 @@ describe('会员深度模式 O-11（模型闸门 / deep / memberNotes / 热度�
   it('模型闸门：非会员即使本机选了会员档也回落默认（设置页显示哪档 = 实际用哪档）', () => {
     const { load } = fresh()
     const preferred = memberOnlyModel(load)
-    load('utils/settings').setPreferredModel(preferred)
+    /* 本机存的是**档位标识**（fast / standard / reason），不是模型名 —— 见 utils/settings.ts */
+    load('utils/settings').setPreferredTier(memberOnlyTier(load).tier)
 
     eq(load('utils/llm').resolveChatModel(true), preferred, '会员应能用该档')
     eq(
@@ -1465,12 +1467,48 @@ describe('会员深度模式 O-11（模型闸门 / deep / memberNotes / 热度�
 
   it('模型闸门：偏好已从清单移除时回落默认（旧选择不能稳定生成失败）', () => {
     const { load } = fresh()
-    load('utils/settings').setPreferredModel('已下架的模型')
+    load('utils/settings').setPreferredTier('已下架的档位')
+    load('utils/settings').setPreferredProvider('已下线的供应商')
     eq(load('utils/llm').resolveChatModel(true), cfg(load).llm.model)
     eq(load('utils/llm').resolveChatModel(false), cfg(load).llm.model)
+    eq(
+      load('utils/llm').resolveChatSelection(true).provider,
+      cfg(load).llm.provider,
+      '认不出的供应商 id 要回落默认那家，而不是把 id 原样带给云函数'
+    )
   })
 
-  it('深度模式：免费请求体里没有 deep 这个键（不是 deep:false），会员才有', async () => {
+  it('供应商自选：换家不换档（存的档位标识跟着走），且 provider 随请求带给云函数', async () => {
+    const { db, load } = fresh()
+    let seen = null
+    env.registerCloudFn('aiProxy', (data) => {
+      seen = data
+      return { ok: true, content: 'ok' }
+    })
+    const settings = load('utils/settings')
+    const llm = load('utils/llm')
+    const providers = cfg(load).llm.providers
+    ok(providers.length >= 2, '前提：至少有两家可选供应商，否则本用例失去意义')
+
+    /* 免费用户切到第二家：模型名整组换成那家的，且请求带的是那家的 id（云端据此取 key） */
+    const other = providers[1]
+    settings.setPreferredProvider(other.id)
+    await llm.chatText('S', 'U')
+    eq(seen.provider, other.id, '用户选的那家必须随请求带给云函数（key 由云端按它去取）')
+    eq(seen.model, other.models[0].id, '免费用户切到哪家都只有那家的极速版')
+    eq(llm.resolveChatSelection(false).providerLabel, other.label)
+
+    /* 会员选标准档后再切家：档位不变，只是换成那家的标准版 */
+    seedMember(db)
+    settings.setPreferredTier(other.models[1].tier)
+    eq(llm.resolveChatSelection(true).model, other.models[1].id)
+    settings.setPreferredProvider(providers[0].id)
+    const after = llm.resolveChatSelection(true)
+    eq(after.tier, other.models[1].tier, '换供应商不该把用户的档位重置回极速版')
+    eq(after.model, providers[0].models[1].id, '首选那家也得到对应的标准版')
+  })
+
+  it('输出上限：请求体里不再出现 deep（上限对所有请求一样，不再是会员权益）', async () => {
     const { db, load } = fresh()
     let seen = null
     env.registerCloudFn('aiProxy', (data) => {
@@ -1479,14 +1517,17 @@ describe('会员深度模式 O-11（模型闸门 / deep / memberNotes / 热度�
     })
 
     await load('utils/llm').chatText('S', 'U')
-    notOk(Object.prototype.hasOwnProperty.call(seen, 'deep'), '免费版的请求体要与改造前逐字节一致')
+    notOk(Object.prototype.hasOwnProperty.call(seen, 'deep'), '免费版不该带 deep')
     eq(seen.model, cfg(load).llm.model)
 
     seedMember(db)
-    load('utils/settings').setPreferredModel(memberOnlyModel(load))
+    load('utils/settings').setPreferredTier(memberOnlyTier(load).tier)
     await load('utils/llm').chatText('S', 'U')
-    eq(seen.deep, true, '会员必须带 deep=true（请云函数放宽输出上限）')
-    eq(seen.model, memberOnlyModel(load))
+    notOk(
+      Object.prototype.hasOwnProperty.call(seen, 'deep'),
+      '会员也不再带 deep：输出上限是「这轮要写多长」的客观需求，截断会让整份报告降级（见 aiProxy 的 chatMaxTokens）'
+    )
+    eq(seen.model, memberOnlyModel(load), '会员闸门照旧：模型档位仍按会员放行')
   })
 
   it('会员段落的提示词只往会员的 system 末尾追加，免费提示词逐字节不变', async () => {
@@ -1766,5 +1807,189 @@ describe('报告质量（素材分级保留 / 点评拆条 / 信源分歧）', (
     ok(paidSystem.startsWith(freeSystem), '会员提示词仍是「免费 + 追加」，不另起一套')
     ok(paidSystem.includes('conflicts'), '会员应被要求输出信源分歧')
     eq(paidUser, freeUser, '素材选取只取决于素材本身，与会员身份无关（预算够时两者逐字相同）')
+  })
+})
+
+/* ------------------------- 报告第二批：人物档案 / 关系图谱 / 后续关注 / 名词解释 / 争议与回应 */
+
+/**
+ * 第二批的共同点是「关于本人的**事实**」（不是判断），故用例的判定依据集中在两条：
+ *   1. 进的是**免费**提示词 —— 这几段对免费用户同样是核心信息，不能跟着会员走；
+ *   2. 指不出真出处就**整条剔除** —— 事实字段不存在「据公开资料」这个兜底出口。
+ * 另外单独立一条边界：名词解释（glossary）是唯一豁免出处的段落，它答的是词义而不是事实。
+ */
+describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词解释 / 争议与回应）', () => {
+  const newsItem = (over = {}) =>
+    Object.assign(
+      {
+        title: '标题',
+        content: '正文',
+        url: 'https://example.com/a',
+        source: '媒体A',
+        publishedDate: '2026-10-08T00:00:00.000Z'
+      },
+      over
+    )
+
+  /** 造 n 条彼此不相干的素材（标题各不同，不会被判成同一件事） */
+  const distinct = (n) =>
+    Array.from({ length: n }, (_, i) =>
+      newsItem({ title: `报道${i}某影星相关消息`, url: `https://example.com/${i}` })
+    )
+
+  /** 跑一次 buildReport，取回真正发给模型的两条消息正文 */
+  const buildMessages = async (news, member = false) => {
+    const { load } = fresh()
+    let seen = null
+    env.registerCloudFn('aiProxy', (data) => {
+      seen = data
+      return { ok: true, content: JSON.stringify({ intro: 'x' }) }
+    })
+    await load('utils/report').buildReport('甲#tech', '甲', news, 'all', member ? { member: true } : {})
+    return { system: seen.messages[0].content, user: seen.messages[1].content }
+  }
+
+  /** sanitizeReport 的最小入参骨架 */
+  const emptyFields = { dynamics: [], quotes: [], sources: [], timeline: [] }
+  const sanitize = (llm, news) => {
+    const { load } = fresh()
+    return load('utils/report').sanitizeReport('k', '甲', Object.assign({}, emptyFields, llm), news)
+  }
+
+  it('五段都进免费提示词：会员拿到的仍是「免费 + 追加」，不另起一套', async () => {
+    const news = distinct(2)
+    const { system: freeSystem } = await buildMessages(news)
+    const { system: paidSystem } = await buildMessages(news, true)
+
+    for (const key of ['profile', 'relations', 'watchlist', 'glossary', 'controversies']) {
+      ok(freeSystem.includes(key), `免费提示词应要求输出 ${key}（它对免费用户同样是核心信息）`)
+      ok(paidSystem.includes(key), `会员提示词 = 免费 + 追加，故同样要它：${key}`)
+    }
+    ok(paidSystem.startsWith(freeSystem), '会员提示词仍是「免费 + 追加」')
+  })
+
+  it('档案/关系/后续关注/争议：指不出真出处就整条剔除，不退化成「据公开资料」', () => {
+    const news = distinct(2)
+    const r = sanitize(
+      {
+        profile: [
+          { label: '职业', value: '演员', basis: news[0].url },
+          { label: '年龄', value: '40 岁', basis: 'https://编造的.example.com/x' },
+          { label: '   ', value: '空字段名', basis: news[0].url }
+        ],
+        relations: [
+          { name: '乙', relation: 'cooperate', note: '同片主演', basis: news[1].url },
+          { name: '丙', relation: 'rival', note: '', basis: '' }
+        ],
+        watchlist: [
+          { when: '2026-11', what: '新片上映', basis: news[0].url },
+          { when: '2027', what: '凭印象猜的档期', basis: '据公开资料' }
+        ],
+        controversies: [
+          { topic: '番位', claim: '被指抢番', response: '工作室否认', basis: news[1].url },
+          { topic: '缺席', claim: '缺席路演', basis: 'https://编造的.example.com/y' }
+        ]
+      },
+      news
+    )
+
+    deepEq(
+      r.profile,
+      [{ label: '职业', value: '演员', basis: '媒体A' }],
+      '编造出处的事实整条丢掉 —— 不能退化成一条看起来「有据可查」的「据公开资料」'
+    )
+    deepEq(r.relations.map((x) => x.name), ['乙'], '无出处的条目剔除（缺名字同此）')
+    deepEq(r.watchlist.map((x) => x.when), ['2026-11'], '事实字段不接受「据公开资料」这个出处')
+    deepEq(r.controversies.map((x) => x.topic), ['番位'], '争议同样必须有真出处')
+  })
+
+  it('关系类别归一为四档；素材没写公开回应就留空串，不替素材写「暂无回应」', () => {
+    const news = distinct(1)
+    const r = sanitize(
+      {
+        relations: [
+          { name: '乙', relation: '粉丝', note: '', basis: news[0].url },
+          { name: '丙', relation: 'mentor', note: '', basis: news[0].url },
+          { name: '丁', relation: '', note: '', basis: news[0].url }
+        ],
+        controversies: [{ topic: '缺席', claim: '缺席路演', basis: news[0].url }]
+      },
+      news
+    )
+
+    deepEq(r.relations.map((x) => x.relation), ['other', 'mentor', 'other'], '四档之外（含缺失）一律 other，不硬猜进某一档')
+    eq(r.controversies[0].response, '', '「暂无回应」是我们替素材下的结论，素材没说就不写')
+  })
+
+  it('五段各有条数与长度上限；全空也落库（空数组 =「本次确实没有」，UI 据此出卡并写明原因）', () => {
+    const news = distinct(1)
+    const many = sanitize(
+      {
+        profile: Array.from({ length: 9 }, (_, i) => ({ label: `字段${i}`, value: '值'.repeat(60), basis: news[0].url })),
+        relations: Array.from({ length: 8 }, (_, i) => ({ name: `人${i}`, relation: 'other', note: '说明'.repeat(40), basis: news[0].url })),
+        watchlist: Array.from({ length: 7 }, (_, i) => ({ when: '2026-11-30T00:00', what: '事件'.repeat(40), basis: news[0].url })),
+        glossary: Array.from({ length: 8 }, (_, i) => ({ term: `词${i}`, explain: '解释'.repeat(40) })),
+        controversies: Array.from({ length: 6 }, (_, i) => ({ topic: `争议${i}`, claim: '内容'.repeat(60), basis: news[0].url }))
+      },
+      news
+    )
+
+    eq(many.profile.length, 6, '档案条数上限')
+    eq(many.profile[0].value.length, 40, '档案值收敛长度')
+    eq(many.relations.length, 5, '关系条数上限')
+    eq(many.relations[0].note.length, 40, '关系说明收敛长度')
+    eq(many.watchlist.length, 4, '后续关注条数上限')
+    eq(many.watchlist[0].what.length, 40, '事件收敛长度')
+    eq(many.glossary.length, 5, '名词解释条数上限')
+    eq(many.glossary[0].explain.length, 50, '释义收敛长度')
+    eq(many.controversies.length, 3, '争议条数上限')
+    eq(many.controversies[0].claim.length, 60, '争议内容收敛长度')
+
+    /* 2026-10-08 契约反转：空数组**也落库**。此前「空则不落库」的理由是「别让老报告与新报告
+       出现两种空」，但那两种空本来就是两件事：键不存在 = 这份报告生成时没要过这一段（老报告），
+       键在但为空 = 本次生成确认素材里没有。都存成「没有键」时 UI 只能整卡不出，用户看到某一块
+       凭空消失，分不清是没内容还是坏了（详见 utils/report.ts 里 sanitizeReport 的注释）。 */
+    const empty = sanitize({ profile: [], relations: [], watchlist: [], glossary: [], controversies: [] }, news)
+    deepEq(empty.profile, [], '空数组也落库：它表示「本次确实没有」，UI 据此出卡并写明原因')
+    deepEq(empty.glossary, [])
+    deepEq(empty.controversies, [])
+  })
+
+  it('名词解释是唯一不带出处的段落：它答的是词义，不是关于本人的事实', () => {
+    const news = distinct(1)
+    const r = sanitize({ glossary: [{ term: '番位', explain: '演员在宣传物料中的排名次序' }] }, news)
+    deepEq(
+      r.glossary,
+      [{ term: '番位', explain: '演员在宣传物料中的排名次序' }],
+      '术语释义不需要 basis：素材里不会有「番位」的定义，硬要只会逼模型编一个出处'
+    )
+  })
+
+  it('老报告（键不存在）与新报告（键在、可能为空数组）是两种「空」，不可混为一谈', () => {
+    const news = distinct(1)
+    const keys = ['profile', 'relations', 'watchlist', 'glossary', 'controversies']
+
+    /* 新报告：sanitize 恒定产出这五段。空数组的含义是「本次生成确认素材里没有」，
+       报告页据此**照常出卡**并写明原因（而不是整卡消失）。 */
+    const fresh = sanitize({}, news)
+    for (const key of keys) {
+      deepEq(fresh[key], [], `新报告恒定带 ${key}（空数组 = 本次确实没有）`)
+    }
+
+    /* 老报告：改动前落库的那份对象里根本没有这些键，新版本不会回头重跑 sanitize。
+       报告页的判据是「键在不在」→ 整卡降级（不替它断言「素材里没有」，那会是一句无根据的话）。
+       这里照它落库时的形状造一份样本，用来钉住这条判据的输入。 */
+    const legacy = {
+      personKey: '测试人物#tech',
+      name: '测试人物',
+      intro: 'x',
+      dynamics: [],
+      quotes: [],
+      timeline: [],
+      sources: []
+    }
+    for (const key of keys) {
+      eq(legacy[key], undefined, `老报告没有 ${key} → 报告页整卡降级`)
+    }
   })
 })

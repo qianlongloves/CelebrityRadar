@@ -458,4 +458,85 @@
     line-height: 1;
     color: $text-3;
   }
+
+  /*
+    来源 × 情绪的一行：名称（复用 __bar-name 的定宽省略）+ 三色比例条 + 条数。
+    比例条不直接用 __bar-track：那条是单色填充的条（子元素只有一个），
+    这里是三段按 flex 分配的三色条，必须自己声明 display: flex。
+  */
+  &__tilt-row {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    margin-top: 20rpx;
+  }
+
+  &__tilt-bar {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    height: 20rpx;
+    border-radius: 999rpx;
+    overflow: hidden;
+    background: $bg;
+  }
+
+  /* 交叉表的条数：比 __bar-value（56rpx，只放得下一个两位数）宽一档，容得下「12 条」 */
+  &__tilt-count {
+    flex-shrink: 0;
+    width: 80rpx;
+    text-align: right;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 情绪走势的柱：按月分层的三色叠柱。外层高度给 ratio 百分比，色段用 flex 权重分内部高度 */
+  &__trend-bar {
+    width: 60%;
+    display: flex;
+    flex-direction: column-reverse;
+    border-radius: 6rpx 6rpx 0 0;
+    overflow: hidden;
+  }
+
+  &__trend-seg {
+    width: 100%;
+
+    &--positive {
+      background: $success;
+    }
+
+    &--neutral {
+      background: $brand-soft;
+    }
+
+    &--negative {
+      background: $accent-orange;
+    }
+  }
+
+  /* 走势卡的图例：色块 + 文字（三色与「情绪构成」同一套，两处不该是两种颜色） */
+  &__legend {
+    display: flex;
+    align-items: center;
+    gap: 8rpx;
+  }
+
+  &__dot {
+    width: 16rpx;
+    height: 16rpx;
+    border-radius: 4rpx;
+
+    &--positive {
+      background: $success;
+    }
+
+    &--neutral {
+      background: $brand-soft;
+    }
+
+    &--negative {
+      background: $accent-orange;
+    }
+  }
 }

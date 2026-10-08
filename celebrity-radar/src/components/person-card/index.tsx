@@ -27,6 +27,16 @@ interface PersonCardProps {
   onToggleFollow?: (p: PersonInfo) => void
   /** 该卡片的关注请求进行中：按钮置灰，避免连点导致关注态来回翻转 */
   followPending?: boolean
+  /**
+   * 右侧两枚入口以**图标**呈现（热门位用）。
+   *
+   * 热门卡右侧同时有「关注」与「AI 报告」两个文字胶囊，加上头像与领域标签后，
+   * 长名字（尤其英文名）会被挤到换行、领域标签被压变形。换成两枚 60rpx 图标圆后，
+   * 名字与标签才留得出空间。
+   * 消歧候选卡（「查看」）与对比名单（「对比」）保留文字：那里只有一枚按钮，
+   * 图标反而丢了语义。
+   */
+  iconActions?: boolean
 }
 
 /** 名人卡：消歧候选、关注列表、热门位共用 */
@@ -36,7 +46,8 @@ export default function PersonCard({
   onAction,
   onClick,
   onToggleFollow,
-  followPending
+  followPending,
+  iconActions
 }: PersonCardProps) {
   const meta = DOMAIN_META[person.domain] ?? DOMAIN_META.other
   return (
@@ -57,32 +68,45 @@ export default function PersonCard({
       {/* 直接关注：描边式，视觉上弱于实心的主操作按钮（先关注、再看报告是更轻的路径） */}
       {onToggleFollow && (
         <View
-          className={`person-card__follow ${person.followed ? 'person-card__follow--on' : ''} ${
-            followPending ? 'person-card__follow--pending' : ''
-          }`}
+          className={`person-card__follow ${iconActions ? 'person-card__follow--icon' : ''} ${
+            person.followed ? 'person-card__follow--on' : ''
+          } ${followPending ? 'person-card__follow--pending' : ''}`}
           hoverClass='person-card__follow--tap'
           onClick={(e) => {
             e.stopPropagation?.()
             if (!followPending) onToggleFollow(person)
           }}
         >
-          {person.followed ? '已关注' : '关注'}
+          {/* 图标态（热门位）的图标由 CSS 背景图给出，按钮内不再放文字 */}
+          {!iconActions && (person.followed ? '已关注' : '关注')}
         </View>
       )}
-      {actionText && onAction && (
-        <AtButton
-          size='small'
-          type={person.followed ? 'secondary' : 'primary'}
-          circle
-          className='person-card__action'
-          onClick={(e) => {
-            e.stopPropagation?.()
-            onAction(person)
-          }}
-        >
-          {actionText}
-        </AtButton>
-      )}
+      {actionText &&
+        onAction &&
+        (iconActions ? (
+          /* 图标态（热门位）：只出一枚紫底 sparkle 圆，动作语义由「点击生成 AI 报告」的小标题兜住 */
+          <View
+            className='person-card__action-icon'
+            hoverClass='person-card__action-icon--tap'
+            onClick={(e) => {
+              e.stopPropagation?.()
+              onAction(person)
+            }}
+          />
+        ) : (
+          <AtButton
+            size='small'
+            type={person.followed ? 'secondary' : 'primary'}
+            circle
+            className='person-card__action'
+            onClick={(e) => {
+              e.stopPropagation?.()
+              onAction(person)
+            }}
+          >
+            {actionText}
+          </AtButton>
+        ))}
     </View>
   )
 }

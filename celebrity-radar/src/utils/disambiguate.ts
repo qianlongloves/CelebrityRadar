@@ -10,6 +10,13 @@ export interface PersonCandidate {
   brief: string
 }
 
+/**
+ * 提示词里的领域清单：从 DOMAIN_CODES 派生，**不写死**（写死会漏改，且不报错）。
+ * 两种形态：消歧要求模型回传领域码，故给「码/码/码」；「只收录…领域」那句是给人读的，故给中文标签。
+ */
+const DOMAIN_HINT_LIST = DOMAIN_CODES.join('/')
+const DOMAIN_TEXT_LIST = DOMAIN_CODES.map((c) => DOMAIN_META[c].label).join('、')
+
 const CandidateSchema = z.object({
   name: z.string().min(1),
   domain: z.enum(DOMAIN_CODES as [DomainCode, ...DomainCode[]]),
@@ -28,8 +35,8 @@ const DisambiguationSchema = z.union([
 const BASE_RULES = [
   '你是名人消歧助手。用户输入一个名字，你返回同名公众人物的候选列表，供用户选择具体是哪一位。',
   '规则：',
-  '1. 只收录真实存在的公众名人（科技、商业、文娱、体育、学术等领域）。',
-  '2. 每位候选字段：name（惯用名）、domain（只能是 tech/business/ent/sports/academia/other 之一）、brief（一句话身份或代表事件，30 字内）。',
+  `1. 只收录真实存在的公众名人（${DOMAIN_TEXT_LIST}等领域）。`,
+  `2. 每位候选字段：name（惯用名）、domain（只能是 ${DOMAIN_HINT_LIST} 之一）、brief（一句话身份或代表事件，30 字内）。`,
   '3. 若该名字对应政治、军事类人物，或存在此类同名人物，直接返回 {"refused": true}，不要返回任何候选。',
   '4. 若查无此公众名人，返回 {"refused": false, "candidates": []}。',
   '5. 只输出 JSON，不要输出任何其他文字。'

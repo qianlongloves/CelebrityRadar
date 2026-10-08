@@ -10,7 +10,12 @@
       "installDependency": true,
       "envVariables": {
         "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
-        "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}"
+        "LLM_PROVIDER": "${env.LLM_PROVIDER}",
+        "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}",
+        "QWEN_API_KEY": "${env.QWEN_API_KEY}",
+        "ZHIPU_API_KEY": "${env.ZHIPU_API_KEY}",
+        "MOONSHOT_API_KEY": "${env.MOONSHOT_API_KEY}",
+        "OPENAI_API_KEY": "${env.OPENAI_API_KEY}"
       }
     },
     {
@@ -60,7 +65,12 @@
       "installDependency": true,
       "envVariables": {
         "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
-        "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}"
+        "LLM_PROVIDER": "${env.LLM_PROVIDER}",
+        "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}",
+        "QWEN_API_KEY": "${env.QWEN_API_KEY}",
+        "ZHIPU_API_KEY": "${env.ZHIPU_API_KEY}",
+        "MOONSHOT_API_KEY": "${env.MOONSHOT_API_KEY}",
+        "OPENAI_API_KEY": "${env.OPENAI_API_KEY}"
       },
       "triggers": [
         {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Taro, { useDidShow, useRouter, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
-import { DOMAIN_META, DomainCode } from '@/config/domains'
+import { DOMAIN_COVERAGE_TEXT, DOMAIN_META, DomainCode } from '@/config/domains'
 import { FOCUS_META, FocusCode, isFocusCode } from '@/config/filters'
 import EmptyState from '@/components/empty-state'
 import QuoteDetail from '@/components/quote-detail'
@@ -11,7 +11,7 @@ import { getOrBuildReport, getCachedReports, ReportOutcome } from '@/utils/cache
 import { hasSearchChannel } from '@/utils/search'
 import { hasLlmChannel } from '@/utils/llm'
 import { Report } from '@/utils/report'
-import { extractKeywords } from '@/utils/keywords'
+import { extractKeywords, extractQuoteThemes } from '@/utils/keywords'
 import { buildComparison } from '@/utils/compare'
 import { buildHeatTrend, TrendPoint } from '@/utils/trend'
 import {
@@ -62,6 +62,18 @@ const STANCE_META: Record<string, { label: string; cls: string }> = {
   neutral: { label: '中性', cls: 'neutral' },
   negative: { label: '质疑', cls: 'negative' },
   mixed: { label: '两极', cls: 'mixed' }
+}
+
+/**
+ * 关系图谱的类别标签（第二批）。枚举在 utils/report.ts 的 RelationKindEnum 里归一 ——
+ * 认不出的值在那里就被折成 other，故这里兜底也写「其他」，两边口径一致。
+ * 四档标签一律用同一套中性样式（不因「对手」染红）：报告只陈述关系，关系本身没有褒贬。
+ */
+const RELATION_META: Record<string, string> = {
+  cooperate: '合作',
+  mentor: '师承',
+  rival: '对手',
+  other: '其他'
 }
 
 /* ===== 热度趋势折线（M4-6）：绘图区几何 ===== */
@@ -506,6 +518,13 @@ export default function ReportPage() {
   const keywordHighlights = keywords.filter((k) => k.refs.length > 0).slice(0, 3)
 
   /**
+   * 语录主题：同一份语录的另一种读法 —— 词云回答「反复提了什么」，这里回答
+   * 「他常讲的话分成几类」。口径与门槛见 utils/keywords.ts 的 extractQuoteThemes，
+   * 同样是纯端上统计，存量报告立即生效。
+   */
+  const quoteThemes = report ? extractQuoteThemes(report) : []
+
+  /**
    * 点词云里的词 → 主题速览（pages/topic）。
    *
    * 「这个话题还出现在谁的报告里、各自都怎么说」是读完词云后最自然的下一问，
@@ -854,7 +873,7 @@ export default function ReportPage() {
       )}
 
       {state.phase === 'refused' && (
-        <EmptyState icon='🚫' title='暂不支持查询该人物' desc='本工具仅覆盖科技、商业、文娱、体育、学术领域公众名人' />
+        <EmptyState icon='🚫' title='暂不支持查询该人物' desc={`本工具覆盖${DOMAIN_COVERAGE_TEXT}等多个领域的公众名人`} />
       )}
 
       {state.phase === 'error' && (
@@ -876,6 +895,16 @@ export default function ReportPage() {
             这份报告的素材覆盖了哪段时间。原先这个位置放的是「同领域名人」——
             读一份关于 A 的报告，却被推荐 B、C、D，与「我在看谁」是脱节的。
           */}
+          {/* 端上算得出覆盖范围就出真卡；算不出时也出一张卡说明（原先 `(cov || coverageSpan !== '') &&`
+              不成立就整卡消失，用户只看到「卡片不见了」）。降级简版除外：整份只留上方警示条，不堆空卡。 */}
+          {!report.degraded && !cov && coverageSpan === '' && (
+            <View className='card'>
+              <View className='card-title'>人物速览</View>
+              <Text className='page-report__empty'>
+                这份报告没有记录素材覆盖范围（多为较早生成的缓存报告），收录的动态也都没有可用日期，故算不出报道热度与覆盖区间。点右上角「查看最新」重新生成即可补上。
+              </Text>
+            </View>
+          )}
           {(cov || coverageSpan !== '') && (
             <View className='card'>
               <View className='card-title'>人物速览</View>
@@ -933,6 +962,16 @@ export default function ReportPage() {
             </View>
           )}
 
+          {/* 简介留空也出卡说明（原先 `report.intro &&` 不成立就整卡消失）。
+              降级简版除外：那种报告整份只留上方警示条。 */}
+          {!report.degraded && !report.intro && (
+            <View className='card'>
+              <View className='card-title'>简介</View>
+              <Text className='page-report__empty'>
+                本次生成没有给出简介（模型未返回这一段的正文）。下方的人物档案、动态与语录不受影响，可照常阅读。
+              </Text>
+            </View>
+          )}
           {report.intro && (
             <View className='card'>
               <View className='card-title'>简介</View>
@@ -940,9 +979,78 @@ export default function ReportPage() {
             </View>
           )}
 
-          {dynamicsView.length > 0 && (
+          {/*
+            人物档案（第二批）：把散在简介那段散文里的身份锚点提成「字段名 : 值」。
+            与简介不是重复关系 —— 简介回答「他最近怎么样」，档案回答「他是谁」，
+            后者要能一眼扫完，所以左边字段名对齐成一列、值一行一条。
+
+            profile 是可选字段，这里有**两种空**要分开：
+              · 键不存在 → 改动前落库的老报告，整卡降级（那时根本没要过这一段，
+                不能替它断言「素材里没有」）；
+              · 键存在但为空数组 → 本次生成确认「素材里确实没有」，此时**卡片照出**，
+                卡里写明为什么是空的。
+            后者是 2026-10-08 改的：此前空数组不落库，两种「空」在页面上长得一样，
+            用户看到的是卡片凭空消失，只能怀疑是坏了（见 utils/report.ts 的 sanitizeReport）。
+            条目的 basis 在 utils/report.ts 里已强制为「真素材」，
+            指不出出处的条目在落库前就被剔除了 —— 所以这里的每条依据都点得回去。
+          */}
+          {report.profile && (
+            <View className='card'>
+              <View className='card-title'>人物档案</View>
+              {report.profile.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有可确认的身份信息 —— 指不出出处的信息一律不收录，这一卡宁缺毋滥。
+                </Text>
+              )}
+              {report.profile.map((p, i) => (
+                <View key={`${i}-${p.label}`} className='page-report__entry'>
+                  <View className='page-report__entry-head'>
+                    <Text className='page-report__entry-label'>{p.label}</Text>
+                    <Text className='page-report__entry-value'>{p.value}</Text>
+                  </View>
+                  <Text className='page-report__entry-basis'>依据：{p.basis}</Text>
+                </View>
+              ))}
+              <Text className='page-report__entry-foot'>每条档案均出自本报告收录的素材，找不到出处的信息不收录。</Text>
+            </View>
+          )}
+
+          {/* 关系图谱（第二批）：人-人维度。关系必须是素材里明确写到的，
+              故这里的依据与档案同规格；四档关系标签一律中性配色，不因「对手」染色。 */}
+          {report.relations && (
+            <View className='card'>
+              <View className='card-title'>关系图谱</View>
+              {report.relations.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有明确写到的人物关系（不做「同框即关系」一类推测）。
+                </Text>
+              )}
+              {report.relations.map((r, i) => (
+                <View key={`${i}-${r.name}`} className='page-report__entry'>
+                  <View className='page-report__entry-head'>
+                    <Text className='page-report__entry-name'>{r.name}</Text>
+                    <Text className='page-report__entry-tag'>{RELATION_META[r.relation] ?? '其他'}</Text>
+                  </View>
+                  {r.note !== '' && <Text className='page-report__entry-text'>{r.note}</Text>}
+                  <Text className='page-report__entry-basis'>依据：{r.basis}</Text>
+                </View>
+              ))}
+              <Text className='page-report__entry-foot'>关系出自素材的明确记载，不做「同框即关系」一类推测。</Text>
+            </View>
+          )}
+
+          {/* 近期动态：报告的主体。素材里确实没有时也出卡并写明原因 —— 空数组意味着
+              「本次生成确认没有」（与老报告的「没有这个字段」不是一回事），
+              此前直接不出卡，用户只能把它读成「页面坏了、模块丢了」。
+              降级简版除外：那种报告整份都没有结构化内容，只留上方那条警示条。 */}
+          {!report.degraded && (
             <View className='card'>
               <View className='card-title'>近期动态（{dynamicsView.length}）</View>
+              {dynamicsView.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有可确认的近期动态。情绪走势、词云等统计都以此卡为数据源，故随之不展示。
+                </Text>
+              )}
               {dynamicsView.map((d, i) => {
                 const domain = hostOf(d.url)
                 return (
@@ -983,9 +1091,14 @@ export default function ReportPage() {
             </View>
           )}
 
-          {report.quotes.length > 0 && (
+          {!report.degraded && (
             <View className='card'>
               <View className='card-title'>经典名言</View>
+              {report.quotes.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有可确认的原文语录（声称有出处、却指不出是哪条素材的，整条不收录）。
+                </Text>
+              )}
               {report.quotes.map((q, i) => {
                 const favId = favIdOf('quote', `${personKey}:${q.text}`)
                 const faved = !!favId && favedIds.has(favId)
@@ -1020,27 +1133,81 @@ export default function ReportPage() {
             </View>
           )}
 
+          {/* 点评为空也出卡说明（原先 `report.analysis &&` 不成立就整卡消失）。
+              降级简版有整段 analysis 时照旧出「AI 点评 · 简版」，故这里不排除 degraded。 */}
+          {!report.degraded && !report.analysis && (
+            <View className='card'>
+              <View className='card-title'>AI 点评</View>
+              <Text className='page-report__empty'>
+                本次生成没有给出点评正文（模型未返回这一段的正文）。上方的人物档案、动态与语录不受影响，可照常阅读。
+              </Text>
+            </View>
+          )}
           {report.analysis && (
             <View className='card'>
               <View className='card-title'>{report.degraded ? 'AI 点评 · 简版' : 'AI 点评'}</View>
               {/*
-                点评拆条（本轮升级）：新报告是 3~4 条「判断 + 依据」，老缓存（与降级简版）
-                只有一整段 analysis —— 两条路共用这张卡，有拆条就渲染列表，否则回落整段。
-                「依据」必须是可见的：判断与出处分开摆，用户才能自己判断这条可不可信，
-                这也是拆条相对整段的全部意义（看起来像专业分析，而不是像套话）。
+                点评（本轮修正）：原先把 3~4 条判断**一条一条摆成列表**、每条下面挂一行
+                「依据：XX」，读起来是一份论点清单 —— 用户反馈「这不是 AI 点评」。
+                而 analysis 本来就是这几句连成的一整段（见 sanitizeReport），现在直接按一段读，
+                句末只留一个 [n]，出处集中列在段末。
+
+                [n] 与出处的对应不能省：拆条相对整段的全部意义就是「判断与出处分开摆，
+                用户自己判断这条可不可信」（提示词第 5 条）。压成一段而丢掉对应关系，
+                等于把上次升级的价值一起丢了 —— 所以是换排版，不是退回整段。
               */}
               {report.analysisPoints && report.analysisPoints.length > 0 ? (
-                <View className='page-report__points'>
-                  {report.analysisPoints.map((p, i) => (
-                    <View key={`${i}-${p.basis}`} className='page-report__point'>
-                      <Text className='page-report__point-text'>{p.point}</Text>
-                      <Text className='page-report__point-basis'>依据：{p.basis}</Text>
-                    </View>
-                  ))}
+                <View>
+                  <Text className='page-report__analysis-text'>
+                    {report.analysisPoints.map((p, i) => (
+                      <Text key={`${i}-${p.basis}`}>
+                        {/[。！？!?]$/.test(p.point) ? p.point : `${p.point}。`}
+                        <Text className='page-report__point-ref'>{`[${i + 1}]`}</Text>
+                      </Text>
+                    ))}
+                  </Text>
+                  <View className='page-report__points'>
+                    <Text className='page-report__points-title'>判断依据</Text>
+                    {report.analysisPoints.map((p, i) => (
+                      <Text
+                        key={`basis-${i}`}
+                        className='page-report__point-basis'
+                      >{`[${i + 1}] ${p.basis}`}</Text>
+                    ))}
+                  </View>
                 </View>
               ) : (
                 <View className='page-report__analysis-text'>{report.analysis}</View>
               )}
+            </View>
+          )}
+
+          {/*
+            近期争议与回应（第二批）：**免费段**，刻意摆在会员卡之前。
+            它回答的是「最近吵过什么、当事人怎么答的」，与会员专享的 memberNotes.risk
+            （面向未来的风险提示）是两件事 —— 边界写在提示词里：已发生的争议归 free，
+            前瞻判断归会员。二者共读时是「事实 + 判断」的两层，不是同一条的两种说法。
+
+            response 允许为空（素材里当事方没公开回应过是常态），此时不出「回应」那一行，
+            而不是补一句「暂无回应」——「暂无」是我们替素材下的结论，素材本身没这么说。
+          */}
+          {report.controversies && (
+            <View className='card'>
+              <View className='card-title'>近期争议与回应</View>
+              {report.controversies.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有可确认的公开争议（只有素材真的写到才收录，不把「没看到争议」写成「没有争议」）。
+                </Text>
+              )}
+              {report.controversies.map((c, i) => (
+                <View key={`${i}-${c.topic}`} className='page-report__entry'>
+                  <Text className='page-report__entry-name'>{c.topic}</Text>
+                  <Text className='page-report__entry-text'>争议：{c.claim}</Text>
+                  {c.response !== '' && <Text className='page-report__entry-text'>回应：{c.response}</Text>}
+                  <Text className='page-report__entry-basis'>依据：{c.basis}</Text>
+                </View>
+              ))}
+              <Text className='page-report__entry-foot'>只记录素材中已公开的争议与回应，平台不作真伪判定，也不做评价。</Text>
             </View>
           )}
 
@@ -1057,7 +1224,7 @@ export default function ReportPage() {
             ⚠ 两个字段要**各自**判空：老会员报告只有 memberNotes，新报告才可能有 conflicts，
               用 memberNotes 的存在与否去决定整卡出不出，会让只带 conflicts 的报告整张消失。
           */}
-          {member && (report.memberNotes || report.conflicts) && (
+          {member && !report.degraded && (
             <View className='card page-report__notes'>
               {/* 标题行兼作「会员权益已生效」的确认位（O-25）：顶部促销条已对会员隐藏，
                   这张卡能出现本身就是确认 —— 再补一个「已生效」小标，比一句推销语诚实，也更省地方。
@@ -1066,6 +1233,16 @@ export default function ReportPage() {
                 <View className='card-title'>会员专享 · 深度解析</View>
                 <Text className='page-report__notes-badge'>已生效</Text>
               </View>
+              {/* 会员段落整体缺失时，把原因写清楚，而不是让整卡消失（2026-10-08 改）。
+                  报告是**全局共享缓存**，所以会员也会读到免费生成（或分配置更早）的那一份 ——
+                  那种报告里根本没有这两个字段（提示词里没要过）。此时若无提示，会员看到的是
+                  「深度解析」整块不见，很容易理解成权益没生效。 */}
+              {!report.memberNotes && !report.conflicts && (
+                <Text className='page-report__empty'>
+                  这份报告生成时没有包含会员段落（可能是免费生成、或较早的缓存）。点上方「查看最新」重新生成，
+                  即可得到对比视角、风险提示与信源分歧这三段。
+                </Text>
+              )}
               {/* 两段各自判空：memberNotes 可能整个不存在（只带 conflicts 的缓存），
                   写成 `report.memberNotes?.compare !== ''` 会在 undefined 时恒为真、渲染出空段 */}
               {report.memberNotes && report.memberNotes.compare !== '' && (
@@ -1102,9 +1279,16 @@ export default function ReportPage() {
             </View>
           )}
 
-          {(sentimentStats || stances.length > 0) && (
+          {/* 立场与舆情：两块内容（本地统计的情绪走向 + 模型判定的话题态度）都可能为空，
+              但卡片本身照出 —— 空的那块写明口径，别让整卡消失。降级简版除外。 */}
+          {!report.degraded && (
             <View className='card'>
               <View className='card-title'>立场与舆情</View>
+              {!sentimentStats && (
+                <Text className='page-report__empty'>
+                  本报告收录的动态不足以归类情绪（至少要有 1 条带情绪标签的动态）。
+                </Text>
+              )}
               {sentimentStats && (
                 <>
                   {/* 情绪走向条：三段按条数占比铺开，颜色与「近期动态」的情绪标签同源。
@@ -1142,6 +1326,11 @@ export default function ReportPage() {
 
               {/* 话题态度：情绪条说「整体氛围如何」，这里说「哪些话题上是这个氛围」——
                   后者才是可核对的对象（每条都附模型给出的一句话依据）。 */}
+              {stances.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材不足以判断各话题上的舆论态度（每条都要求附依据，指不出依据的不写）。
+                </Text>
+              )}
               {stances.length > 0 && (
                 <View className='page-report__stance-topics'>
                   {stances.map((s, i) => (
@@ -1169,123 +1358,202 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/* 关键词云 + 高频观点（M4-5）：纯端上统计（口径见 utils/keywords.ts），不消耗生成额度。
-              少于 4 个词就整卡不出 —— 素材本来就少的报告，词云只会是一堆零散碎片。 */}
-          {keywords.length >= 4 && (
+          {/*
+            关键词云 + 高频观点（M4-5）：纯端上统计（口径见 utils/keywords.ts），不消耗生成额度。
+
+            词数不足 4 个时**不整卡消失**：原先写的是「keywords.length >= 4 &&」，不够就整卡不出。
+            端上统计不消耗额度，卡片凭空不见只会被读成功能坏了 —— 照出卡片并写明为什么没出词云，
+            读的人才知道是「素材本来就只有这几条」，而不是坏了。
+            降级简版除外：那种报告整份没有结构化内容，只留上方那条警示条。
+          */}
+          {!report.degraded && (
             <View className='card'>
               <View className='card-title'>关键词云</View>
-              {/* 标签墙：不引 canvas / 图表库，字号按词频分三档（设计方案 §3.3 定稿的降级方案） */}
-              <View className='page-report__cloud'>
-                {keywords.map((k) => (
-                  <Text
-                    key={k.word}
-                    className={`page-report__cloud-tag page-report__cloud-tag--t${k.tier}${
-                      k.from === 'topic' ? ' page-report__cloud-tag--topic' : ''
-                    }`}
-                    /* 每个词都可点：本页只回答「这份报告里反复提了什么」，
-                       点下去才回答「别人是不是也在讲」。 */
-                    onClick={() => goTopic(k.word)}
-                  >
-                    {k.word}
-                  </Text>
-                ))}
-              </View>
-              <Text className='page-report__cloud-note'>
-                {`按收录的 ${report.dynamics.length} 条动态与 ${report.quotes.length} 条语录统计，字号代表提及它的素材条数；中文无词典，仅作主题速览。点任一词语可看它在别的报告里怎么说。`}
-              </Text>
-
-              {keywordHighlights.length > 0 && (
-                <View className='page-report__highlights'>
-                  <View className='page-report__highlights-title'>高频观点</View>
-                  {keywordHighlights.map((k) => (
-                    <View key={k.word} className='page-report__highlight'>
-                      <View className='page-report__highlight-head'>
-                        <Text
-                          className='page-report__highlight-word'
-                          onClick={() => goTopic(k.word)}
-                        >
-                          {`${k.word} ›`}
-                        </Text>
-                        <Text className='page-report__highlight-count'>{k.count} 条素材提及</Text>
-                      </View>
-                      {/* 词云说「反复提到了什么」，这里给出「是在哪些素材里提到的」——
-                          每个词都摊开原文出处，读的人可以自己核对，不存在凭空生成的词 */}
-                      {k.refs.map((r, i) => (
-                        <Text key={i} className='page-report__highlight-ref'>
-                          {`· ${r.label}（${r.source}）`}
-                        </Text>
-                      ))}
-                    </View>
-                  ))}
+              {keywords.length < 4 && (
+                <Text className='page-report__empty'>
+                  {`本次生成时，本报告收录的 ${report.dynamics.length} 条动态与 ${report.quotes.length} 条语录里，反复出现的说法不足 4 个（少于 4 个词只会是一堆零散碎片），故不出词云。词云按「有多少条素材提到它」统计，素材太少时这个数没有意义。`}
+                </Text>
+              )}
+              {keywords.length >= 4 && (
+                <>
+                  {/* 标签墙：不引 canvas / 图表库，字号按词频分三档（设计方案 §3.3 定稿的降级方案） */}
+                  <View className='page-report__cloud'>
+                    {keywords.map((k) => (
+                      <Text
+                        key={k.word}
+                        className={`page-report__cloud-tag page-report__cloud-tag--t${k.tier}${
+                          k.from === 'topic' ? ' page-report__cloud-tag--topic' : ''
+                        }`}
+                        /* 每个词都可点：本页只回答「这份报告里反复提了什么」，
+                           点下去才回答「别人是不是也在讲」。 */
+                        onClick={() => goTopic(k.word)}
+                      >
+                        {k.word}
+                      </Text>
+                    ))}
+                  </View>
                   <Text className='page-report__cloud-note'>
-                    以上说法在本报告收录的素材中反复出现，逐条附原文出处，可自行核对。
+                    {`按收录的 ${report.dynamics.length} 条动态与 ${report.quotes.length} 条语录统计，字号代表提及它的素材条数；中文无词典，仅作主题速览。点任一词语可看它在别的报告里怎么说 —— 其中话题词来自模型判定的热点话题（未必在素材正文里原样出现），聚合结果按正文里真写过这个词的报告算。`}
                   </Text>
-                </View>
+
+                  {keywordHighlights.length > 0 && (
+                    <View className='page-report__highlights'>
+                      <View className='page-report__highlights-title'>高频观点</View>
+                      {keywordHighlights.map((k) => (
+                        <View key={k.word} className='page-report__highlight'>
+                          <View className='page-report__highlight-head'>
+                            <Text
+                              className='page-report__highlight-word'
+                              onClick={() => goTopic(k.word)}
+                            >
+                              {`${k.word} ›`}
+                            </Text>
+                            <Text className='page-report__highlight-count'>{k.count} 条素材提及</Text>
+                          </View>
+                          {/* 词云说「反复提到了什么」，这里给出「是在哪些素材里提到的」——
+                              每个词都摊开原文出处，读的人可以自己核对，不存在凭空生成的词 */}
+                          {k.refs.map((r, i) => (
+                            <Text key={i} className='page-report__highlight-ref'>
+                              {`· ${r.label}（${r.source}）`}
+                            </Text>
+                          ))}
+                        </View>
+                      ))}
+                      <Text className='page-report__cloud-note'>
+                        以上说法在本报告收录的素材中反复出现，逐条附原文出处，可自行核对。
+                      </Text>
+                    </View>
+                  )}
+                </>
               )}
             </View>
           )}
 
-          {/* 热度趋势（M4-6）：把报告里带日期的动态与时间线事件摊成近 30 天折线。
-              点和线都是普通 View（几何在 trendGeometry 里算成 rpx），与词云、情绪条同一条
-              「不引图表库」的路线；纵轴是条数、横轴是时间，脚注交代口径，免得被读成全网报道量。 */}
-          {trend && trendGeo && (
+          {/*
+            语录主题：把平铺的语录按「他常讲的话」归成 2~3 组（口径与门槛见
+            utils/keywords.ts 的 extractQuoteThemes）。主题词取自语录原文，不是模型分类，
+            故每条语录都能在「经典语录」里逐一核对。
+
+            归不出一组时**不整卡消失**：原先写的是「quoteThemes.length >= 2 &&」，不够就整卡不出。
+            主题词是数语录原文里反复出现的说法，语录少自然数不出来 —— 卡片照出并说明，
+            免得被读成功能坏了。降级简版除外（整份只有警示条）。
+          */}
+          {!report.degraded && (
             <View className='card'>
-              <View className='card-title'>热度趋势</View>
-              <View className='page-report__trend'>
-                <View className='page-report__trend-plot'>
-                  {[25, 50, 75].map((top) => (
-                    <View key={top} className='page-report__trend-grid' style={{ top: `${top}%` }} />
+              <View className='card-title'>语录主题</View>
+              {quoteThemes.length < 2 && (
+                <Text className='page-report__empty'>
+                  {`本次生成时，本报告收录的 ${report.quotes.length} 条语录里，反复出现的说法不足以归成 2 组以上主题（主题词取自语录原文，不做语义归类），故本卡只作说明。语录本身照旧全部列在「经典名言」里。`}
+                </Text>
+              )}
+              {quoteThemes.length >= 2 && (
+                <>
+                  {quoteThemes.map((t) => (
+                    <View key={t.topic} className='page-report__qtheme'>
+                      <View className='page-report__qtheme-head'>
+                        <Text className='page-report__qtheme-topic'>{t.topic}</Text>
+                        <Text className='page-report__qtheme-count'>{`${t.count} 条语录`}</Text>
+                      </View>
+                      {t.quotes.map((q, i) => (
+                        <Text key={i} className='page-report__qtheme-quote'>{`· ${q}`}</Text>
+                      ))}
+                    </View>
                   ))}
-                  {trendGeo.segs.map((s, i) => (
-                    <View
-                      key={`seg-${i}`}
-                      className='page-report__trend-seg'
-                      style={{
-                        left: `${s.left}rpx`,
-                        top: `${s.top}rpx`,
-                        width: `${s.len}rpx`,
-                        transform: `rotate(${s.deg}deg)`
-                      }}
-                    />
-                  ))}
-                  {trendGeo.nodes.map((n, i) => (
-                    <View
-                      key={`dot-${i}`}
-                      className={`page-report__trend-dot${n.ratio >= 1 ? ' page-report__trend-dot--peak' : ''}`}
-                      style={{ left: `${n.cx}rpx`, top: `${n.cy}rpx` }}
-                    />
-                  ))}
-                  {/* 只在有内容的桶上标数字：空桶标 0 会让这条线看起来像数据缺失 */}
-                  {trendGeo.nodes.map((n, i) =>
-                    n.count > 0 ? (
-                      <Text
-                        key={`val-${i}`}
-                        className='page-report__trend-value'
-                        style={{ left: `${n.cx}rpx`, top: `${n.cy - 34}rpx` }}
-                      >
-                        {n.count}
-                      </Text>
-                    ) : null
-                  )}
-                </View>
-                {/* 横轴标签用等宽 flex 均分，中心正好落在各桶中点，与折线上的点对齐 */}
-                <View className='page-report__trend-axis'>
-                  {trend.points.map((p, i) => (
-                    <Text key={`axis-${i}`} className='page-report__trend-axis-label'>
-                      {p.label}
-                    </Text>
-                  ))}
-                </View>
-              </View>
-              <Text className='page-report__trend-note'>
-                {`按本报告收录的带日期条目聚合：近 30 天共 ${trend.total} 条动态与事件、覆盖 ${trend.spanDays} 天，纵轴为条数（单格峰值 ${trend.peak}）。反映公开信息节奏，不等于全网报道量。`}
-              </Text>
+                  <Text className='page-report__cloud-note'>
+                    {`主题词取自语录原文里反复出现的说法（不做语义归类），每条语录只归入一个主题；本报告共 ${report.quotes.length} 条语录，未归入的照旧留在「经典语录」里。`}
+                  </Text>
+                </>
+              )}
             </View>
           )}
 
-          {timelineView.length > 0 && (
+          {/*
+            热度趋势（M4-6）：把报告里带日期的动态与时间线事件摊成折线（默认近 30 天，
+            材料稀疏时由 buildHeatTrend 放宽到 60/90/180 天，脚注据实标注窗口与格宽）。
+            点和线都是普通 View（几何在 trendGeometry 里算成 rpx），与词云、情绪条同一条
+            「不引图表库」的路线；纵轴是条数、横轴是时间，脚注交代口径，免得被读成全网报道量。
+
+            条件没过时**不整卡消失**：原先写的是「trend && trendGeo &&」，不成立就什么都不渲染。
+            这张卡是端上聚合、不消耗生成额度，「无声无息少一张图」只会被读成功能坏了 ——
+            照出卡片并写明为什么没画线，读的人才知道是素材稀疏，而不是坏了。
+            降级简版除外：那种报告整份没有结构化内容，只留上方那条警示条。
+          */}
+          {!report.degraded && (
+            <View className='card'>
+              <View className='card-title'>热度趋势</View>
+              {(trend == null || trendGeo == null) && (
+                <Text className='page-report__empty'>
+                  {trend == null
+                    ? '本次生成时，本报告收录的带日期条目不足 3 条（少于 3 个点连不成走势），故不画折线。可点开上方「近期动态」「时间线」逐条核对 —— 这张图的数据源就是它们。'
+                    : '这份报告的生成时间不可解析，横轴刻度无从对齐，故不画折线。'}
+                </Text>
+              )}
+              {trend && trendGeo && (
+                <>
+                  <View className='page-report__trend'>
+                    <View className='page-report__trend-plot'>
+                      {[25, 50, 75].map((top) => (
+                        <View key={top} className='page-report__trend-grid' style={{ top: `${top}%` }} />
+                      ))}
+                      {trendGeo.segs.map((s, i) => (
+                        <View
+                          key={`seg-${i}`}
+                          className='page-report__trend-seg'
+                          style={{
+                            left: `${s.left}rpx`,
+                            top: `${s.top}rpx`,
+                            width: `${s.len}rpx`,
+                            transform: `rotate(${s.deg}deg)`
+                          }}
+                        />
+                      ))}
+                      {trendGeo.nodes.map((n, i) => (
+                        <View
+                          key={`dot-${i}`}
+                          className={`page-report__trend-dot${n.ratio >= 1 ? ' page-report__trend-dot--peak' : ''}`}
+                          style={{ left: `${n.cx}rpx`, top: `${n.cy}rpx` }}
+                        />
+                      ))}
+                      {/* 只在有内容的桶上标数字：空桶标 0 会让这条线看起来像数据缺失 */}
+                      {trendGeo.nodes.map((n, i) =>
+                        n.count > 0 ? (
+                          <Text
+                            key={`val-${i}`}
+                            className='page-report__trend-value'
+                            style={{ left: `${n.cx}rpx`, top: `${n.cy - 34}rpx` }}
+                          >
+                            {n.count}
+                          </Text>
+                        ) : null
+                      )}
+                    </View>
+                    {/* 横轴标签用等宽 flex 均分，中心正好落在各桶中点，与折线上的点对齐 */}
+                    <View className='page-report__trend-axis'>
+                      {trend.points.map((p, i) => (
+                        <Text key={`axis-${i}`} className='page-report__trend-axis-label'>
+                          {p.label}
+                        </Text>
+                      ))}
+                    </View>
+                  </View>
+                  <Text className='page-report__trend-note'>
+                    {`按本报告收录的带日期条目聚合：${trend.from} ~ ${trend.to} 共 ${trend.total} 条动态与事件、覆盖 ${trend.spanDays} 天（每格 ${Math.round(
+                      trend.windowDays / trend.points.length
+                    )} 天，纵轴为条数，单格峰值 ${trend.peak}）。反映公开信息节奏，不等于全网报道量。`}
+                  </Text>
+                </>
+              )}
+            </View>
+          )}
+
+          {!report.degraded && (
             <View className='card'>
               <View className='card-title'>时间线</View>
+              {timelineView.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有可确认的关键事件。
+                </Text>
+              )}
               {timelineView.map((t, i) => (
                 <View key={i} className='page-report__timeline-item'>
                   <View className='page-report__timeline-dot' />
@@ -1295,6 +1563,51 @@ export default function ReportPage() {
                   </View>
                 </View>
               ))}
+            </View>
+          )}
+
+          {/* 后续关注（第二批）：时间线是往回看，这张卡是往前看 —— 报告因此从「一份回顾」
+              变成「一份可以跟踪的东西」。只收素材里已公布的时间点，故 when 常是「2026-11」
+              这种刻度而不是精确日期；素材没公布就不写（猜档期是推断，不是信息）。 */}
+          {report.watchlist && (
+            <View className='card'>
+              <View className='card-title'>后续关注</View>
+              {report.watchlist.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有已公布的时间点（档期一类不作推测，未公布就留空）。
+                </Text>
+              )}
+              {report.watchlist.map((w, i) => (
+                <View key={`${i}-${w.when}`} className='page-report__entry'>
+                  <Text className='page-report__entry-name'>{w.when}</Text>
+                  <Text className='page-report__entry-text'>{w.what}</Text>
+                  <Text className='page-report__entry-basis'>依据：{w.basis}</Text>
+                </View>
+              ))}
+              <Text className='page-report__entry-foot'>只列素材中已公布的时间点，未公布的不作推测。</Text>
+            </View>
+          )}
+
+          {/* 名词解释（第二批）：报告里出现的行话与背景词。摆在这个位置是当「页脚工具」用 ——
+              读到这里遇到没看懂的词，往回翻不如就地查。也是全项目唯一不带出处的模型段落
+              （它答的是词义，不是关于本人的事实断言，理由见 utils/report.ts 的 Schema 注释）。 */}
+          {report.glossary && (
+            <View className='card'>
+              <View className='card-title'>名词解释</View>
+              {report.glossary.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次报告里没有需要额外解释的行话或背景词。
+                </Text>
+              )}
+              {report.glossary.map((g, i) => (
+                <View key={`${i}-${g.term}`} className='page-report__entry'>
+                  <View className='page-report__entry-head'>
+                    <Text className='page-report__entry-label page-report__entry-label--term'>{g.term}</Text>
+                    <Text className='page-report__entry-value'>{g.explain}</Text>
+                  </View>
+                </View>
+              ))}
+              <Text className='page-report__entry-foot'>只解释报告中出现过的行话与背景词，不涉及对本人事实的判断。</Text>
             </View>
           )}
 

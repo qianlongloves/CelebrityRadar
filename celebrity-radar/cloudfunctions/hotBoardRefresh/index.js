@@ -3,8 +3,9 @@
  *
  * 触发：定时触发器（cloudbaserc.json 的 triggers，默认每天 06:30）。
  * 环境变量（控制台 → 云函数 → hotBoardRefresh → 配置 → 环境变量）：
- *   BOCHA_API_KEY     博查检索 key（与 aiProxy / notifyFollowUpdates 共用同一枚）
- *   DEEPSEEK_API_KEY  大模型 key（与 aiProxy 共用同一枚）
+ *   BOCHA_API_KEY   博查检索 key（与 aiProxy / notifyFollowUpdates 共用同一枚）
+ *   大模型 key 的变量名随供应商而变（DEEPSEEK_API_KEY / QWEN_API_KEY / …），
+ *   由同目录 llm.config.js 决定 —— 换一家只改那张表 + LLM_PROVIDER（与 aiProxy 用同一家）。
  *
  * 为什么必须放在云端而不是端上生成：
  * 1. 榜单是**全局运营位**，一天一份、所有人看同一份。端上生成 = 每个用户各生成一次，
@@ -13,8 +14,8 @@
  * 3. 榜单要「昨天有、今天也有」：这轮失败就保留上一份，端上照常可读。
  * 流程因此是「云函数按天生产 → 落 hot_board 集合 → 端上只读」。
  *
- * 生产三步：① 6 个领域各打一次博查（近一周）拿标题 + 摘要
- *          ② 摘要喂给大模型，产出 24 位（每领域 4 位）的 JSON 榜单
+ * 生产三步：① 12 个领域各打一次博查（近一周）拿标题 + 摘要
+ *          ② 摘要喂给大模型，产出 24 位（每领域 2 位）的 JSON 榜单
  *          ③ 校验后覆盖写 hot_board/latest
  *
  * action：
@@ -28,15 +29,14 @@
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
+/* 供应商注册表 + 解析（换一家改它，不改本文件）。⚠ 与 aiProxy 目录下的副本逐字一致 */
+const { resolveLlm } = require('./llm.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const db = cloud.database()
 
 const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
-const LLM_BASE_URL = 'https://api.deepseek.com/v1'
-/** 与 aiProxy 的 LLM_MODEL / src/config/public.ts 的 llm.model 同源，改动需同步 */
-const LLM_MODEL = 'deepseek-v4-flash'
 const SEARCH_TIMEOUT_MS = 15000
 const LLM_TIMEOUT_MS = 30000
 
@@ -45,23 +45,36 @@ const COLLECTION = 'hot_board'
 const DOC_ID = 'latest'
 /** 20 小时内的榜单视为「今天已经生成过」，重复触发直接返回（定时器重试 / 端上补跑都会命中） */
 const FRESH_MS = 20 * 60 * 60 * 1000
-/** 每领域出几位：6 × 4 = 24，与端上 BOARD_LIMIT 一致 */
-const PER_DOMAIN = 4
+/**
+ * 每领域出几位：12 × 2 = 24，与端上 BOARD_LIMIT（utils/hot-board.ts）一致。
+ * 2026-10-08 领域从 6 个扩到 12 个时由 4 降到 2：检索是**并行**的（见 exports.main ①），
+ * 但每个领域各自打一次博查，领域翻倍 ⇒ 上游检索次数翻倍，故用降位数把总条数框住 ——
+ * 榜单总量与端上完全无感，代价只是单个领域从 4 位缩到 2 位。
+ */
+const PER_DOMAIN = 2
 /** 校验下限：低于这个条数视为这轮失败，保留旧榜单（宁可用昨天的，也不要一份残缺榜） */
 const MIN_ITEMS = 12
-/** 至少要覆盖几个领域：防止模型全堆在文娱一个领域 */
-const MIN_DOMAINS = 4
+/** 至少要覆盖几个领域：防止模型全堆在文娱一个领域（12 个领域时，6 个只算及格） */
+const MIN_DOMAINS = 6
 
-/** 领域清单：与 src/config/domains.ts 的 DOMAIN_CODES 一一对应 */
+/** 领域清单：与 src/config/domains.ts 的 DOMAIN_CODES 一一对应（增删必须同步，顺序保持一致） */
 const DOMAINS = [
   { code: 'tech', label: '科技', query: '科技 企业家 最新动态 发布' },
+  { code: 'internet', label: '互联网', query: '互联网 平台 产品负责人 最新动态' },
   { code: 'business', label: '商业', query: '商界 企业家 最新动态' },
+  { code: 'finance', label: '财经', query: '投资人 经济学家 基金经理 最新观点' },
+  { code: 'auto', label: '汽车', query: '车企 高管 新能源车 最新动态' },
   { code: 'ent', label: '文娱', query: '明星 艺人 最新动态 热搜' },
+  { code: 'art', label: '艺术', query: '艺术家 导演 音乐家 最新作品' },
   { code: 'sports', label: '体育', query: '运动员 体育明星 最新比赛 动态' },
+  { code: 'health', label: '健康', query: '医学专家 医生 公共卫生 最新研究' },
   { code: 'academia', label: '学术', query: '科学家 学者 最新研究成果' },
+  { code: 'edu', label: '教育', query: '教育家 教师 教育行业 最新动态' },
   { code: 'other', label: '其他', query: '公众人物 热点 最新动态' }
 ]
 const DOMAIN_CODES = DOMAINS.map((d) => d.code)
+/** 提示词里的领域清单：从 DOMAINS 派生，增删领域码时不必再改提示词正文（写死必然漂移） */
+const DOMAIN_LIST = DOMAINS.map((d) => `${d.code}（${d.label}）`).join('、')
 
 function readEnv(name) {
   const v = process.env[name]
@@ -162,7 +175,7 @@ function buildPrompt(digests, today) {
     '你是「名人雷达」的热门榜编辑，负责每天从公开报道里挑出当下最值得关注的公众人物。',
     '',
     '硬性规则：',
-    `1. 领域只能从这 6 个里选：tech（科技）、business（商业）、ent（文娱）、sports（体育）、academia（学术）、other（其他），每个领域给 ${PER_DOMAIN} 位，共 ${total} 位。`,
+    `1. 领域只能从这 ${DOMAINS.length} 个里选：${DOMAIN_LIST}，每个领域给 ${PER_DOMAIN} 位，共 ${total} 位。`,
     '2. 只选真实存在、且在给定报道里能找到依据的公众人物；不要政治、军事人物，不要虚构人物，不要把机构名或公司名当人名。',
     '3. 榜单位次 = 关注度从高到低，数组顺序即排名（第 1 位最热）。',
     '4. 同一个人只出现一次；外籍人物用通行中文译名（如「马斯克」，不要写「Elon Musk」）。',
@@ -200,12 +213,12 @@ function extractJson(raw) {
   }
 }
 
-async function askLlm(key, system, user) {
+async function askLlm(llm, system, user) {
   const res = await postJson(
-    `${LLM_BASE_URL.replace(/\/+$/, '')}/chat/completions`,
-    { Authorization: `Bearer ${key}` },
+    `${String(llm.baseUrl || '').replace(/\/+$/, '')}/chat/completions`,
+    { Authorization: `Bearer ${llm.apiKey}` },
     {
-      model: LLM_MODEL,
+      model: llm.model,
       stream: false,
       messages: [
         { role: 'system', content: system },
@@ -294,14 +307,18 @@ exports.main = async (event) => {
   }
 
   const bochaKey = readEnv('BOCHA_API_KEY')
-  const llmKey = readEnv('DEEPSEEK_API_KEY')
-  if (!bochaKey || !llmKey) {
+  /* 供应商 / 端点 / key / 模型由 llm.config.js 统一裁决（与 aiProxy 同一张表、同一份副本） */
+  const llm = resolveLlm(event)
+  const llmKey = llm.apiKey
+  if (!bochaKey || !llmKey || !llm.baseUrl) {
     /* 未配置不是错误：函数可能先于密钥上线部署，静默跳过即可（不产生失败告警） */
     return {
       ok: false,
       skipped:
         '缺少环境变量：' +
-        [!bochaKey && 'BOCHA_API_KEY', !llmKey && 'DEEPSEEK_API_KEY'].filter(Boolean).join(' / ')
+        [!bochaKey && 'BOCHA_API_KEY', !llmKey && llm.apiKeyEnv, !llm.baseUrl && 'LLM_BASE_URL']
+          .filter(Boolean)
+          .join(' / ')
     }
   }
 
@@ -335,7 +352,7 @@ exports.main = async (event) => {
   const prompt = buildPrompt(usable, date)
   let items
   try {
-    const content = await askLlm(llmKey, prompt.system, prompt.user)
+    const content = await askLlm(llm, prompt.system, prompt.user)
     const parsed = extractJson(content)
     if (!parsed) return { ok: false, error: '大模型输出不含 JSON，保留原有榜单', failed }
     items = normalizeItems(parsed)
@@ -357,7 +374,7 @@ exports.main = async (event) => {
     items: judged.items,
     generated_at: new Date().toISOString(),
     date,
-    model: LLM_MODEL
+    model: llm.model
   }
   try {
     const w = await writeBoard(doc)

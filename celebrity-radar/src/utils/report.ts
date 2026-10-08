@@ -10,15 +10,31 @@ import { diagLog } from './cloud-diagnostics'
  * 不信任提示词：URL 白名单、来源标注、枚举值全部代码层强制。
  */
 
+/**
+ * 宽容字符串：类型不对（null / 数字 / 对象）时回落成空串，而不是让**整份报告**校验失败。
+ *
+ * 为什么值得单独写一个 helper：报告的契约是一个大对象 + 十个数组，而 zod 是「一处不合法、
+ * 整份 parse 失败」。模型偶发的一个 `"summary": null`、`"profile": {}` 就是这么一处 ——
+ * 它会让 chatJSON 两次都失败 → 整份降级成纯文本简版 → 用户看到「报告页一堆模块没了」，
+ * 而日志里只有一句「输出未过校验」。一个字段的类型偏差，代价不该是整份报告。
+ *
+ * 故各字段一律「能读就读，读不了回落」：真正的值域把关交给 sanitizeReport
+ * （它本来就在做去空、截断与出处白名单，且能容忍缺字段）。
+ * .catch() 同时兜住「键缺失」与「类型错误」两种情况，因此不必再叠 .default()。
+ */
+const looseStr = (fallback = '') => z.string().catch(fallback)
+
 const SentimentEnum = z.enum(['positive', 'neutral', 'negative'])
 
 const DynamicSchema = z.object({
-  date: z.string(),
-  title: z.string(),
-  summary: z.string().default(''),
-  source: z.string().default(''),
-  url: z.string(),
-  sentiment: SentimentEnum.default('neutral')
+  date: looseStr(),
+  title: looseStr(),
+  summary: looseStr(),
+  source: looseStr(),
+  url: looseStr(),
+  /* 枚举用 .catch 而不是 .default：模型写「正面」「Positive」时回落 neutral，
+     而不是让整份报告在校验这一步直接失败（值域归一另有 normSentiment 一道） */
+  sentiment: SentimentEnum.catch('neutral')
 })
 
 /**
@@ -37,21 +53,21 @@ const DynamicSchema = z.object({
  * 新写入时由 sanitizeReport 统一归一成字符串。
  */
 const QuoteSchema = z.object({
-  text: z.string(),
-  context: z.string().default(''),
-  background: z.string().optional(),
-  note: z.string().optional(),
-  source: z.string().default('据公开资料')
+  text: looseStr(),
+  context: looseStr(),
+  background: z.string().optional().catch(undefined),
+  note: z.string().optional().catch(undefined),
+  source: looseStr('据公开资料')
 })
 
 const TimelineSchema = z.object({
-  date: z.string(),
-  event: z.string()
+  date: looseStr(),
+  event: looseStr()
 })
 
 const SourceSchema = z.object({
-  title: z.string(),
-  url: z.string()
+  title: looseStr(),
+  url: looseStr()
 })
 
 /**
@@ -66,9 +82,9 @@ const SourceSchema = z.object({
  * 页面上不出现裸 URL（见 sanitizeReport 的 sourceNameOf）。
  */
 const AnalysisPointSchema = z.object({
-  point: z.string(),
+  point: looseStr(),
   /** 素材 URL 原样复制；素材里找不到出处时写「据公开资料」 */
-  basis: z.string().default('据公开资料')
+  basis: looseStr('据公开资料')
 })
 
 /** 话题态度倾向：比 sentiment 多一档「两极」—— 热点话题上的舆论常常是撕裂的，三值装不下 */
@@ -84,15 +100,15 @@ const StanceEnum = z.enum(['positive', 'neutral', 'negative', 'mixed'])
  */
 const MemberNotesSchema = z.object({
   /** 与同领域其他公众人物的差异 / 相对位置 */
-  compare: z.string().default(''),
+  compare: looseStr(),
   /** 近期需要留意的争议或风险（中性、就事论事） */
-  risk: z.string().default('')
+  risk: looseStr()
 })
 const StanceSchema = z.object({
-  topic: z.string(),
-  attitude: StanceEnum.default('neutral'),
+  topic: looseStr(),
+  attitude: StanceEnum.catch('neutral'),
   /** 一句话依据（自由文本，无法像 url 那样白名单校验，只在 sanitize 里收敛长度） */
-  note: z.string().default('')
+  note: looseStr()
 })
 
 /**
@@ -107,34 +123,112 @@ const StanceSchema = z.object({
  */
 const ConflictSchema = z.object({
   /** 争点：两边不一致的那件事（12 字内） */
-  topic: z.string(),
+  topic: looseStr(),
   /** 一方说法（须含来源媒体名与具体内容） */
-  a: z.string().default(''),
+  a: looseStr(),
   /** 另一方说法（同上，与 a 相对） */
-  b: z.string().default('')
+  b: looseStr()
+})
+
+/* ===== 第二批：结构化事实字段（人物档案 / 关系图谱 / 后续关注 / 名词解释 / 争议与回应） =====
+ *
+ * 这一批的共同点是**事实**而不是**判断**：它们回答 who（档案）、跟谁（关系）、
+ * 接下来（后续关注）、什么意思（名词解释）、吵了什么（争议与回应）。
+ * 与 analysisPoints / stance 那类模型判断不同，事实字段**没有出处就是编造** ——
+ * 故除名词解释外全部强制带 basis（素材 url），由 sanitize 里的 strictSourceOf 卡死：
+ * 编一个 url 出来不会得到一条假依据，而是让**整条被丢掉**。
+ *
+ * 名词解释刻意豁免出处要求：它解释的是「番位」「对赌」这类行话的通行含义（常识），
+ * 不是关于本人的事实断言 —— 素材里不会有一段文字「定义」番位，硬要 basis 只会逼模型编。
+ *
+ * 五段全部进**免费**提示词（SYSTEM_REALTIME）：术语注解与近期争议对免费用户同样是核心信息
+ * （见路线图「第二批」的注意栏），代价是每次生成多付这几段的 token，这是本批唯一的成本。
+ * 老报告 JSON 里根本没有这些键，UI 一律整卡降级（同 Report.coverage 的处理）。
+ */
+
+/** 人物档案的一条：label(字段名) + value(值) + basis(素材 url，落库前换成媒体名) */
+const ProfileItemSchema = z.object({
+  label: looseStr(),
+  value: looseStr(),
+  /** 素材 url 原样复制。**这里没有「据公开资料」这个出口**：档案是事实，指不出出处就不该出现 */
+  basis: looseStr()
+})
+
+/**
+ * 关系类别：枚举而不是自由文本 —— 自由文本会让同一段关系在两次生成里叫「合作」「合作方」
+ * 「合作伙伴」三个名字，UI 就再也给不出稳定标签。四档之外的一律归 other，不硬凑语义。
+ */
+const RelationKindEnum = z.enum(['cooperate', 'mentor', 'rival', 'other'])
+
+const RelationSchema = z.object({
+  /** 对方姓名 */
+  name: looseStr(),
+  /* 同上：模型写「合作」「亦师亦友」时回落 other（sanitize 的 normRelation 也会再归一一次），
+     而不是让整份报告在这一条上直接失败 */
+  relation: RelationKindEnum.catch('other'),
+  /** 一句话说明这段关系；关系本身已由 relation 说清时可空串 */
+  note: looseStr(),
+  basis: looseStr()
+})
+
+/** 后续关注的一条：素材里**已公布**的时间点 + 事件 + 出处 */
+const WatchItemSchema = z.object({
+  when: looseStr(),
+  what: looseStr(),
+  basis: looseStr()
+})
+
+/**
+ * 名词解释的一条：term + explain。**刻意不带 basis**（理由见本节顶部注释）——
+ * 它豁免的只是「出处」，不豁免「只解释报告里确实出现的词」，后者由提示词约束。
+ */
+const GlossaryItemSchema = z.object({
+  term: looseStr(),
+  explain: looseStr()
+})
+
+/** 近期争议与回应的一条：争议点 + 争议内容 + 回应（可空串）+ 出处 */
+const ControversySchema = z.object({
+  topic: looseStr(),
+  claim: looseStr(),
+  /** 当事方 / 相关方的公开回应；素材里没有回应就空串，**不为凑格式编一句回应** */
+  response: looseStr(),
+  basis: looseStr()
 })
 
 /** LLM 输出契约（heat 由本地计算，不由模型给） */
 const LlmReportSchema = z.union([
   z.object({ refused: z.literal(true) }),
   z.object({
-    refused: z.literal(false).optional(),
-    intro: z.string().default(''),
-    dynamics: z.array(DynamicSchema).default([]),
-    quotes: z.array(QuoteSchema).default([]),
-    analysis: z.string().default(''),
+    /* 这里刻意用 unknown 而不是 literal(false)：模型偶发写 "refused": "false" / 0 时，
+       literal 两处都不匹配 → 整份报告校验失败 → 降级。判「是不是拒答」只需看它是否全等 true
+       （见 isRefusedResult），值域校验不必要，也不必付整份报告的代价。 */
+    refused: z.unknown().optional(),
+    intro: looseStr(),
+    dynamics: z.array(DynamicSchema).catch([]),
+    quotes: z.array(QuoteSchema).catch([]),
+    analysis: looseStr(),
     /* 点评拆条（本轮）：新提示词只请求它，analysis 由 sanitize 从各条拼出来。
        analysis 仍保留在契约里 —— 降级简版路径（SYSTEM_FALLBACK）产出的就是一整段文字，
        两条路共用同一个渲染出口（见 pages/report/index.tsx）。 */
-    analysisPoints: z.array(AnalysisPointSchema).default([]),
-    stance: z.array(StanceSchema).default([]),
-    timeline: z.array(TimelineSchema).default([]),
-    sources: z.array(SourceSchema).default([]),
+    analysisPoints: z.array(AnalysisPointSchema).catch([]),
+    stance: z.array(StanceSchema).catch([]),
+    timeline: z.array(TimelineSchema).catch([]),
+    sources: z.array(SourceSchema).catch([]),
     /* 会员专属段落（O-11）：只有会员的提示词里会出现它，免费报告恒为 undefined。
        必须在 schema 里声明 —— zod 的非严格对象会把未声明的键**静默丢弃**。 */
-    memberNotes: MemberNotesSchema.optional(),
+    memberNotes: MemberNotesSchema.optional().catch(undefined),
     /* 信源分歧（本轮，会员专享）：同上，不声明就等于白要（会被 zod 静默丢掉） */
-    conflicts: z.array(ConflictSchema).optional()
+    conflicts: z.array(ConflictSchema).optional().catch(undefined),
+    /* 第二批（免费可见）：五段结构化事实字段，随 SYSTEM_REALTIME 一起要。
+       同样必须先声明 —— zod 的非严格对象会把未声明的键静默丢弃。
+       一律 .catch([]) 而不是 .default([])：模型把它们写成对象 / 字符串时也只是这一段为空，
+       不该让整份报告在校验这一步失败（.catch 同时兜住键缺失，故不必再叠 .default）。 */
+    profile: z.array(ProfileItemSchema).catch([]),
+    relations: z.array(RelationSchema).catch([]),
+    watchlist: z.array(WatchItemSchema).catch([]),
+    glossary: z.array(GlossaryItemSchema).catch([]),
+    controversies: z.array(ControversySchema).catch([])
   })
 ])
 
@@ -142,7 +236,10 @@ export type LlmReport = z.infer<typeof LlmReportSchema> & { refused?: boolean }
 
 /** 拒答结果的显式类型守卫（联合窄化用） */
 export function isRefusedResult(x: unknown): x is { refused: true } {
-  return typeof x === 'object' && x !== null && (x as { refused?: unknown }).refused === true
+  const refused = typeof x === 'object' && x !== null ? (x as { refused?: unknown }).refused : undefined
+  /* 兼收字符串 'true'：schema 里 refused 是宽容字段（见 LlmReportSchema 的注释），模型写成
+     "refused": "true" 时不该被当成「没有拒答」—— 那会让一份本该拒答的报告变成一堆空卡片 */
+  return refused === true || refused === 'true'
 }
 
 /** 一条点评：判断本身 + 依据（媒体名，或「据公开资料」） */
@@ -170,6 +267,12 @@ export interface LlmReportFields {
   sources?: Array<{ title?: string; url: string }>
   memberNotes?: { compare?: string; risk?: string }
   conflicts?: Array<{ topic?: string; a?: string; b?: string }>
+  /* 第二批（免费可见）：宽松形态，字段可能缺失或非字符串，由 sanitize 内部归一 */
+  profile?: Array<{ label?: string; value?: string; basis?: string }>
+  relations?: Array<{ name?: string; relation?: string; note?: string; basis?: string }>
+  watchlist?: Array<{ when?: string; what?: string; basis?: string }>
+  glossary?: Array<{ term?: string; explain?: string }>
+  controversies?: Array<{ topic?: string; claim?: string; response?: string; basis?: string }>
 }
 
 /** 完整报告（落库/渲染形态，§2.3 Schema v2） */
@@ -213,6 +316,26 @@ export interface Report {
    * 但报告是全局共享缓存，**UI 同样必须再判一次会员态**（两者在报告页共用一张卡）。
    */
   conflicts?: Conflict[]
+  /**
+   * 第二批（免费可见）：结构化人物档案 —— 一眼看清 who 的锚点，替代把身份信息全塞在
+   * intro 那段散文里。每条都带 basis（媒体名），故每条都能回到一篇素材去核对。
+   * 可选 —— 改动前落库的老报告没有这个键，UI 整卡不出。
+   */
+  profile?: Array<z.infer<typeof ProfileItemSchema>>
+  /**
+   * 第二批（免费可见）：关系图谱（合作者 / 师承 / 对手 / 其他）。
+   * 关系必须明确写在素材里，不得由「同框」「同公司」推测 —— 出处不是真素材的条目不会落库。
+   */
+  relations?: Array<z.infer<typeof RelationSchema>>
+  /** 第二批（免费可见）：后续关注 —— 素材里已公布的时间点 / 事件，把报告从「回顾」变成「可跟踪」 */
+  watchlist?: Array<z.infer<typeof WatchItemSchema>>
+  /** 第二批（免费可见）：名词解释 —— 报告里出现的行话与背景词（唯一不带出处的字段，理由见 Schema 注释） */
+  glossary?: Array<z.infer<typeof GlossaryItemSchema>>
+  /**
+   * 第二批（免费可见）：近期争议与回应。刻意与会员段的 memberNotes.risk 分成两件事 ——
+   * 这里记的是**已发生**的争议与公开回应（事实），risk 是**面向未来**的风险提示（判断）。
+   */
+  controversies?: Array<z.infer<typeof ControversySchema>>
   disclaimer: string
   /** 生成时的关注侧重（发现页「关注」筛选，'all' = 六段完整） */
   focus?: FocusCode
@@ -250,15 +373,38 @@ export const DISCLAIMER = '内容由 AI 基于公开网络信息生成，仅供�
 const SYSTEM_REALTIME = [
   '你是名人动态分析师。基于提供的真实新闻素材，为指定名人生成一份结构化报告。',
   '硬约束：',
+  /*
+   * 出处（basis）的写法单列一条前置，因为它出现在五处字段里，而原先的说法（「必须从素材 url
+   * 原样复制」）在实践中太难做到：模型抄长 URL 的走形率很高，一旦差一个字符，整条事实就会在
+   * sanitize 里被判成「无出处」而消失 —— 用户看到的就是「报告少了一块」。
+   * 故把口径放宽到「抄不准就写媒体名」，与 sanitizeReport 的三层出处匹配（归一化 URL →
+   * 媒体名 → 标题）严格对齐：提示词要求的，正是校验会放行的。唯一不放宽的是来源本身 ——
+   * 必须是本次素材里出现过的，不得写素材之外的来源，也不得自己拼链接。
+   */
+  '出处（basis）写法：优先直接复制素材里的 url（整串照抄，不要改写、不要省略）。若那串字符太长、记不准，写该素材的媒体名（如「新华社」）同样算指认出处。两者都必须来自本次素材。',
   '1. 仅基于素材作答，不编造日期与来源。',
   '2. dynamics 每条字段：date(YYYY-MM-DD)、title、summary(一句摘要)、source(来源媒体名)、url(必须从素材 URL 原样复制)、sentiment(只能是 positive/neutral/negative)。',
   '3. quotes 每条字段：text(名言原文)、context(出处场合/时间)、background(背景：这句话是在什么场合、什么背景下说的，1~2 句，须出自素材)、note(注解：这句话的含义 / 影响 / 争议，1~2 句，须出自素材，没有可说的就填空串)、source(素材 URL 或「据公开资料」)；background 与 note 合计不超过 100 字。',
   '4. sources 列出全部用到的素材：title + url(原样复制)。',
   '5. analysisPoints：3~4 条各自独立的判断，每条字段：point(一句完整的判断，40 字内，以句号结尾)、basis(这条判断依据的素材 url，原样复制；素材里找不到出处的写「据公开资料」)。判断必须具体到人、事、时间或具体说法，禁止「风格独特」「备受关注」「引发讨论」这类换个人名也成立的套话；各条之间不要互相重复。',
-  '6. stance：2~4 个近期热点话题上的舆论态度，每条字段：topic(话题名，12 字内)、attitude(只能是 positive/neutral/negative/mixed)、note(一句话依据，须出自素材)；素材不足以判断则留空数组。',
-  '7. timeline：素材中可确认的关键事件(date + event)；无把握则留空数组。',
-  '8. 若素材显示该人物属政治、军事类敏感人物，仅返回 {"refused": true}。',
-  '9. 只输出 JSON，格式：{"intro":string,"dynamics":[],"quotes":[],"analysisPoints":[],"stance":[],"timeline":[],"sources":[]}'
+  '6. stance：2~4 个近期热点话题上的舆论态度，每条字段：topic(话题名，12 字内)、attitude(只能是 positive/neutral/negative/mixed)、note(一句话依据，须出自素材)；素材里确实没有任何可判断的舆论态度才留空数组。',
+  '7. timeline：素材中可确认的关键事件(date + event)；素材里确实没有可确认的事件才留空数组。',
+  '8. profile：结构化人物档案 3~6 条（尽量给到 5 条），用来让人一眼看清「是谁」，每条字段：label(字段名，8 字内，如「职业」「出生年份」「代表作」「主要成就」)、value(40 字内)、basis(这条事实出自的素材，写法见开头「出处（basis）写法」)。**每条都必须能在素材里找到依据，找不到的整条不要写**；不要用常识去补全素材里没有的信息（那是编造，不是补充）。',
+  '9. relations：与本人有公开关系的人，最多 5 条，每条字段：name(对方姓名)、relation(只能是 cooperate/mentor/rival/other，依次表示合作、师承、对手、其他)、note(一句话说明这段关系，说不清就填空串)、basis(关系出自的素材，写法见开头)。关系必须是素材里**明确写到**的（同台合作、师徒、公开竞争等），不得由「同框」「同公司」「同时出现」推测；只有单方提及也不写。',
+  '10. watchlist：未来值得跟踪的时间点或事件，只写素材里**已公布**的，最多 4 条，每条字段：when(已公布的时间，如 2026-11 或「下月」，12 字内)、what(事件，40 字内)、basis(素材，写法见开头)。素材里确实没有公布任何时间点才留空数组（不得推测档期）。',
+  '11. glossary：本报告或素材里出现、普通读者可能不懂的行话或背景词（如文娱「番位」、财经「对赌」），最多 5 条，每条字段：term(词，10 字内)、explain(一句话解释，50 字内)。只解释确实出现过的词（确实没有这类词才留空数组）；解释用该词的通行含义即可（这一条答的是词义，不是关于本人的事实），不做褒贬评价。',
+  '12. controversies：近期公开争议与各方的回应，最多 3 条，每条字段：topic(争议点，12 字内)、claim(争议内容，60 字内)、response(当事方或相关方的公开回应，40 字内；素材里没有公开回应就填空串)、basis(素材，写法见开头)。只写素材里确实存在的争议，只陈述、不评价、不裁决。',
+  '13. 若素材显示该人物属政治、军事类敏感人物，仅返回 {"refused": true}。',
+  /*
+   * 「写满」这条是补上去的，它对应一类此前没被当成问题的失败：模板里每段都留了「素材不足
+   * 则留空」的口子，而模型对这类口子的利用程度远超预期 —— 它会把「省事」读成「素材不足」，
+   * 于是某些段整段为空。报告页对空段是不出卡的（见 index.tsx），用户看到的便是**整块卡片
+   * 直接消失**，观感上就是「报告不全，会员免费都一样」。
+   * 故这里把两个概念的边界写死：先尽力找，确实没有才留空；同时把第 1 条再钉一遍，
+   * 免得这句被读成鼓励注水。
+   */
+  '14. 除「素材里确实没有」之外，**每一段都要给出内容**（dynamics / quotes / analysisPoints / stance / timeline / sources / profile / relations / watchlist / glossary / controversies 都算）：先尽力在素材里找，确实找不到才留空数组。不许因为条数不好凑、懒得逐一核对就返回空数组 —— 用户看到的是一整块卡片直接消失，比少一条信息严重得多；但也不得为凑数编造（第 1 条）。',
+  '15. 只输出 JSON，格式：{"intro":string,"dynamics":[],"quotes":[],"analysisPoints":[],"stance":[],"timeline":[],"sources":[],"profile":[],"relations":[],"watchlist":[],"glossary":[],"controversies":[]}'
 ].join('\n')
 
 /**
@@ -268,7 +414,7 @@ const SYSTEM_REALTIME = [
  */
 const MEMBER_HINT_REALTIME = [
   '会员补充要求：额外输出 memberNotes 与 conflicts（**无素材支撑就留空**，不得为了凑数而编）。',
-  'memberNotes 含两段文字：compare —— 该名人与同领域其他公众人物的差异或相对位置，2~3 句，比较对象须出自素材并写清是谁；risk —— 近期需要留意的争议或风险提示，措辞中性、就事论事、不做人身评价；无则填空串。',
+  'memberNotes 含两段文字：compare —— 该名人与同领域其他公众人物的差异或相对位置，2~3 句，比较对象须出自素材并写清是谁；risk —— **面向未来**的风险提示（接下来值得留意什么），措辞中性、就事论事、不做人身评价；**已经发生的争议与回应属于免费段 controversies，不要在这里复述**；无则填空串。',
   'conflicts：素材之间**互相矛盾**的地方（同一件事两边说法不一致、关键数字对不上、一方否认另一方的说法），最多 3 条，每条字段：topic(争点，12 字内)、a(一方说法，写清是哪家媒体、说了什么)、b(另一方说法，同 a)。两方都必须真实存在于素材中，不得自己想象一个对立面；素材里没有矛盾就留空数组。',
   '格式追加：{"memberNotes":{"compare":string,"risk":string},"conflicts":[{"topic":string,"a":string,"b":string}]}'
 ].join('\n')
@@ -338,6 +484,45 @@ const CONFLICT_SIDE_CHARS = 100
 /** 分歧条数上限：报告只摆最关键的几处，摆满一屏反而没了重点 */
 const CONFLICT_MAX = 3
 
+/* ----- 第二批（免费可见的五段事实字段）：长度与条数上限 -----
+ *
+ * 这几段的共同点是「一段一条事实」，故各档上限都贴着「一条事实说清楚」的尺度定，
+ * 与 stance.note（60 字）、analysisPoints（80 字）同一套克制：数值不同只是体裁不同，
+ * 依据都是「超过就不再是一条，而是又变回一段综述」。 */
+
+/** 人物档案条数：档案是「一眼看清 who」，超过 6 条就不再是一眼 */
+const PROFILE_MAX = 6
+/** 字段名上限（「出生年份」四个字，够用且能左右对齐成一列） */
+const PROFILE_LABEL_CHARS = 8
+/** 字段值上限 */
+const PROFILE_VALUE_CHARS = 40
+
+/** 关系条数：人-人维度只摆最主要的几段关系 */
+const RELATION_MAX = 5
+/** 对方姓名上限（中文姓名 2~4 字，留出艺名 / 组合名的余量） */
+const RELATION_NAME_CHARS = 20
+/** 关系说明上限 */
+const RELATION_NOTE_CHARS = 40
+
+/** 后续关注条数 */
+const WATCH_MAX = 4
+/** 时间点上限（「2026-11」「下月」这类已公布的刻度，不是日期格式） */
+const WATCH_WHEN_CHARS = 12
+/** 事件上限 */
+const WATCH_WHAT_CHARS = 40
+
+/** 名词解释条数：行话注解只是阅读辅助，摆满一屏就成了词典 */
+const GLOSSARY_MAX = 5
+const GLOSSARY_TERM_CHARS = 10
+const GLOSSARY_EXPLAIN_CHARS = 50
+
+/** 争议条数 */
+const CONTROVERSY_MAX = 3
+const CONTROVERSY_TOPIC_CHARS = 12
+const CONTROVERSY_CLAIM_CHARS = 60
+/** 单侧回应的长度上限：装得下一句「XX 已回应……」，与 conflicts 的单侧说法同档 */
+const CONTROVERSY_RESPONSE_CHARS = 40
+
 /* ===== 素材 → 提示词的选取（本轮升级：事件归组 + 分级保留） ===== */
 
 /**
@@ -358,6 +543,13 @@ const BRIEF_ITEM_CHARS = 160
 
 /** 同一事件的判定阈值：标题字符二元组的 Dice 系数（见 groupByEvent） */
 const SAME_EVENT_RATIO = 0.62
+
+/**
+ * 「basis 写的是素材标题」这一层匹配的最短长度（归一化后的字符数）。
+ * 要求足够长是因为这一层用的是「一方包含另一方」：短串（如「新剧开播」）会在一堆不相关的
+ * 标题里误命中，而误命的代价是给一条编造的事实配上了一条真出处 —— 比少一条严重得多。
+ */
+const TITLE_MATCH_MIN_CHARS = 8
 
 /**
  * 标题归一化：只留中英文与数字。
@@ -493,11 +685,11 @@ const FOCUS_LABEL: Record<FocusCode, string> = {
 const FOCUS_HINT_REALTIME: Record<FocusCode, string> = {
   all: '',
   dynamics:
-    '补充要求（优先满足）：本次用户侧重「近期动态」，dynamics 不少于 3 条且优先最新事件，summary 写足信息量；quotes 可精简至 1~2 条。',
+    '补充要求（优先满足）：本次用户侧重「近期动态」，dynamics 不少于 3 条且优先最新事件，summary 写足信息量；quotes 仍至少给 1 条 —— 可精简，但不得为空（空段落会让报告页整块卡片消失）。',
   quotes:
-    '补充要求（优先满足）：本次用户侧重「言论观点」，quotes 不少于 3 条并写清 context 出处场合与 background 背景；dynamics 可精简至 1~2 条。',
+    '补充要求（优先满足）：本次用户侧重「言论观点」，quotes 不少于 3 条并写清 context 出处场合与 background 背景；dynamics 仍至少给 3 条且 date 与 url 齐全 —— 折线图与情绪走势都以 dynamics 为数据源，少于 3 条这两张卡会整块消失，侧重只该改变篇幅，不该让模块不见了。',
   timeline:
-    '补充要求（优先满足）：本次用户侧重「经历履历」，timeline 尽量补全可确认的关键节点，analysisPoints 需串联其成长与职业脉络；dynamics 可精简至 1~2 条。'
+    '补充要求（优先满足）：本次用户侧重「经历履历」，timeline 尽量补全可确认的关键节点，analysisPoints 需串联其成长与职业脉络；dynamics 仍至少给 3 条且 date 与 url 齐全（折线图与情绪走势都以它为数据源）。'
 }
 
 /**
@@ -567,7 +759,15 @@ export async function buildReport(
     return { ok: true, data: { refused: true } }
   }
 
-  const report = sanitizeReport(personKey, name, result.data, news, focus)
+  /*
+   * 这里必须显式断言一次：上面各个字段都用了 .catch() 做宽容兜底，而 zod 的 ZodCatch 为了让
+   * 兜底能接住任何输入，把类型的 Input 拓宽成了 unknown —— 于是一个含 .catch() 的 object 在
+   * TS 眼里会整体退化成「每个字段都是 unknown」，union 的输出类型也跟着糊掉。
+   * 运行时形状由 zod 保证（出参就是 LLM 给的对象，字段只多不少），且 sanitizeReport 对每个
+   * 字段都是防御式读取（?? ''），所以这条边界用一个显式断言收掉，比为了类型好看而放弃
+   * .catch() 的运行时宽容更划算 —— 前者只是少一层类型检查，后者是「一个 null 让整份报告降级」。
+   */
+  const report = sanitizeReport(personKey, name, result.data as LlmReportFields, news, focus)
   return { ok: true, data: report }
 }
 
@@ -620,18 +820,112 @@ function buildCoverage(news: NewsItem[]): ReportCoverage {
 }
 
 /**
- * 素材 URL → 展示用的媒体名。
+ * 出处索引：把模型给的 basis 映射回素材（见 matchNewsOf）。
  *
- * 点评的 basis 沿用 quotes.source 的白名单思路：模型给的是素材 URL，落库前换成媒体名
- * （页面上不出现裸 URL，与人读的「依据：新华社」一致）。不落在素材集合里、或本来就写着
- * 「据公开资料」，一律收敛成「据公开资料」—— 模型编一个 URL 出来不会得到一条假来源，
- * 只会得到一句诚实的「无出处」。
+ * 为什么需要这一层，而不是一句 `urlSet.has(u)`：模型抄 URL 的走形率相当高 —— 末尾带上中文句号、
+ * 被引号或书名号包住、多一个 / 少一个尾斜杠、http 与 https 混用、丢了 # 之后那段、写成 &amp;。
+ * 原先是**逐字符全等**，上面任何一处走形都让这条彻底消失：页面上的表现不是「依据不准」，而是
+ * **整条档案 / 关系 / 后续关注 / 争议凭空少一条，甚至整段卡片不出**，日志里只有一句
+ * 「事实字段无有效出处，剔除 N 条」。素材明明是有的，只是那串字符没抄准 ——
+ * 「不确定就不呈现」这条规矩不该被用在「明明确定、只是写法不同」上。
+ *
+ * 于是改成三层匹配：归一化 URL → 媒体名 → 标题。命中任一层都算指出处，
+ * 而**返回值永远取自素材本身**（媒体名 / 素材原始 URL），所以编造一个出处依然过不来。
  */
-function sourceNameOf(url: string | undefined, news: NewsItem[], urlSet: Set<string>): string {
-  const u = (url ?? '').trim()
-  if (u === '' || u === '据公开资料') return '据公开资料'
-  if (!urlSet.has(u)) return '据公开资料'
-  return news.find((n) => n.url === u)?.source || '据公开资料'
+interface SourceIndex {
+  /** 归一化 URL → 素材 */
+  byUrl: Map<string, NewsItem>
+  /** 媒体名 → 该家的一条代表素材（长名在前：同时含「新华社」与「新华」时该命中更完整的那个） */
+  media: Array<{ name: string; item: NewsItem }>
+  /** 归一化标题 → 素材 */
+  titles: Array<{ key: string; item: NewsItem }>
+}
+
+/**
+ * URL 归一：把「同一篇文章的几种写法」收敛成一个键。
+ * 顺序有意如此 —— 先剥装饰与尾随标点、去锚点与查询串，再统一协议与 www，最后去尾斜杠。
+ * 查询串整体丢弃（它多是渠道 / 分享参数）；代价是「仅靠 ?id= 区分的两篇文章」会被视为同一篇，
+ * 这在新闻站点里罕见，换来的是「模型抄来的链接只要指向同一篇，就一定认得出来」。
+ */
+function normalizeUrl(raw: string): string {
+  return (raw ?? '')
+    .trim()
+    /* 包裹装饰与尾随标点：模型很爱写「（https://…）」『https://…』，或让句号落在链接后面 */
+    .replace(/^[「『【（(<"“”'`]+/, '')
+    .replace(/[」』】）)>"“”'`。,，;；、]+$/, '')
+    .replace(/&amp;/gi, '&')
+    .replace(/[#?].*$/, '')
+    .replace(/^https?:\/\//i, '')
+    .replace(/^www\./i, '')
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
+
+/** 建一次索引，本次 sanitize 的所有段落共用（素材最多几十条，逐条建一遍即可） */
+function buildSourceIndex(news: NewsItem[]): SourceIndex {
+  const byUrl = new Map<string, NewsItem>()
+  const mediaFirst = new Map<string, NewsItem>()
+  const titles: Array<{ key: string; item: NewsItem }> = []
+  for (const n of news) {
+    const key = normalizeUrl(n.url)
+    if (key !== '' && !byUrl.has(key)) byUrl.set(key, n)
+    /* 单字媒体名不参与匹配：它对不上任何有用信息，却极易在长文本里误命中 */
+    if (n.source && n.source.length >= 2 && !mediaFirst.has(n.source)) mediaFirst.set(n.source, n)
+    const t = normalizeTitle(n.title ?? '')
+    if (t.length >= TITLE_MATCH_MIN_CHARS) titles.push({ key: t, item: n })
+  }
+  const media = [...mediaFirst.entries()]
+    .map(([name, item]) => ({ name, item }))
+    .sort((a, b) => b.name.length - a.name.length)
+  return { byUrl, media, titles }
+}
+
+/**
+ * basis → 素材。命中顺序：归一化 URL → 媒体名 → 标题；都不中返回 null
+ * （调用方按各自体裁处理空返回值：判断类收敛成「据公开资料」，事实类整条剔除）。
+ */
+function matchNewsOf(basis: string | undefined, index: SourceIndex): NewsItem | null {
+  const raw = (basis ?? '').trim()
+  if (raw === '' || raw === '据公开资料') return null
+  const byUrl = index.byUrl.get(normalizeUrl(raw))
+  if (byUrl) return byUrl
+  /*
+   * raw 看起来就是个链接（带协议头或 www.）却没匹配上：那是模型自己拼的 / 指向站外，
+   * 到此为止 —— 一串 URL 里恰好含某个媒体名（或标题）不等于出处成立，再往下试等于给
+   * 编造的链接开一道门。只有「写成媒体名 / 标题」的 basis 才走下面两层。
+   */
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || /^www\./i.test(raw)) return null
+  const byMedia = index.media.find((m) => raw.includes(m.name))
+  if (byMedia) return byMedia.item
+  const t = normalizeTitle(raw)
+  if (t.length >= TITLE_MATCH_MIN_CHARS) {
+    const byTitle = index.titles.find((x) => x.key.includes(t) || t.includes(x.key))
+    if (byTitle) return byTitle.item
+  }
+  return null
+}
+
+/**
+ * 判断类字段（analysisPoints）的 basis → 展示用的媒体名；指不出出处时收敛成「据公开资料」。
+ *
+ * 为什么这里留了兜底出口：点评是**判断**，「据公开资料」是一句诚实的「我找不到出处」，
+ * 判断本身仍有价值（页面上「依据：据公开资料」一眼就能看出这条没链接可点）。
+ */
+function sourceNameOf(basis: string | undefined, index: SourceIndex): string {
+  return matchNewsOf(basis, index)?.source || '据公开资料'
+}
+
+/**
+ * 事实字段（档案 / 关系 / 后续关注 / 争议）的 basis → 媒体名，**指不出出处时返回空串**
+ * （调用方据此整条剔除）。
+ *
+ * 与 sourceNameOf 只差这一步，这一差分在两个字段的体裁上：档案 / 关系 / 后续关注 / 争议全是
+ * **关于本人的事实**，没有出处就等于编造 —— 退化成「据公开资料」会让一条凭空生成的事实
+ * 看起来像一条有据可查的事实。故这里不给兜底出口：模型编一个出处不会换来一条假来源，
+ * 只会让这条被丢掉。顺带把「媒体名为空」也当作无出处（无名来源对读者等于没有依据）。
+ */
+function strictSourceOf(basis: string | undefined, index: SourceIndex): string {
+  return matchNewsOf(basis, index)?.source || ''
 }
 
 /**
@@ -643,6 +937,10 @@ function sourceNameOf(url: string | undefined, news: NewsItem[], urlSet: Set<str
  * 5. analysisPoints 的 basis 同第 2 条（换成媒体名），空判断剔除、超 4 条截断；
  *    analysis 由各条拼出 —— 拆条不改变 analysis 这个字符串的存在性（问答上下文要用）
  * 6. conflicts 是会员专享段落，缺任一侧的条目剔除（只有一方在说话不叫分歧）
+ * 7. 第二批（profile / relations / watchlist / controversies）：basis 必须是**真素材**，
+ *    指不出出处就整条剔除（事实字段没有「据公开资料」这个出口，理由见 strictSourceOf）；
+ *    各段另有条数与长度上限；**空数组也落库**（区别于「键不存在」= 这份报告没要过这段，
+ *    见返回值处的注释）。glossary 是唯一的例外（它是词义，不是事实断言）
  */
 export function sanitizeReport(
   personKey: string,
@@ -651,7 +949,10 @@ export function sanitizeReport(
   news: NewsItem[],
   focus: FocusCode = 'all'
 ): Report {
-  const urlSet = new Set(news.map((n) => n.url))
+  /* 出处索引：本函数所有段落共用。它把「模型抄歪一点的 URL」「写成媒体名」都算作有效出处
+     （理由见 buildSourceIndex）—— 逐字符全等会把明明确定、只是写法不同的出处判成没有出处，
+     代价是整条事实消失，而用户看到的就是「报告少了一块」。 */
+  const srcIndex = buildSourceIndex(news)
 
   const normSentiment = (s?: string): 'positive' | 'neutral' | 'negative' =>
     s === 'positive' || s === 'negative' ? s : 'neutral'
@@ -659,29 +960,56 @@ export function sanitizeReport(
   const normStance = (s?: string): 'positive' | 'neutral' | 'negative' | 'mixed' =>
     s === 'positive' || s === 'negative' || s === 'mixed' ? s : 'neutral'
 
-  const dynamics = (llm.dynamics ?? [])
-    .filter((d) => urlSet.has(d.url))
-    .map((d) => ({
+  /* 关系类别归一：四档之外（含模型自造的词）一律 other —— 不硬把「亦师亦友」猜进某一档 */
+  const normRelation = (r?: string): 'cooperate' | 'mentor' | 'rival' | 'other' =>
+    r === 'cooperate' || r === 'mentor' || r === 'rival' ? r : 'other'
+
+  /*
+   * 动态：出处必须能对上素材（这是「动态」这个体裁的底线 —— 点不回原文就不是动态）。
+   * 但比对走 srcIndex 而不是逐字符全等，且**落库用素材里的原始 URL**：模型抄来的链接
+   * 差一个字符就 404，而点回去核对正是这条出处存在的意义。标题 / 媒体名缺失时用素材的。
+   */
+  const dynamics: Report['dynamics'] = []
+  for (const d of llm.dynamics ?? []) {
+    const hit = matchNewsOf(d.url, srcIndex)
+    if (!hit) continue
+    dynamics.push({
       date: d.date ?? '',
-      title: d.title ?? '',
+      title: d.title || hit.title,
       summary: d.summary ?? '',
-      source: d.source ?? '',
-      url: d.url,
+      source: d.source || hit.source,
+      url: hit.url,
       sentiment: normSentiment(d.sentiment)
-    }))
-  const quotes = (llm.quotes ?? [])
-    .filter((q) => (q.source ?? '据公开资料') === '据公开资料' || urlSet.has(q.source as string))
-    .map((q) => ({
+    })
+  }
+  const quotes: Report['quotes'] = []
+  for (const q of llm.quotes ?? []) {
+    const raw = (q.source ?? '').trim()
+    const hit = matchNewsOf(raw, srcIndex)
+    /* 「声称有出处、却指不出是哪条素材」的整条不要 —— 与事实字段同一道闸门（一个编造的链接
+       不该被当成出处）。自称「据公开资料」的留下：那是一句诚实的「我找不到出处」，
+       与凭空说一个有出处不是一回事，而语录本身是核心内容，不该因此整段消失。 */
+    if (raw !== '' && raw !== '据公开资料' && !hit) continue
+    quotes.push({
       text: q.text,
       context: q.context ?? '',
       /* 背景 / 注解：自由文本，照旧「去空 + 收敛长度」；空串保留（UI 按空串决定渲不渲染那一段） */
       background: (q.background ?? '').trim().slice(0, QUOTE_NOTE_CHARS),
       note: (q.note ?? '').trim().slice(0, QUOTE_NOTE_CHARS),
-      source: q.source ?? '据公开资料'
-    }))
-  const sources = (llm.sources ?? [])
-    .filter((s) => urlSet.has(s.url))
-    .map((s) => ({ title: s.title ?? '', url: s.url }))
+      /* 落库用素材里的原始 URL：quote-check 要靠这一串精确对上动态 / 来源清单，
+         两边都换成素材原串才匹配得上（此前是模型抄来的那串，抄歪了就永远对不上） */
+      source: hit ? hit.url : '据公开资料'
+    })
+  }
+  /* 来源清单：只收能对上素材的，且标题 / URL 以素材自身为准（这片清单的用处就是点回原文） */
+  const sources: Report['sources'] = []
+  const seenSourceUrl = new Set<string>()
+  for (const s of llm.sources ?? []) {
+    const hit = matchNewsOf(s.url, srcIndex) ?? matchNewsOf(s.title, srcIndex)
+    if (!hit || seenSourceUrl.has(hit.url)) continue
+    seenSourceUrl.add(hit.url)
+    sources.push({ title: s.title || hit.title, url: hit.url })
+  }
   const timeline = (llm.timeline ?? []).map((t) => ({ date: t.date ?? '', event: t.event ?? '' }))
   /* 话题态度：topic / note 是自由文本，没有像 url 那样可白名单的锚点，
      只能做「去空 + 限条数 + 收敛长度」，因此它排在各段之后（见附录 B 的校验顺序） */
@@ -702,11 +1030,11 @@ export function sanitizeReport(
     diagLog('warn', 'db', `白名单剔除 ${removed} 条（${personKey}）`)
   }
 
-  /* 点评拆条（本轮）：basis 是 url 引用位，与 quotes.source 同一套白名单 */
+  /* 点评拆条（本轮）：basis 是 url 引用位，与 quotes.source 走同一套出处匹配（srcIndex） */
   const analysisPoints = (llm.analysisPoints ?? [])
     .map((p) => ({
       point: (p.point ?? '').trim().slice(0, ANALYSIS_POINT_CHARS),
-      basis: sourceNameOf(p.basis, news, urlSet)
+      basis: sourceNameOf(p.basis, srcIndex)
     }))
     .filter((p) => p.point !== '')
     .slice(0, ANALYSIS_POINT_MAX)
@@ -741,10 +1069,104 @@ export function sanitizeReport(
     .filter((c) => c.topic !== '' && c.a !== '' && c.b !== '')
     .slice(0, CONFLICT_MAX)
 
+  /*
+   * 第二批（免费可见的五段事实字段）：四段的骨架完全一样 ——
+   *   去空 + 收敛长度 → 用 strictSourceOf 求「必须为真素材」的出处 → 指不出出处就整条剔除 → 截条数。
+   * 写成同一套而不是各写一遍，是因为「事实必须有出处」这条规矩只能有一处实现：
+   * 任何一段漏掉 strictSourceOf，模型编的事实就会从那个口子进来。
+   */
+  const profile = (llm.profile ?? [])
+    .map((p) => ({
+      label: (p.label ?? '').trim().slice(0, PROFILE_LABEL_CHARS),
+      value: (p.value ?? '').trim().slice(0, PROFILE_VALUE_CHARS),
+      basis: strictSourceOf(p.basis, srcIndex)
+    }))
+    .filter((p) => p.label !== '' && p.value !== '' && p.basis !== '')
+    .slice(0, PROFILE_MAX)
+
+  const relations = (llm.relations ?? [])
+    .map((r) => ({
+      name: (r.name ?? '').trim().slice(0, RELATION_NAME_CHARS),
+      relation: normRelation(r.relation),
+      note: (r.note ?? '').trim().slice(0, RELATION_NOTE_CHARS),
+      basis: strictSourceOf(r.basis, srcIndex)
+    }))
+    .filter((r) => r.name !== '' && r.basis !== '')
+    .slice(0, RELATION_MAX)
+
+  const watchlist = (llm.watchlist ?? [])
+    .map((w) => ({
+      when: (w.when ?? '').trim().slice(0, WATCH_WHEN_CHARS),
+      what: (w.what ?? '').trim().slice(0, WATCH_WHAT_CHARS),
+      basis: strictSourceOf(w.basis, srcIndex)
+    }))
+    .filter((w) => w.when !== '' && w.what !== '' && w.basis !== '')
+    .slice(0, WATCH_MAX)
+
+  /*
+   * 名词解释：全项目**唯一不带出处**的模型段落（理由见 Schema 注释 —— 它答的是词义而不是
+   * 关于本人的事实）。正因为少了出处这道闸门，它必须更短、更少：条数与字数都收得比其余四段紧。
+   */
+  const glossary = (llm.glossary ?? [])
+    .map((g) => ({
+      term: (g.term ?? '').trim().slice(0, GLOSSARY_TERM_CHARS),
+      explain: (g.explain ?? '').trim().slice(0, GLOSSARY_EXPLAIN_CHARS)
+    }))
+    .filter((g) => g.term !== '' && g.explain !== '')
+    .slice(0, GLOSSARY_MAX)
+
+  /* 争议与回应：response 允许空串（素材里没有公开回应是常态），故它不进 filter 条件 */
+  const controversies = (llm.controversies ?? [])
+    .map((c) => ({
+      topic: (c.topic ?? '').trim().slice(0, CONTROVERSY_TOPIC_CHARS),
+      claim: (c.claim ?? '').trim().slice(0, CONTROVERSY_CLAIM_CHARS),
+      response: (c.response ?? '').trim().slice(0, CONTROVERSY_RESPONSE_CHARS),
+      basis: strictSourceOf(c.basis, srcIndex)
+    }))
+    .filter((c) => c.topic !== '' && c.claim !== '' && c.basis !== '')
+    .slice(0, CONTROVERSY_MAX)
+
+  /* 事实字段被剔除的条数单独记一笔：它是「不做推断」这道闸门在真实生成里生效的证据 */
+  const factDropped =
+    (llm.profile?.length ?? 0) -
+    profile.length +
+    ((llm.relations?.length ?? 0) - relations.length) +
+    ((llm.watchlist?.length ?? 0) - watchlist.length) +
+    ((llm.controversies?.length ?? 0) - controversies.length)
+  if (factDropped > 0) {
+    diagLog('warn', 'db', `事实字段无有效出处，剔除 ${factDropped} 条（${personKey}）`)
+  }
+
   // 热度（§1.6）：N30 = 素材数（查询窗口 30 天，截到 HEAT_COUNT_CAP）；N7 = publishedDate 在 7 天内
   const statsNews = news.length > HEAT_COUNT_CAP ? news.slice(0, HEAT_COUNT_CAP) : news
   const n7 = countWithinDays(statsNews, 7)
   const heat = heatValue(statsNews.length, n7)
+
+  /*
+   * 落库前的「成段数」快照（诊断口径）。
+   *
+   * 报告是全局共享缓存，事后只能靠这条日志回答「这次到底是哪一段没内容」——
+   * 用户反馈「报告不全」时，它把三种「空」区分开：
+   *   · 这里计数为 0 → 模型这次没给（或给了但指不出出处，另见上面的剔除日志）；
+   *   · 键不在 detail 里（老报告根本走不到这行）→ 这份报告生成时没要过这一段；
+   *   · 数组非空但 UI 没渲染 → 那是呈现层的问题，与数据无关。
+   * 条数放 detail（可结构化筛选），message 保持一句话，避免把诊断页刷满。
+   */
+  diagLog('info', 'db', `报告成段数（${personKey}）`, {
+    dynamics: dynamics.length,
+    quotes: quotes.length,
+    sources: sources.length,
+    timeline: timeline.length,
+    stance: stance.length,
+    analysisPoints: analysisPoints.length,
+    profile: profile.length,
+    relations: relations.length,
+    watchlist: watchlist.length,
+    glossary: glossary.length,
+    controversies: controversies.length,
+    conflicts: conflicts.length,
+    memberNotes: memberNotes ? 1 : 0
+  })
 
   return {
     personKey,
@@ -762,6 +1184,24 @@ export function sanitizeReport(
     sources,
     ...(memberNotes ? { memberNotes } : {}),
     ...(conflicts.length > 0 ? { conflicts } : {}),
+    /*
+     * 第二批五段：**空数组也落库**（2026-10-08 改）。
+     *
+     * 原先的口径是「空则不落库」，理由是「落空数组会让老报告与新报告在 UI 上出现两种空」。
+     * 实践下来这个取舍错了方向：那两种「空」本来就是**两件不同的事** ——
+     *   · 键不存在 = 这份报告生成时根本没要过这一段（老报告、降级简版）；
+     *   · 键存在且为空 = 本次生成确认「素材里确实没有」。
+     * 两者都存成「没有这个键」，UI 就只能整卡不出：用户看到某一块凭空消失，既分不清是本来
+     * 没内容还是页面坏了，也无从判断该不该点「查看最新」重新生成 —— 而「本次确实没有」恰好是
+     * 决定要不要重新生成的关键信息（素材每天都在变）。
+     * 故改为一律落库：UI 用「键在不在」区分老报告（整卡降级，维持原约定不变），
+     * 用「数组空不空」区分本次确实没有（出卡 + 写明原因）。
+     */
+    profile,
+    relations,
+    watchlist,
+    glossary,
+    controversies,
     disclaimer: DISCLAIMER,
     focus,
     coverage: buildCoverage(news)

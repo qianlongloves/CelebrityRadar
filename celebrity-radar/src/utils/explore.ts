@@ -1,12 +1,19 @@
 import Taro from '@tarojs/taro'
 import { z } from 'zod'
-import { buildPersonKey, DOMAIN_CODES, DomainCode } from '@/config/domains'
+import { buildPersonKey, DOMAIN_CODES, DOMAIN_META, DomainCode } from '@/config/domains'
 import { HOT_PERSONS } from '@/config/hot'
 import { chatJSON } from './llm'
 import { diagLog } from './cloud-diagnostics'
 
 /** 热门池唯一来源 = config/hot.ts（发现页热门卡片 / 今日名人 / 静态兜底共用） */
 const FLAT: Array<{ name: string; domain: DomainCode }> = HOT_PERSONS.map(({ name, domain }) => ({ name, domain }))
+
+/**
+ * 提示词里的领域清单：从 DOMAIN_CODES 派生，**不写死**。
+ * 领域码增删只改 config/domains.ts，这里与选题提示词自动跟随 —— 写死的话新领域永远不会被
+ * AI 选题选中（模型只在被告知的那几个里挑），而且**不会有任何报错**，属于最难发现的一类漏改。
+ */
+const DOMAIN_LIST = DOMAIN_CODES.map((c) => `${c}（${DOMAIN_META[c].label}）`).join('、')
 
 export interface PersonPick {
   name: string
@@ -55,7 +62,7 @@ async function pickPersonByAi(): Promise<PersonPick | null> {
   const system = [
     '你是名人观察产品的选题助手：随机推荐一位值得关注的公众人物，供系统生成深度观察报告。',
     '规则：',
-    '1. 领域从 tech（科技）、business（商业）、ent（文娱）、sports（体育）、academia（学术）、other（其他）中选一个，各领域机会大致均等，不要总推企业家或当红艺人。',
+    `1. 领域从 ${DOMAIN_LIST} 中选一个，各领域机会大致均等，不要总推企业家或当红艺人。`,
     `2. 不要推荐这些高频人物：${HOT_PERSONS.map((p) => p.name).join('、')}。`,
     '3. 必须是真实存在、且近一年有公开报道的公众人物；不要政治、军事类人物。',
     '4. 输出字段：name（惯用中文名，外籍人物用通行中文译名）、domain（上列之一）。',

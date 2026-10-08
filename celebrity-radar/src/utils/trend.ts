@@ -1,8 +1,10 @@
 import dayjs from 'dayjs'
+import { parseDay } from './date'
 import type { Report } from './report'
 
 /**
- * 热度趋势（M4-6）：纯端上聚合，把报告里**带日期、可核对**的条目摊成一条近 30 天折线。
+ * 热度趋势（M4-6）：纯端上聚合，把报告里**带日期、可核对**的条目摊成一条折线
+ * （默认近 30 天，材料稀疏时按下面的阶梯放宽到 60 / 90 / 180 天）。
  *
  * 口径为何是这些数据：Schema 不落素材的逐日分布（coverage 只有 N30 / N7 两个标量），
  * 端上能拿到的日期序列就是 dynamics.date 与 timeline.date —— 模型基于素材给出的日期，
@@ -16,13 +18,24 @@ import type { Report } from './report'
  * View + transform 自绘（几何换算见 pages/report/index.tsx 的 trendGeometry）。
  */
 
-/** 观察窗口（天）与分桶数：30 天 / 6 桶 = 5 天一格，看得出疏密又不至于全是空桶 */
+/** 优先窗口（天）与分桶数：30 天 / 6 桶 = 5 天一格，看得出疏密又不至于全是空桶 */
 const WINDOW_DAYS = 30
+/**
+ * 材料不够时的放宽阶梯（天）。**这是「整卡凭空消失」的修复**：
+ * 原先只认 30 天，而热闹型名人（文娱、体育）的公开报道本就是一阵一阵的 ——
+ * 报告里的动态若集中在 40~90 天前，30 天内一条不剩，卡片就无声无息地没了，
+ * 读的人只会以为功能被删了。放宽窗口后，稀疏报告画出的是「更粗一格」的节奏，
+ * 横轴刻度会跟着变（5 天 → 10/15/30 天一格），信息仍然可核对。
+ * 上限 180 天：再往前翻，混进来的多半是履历类节点，与「近期热度」不是一回事，
+ * 那种报告本就该不出这张卡。
+ */
+const WINDOW_STEPS = [WINDOW_DAYS, 60, 90, 180]
+const MAX_WINDOW_DAYS = 180
 const BUCKETS = 6
 /** 少于 3 条就整卡不出：两个点连不成趋势，与词云（<4 词不出）同一取舍 */
 const MIN_EVENTS = 3
-/** 只认模型契约里的 YYYY-MM-DD；其它形态（带时区、只到月份）一律不解析，宁可少一个点也不猜 */
-const DAY_RE = /^\d{4}-\d{2}-\d{2}/
+
+/* 日期归一见 utils/date.ts：与主页「时间分布」、周报「逐日分布」共用一套解析规则 */
 
 export interface TrendPoint {
   /** 桶起始日（M/D），横轴刻度 */
@@ -44,12 +57,20 @@ export interface HeatTrend {
   /** 窗口起止（YYYY-MM-DD） */
   from: string
   to: string
+  /** 实际采用的观察窗口（天）：30 起，材料稀疏时按阶梯放宽到 60 / 90 / 180 */
+  windowDays: number
   /** 单桶最多几条，纵轴上限 */
   peak: number
 }
 
 /**
  * 聚合出一份报告的趋势折线；条目不足或日期不可解析时返回 null（调用方整卡不渲染）。
+ *
+ * 窗口选择：默认先按 30 天试，条数不够就沿 WINDOW_STEPS 放宽，直到够 MIN_EVENTS 或触到
+ * 180 天上限。**必须按「先宽后窄」的顺序试**，因为放宽窗口会改变分桶粒度 ——
+ * 已经有 30 天数据的报告不该因为「60 天能装下更多点」而被降级成 10 天一格。
+ *
+ * `opts.days` 一旦显式给出，就只试这一个窗口、不再放宽（给对比/固定口径的场景用）。
  */
 export function buildHeatTrend(
   report: Report,
@@ -59,31 +80,49 @@ export function buildHeatTrend(
   const base = dayjs(report.generatedAt)
   if (!base.isValid()) return null
 
-  const days = Math.max(2, Math.floor(opts.days ?? WINDOW_DAYS))
   const buckets = Math.max(1, Math.floor(opts.buckets ?? BUCKETS))
   const to = base.startOf('day')
-  const from = to.subtract(days - 1, 'day')
 
-  /* 去重键 = 距窗口起点的天数 + 文本前缀：动态与时间线常记同一件事（同一天同一种说法），
-     不去重会让同一事件在图上算两次；文本不同则视为两件事，宁可多算也不误合并。 */
+  /* 去重键 = 日期 + 文本前缀：动态与时间线常记同一件事（同一天同一种说法），
+     不去重会让同一事件在图上算两次；文本不同则视为两件事，宁可多算也不误合并。
+     键用绝对日期而不是「距窗口起点的天数」—— 后者会随窗口放宽而变，同一个事件
+     在不同窗口下算不算重复就不一致了。 */
   const seen = new Set<string>()
-  const offsets: number[] = []
+  const events: dayjs.Dayjs[] = []
   const collect = (date: string | undefined, text: string | undefined) => {
-    if (!DAY_RE.test(date ?? '')) return
-    const d = dayjs(date)
-    if (!d.isValid()) return
-    const offset = d.startOf('day').diff(from, 'day')
-    if (offset < 0 || offset >= days) return
-    const key = `${offset}|${(text ?? '').slice(0, 12)}`
+    const d = parseDay(date)
+    if (!d) return
+    const day = d.startOf('day')
+    const key = `${day.format('YYYY-MM-DD')}|${(text ?? '').slice(0, 12)}`
     if (seen.has(key)) return
     seen.add(key)
-    offsets.push(offset)
+    events.push(day)
   }
   report.dynamics.forEach((d) => collect(d.date, d.title !== '' ? d.title : d.summary))
   report.timeline.forEach((t) => collect(t.date, t.event))
 
-  if (offsets.length < MIN_EVENTS) return null
+  /* 全部去重条目（不设窗口）都不够 MIN_EVENTS 时，任何窗口都救不回来 —— 先挡掉这层 */
+  if (events.length < MIN_EVENTS) return null
 
+  /* 阶梯由窄到宽，取第一个够数的窗口；显式给出 opts.days 时只试它这一个 */
+  const steps = opts.days
+    ? [Math.max(2, Math.min(MAX_WINDOW_DAYS, Math.floor(opts.days)))]
+    : WINDOW_STEPS
+  let chosen: { days: number; offsets: number[] } | null = null
+  for (const days of steps) {
+    const from = to.subtract(days - 1, 'day')
+    const offsets = events
+      .map((d) => d.diff(from, 'day'))
+      .filter((o) => o >= 0 && o < days)
+    if (offsets.length >= MIN_EVENTS) {
+      chosen = { days, offsets }
+      break
+    }
+  }
+  if (!chosen) return null
+
+  const { days, offsets } = chosen
+  const from = to.subtract(days - 1, 'day')
   const per = days / buckets
   const counts = new Array<number>(buckets).fill(0)
   offsets.forEach((o) => {
@@ -104,6 +143,7 @@ export function buildHeatTrend(
     spanDays: Math.max(...offsets) - Math.min(...offsets) + 1,
     from: from.format('YYYY-MM-DD'),
     to: to.format('YYYY-MM-DD'),
+    windowDays: days,
     peak
   }
 }

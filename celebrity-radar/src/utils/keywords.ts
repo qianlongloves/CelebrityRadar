@@ -165,6 +165,31 @@ function countGrams(units: Unit[]): Map<string, GramStat> {
   return stats
 }
 
+/**
+ * 人物名与**人物名的碎片**。
+ *
+ * 只挡「包含完整人名」是不够的 —— 那正是「搜陈佩斯、词云出现『陈佩』」的成因：
+ * 动态标题几乎条条以「陈佩斯……」开头，于是 2-gram「陈佩」「佩斯」命中数极高，
+ * 又因为正好落在汉字片段开头而骗过边界判据，稳稳进入高频档；而真正的名字
+ * 「陈佩斯」自己被 `word.includes(name)` 滤掉了，只剩两个半截名字留在墙上。
+ * 反向包含（`name.includes(word)`）就把这类碎片一并挡住，且对 3 字以上的中文
+ * 人名几乎不会误伤 —— 人名碎片本就很少恰好是常用词。
+ *
+ * 词云与语录主题共用这一条（两处若各写一份，总有一处会漏掉反向包含）。
+ */
+function isNamePart(word: string, name: string): boolean {
+  return !!name && (word.includes(name) || name.includes(word))
+}
+
+/** 一个词的所有子串（长度 ≥ MIN_LEN）。重叠收敛时用来抑制同源的截断碎片 */
+function substringsOf(w: string): string[] {
+  const out: string[] = []
+  for (let len = MIN_LEN; len < w.length; len++) {
+    for (let i = 0; i + len <= w.length; i++) out.push(w.slice(i, i + len))
+  }
+  return out
+}
+
 /** 关键词抽取的可调口径（词云用默认值；对比场景放宽 minHits、收紧 minRuns） */
 export interface KeywordOptions {
   /** 最多返回几个词（默认 16） */
@@ -194,7 +219,7 @@ export function extractKeywords(report: Report, options: KeywordOptions = {}): K
   if (units.length === 0) return []
 
   const stats = countGrams(units)
-  const name = report.name || ''
+  const name = (report.name || '').trim()
   const refsOf = (idxs: number[]): KeywordRef[] =>
     idxs.slice(0, 2).map((i) => ({ label: units[i].label, source: units[i].source }))
 
@@ -206,8 +231,8 @@ export function extractKeywords(report: Report, options: KeywordOptions = {}): K
     if (!st.edge) continue
     /* 只在单个片段里出现过的候选是标点截断的产物，不是主题词 */
     if (st.runs < minRuns) continue
-    /* 人物名进词云没有意义（通篇都在讲 TA），还会挤掉真正的主题词 */
-    if (name && word.includes(name)) continue
+    /* 人物名（及人名碎片）进词云没有意义（通篇都在讲 TA），还会挤掉真正的主题词 */
+    if (isNamePart(word, name)) continue
     candidates.push({ word, count: st.idxs.length, from: 'text', tier: 1, refs: refsOf(st.idxs) })
   }
 
@@ -218,6 +243,10 @@ export function extractKeywords(report: Report, options: KeywordOptions = {}): K
   for (const s of report.stance ?? []) {
     const topic = (s.topic || '').trim()
     if (topic.length < MIN_LEN || topic.length > 8) continue
+    /* 话题恰好就是人名（或人名的半截）时同样不进：它不构成「在讲什么」的信息。
+       注意这里只挡「是人名的一部分」，话题里**含有**人名仍保留（「马斯克收购推特」这类
+       才是有内容的说法），与文本候选那边「包含人名即弃」的口径不同是有意为之。 */
+    if (name && name.includes(topic)) continue
     const note = (s.note || '').trim()
     const existing = candidates.find((c) => c.word === topic)
     if (existing) {
@@ -243,13 +272,6 @@ export function extractKeywords(report: Report, options: KeywordOptions = {}): K
      模型判定的话题豁免收敛：它可能恰好是某个文本词的局部（「新品定价」含「定价」），
      但那是报告的主题名，不该因为端上统计的粒度问题被丢掉。 */
   const picked: KeywordItem[] = []
-  const substringsOf = (w: string): string[] => {
-    const out: string[] = []
-    for (let len = MIN_LEN; len < w.length; len++) {
-      for (let i = 0; i + len <= w.length; i++) out.push(w.slice(i, i + len))
-    }
-    return out
-  }
   /**
    * 被收敛掉的候选，其内部片段也要一并抑制。
    *
@@ -282,4 +304,77 @@ export function extractKeywords(report: Report, options: KeywordOptions = {}): K
   })
 
   return picked
+}
+
+/** 语录少于这么多条就不做主题聚类：两三句本就能一眼看完，聚类只会把信息切碎 */
+const MIN_QUOTES_FOR_THEMES = 4
+/** 一个主题至少要有这么多条不同语录命中（同一条语录里重复三遍不算主题） */
+const MIN_THEME_HITS = 2
+/** 每个主题附带的语录原文条数上限（全文在「经典语录」卡里，这里只要代表例） */
+const THEME_SAMPLE = 2
+/** 主题里语录原文的截断长度 */
+const THEME_QUOTE_CHARS = 40
+
+/** 语录主题（「他常讲的话」分成了哪几类） */
+export interface QuoteTheme {
+  /** 主题词：来自语录原文的高频说法（n-gram），不是模型生成的分类名 */
+  topic: string
+  /** 归入该主题的语录条数 */
+  count: number
+  /** 代表语录（原文，最多 THEME_SAMPLE 条） */
+  quotes: string[]
+}
+
+/**
+ * 语录主题聚类 —— 把平铺的语录按「他常讲的话」归成 2~3 组。
+ *
+ * 复用词云的 n-gram 口径（同一份 countGrams、同一条人名判据），但**分组方式不同**：
+ * 词云回答「哪些说法被反复提起」，这里回答「哪几条语录在讲同一件事」。做法是
+ * **贪心互斥归类** —— 候选主题词按命中数排序，依次把尚未归属的语录收进自己名下，
+ * 每条语录只归一个主题。互斥是刻意的：同一条语录出现在两个主题里，读者会以为
+ * 语录总数对不上；而「一条语录讲了两件事」这种判断本就超出端上统计的能力范围。
+ *
+ * 返回顺序即展示顺序；主题不足 2 个时返回空数组，由调用方决定整卡不渲染
+ * （只有一个「主题」等于没有分类，摆出来只会让人以为聚类坏了）。
+ */
+export function extractQuoteThemes(report: Report, options: { limit?: number } = {}): QuoteTheme[] {
+  const { limit = 3 } = options
+  const texts = (report.quotes ?? [])
+    .map((q) => (q.text || '').trim())
+    .filter((t) => t.length >= MIN_LEN)
+  if (texts.length < MIN_QUOTES_FOR_THEMES) return []
+
+  const units: Unit[] = texts.map((t) => ({
+    label: t.length > THEME_QUOTE_CHARS ? `${t.slice(0, THEME_QUOTE_CHARS)}…` : t,
+    source: '语录原文',
+    text: t
+  }))
+  const stats = countGrams(units)
+  const name = (report.name || '').trim()
+
+  const candidates = Array.from(stats.entries())
+    /* 至少被 2 条不同语录命中；且贴过片段边界（与词云同一条判据，见 countGrams 的说明） */
+    .filter(([word, st]) => st.idxs.length >= MIN_THEME_HITS && st.edge && !isNamePart(word, name))
+    .sort((a, b) => b[1].idxs.length - a[1].idxs.length || b[0].length - a[0].length)
+
+  const themes: QuoteTheme[] = []
+  const taken = new Set<number>()
+  const suppressed = new Set<string>()
+  for (const [word, st] of candidates) {
+    if (themes.length >= limit) break
+    if (suppressed.has(word)) continue
+    const free = st.idxs.filter((i) => !taken.has(i))
+    if (free.length < MIN_THEME_HITS) continue
+    free.forEach((i) => taken.add(i))
+    themes.push({
+      topic: word,
+      count: free.length,
+      quotes: free.slice(0, THEME_SAMPLE).map((i) => units[i].label)
+    })
+    /* 主题词的长短两版只留一条（同词云的重叠收敛）：把子串一并抑制，免得
+       「喜剧创作」之后又冒出「剧创作」这类截断碎片当第二个主题 */
+    substringsOf(word).forEach((s) => suppressed.add(s))
+  }
+
+  return themes.length >= 2 ? themes : []
 }

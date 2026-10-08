@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { publicConfig } from '@/config/public'
-import { getPreferredModel } from './settings'
+import type { LlmProvider, LlmTier } from '@/config/public'
+import { getPreferredProvider, getPreferredTier } from './settings'
 import { diagLog } from './cloud-diagnostics'
 import { debugRaw } from './debug'
 import { callCloudFunction, cloudTimeoutHint, isCloudConfigured } from './cloud'
@@ -17,8 +18,10 @@ import { readMemberState } from './member'
  * 全项目只剩一种模式，用户不必理解「该填 key 还是靠平台」。
  *
  * 端点走 **OpenAI 兼容协议**：CloudBase 不托管大模型，由 aiProxy 拼 /chat/completions。
- * 模型名由 resolveChatModel() 统一裁决：本机偏好（M7-4 设置页所选，须仍在 publicConfig.llm.models
- * 清单内）优先，否则回落到 publicConfig.llm.model（云函数侧另有同名常量作兜底，改动需同步）。
+ * 用哪家、用哪一档由 resolveChatSelection() 统一裁决（M7-4 / 2026-10-08 供应商自选）：
+ * 本机偏好（「我的 → 模型供应商 / 生成档位」所选）优先，否则回落 publicConfig.llm.provider
+ * 与他家的 fast 档。两个值都随请求带给云函数，由**云端**那家的 key 代打
+ * （云函数只在端上没带 / 带了不认识的 id 时才用 LLM_PROVIDER 兜底，见 llm.config.js 的 resolveLlm）。
  * 取非流式完整响应：少一层聚合、失败语义更清晰。
  * extractJSONText 等纯函数与原实现一致，上层解析行为不变。
  */
@@ -54,8 +57,12 @@ interface ProxyChatResult {
   model?: string
   /** 云函数把会员专属档位降级成默认模型时置 true（非会员请求了强模型，见 aiProxy 的会员闸门） */
   downgraded?: boolean
-  /** 云函数确认按会员放行了深度模式（放宽 max_tokens），见 aiProxy 的 MEMBER_CHAT_MAX_TOKENS */
-  deep?: boolean
+  /**
+   * 上游的 finish_reason 原样回传（见 aiProxy 的 handleChat）。'length' = 输出撞上 max_tokens 被截断，
+   * 报告这类长 JSON 一旦被截断就会解析失败、整份降级成纯文本（表现是卡片成批消失），
+   * 所以它是这里唯一值得端上专门记一笔的字段。
+   */
+  finishReason?: string
   kind?: string
   error?: string
 }
@@ -116,53 +123,104 @@ function errText(err: unknown): string {
 
 /**
  * 是否有可用大模型通道。只剩云函数代理一条，故这里只反映「云环境 ID 配了没」——
- * 函数是否真部署好、环境变量 DEEPSEEK_API_KEY 是否真配了，只有调一次才知道。
+ * 函数是否真部署好、所选供应商的 key 环境变量是否真配了，只有调一次才知道。
  * 调用方用它避免「明明能用却被前置判断拦下」，真失败由 chatOnce 的返回值兜住。
  */
 export function hasLlmChannel(): boolean {
   return isCloudConfigured
 }
 
+/** 一次生成实际会用的「供应商 + 档位 + 模型名」（设置页展示与请求取值共用同一份判定） */
+export interface ChatSelection {
+  /** 供应商 id（config/public.ts 的 llm.providers 里的某个 id） */
+  provider: string
+  /** 该供应商的展示名（设置页显示「当前」用） */
+  providerLabel: string
+  /** 档位标识：fast / standard / reason */
+  tier: string
+  /** 档位展示名：极速版 / 标准版 / 深度推理 */
+  tierLabel: string
+  /** 实际会带给云函数的模型名 */
+  model: string
+  /** 该模型是否会员专属（true 且非会员时，上面几项已是**回落**后的结果，不是用户选的那个） */
+  memberOnly: boolean
+}
+
+/** 按 id 取供应商；找不到（没选过 / 已被运营下线）返回默认那家（providers[0]） */
+function pickProvider(id: string | null): LlmProvider {
+  const hit = id !== null ? publicConfig.llm.providers.find((p) => p.id === id) : undefined
+  return (hit ?? publicConfig.llm.providers[0]) as LlmProvider
+}
+
 /**
- * 当前生效的模型名（M7-4「模型选择」），同步版：设置页展示与请求取值共用同一判定。
+ * 当前生效的「供应商 + 档位」（M7-4「模型选择」，2026-10-08 起由用户自选供应商），同步版：
+ * 设置页展示与请求取值共用同一判定。
  *
- * 顺序：本机偏好（「我的 → 生成模型」里选的）→ 公共配置默认值 llm.model。
- * 三道关卡：
- *   ① 偏好只有在仍存在于 llm.models 清单里时才生效 —— 运营把某个模型从清单里删掉后，
- *      用户设备上残留的旧选择不能再被带上，否则会稳定地生成失败且用户看不出为什么；
- *   ② 标了 memberOnly 的档位只有会员能用（「质」权益，2026-10-07）—— 非会员一律回落默认模型，
- *      这样「设置页显示哪档 = 实际用哪档」的承诺对免费用户同样成立（存量偏好会被忽略）；
- *   ③ 会员态由**调用方传入**：本函数必须同步（设置页要同步渲染），而读库是异步的，
+ * 顺序：本机偏好（「我的 → 模型供应商 / 生成档位」里选的）→ 公共配置默认值
+ * （llm.provider + 他家的 fast 档）。用户选的档位存的是**档位标识**而不是模型名，
+ * 所以换供应商时档位跟着走（deepseek 标准版 → 通义千问标准版），不必让用户重选一次。
+ *
+ * 四道关卡：
+ *   ① 供应商偏好只有在仍存在于 llm.providers 清单里时才生效 —— 运营把某家下线后
+ *      （或用户装的是另一份配置），设备上残留的旧选择不能再被带上，否则会稳定地生成失败
+ *      且用户看不出为什么；档位偏好同理（找不到就回落该家的 fast 档）；
+ *   ② 那家必须真的有这个档位：清单里没有该 tier 时回落 fast 档（fast 档是每家的兜底，
+ *      config/public.ts 里约定它恒为 memberOnly=false）；
+ *   ③ 标了 memberOnly 的档位只有会员能用（「质」权益，2026-10-07）—— 非会员一律回落该家
+ *      的 fast 档，这样「设置页显示哪档 = 实际用哪档」的承诺对免费用户同样成立；
+ *   ④ 会员态由**调用方传入**：本函数必须同步（设置页要同步渲染），而读库是异步的，
  *      调用方各自已在同一份数据上判过会员（设置页用配额卡那次读数、chatViaPlatform 用
  *      readMemberState），这里不再多读一次库。
  *
  * ⚠ 端上这一层只管「展示与请求值」，是**可被改包绕过**的；真正的闸门在云函数 aiProxy
- * （MEMBER_ONLY_MODELS 白名单，非会员请求强模型会被静默降级），两处口径必须一致。
+ * （llm.config.js 的 memberOnlyModels，非会员请求强模型会被静默降级），两处口径必须一致。
  */
-export function resolveChatModel(member: boolean): string {
-  const preferred = getPreferredModel()
-  const hit = preferred !== null ? publicConfig.llm.models.find((m) => m.id === preferred) : undefined
-  if (!hit) return publicConfig.llm.model
-  if (hit.memberOnly && !member) return publicConfig.llm.model
-  return hit.id
+export function resolveChatSelection(member: boolean): ChatSelection {
+  const provider = pickProvider(getPreferredProvider())
+  const tiers = provider.models as readonly LlmTier[]
+  const fallback = tiers[0]
+  const wanted = getPreferredTier()
+  const hit = (wanted !== null ? tiers.find((m) => m.tier === wanted) : undefined) ?? fallback
+  const usable = hit.memberOnly && !member ? fallback : hit
+  return {
+    provider: provider.id,
+    providerLabel: provider.label,
+    tier: usable.tier,
+    tierLabel: usable.label,
+    model: usable.id,
+    memberOnly: usable.memberOnly
+  }
 }
 
 /**
- * 一次读库拿「会员态 + 模型名」（O-11 深度模式起两个用途共用）：
- *   ① 模型档位由会员态裁决（resolveChatModel 必须同步，故会员态在调用方读出再传入）；
- *   ② 会员的请求体要带 deep=true（请云函数放宽输出上限）。
- * 合并成一次读库是刻意的：两个用途各读一次，等于每次生成多一次云读、且两次读数可能不一致。
+ * 当前生效的模型名（只要模型名时的入口；与 resolveChatSelection 同源，判定逻辑不重复一份）。
+ * 保留它是因为「档位」是 2026-10-08 才引入的概念 —— 少数只关心模型名的调用方不必跟着改。
+ */
+export function resolveChatModel(member: boolean): string {
+  return resolveChatSelection(member).model
+}
+
+/**
+ * 一次读库拿「供应商 + 模型名」：供应商与模型档位由本机偏好 + 会员态裁决
+ * （resolveChatSelection 必须同步，故会员态在函数内读出再传入）。
  *
  * 这里多一次 users 读是刻意的：请求值和设置页展示必须出自同一套判定，
  * 否则会出现「设置页写着极速版、实际发的是深度推理」这种查不出来的错位。
  * 读库失败按非会员处理（readMemberState 的口径）—— 宁可这一次降级，也不给非会员放行强模型。
  *
- * 占位模型名（REPLACE_ME）视为不可用，返回 null 交给云函数退回它自己的常量。
+ * 2026-10-08：不再往请求体里带 deep（输出上限对所有人一样，见 aiProxy 的 chatMaxTokens）——
+ * 会员态在这里只剩「选哪一档模型」这一个用途，云函数那边的会员闸门照旧拦模型档位。
+ *
+ * 占位模型名（REPLACE_ME）视为不可用，返回 null 交给云函数退回它自己的常量
+ * （只对模型名做这个兜底：供应商 id 认不出时 cloud 侧自会回落它自己的默认家）。
  */
-export async function resolveChatTarget(): Promise<{ member: boolean; model: string | null }> {
+export async function resolveChatTarget(): Promise<{
+  provider: string
+  model: string | null
+}> {
   const member = (await readMemberState()).member
-  const m = resolveChatModel(member)
-  return { member, model: !m || m.includes('REPLACE_ME') ? null : m }
+  const sel = resolveChatSelection(member)
+  return { provider: sel.provider, model: !sel.model || sel.model.includes('REPLACE_ME') ? null : sel.model }
 }
 
 /** 取模型名（只关心模型时的入口；与 resolveChatTarget 同源，判定逻辑不重复一份） */
@@ -189,17 +247,20 @@ export async function getChatModel(): Promise<string | null> {
  * 于是「未就绪」不能再静默降级，必须变成一句能照着操作的报错（见下方两个分支）。
  */
 async function chatViaPlatform(messages: ChatMessage[]): Promise<ChatAttempt> {
-  const { member, model } = await resolveChatTarget()
+  const { provider, model } = await resolveChatTarget()
   const startedAt = Date.now()
   let res: ProxyChatResult | null
   try {
     res = (await callCloudFunction('aiProxy', {
       action: 'chat',
-      /* 模型名与端上公共配置同源，传空则云函数用自己那份常量 */
+      /*
+       * 供应商与模型名都取自同一次判定（resolveChatTarget）：用户选的供应商在这里生效，
+       * 由云函数用**那家**的环境变量 key 代打（端上不持有任何 key）。
+       * 云函数只在端上没带、或带了个它不认识的 id 时才用它的 LLM_PROVIDER 兜底（见 llm.config.js）。
+       */
+      provider,
       model: model ?? undefined,
-      messages,
-      /* 深度模式（O-11）：只在会员时带上 —— 免费版的请求体与改造前逐字节一致 */
-      ...(member ? { deep: true } : {})
+      messages
     })) as ProxyChatResult | null
   } catch (err) {
     /* 整体打印原始错误对象：对象上可能还有 errText 未覆盖的链路侧字段 */
@@ -243,7 +304,7 @@ async function chatViaPlatform(messages: ChatMessage[]): Promise<ChatAttempt> {
       diagLog('warn', 'llm', `平台大模型通道未就绪：${why}`)
       return {
         ok: false,
-        error: `平台大模型通道未就绪：${why}（需部署 aiProxy 并配置环境变量 DEEPSEEK_API_KEY）`,
+        error: `平台大模型通道未就绪：${why}（需部署 aiProxy 并配置大模型环境变量，见 llm.config.js）`,
         retryable: false
       }
     }
@@ -261,9 +322,28 @@ async function chatViaPlatform(messages: ChatMessage[]): Promise<ChatAttempt> {
     'llm',
     `chatOnce(平台) ${(elapsedMs / 1000).toFixed(1)}s 输出${content.length}字`,
     /* downgraded 记进 meta：出现「会员说切了深度推理但报告很快」时，一眼能看出是服务端降级 */
-    /* deep 记进 meta：会员报告被截断时，要先确认服务端到底有没有真的放行深度模式 */
-    { model: res.model, downgraded: !!res.downgraded, deep: !!res.deep, elapsedMs, outputChars: content.length }
+    /* finishReason 记进 meta：被截断（length）与正常结束（stop）在日志里要分得开 */
+    {
+      model: res.model,
+      downgraded: !!res.downgraded,
+      finishReason: res.finishReason || '',
+      elapsedMs,
+      outputChars: content.length
+    }
   )
+  /*
+   * 截断了要单独喊一声：JSON 长生成被截断不会报「太长」，而是解析失败 → 整份降级成纯文本，
+   * 用户看到的是「报告页一堆卡片没了」。这行 warn 让这类失败在诊断日志里一眼认出来，
+   * 不必再从「卡片消失」倒推原因（上限值见 aiProxy 的 chatMaxTokens）。
+   */
+  if (res.finishReason === 'length') {
+    diagLog(
+      'warn',
+      'llm',
+      `输出被上游截断（finish_reason=length，${content.length}字）：长 JSON 会解析失败并整份降级`,
+      { model: res.model, outputChars: content.length }
+    )
+  }
   return { ok: true, content }
 }
 

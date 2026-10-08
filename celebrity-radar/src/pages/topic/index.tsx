@@ -109,12 +109,24 @@ export default function Topic() {
   }
 
   if (phase === 'empty' || !digest) {
+    /*
+      空状态分两种，别混成一句「暂无内容」：
+      · 有报告只是把话题名写成了它（模型判定的话题名），素材正文里没有原样写过 ——
+        点词云里的话题词最容易撞上这一种，不说清就会以为是页面坏了；
+      · 谁都没写过 —— 那才是真的「这个话题还没进过你已读过的报告」。
+      这个数来自 utils/topic-digest（只统计、不算成员，见那里的注释）；digest 为 null 时没有它。
+    */
+    const stanceOnly = digest?.stanceOnlyReports ?? 0
     return (
       <View className='page-topic safe-bottom'>
         <EmptyState
           icon='🧩'
           title={usable ? `暂时没有别处也讲「${topic}」` : '主题信息缺失'}
-          desc='主题聚合只统计你这边已读过报告的名人。多关注几位、多读几份报告，同一个话题下就会汇出更多视角。'
+          desc={
+            stanceOnly > 0
+              ? `这个词只在 ${stanceOnly} 份报告的「话题」里出现过（模型判定的话题名），素材正文里没有原样写过它。本页只聚合正文真的写过这个词的报告 —— 否则就成了按话题名联想。换一个更常见的说法，或多读几份报告再来看看。`
+              : '这个词还没有进过你已收录的报告（本页只聚合你这边已读过的报告，不联网检索）。多关注几位、多读几份报告，同一个话题下就会汇出更多视角。'
+          }
           actionText='去发现名人'
           onAction={() => Taro.switchTab({ url: '/pages/index/index' })}
         />
@@ -172,6 +184,16 @@ export default function Topic() {
       </View>
 
       {/* 公开立场：模型判定的话题态度，只在命中本主题时列出 */}
+      {/* 空结果也出卡并写明原因（原先不成立就整卡消失，用户只看到「卡片一张张不见了」）。
+          本页零模型调用、纯本地聚合，卡片消失只会被读成本页坏了。 */}
+      {digest.stances.length === 0 && (
+        <View className='card'>
+          <View className='card-title'>各自是什么态度</View>
+          <Text className='page-topic__note'>
+            这批报告的「话题态度」里没有命中本主题的条目。态度是模型在生成报告时判定的，只有那份报告里正好讲到这个话题才会有 —— 不是本页没取到。
+          </Text>
+        </View>
+      )}
       {digest.stances.length > 0 && (
         <View className='card'>
           <View className='card-title'>各自是什么态度</View>
@@ -191,6 +213,14 @@ export default function Topic() {
       )}
 
       {/* 相关言论：复用报告页的 quote-detail（含「查证」），口径两处一致 */}
+      {digest.quotes.length === 0 && (
+        <View className='card'>
+          <View className='card-title'>围绕这个话题说过什么</View>
+          <Text className='page-topic__note'>
+            这批报告的语录里没有直接谈这个话题的句子。语录按原文命中本主题的关键词，不做语义延伸 —— 没命中就是没有原话，不是本页没取到。
+          </Text>
+        </View>
+      )}
       {digest.quotes.length > 0 && (
         <View className='card'>
           <View className='card-title'>围绕这个话题说过什么</View>
@@ -205,6 +235,14 @@ export default function Topic() {
       )}
 
       {/* 相关报道：正文里真的出现该主题的条目，点开是原文预览 */}
+      {digest.news.length === 0 && (
+        <View className='card'>
+          <View className='card-title'>相关报道</View>
+          <Text className='page-topic__note'>
+            这批报告收录的报道正文里没有出现这个话题。本卡只列正文真的出现过该主题的条目，不做相关推荐，也不按标题联想。
+          </Text>
+        </View>
+      )}
       {digest.news.length > 0 && (
         <View className='card'>
           <View className='card-title'>相关报道</View>
@@ -235,6 +273,16 @@ export default function Topic() {
       )}
 
       {/* 时间线：按天聚合的讨论分布（哪天有几个人在讲），不是逐条罗列 */}
+      {digest.timeline.length <= 1 && (
+        <View className='card'>
+          <View className='card-title'>什么时候被讨论得最多</View>
+          <Text className='page-topic__note'>
+            {digest.timeline.length === 0
+              ? '这批报告里没有可用的日期，按天摊开画不出分布。'
+              : '这批报告里谈到本主题的日期只落在一两天内，按天摊开只有一根柱子（也就是没有起伏可看），故不出图。'}
+          </Text>
+        </View>
+      )}
       {digest.timeline.length > 1 && (
         <View className='card'>
           <View className='card-title'>什么时候被讨论得最多</View>

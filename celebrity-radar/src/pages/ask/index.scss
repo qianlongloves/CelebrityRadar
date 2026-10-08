@@ -94,10 +94,16 @@
     font-weight: 600;
 
     &--tech { background: $domain-tech; }
+    &--internet { background: $domain-internet; }
     &--business { background: $domain-business; }
+    &--finance { background: $domain-finance; }
+    &--auto { background: $domain-auto; }
     &--ent { background: $domain-ent; }
+    &--art { background: $domain-art; }
     &--sports { background: $domain-sports; }
+    &--health { background: $domain-health; }
     &--academia { background: $domain-academia; }
+    &--edu { background: $domain-edu; }
     &--other { background: $domain-other; }
   }
 

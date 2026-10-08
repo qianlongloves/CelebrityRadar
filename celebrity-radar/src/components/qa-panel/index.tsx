@@ -101,9 +101,9 @@ export default function QaPanel({
   const [asking, setAsking] = useState(false)
   const [notice, setNotice] = useState('')
   /*
-   * 今日提问用量（已用 / 还可问 + 调试开挂标记，见 utils/qa.ts#qaUsageToday）。
-   * 存整个口径而不是只存「剩余次数」：开挂时剩余没有意义，界面要改读 `used` 并改措辞，
-   * 只留一个数字就没法区分「真的还剩 0 次」与「不限次」。
+   * 今日提问用量（已用 / 还可问，见 utils/qa.ts#qaUsageToday）。
+   * 存整个口径而不是只存「剩余次数」：升级提示要按 `unlimited` 判定（开挂态不弹，
+   * 此时并没被拦），只留一个数字就没法区分「真的还剩 0 次」与「闸门被放开」。
    */
   const [usage, setUsage] = useState<QaUsage>(() => qaUsageToday(member))
   /* 建议问题当前批次（「换一批」只动这个下标，不重新生成问题） */
@@ -238,16 +238,15 @@ export default function QaPanel({
   /**
    * 提问用量那一行的措辞（O-28 缩短）。
    *
-   * 常态说「剩」；开挂态说「已问」—— 开挂时次数不设限，「还剩几次」这个说法不成立，
-   * 但数字仍要如实报出来（排查要看真实用量，这是第三十三次校正修的主症状）。
+   * 一律说「剩 N 次」：调试开关只松闸门、不改展示（见 utils/debug.ts），
+   * 界面与真实用户所见逐字一致 —— 不出现「不限次」这类字样；
+   * 数字取自 utils/qa.ts#qaUsageToday 的真值，不是为开挂圆场的满额。
    *
    * 措辞刻意写到最短：它与名人名字**同一行**（见下方 __left），字数多一个字，
    * 长名字就多被挤一个字的宽度。原先的「今日还可问 N 次」（14 字）会把名字压到省略，
    * 「今日」在这里也是冗余 —— 每日额度这件事由升级条（「每日提问提到 N 次」）负责说清。
    */
-  const usageLabel = usage.unlimited
-    ? `${member ? '会员' : '免费版'} · 已问 ${usage.used} 次（调试不限次）`
-    : `${member ? '会员' : '免费版'} · 剩 ${usage.remaining} 次`
+  const usageLabel = `${member ? '会员' : '免费版'} · 剩 ${usage.remaining} 次`
 
   /**
    * 建议问题分批：候选按报告内容生成，这里只决定取哪一批。

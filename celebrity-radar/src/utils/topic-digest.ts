@@ -90,6 +90,13 @@ export interface TopicDigest {
   timeline: TopicTimelinePoint[]
   /** 命中的素材总条数（动态 + 语录，按条计） */
   materialCount: number
+  /**
+   * 有多少份报告的**模型判定话题名**（stance.topic）命中了本主题、但素材正文里没有原样出现。
+   *
+   * 这些报告不算成员（证据只认正文，见 buildTopicDigest 的命中判定），这个数只用来把空状态
+   * 写准：是「没人写过这个词」，还是「只在模型判定的话题名里出现过」（点词云的话题词最容易撞上）。
+   */
+  stanceOnlyReports: number
   /** 主题热度 0~100（口径见 heatOf） */
   heat: number
   /** 参与聚合的最新一份报告的生成时间：页面据此说明「数据截至」 */
@@ -146,6 +153,8 @@ export function buildTopicDigest(topic: string, reports: Report[]): TopicDigest 
   /** 时间线的累积器：日期 → 条数 / 当天的名人 */
   const byDay = new Map<string, { count: number; names: string[] }>()
   let materialCount = 0
+  /** 只在模型判定话题名里命中本主题的报告数（不算成员，只给空状态文案用） */
+  let stanceOnlyReports = 0
   let updatedAt = ''
 
   if (t) {
@@ -171,7 +180,21 @@ export function buildTopicDigest(topic: string, reports: Report[]): TopicDigest 
       const hitNews = report.dynamics.filter((d) => hitText(`${d.title} ${d.summary}`))
       const hitQuotes = report.quotes.filter((q) => hitText(`${q.text} ${q.context}`))
       const mentions = hitNews.length + hitQuotes.length
-      if (mentions === 0) continue
+      /*
+       * 正文里没有这个词、但模型判定的话题名（stance.topic）里有（sameTopic）：
+       * 这份报告**照样不算本主题的成员** —— 上面那条判据是本页的立身之本，不开口子
+       * （否则「显示提及 2 条、报道列表却是空的」这类对不上又会回来）。
+       *
+       * 但要单独记一笔数：报告页词云里的词有一类直接取自 stance.topic
+       * （见 utils/keywords.ts 的话题分支，页面上是有底色的那种），点它进本页最容易一页空白。
+       * 有了这个计数，空状态才能把话说准 —— 是「没人写过这个词」，还是「只在模型判定的话题名
+       * 里出现过」（见 pages/topic 的空状态文案）。它只影响那一句文案，不进 members / materialCount。
+       */
+      const stanceOnly = (report.stance ?? []).some((s) => sameTopic((s.topic ?? '').trim(), t))
+      if (mentions === 0) {
+        if (stanceOnly) stanceOnlyReports += 1
+        continue
+      }
 
       const parsed = parsePersonKey(report.personKey)
       const domain: DomainCode = parsed?.domain ?? 'other'
@@ -249,6 +272,7 @@ export function buildTopicDigest(topic: string, reports: Report[]): TopicDigest 
     news,
     timeline,
     materialCount,
+    stanceOnlyReports,
     heat: heatOf(members.length, materialCount),
     updatedAt
   }

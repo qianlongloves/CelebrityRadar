@@ -18,9 +18,11 @@
  * 为什么要分开：仓库里留真实环境 ID，fork 者会直接连上原作者的云环境；
  * 而本地为放开额度把 debug 置 true 的改动，混在本文件里也总有误提交的风险。
  *
- * 【llm.model】上游密钥由云函数 aiProxy 用环境变量代打
- *（DEEPSEEK_API_KEY / BOCHA_API_KEY），端上不再直连上游，故这里只留模型名，
- * 不留 baseURL / apiKey。
+ * 【llm】上游密钥由云函数 aiProxy 用环境变量代打（具体变量名随供应商而变，
+ * 见 cloudfunctions/aiProxy/llm.config.js），端上不再直连上游，故这里只留
+ * 供应商 id 与模型名，不留 baseURL / apiKey。
+ * 2026-10-08 起供应商**由用户自选**（「我的 → 模型供应商」），因此下面列的每一家都要在云端
+ * 配好 key（用户切到哪家、云函数就用哪家的 key 代打，用户为额度付费）；清单见 llm.providers。
  *
  * 【调试开关】debug 的五个值同样取自 local.ts，**仓库默认五项全 false**：
  * 四个 disable* 都会放大成本（免费层限流、提问额度与 429 冷却同时失效），
@@ -31,53 +33,134 @@
  */
 import { localConfig } from './local'
 
-export const publicConfig = {
-  /** CloudBase 环境 ID（微信云开发 → 环境 ID）；取值见 src/config/local.ts */
-  cloudbaseEnvId: localConfig.cloudbaseEnvId,
-
-  /** LLM 通道：端上只读模型名，请求由 cloudfunctions/aiProxy 代发 */
-  llm: {
-    /**
-     * 默认模型名。云函数侧有同名常量（aiProxy 的 LLM_MODEL），作为「端上没带模型名」时的兜底，
-     * 改动需同步，否则端上判定的「可用」与云函数实际调用的模型会不一致。
-     */
-    model: 'deepseek-v4-flash',
-
-    /**
-     * 可选模型清单（M7-4「模型选择」）。
-     *
-     * 端上「我的 → 生成模型」按此渲染选项，用户选择只存本机 storage（见 utils/settings.ts），
-     * 生成时由 utils/llm.ts 随请求带给 aiProxy，云函数按传入的模型名调用上游 OpenAI 兼容端点。
-     *
-     * ⚠ 这里的 id 必须是上游真实存在的模型名（默认端点见 aiProxy 的 LLM_BASE_URL），
-     * 填错只会在生成时报上游错误；清单可随上游上新自行增删，无需改端上代码。
-     * 第一项即默认：须与上面的 llm.model 一致（用户未选择时展示并实际使用的就是它）。
-     *
-     * memberOnly（「质」权益，2026-10-07）：true = 仅会员可用。免费用户即使本机存了该档位的
-     * 偏好，utils/llm.ts#resolveChatModel 也会回落到默认模型，「我的」页对应项加锁标。
-     * ⚠ 改这一列必须同步 cloudfunctions/aiProxy 的 MEMBER_ONLY_MODELS —— 那份才是计费闸门：
-     * 端上判定只影响展示与请求值，改包即可绕过；云函数那份才决定上游真用哪个模型。
-     */
+/**
+ * 可选模型供应商（2026-10-08：供应商由用户自选，key 仍由开发者提供）。
+ *
+ * 每个供应商都按**同一套三档**组织（tier 是档位标识，label 才是给用户看的名字）：
+ *   fast     → 极速版   （免费档：memberOnly 必须为 false，它就是这家没得选时的兜底）
+ *   standard → 标准版   （会员档）
+ *   reason   → 深度推理 （会员档）
+ * 用户在「我的」页先选供应商、再选档位；换供应商时档位清单整组跟着换，用户选的**档位**不变
+ * （本机存的是 tier 而不是具体模型名，见 utils/settings.ts），于是切到哪家都是「他家对应的那一档」。
+ *
+ * ⚠ tier 名字刻意不叫 deep：全项目另有一个 O-11「深度模式」（会员生成时素材加厚 + 多两段专享内容，
+ *   见 utils/report.ts 的 memberNotes），那是**报告深度**，与本文件的**模型档位**是两件事。
+ *
+ * ── key 从哪来（重要）──────────────────────────────────────────
+ * 端上不持有任何 key：用户切到哪家，就由云函数 aiProxy 用**环境变量里那家的 key** 代打
+ * （变量名见 cloudfunctions/aiProxy/llm.config.js 的 apiKeyEnv），用户为额度付费（免费档 / 会员档）。
+ * 因此下表的每一家都必须在云端把 key 配好，否则用户一切过去就会拿到
+ * 「平台未配置大模型额度（云函数环境变量 XXX_API_KEY）」。
+ * **只列出你云端配置了 key 的供应商** —— 这是本表唯一的存在理由。
+ *
+ * ⚠ 下面的 id 必须与 cloudfunctions/aiProxy/llm.config.js 的 PROVIDERS 键一致（两份手工同步）；
+ *   models 里的 id 必须是该家上游真实存在的模型名，填错只会在生成时报上游错误。
+ *   memberOnly 那一列必须与 llm.config.js 的 memberOnlyModels 一致 —— 端上这列只决定 UI 与请求值
+ *   （改包即可绕过），云函数那份才是计费闸门。
+ *   （openai 与 custom 未列入：前者境内云函数连不上、后者没有默认端点，用户切过去只会失败。）
+ */
+const LLM_PROVIDERS = [
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
     models: [
       {
+        tier: 'fast',
         id: 'deepseek-v4-flash',
         label: '极速版',
         desc: '响应最快、成本最低，适合日常生成报告',
         memberOnly: false
       },
+      { tier: 'standard', id: 'deepseek-v4', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
       {
-        id: 'deepseek-v4',
-        label: '标准版',
-        desc: '质量与速度均衡，长文更完整',
-        memberOnly: true
-      },
-      {
+        tier: 'reason',
         id: 'deepseek-reasoner',
         label: '深度推理',
         desc: '推理更强、耗时更长，适合深度分析',
         memberOnly: true
       }
     ]
+  },
+  {
+    id: 'qwen',
+    label: '通义千问',
+    models: [
+      { tier: 'fast', id: 'qwen-turbo', label: '极速版', desc: '响应最快、成本最低，适合日常生成报告', memberOnly: false },
+      { tier: 'standard', id: 'qwen-plus', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
+      { tier: 'reason', id: 'qwen-max', label: '深度推理', desc: '推理更强、耗时更长，适合深度分析', memberOnly: true }
+    ]
+  },
+  {
+    id: 'zhipu',
+    label: '智谱 GLM',
+    models: [
+      { tier: 'fast', id: 'glm-4-flash', label: '极速版', desc: '响应最快、成本最低，适合日常生成报告', memberOnly: false },
+      { tier: 'standard', id: 'glm-4-air', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
+      { tier: 'reason', id: 'glm-4-plus', label: '深度推理', desc: '推理更强、耗时更长，适合深度分析', memberOnly: true }
+    ]
+  },
+  {
+    id: 'moonshot',
+    label: 'Moonshot Kimi',
+    models: [
+      {
+        tier: 'fast',
+        id: 'moonshot-v1-8k',
+        label: '极速版',
+        desc: '响应最快、成本最低，适合日常生成报告',
+        memberOnly: false
+      },
+      { tier: 'standard', id: 'moonshot-v1-32k', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
+      {
+        tier: 'reason',
+        id: 'moonshot-v1-128k',
+        label: '深度推理',
+        desc: '推理更强、耗时更长，适合深度分析',
+        memberOnly: true
+      }
+    ]
+  }
+] as const
+
+/** 供应商（id + 展示名 + 他家的三档位） */
+export type LlmProvider = (typeof LLM_PROVIDERS)[number]
+
+/** 单个档位（tier 是档位标识，id 才是上游模型名） */
+export type LlmTier = LlmProvider['models'][number]
+
+export const publicConfig = {
+  /** CloudBase 环境 ID（微信云开发 → 环境 ID）；取值见 src/config/local.ts */
+  cloudbaseEnvId: localConfig.cloudbaseEnvId,
+
+  /** LLM 通道：端上只读供应商与模型名，请求由 cloudfunctions/aiProxy 代发 */
+  llm: {
+    /**
+     * 可选供应商清单（用户可在「我的 → 模型供应商」里切换）；见上方 LLM_PROVIDERS 的说明。
+     * 顺序即展示顺序，**第一项即默认**（用户没选过供应商时走它）。
+     */
+    providers: LLM_PROVIDERS,
+
+    /**
+     * 默认供应商 id。须与 providers[0].id 一致 —— 它是「本机没存偏好」时的兜底，
+     * 生成时随请求带给云函数（云函数侧 LLM_PROVIDER 只在端上没带 / 带了不认识的 id 时才接管，
+     * 见 llm.config.js 的 resolveLlm）。
+     */
+    provider: 'deepseek',
+
+    /**
+     * 默认档位：providers[0]（默认供应商）那一档的模型名，须与他家的 fast 档一致。
+     * 是「端上没带模型名」时的展示与请求值，云函数侧另有 llm.config.js 的 defaultModel 兜底。
+     */
+    model: 'deepseek-v4-flash',
+
+    /**
+     * 默认供应商的档位清单（= providers[0].models）。
+     *
+     * 之所以还留这一份：三家供应商的**档位标签是统一的**（极速版 / 标准版 / 深度推理），
+     * 于是「档位文案」只需要一处来源 —— pages/member 的权益对比表与 utils/member.ts 的权益说明
+     * 都按它推导，加一家供应商不必改这些文案。**界面渲染用户可选清单要用 llm.providers**。
+     */
+    models: LLM_PROVIDERS[0].models
   },
 
   /**

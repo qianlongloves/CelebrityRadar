@@ -123,6 +123,36 @@ export default function Profile() {
     return `${parts.join('；')}。条形以条数最多的一家为满格。`
   })()
 
+  /**
+   * 来源×情绪脚注。**这句口径必须写**：`sentiment` 是逐条报道的写法，不是该媒体的编辑方针。
+   * 不写，读者会把它读成「这家媒体就是反他的」—— 那是个素材撑不住的结论（卡名也因此
+   * 叫「来源 × 情绪」而不是「媒体立场」）。
+   */
+  const tiltNote = (() => {
+    const t = stats?.tilt
+    if (!t) return ''
+    const hidden = t.hidden > 0 ? `，另有 ${t.hidden} 条来自 ${t.hiddenFamilies} 家，因单家条数过少未单列` : ''
+    return `配色与「情绪构成」一致。共统计 ${t.total} 条可判定来源的动态（${t.families} 家媒体），下列 ${t.items.length} 家各自达到可比较的条数${hidden}。条数过少的来源不参与对照 —— 一条报道代表不了一家媒体的口径，列出来只会误导。此处标注的是本报告收录的这几条报道的写法，不代表该媒体的整体立场。`
+  })()
+
+  /** 素材可信度脚注：把「独立事件」「重复率」的判定口径摊开，说明它是启发式而非精确去重 */
+  const credibilityNote = (() => {
+    const c = stats?.credibility
+    if (!c) return ''
+    const shared = c.shared > 0 ? `其中 ${c.shared} 件被 2 家及以上来源报道，` : ''
+    const first = c.first ? ` 首报为 ${c.first.date}（${c.first.source}）。` : ''
+    return `基于本报告收录的 ${c.total} 条动态：${c.families} 家来源、${c.events} 件独立事件，${shared}重复报道 ${c.repeated} 条（约 ${Math.round(
+      c.repeatRatio * 100
+    )}%）。同一事件按标题文本归并，属启发式口径。${first}`
+  })()
+
+  /** 情绪走势脚注：说明柱高与色块各是什么，以及为什么至少两个月才出这张卡 */
+  const trendNote = (() => {
+    const t = stats?.sentimentTrend
+    if (!t) return ''
+    return `横轴为月份（${t.from} ~ ${t.to}），柱高为该月带日期动态的条数（同月同一说法只计一次），色块为其中的情绪构成，共 ${t.total} 条。至少两个月有数据才出这张卡 —— 只有一根柱子那是构成，不是走势。`
+  })()
+
   const pct = (n: number, total: number): string => `${Math.round((n / total) * 100)}%`
 
   return (
@@ -275,9 +305,14 @@ export default function Profile() {
           )}
 
           {/*
-            数据 Tab（M2-4）：曝光度 / 报道来源 / 情绪构成 / 时间分布四张卡。
-            每张卡都有自己的成立门槛（见 utils/stats.ts 顶部常量），样本不足时整块不出 ——
-            宁可少一张卡，也不摆一张由一两条数据凑出来的「分布」。
+            数据 Tab（M2-4）：曝光度 / 报道来源 / 来源×情绪 / 素材可信度 / 情绪构成 /
+            情绪走势 / 时间分布等卡。每张卡都有自己的成立门槛（见 utils/stats.ts 顶部常量）。
+
+            2026-10-08 改：门槛没过时**不再整卡消失**，改为「卡片照出 + 写明为什么没画图」。
+            原先的取舍是「宁可少一张卡，也不摆一张由一两条数据凑出来的分布」——
+            出发点（不摆假分布）仍然成立，所以门槛一个没动、一条数据也没多算；
+            但代价是用户看到卡片无声无息地少了一张，只能怀疑是坏了（报告页同此处理）。
+            故这里只改**呈现**：不出图，但出卡、说明原因。降级（无报告）仍走上面的空状态。
           */}
           {tab === 3 && (
             <View className='page-profile__tab-pane'>
@@ -300,6 +335,15 @@ export default function Profile() {
                 <Text className='page-profile__stat-note'>{exposureNote}</Text>
               </View>
 
+              {/* 门槛没过也出卡并写明原因（原先不成立就整卡不出，见数据 Tab 顶部注释） */}
+              {!stats.sources && (
+                <View className='card'>
+                  <View className='card-title'>报道来源分布</View>
+                  <Text className='page-profile__stat-note'>
+                    {`本报告收录的 ${report.dynamics.length} 条动态里，带来源标注的条目不足 3 条（一两条连不成分布），故不出条形图。`}
+                  </Text>
+                </View>
+              )}
               {stats.sources && (
                 <View className='card'>
                   <View className='card-title'>报道来源分布</View>
@@ -319,6 +363,99 @@ export default function Profile() {
                 </View>
               )}
 
+              {/*
+                来源 × 情绪：与「报道来源分布」是同一批动态的两种切法（谁在报 / 怎么报），
+                故共用 utils/stats.ts 的同一份来源归并，两卡的家数必然一致。
+                门槛比来源分布更严：单家不足 2 条不单列 —— 见 tiltNote 里的说明。
+              */}
+              {!stats.tilt && (
+                <View className='card'>
+                  <View className='card-title'>来源 × 情绪</View>
+                  <Text className='page-profile__stat-note'>
+                    本报告收录的动态里，可判定来源、且单家达到 2 条以上的来源不足 2 家（一条报道代表不了一家媒体的口径），故无可对照的对象。
+                  </Text>
+                </View>
+              )}
+              {stats.tilt && (
+                <View className='card'>
+                  <View className='card-title'>来源 × 情绪</View>
+                  {stats.tilt.items.map((s) => (
+                    <View key={s.name} className='page-profile__tilt-row'>
+                      <Text className='page-profile__bar-name'>{s.name}</Text>
+                      <View className='page-profile__tilt-bar'>
+                        {s.positive > 0 && (
+                          <View
+                            className='page-profile__stance-seg page-profile__stance-seg--positive'
+                            style={{ flex: s.positive }}
+                          />
+                        )}
+                        {s.neutral > 0 && (
+                          <View
+                            className='page-profile__stance-seg page-profile__stance-seg--neutral'
+                            style={{ flex: s.neutral }}
+                          />
+                        )}
+                        {s.negative > 0 && (
+                          <View
+                            className='page-profile__stance-seg page-profile__stance-seg--negative'
+                            style={{ flex: s.negative }}
+                          />
+                        )}
+                      </View>
+                      <Text className='page-profile__tilt-count'>{`${s.total} 条`}</Text>
+                    </View>
+                  ))}
+                  <Text className='page-profile__stat-note'>{tiltNote}</Text>
+                </View>
+              )}
+
+              {/*
+                素材可信度：全部由端上数出来（不依赖 coverage，故老报告也有）。
+                四个数字回答「这些素材本身有多硬」，与曝光度卡（热度多高）是两种问题。
+              */}
+              {!stats.credibility && (
+                <View className='card'>
+                  <View className='card-title'>素材可信度</View>
+                  <Text className='page-profile__stat-note'>
+                    {`本报告收录的动态不足 3 条（本次 ${report.dynamics.length} 条），数不出独立事件与重复报道比，故不出这四个数。`}
+                  </Text>
+                </View>
+              )}
+              {stats.credibility && (
+                <View className='card'>
+                  <View className='card-title'>素材可信度</View>
+                  <View className='page-profile__stat-grid'>
+                    <View className='page-profile__stat'>
+                      <Text className='page-profile__stat-value'>{stats.credibility.events}</Text>
+                      <Text className='page-profile__stat-label'>独立事件</Text>
+                    </View>
+                    <View className='page-profile__stat'>
+                      <Text className='page-profile__stat-value'>{stats.credibility.families}</Text>
+                      <Text className='page-profile__stat-label'>独立信源</Text>
+                    </View>
+                    <View className='page-profile__stat'>
+                      <Text className='page-profile__stat-value'>{stats.credibility.shared}</Text>
+                      <Text className='page-profile__stat-label'>多家共报</Text>
+                    </View>
+                    <View className='page-profile__stat'>
+                      <Text className='page-profile__stat-value'>
+                        {`${Math.round(stats.credibility.repeatRatio * 100)}%`}
+                      </Text>
+                      <Text className='page-profile__stat-label'>重复报道</Text>
+                    </View>
+                  </View>
+                  <Text className='page-profile__stat-note'>{credibilityNote}</Text>
+                </View>
+              )}
+
+              {!stats.sentiment && (
+                <View className='card'>
+                  <View className='card-title'>情绪构成</View>
+                  <Text className='page-profile__stat-note'>
+                    本报告收录的公开动态为 0 条，没有可归类的对象，故不出构成条。若报告是刚生成的，可先看「动态」Tab 里有没有条目。
+                  </Text>
+                </View>
+              )}
               {stats.sentiment && (
                 <View className='card'>
                   <View className='card-title'>情绪构成</View>
@@ -359,6 +496,84 @@ export default function Profile() {
                 </View>
               )}
 
+              {/*
+                情绪走势：情绪构成（横向占比）与时间分布（条数节奏）的交叉 —— 回答
+                「舆情是变好了还是变差了」。月份刻度与窗口来自同一套规则（见 utils/stats.ts
+                的 bucketize），不会出现两卡月份错位；但数据源只有动态（时间分布还含时间线），
+                故两卡的起止月份与条数可以不相等。
+              */}
+              {!stats.sentimentTrend && (
+                <View className='card'>
+                  <View className='card-title'>情绪走势</View>
+                  <Text className='page-profile__stat-note'>
+                    {`至少要有 3 条带日期的动态、且分布在 2 个月以上才画得出走势（只有一根柱子那是上方的「情绪构成」，不是走势）。本报告为 ${report.dynamics.length} 条动态，未达到门槛，故不出图。`}
+                  </Text>
+                </View>
+              )}
+              {stats.sentimentTrend && (
+                <View className='card'>
+                  <View className='card-title'>情绪走势</View>
+                  <View className='page-profile__stance-legend'>
+                    <View className='page-profile__legend'>
+                      <View className='page-profile__dot page-profile__dot--positive' />
+                      <Text className='page-profile__stance-legend-item'>积极</Text>
+                    </View>
+                    <View className='page-profile__legend'>
+                      <View className='page-profile__dot page-profile__dot--neutral' />
+                      <Text className='page-profile__stance-legend-item'>中性</Text>
+                    </View>
+                    <View className='page-profile__legend'>
+                      <View className='page-profile__dot page-profile__dot--negative' />
+                      <Text className='page-profile__stance-legend-item'>消极</Text>
+                    </View>
+                  </View>
+                  <View className='page-profile__months'>
+                    {stats.sentimentTrend.items.map((s) => (
+                      <View key={s.key} className='page-profile__month'>
+                        <Text className='page-profile__month-count'>{s.total > 0 ? s.total : ''}</Text>
+                        <View className='page-profile__month-track'>
+                          {s.total > 0 && (
+                            <View
+                              className='page-profile__trend-bar'
+                              style={{ height: `${s.ratio * 100}%` }}
+                            >
+                              {s.positive > 0 && (
+                                <View
+                                  className='page-profile__trend-seg page-profile__trend-seg--positive'
+                                  style={{ flex: s.positive }}
+                                />
+                              )}
+                              {s.neutral > 0 && (
+                                <View
+                                  className='page-profile__trend-seg page-profile__trend-seg--neutral'
+                                  style={{ flex: s.neutral }}
+                                />
+                              )}
+                              {s.negative > 0 && (
+                                <View
+                                  className='page-profile__trend-seg page-profile__trend-seg--negative'
+                                  style={{ flex: s.negative }}
+                                />
+                              )}
+                            </View>
+                          )}
+                        </View>
+                        <Text className='page-profile__month-label'>{s.label}</Text>
+                      </View>
+                    ))}
+                  </View>
+                  <Text className='page-profile__stat-note'>{trendNote}</Text>
+                </View>
+              )}
+
+              {!stats.months && (
+                <View className='card'>
+                  <View className='card-title'>时间分布</View>
+                  <Text className='page-profile__stat-note'>
+                    本报告收录的带日期条目（动态 + 时间线）不足 3 条，摊到月份上每月不足一条，画不出分布，故不出图。
+                  </Text>
+                </View>
+              )}
               {stats.months && (
                 <View className='card'>
                   <View className='card-title'>时间分布</View>

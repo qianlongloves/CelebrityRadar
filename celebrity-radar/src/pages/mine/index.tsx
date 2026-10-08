@@ -3,9 +3,11 @@ import Taro, { useDidShow } from '@tarojs/taro'
 import { View, Text, Button, Input, Image } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { ensureLogin, updateProfile } from '@/utils/auth'
-import { clearLocalSettings, setPreferredModel } from '@/utils/settings'
-import { resolveChatModel } from '@/utils/llm'
+import { clearLocalSettings, getPreferredTier, setPreferredProvider, setPreferredTier } from '@/utils/settings'
+import { resolveChatSelection } from '@/utils/llm'
+import type { ChatSelection } from '@/utils/llm'
 import { publicConfig } from '@/config/public'
+import type { LlmProvider, LlmTier } from '@/config/public'
 import { notifyConfigured, requestNotify } from '@/utils/notify'
 import { clearAllMyData } from '@/utils/data-deletion'
 import { listFollows } from '@/utils/follows'
@@ -57,11 +59,12 @@ export default function Mine() {
    */
   const [qaUsage, setQaUsage] = useState<QaUsage>(() => qaUsageToday(false))
   /**
-   * 当前生效模型（M7-4 模型选择）。初值按**非会员**口径解析（配额还没读回来，
-   * 此时确实只能走免费档），loadCounts 拿到会员态后再按真实身份重算一次。
-   * 与生成时 utils/llm.ts#resolveChatModel 同源，页面展示不会和实际调用打架。
+   * 当前生效的「供应商 + 档位」（M7-4 模型选择，2026-10-08 起供应商由用户自选）。
+   * 初值按**非会员**口径解析（配额还没读回来，此时确实只能走免费档），
+   * loadCounts 拿到会员态后再按真实身份重算一次。
+   * 与生成时 utils/llm.ts#resolveChatSelection 同源，页面展示不会和实际调用打架。
    */
-  const [model, setModel] = useState<string>(() => resolveChatModel(false))
+  const [selection, setSelection] = useState<ChatSelection>(() => resolveChatSelection(false))
   /**
    * 套餐用量卡是否展开：默认折叠。
    *
@@ -75,27 +78,62 @@ export default function Mine() {
   const isMember = !!genQuota?.member
 
   /**
-   * 切换模型（M7-4）：只写本机偏好，下次生成生效；已缓存的报告不受影响。
+   * 下面渲染的档位清单：跟随所选供应商**整组切换**（这就是「换供应商 = 换档位清单」）——
+   * 三家都是极速版 / 标准版 / 深度推理这一套，变的只是各档对应的上游模型与描述。
+   * 类型显式收敛成 LlmTier[]：providers 各项的 models 是四个不同的字面量元组，
+   * 直接 map 会得到「联合类型上没有可调用的 map 签名」。
+   */
+  const tiers: readonly LlmTier[] = (
+    publicConfig.llm.providers.find((p) => p.id === selection.provider) ?? publicConfig.llm.providers[0]
+  ).models
+
+  /**
+   * 切换供应商（2026-10-08）：只写本机偏好，下次生成生效；已缓存的报告不受影响。
+   *
+   * key 不在端上：用户切到哪家，就由云函数用**那家**的环境变量 key 代打（用户为零配置）。
+   * 因此换供应商本身不设门槛（免费用户也能切），付费点仍落在档位上：
+   * 免费用户无论切到哪家，能用的都只是那家的极速版。
+   *
+   * ⚠ 「换家不换档」是刻意的：本机存的是档位标识（fast / standard / reason）而不是模型名，
+   * 所以切过去还是「我选的那一档」（DeepSeek 标准版 → 通义千问标准版），不必重选一次。
+   * 档位清单整组跟着换，故上面显示的选项标签会变、模型名会变，选中仍是同一档。
+   */
+  const chooseProvider = (p: LlmProvider) => {
+    if (p.id === selection.provider) return
+    setPreferredProvider(p.id)
+    setSelection(resolveChatSelection(isMember))
+    Taro.showToast({ title: `已切换为 ${p.label}`, icon: 'none' })
+  }
+
+  /**
+   * 切换生成档位（极速版 / 标准版 / 深度推理）：只写本机偏好，下次生成生效。
    *
    * 会员专属档位对免费用户不做「静默失败」：说清为什么不能用，并把人送到会员中心 ——
    * 这是「质」权益最直接的转化触点（用户正是在这里第一次发现「更强的模型要付费」）。
    * 真正的闸门在云函数 aiProxy（改包也绕不过），这里只负责把话说清楚。
    */
-  const chooseModel = async (m: (typeof publicConfig.llm.models)[number]) => {
-    if (m.id === model) return
-    if (m.memberOnly && !isMember) {
+  const chooseTier = async (t: LlmTier) => {
+    if (t.tier === selection.tier) {
+      /*
+       * 已是当前生效档位：若本机存的偏好与显示不一致（残留的会员档被回落成了极速版），
+       * 顺手对齐 —— 否则「显示极速版、存着标准版」，续费后会毫无预兆地跳档。
+       */
+      if (getPreferredTier() !== t.tier) setPreferredTier(t.tier)
+      return
+    }
+    if (t.memberOnly && !isMember) {
       const res = await Taro.showModal({
         title: '会员专属模型',
-        content: `${m.label}仅会员可用：开通后即可用它生成更完整的报告，已生成的报告不受影响`,
+        content: `${t.label}仅会员可用：开通后即可用它生成更完整的报告，已生成的报告不受影响`,
         confirmText: '去开通',
         cancelText: '再想想'
       })
       if (res.confirm) Taro.navigateTo({ url: '/pages/member/index' })
       return
     }
-    setPreferredModel(m.id)
-    setModel(m.id)
-    Taro.showToast({ title: '已切换模型', icon: 'none' })
+    setPreferredTier(t.tier)
+    setSelection(resolveChatSelection(isMember))
+    Taro.showToast({ title: '已切换档位', icon: 'none' })
   }
 
   const loadCounts = async () => {
@@ -106,7 +144,7 @@ export default function Mine() {
       /* 未登录按免费版口径展示：此时确实只能走免费额度 */
       setQaUsage(qaUsageToday(false))
       /* 模型展示同步回免费档：未登录时残留的强模型偏好不该被显示成「当前生效」 */
-      setModel(resolveChatModel(false))
+      setSelection(resolveChatSelection(false))
       return
     }
     /* 配额与列表并行取：配额失败不拖累列表展示（catch 内静默，卡片显示占位） */
@@ -127,7 +165,7 @@ export default function Mine() {
        两个数字必须出自同一次会员判定，否则会出现「卡里一半是会员口径、一半是免费口径」 */
     const askMember = !!quota?.member
     /* 会员态到手后重算模型展示：非会员即使本机残留强模型偏好，也要显示回落到免费档 */
-    setModel(resolveChatModel(askMember))
+    setSelection(resolveChatSelection(askMember))
     /* qaUsageToday 读的是刚被 askP 对齐过的镜像 ⇒ 这里已是云端口径 */
     setQaUsage(qaUsageToday(askMember))
   }
@@ -173,8 +211,8 @@ export default function Mine() {
     const ok = await clearAllMyData()
     /* 清理本机设置（历史遗留密钥 + 模型偏好）；周报含关注画像且不在云端删除范围，一并清掉 */
     clearLocalSettings()
-    /* 模型偏好刚被清掉，界面同步回落到默认模型 */
-    setModel(resolveChatModel(isMember))
+    /* 供应商 / 档位偏好刚被清掉，界面同步回落到默认那家与免费档 */
+    setSelection(resolveChatSelection(isMember))
     clearWeeklyCache()
     /* 消息已读基线也是本机数据：留着会让「清空后」的首页铃铛按旧基线判定未读 */
     clearMessageState()
@@ -263,13 +301,11 @@ export default function Mine() {
   const genPct = genLimit > 0 ? Math.min(100, Math.round((genUsed / genLimit) * 100)) : 0
   const qaPct = qaUsage.limit > 0 ? Math.min(100, Math.round((qaUsage.used / qaUsage.limit) * 100)) : 0
   /**
-   * AI 提问用量那一行的数字。
-   * 开挂态（调试开关）报「已用 N 次」而不报分母 —— 此时次数不设限，
-   * 照旧写 `已用 7 / 5 次` 会像是额度算错了；数字本身仍如实取真实用量。
+   * AI 提问用量那一行的数字：一律如实报「已用 / 每日上限」。
+   * 调试开关只松闸门、不参与展示（见 utils/debug.ts）—— 界面与真实用户所见逐字一致，
+   * 不出现「不限次」这类字样，本地调到的样子就是上线后的样子。
    */
-  const qaUsageText = qaUsage.unlimited
-    ? `已用 ${qaUsage.used} 次（调试不限次）`
-    : `已用 ${qaUsage.used} / ${qaUsage.limit} 次`
+  const qaUsageText = `已用 ${qaUsage.used} / ${qaUsage.limit} 次`
 
   const menus: MenuItem[] = [
     {
@@ -568,26 +604,44 @@ export default function Mine() {
       </View>
 
       {/*
-        生成模型（M7-4）：只写本机偏好（utils/settings.ts），仅影响此后新生成的报告。
-        两枚 key（博查 + 大模型）都在服务端 aiProxy 的环境变量里，端上不持有任何凭据，
-        因此这里没有任何配置项，也不需要连通性自检 —— 这只是一份「用哪个模型生成」的偏好。
+        模型供应商 + 生成档位（M7-4；2026-10-08 起供应商由用户自选）：
+        只写本机偏好（utils/settings.ts），仅影响此后新生成的报告。
+        两枚 key（博查 + 大模型）都在服务端 aiProxy 的环境变量里，端上不持有任何凭据 ——
+        用户切到哪家，云函数就用**那家**的 key 代打，因此这里没有配置项，也不需要连通性自检，
+        这只是一份「用哪家、哪一档生成」的偏好。
       */}
       <View className='card page-mine__model'>
         <View className='page-mine__model-head'>
-          <Text className='page-mine__model-title'>生成模型</Text>
-          <Text className='page-mine__model-current'>
-            {publicConfig.llm.models.find((m) => m.id === model)?.label ?? model}
-          </Text>
+          <Text className='page-mine__model-title'>模型供应商</Text>
+          <Text className='page-mine__model-current'>{selection.providerLabel}</Text>
+        </View>
+        <View className='page-mine__provider-options'>
+          {publicConfig.llm.providers.map((p) => (
+            <View
+              key={p.id}
+              className={`page-mine__provider-option${p.id === selection.provider ? ' page-mine__provider-option--on' : ''}`}
+              onClick={() => chooseProvider(p)}
+            >
+              <Text className='page-mine__provider-label'>{p.label}</Text>
+            </View>
+          ))}
+        </View>
+        <Text className='page-mine__model-note'>额度由平台统一提供，切换供应商后档位清单随之更换</Text>
+
+        {/* 档位清单来自所选供应商（tiers），故换家时这一组整组变 —— 用户选的档位标识不变 */}
+        <View className='page-mine__model-head page-mine__model-head--sub'>
+          <Text className='page-mine__model-title'>生成档位</Text>
+          <Text className='page-mine__model-current'>{selection.tierLabel}</Text>
         </View>
         <View className='page-mine__model-options'>
-          {publicConfig.llm.models.map((m) => {
+          {tiers.map((m) => {
             /* 会员专属档位对免费用户显示「会员」标：先说清门槛，点了再给开通引导 */
             const locked = m.memberOnly && !isMember
             return (
               <View
-                key={m.id}
-                className={`page-mine__model-option${m.id === model ? ' page-mine__model-option--on' : ''}${locked ? ' page-mine__model-option--locked' : ''}`}
-                onClick={() => void chooseModel(m)}
+                key={m.tier}
+                className={`page-mine__model-option${m.tier === selection.tier ? ' page-mine__model-option--on' : ''}${locked ? ' page-mine__model-option--locked' : ''}`}
+                onClick={() => void chooseTier(m)}
               >
                 <View className='page-mine__model-option-head'>
                   <Text className='page-mine__model-option-label'>{m.label}</Text>

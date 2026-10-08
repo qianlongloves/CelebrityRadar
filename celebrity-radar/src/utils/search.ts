@@ -101,12 +101,29 @@ type PagesAttempt =
  * 也就不能再靠 HTTP 状态码分流 —— 重试与否统一看云函数给出的 kind。
  */
 
+/**
+ * 上游响应结构摘要（对应 cloudfunctions/aiProxy 的 probeOf，只有键名与条数）。
+ *
+ * 用途单一：回答「博查返不返回图片/视频、字段叫什么」。博查的图片在 `data.images.value`、
+ * 视频在 `data.videos.value`，与 `webPages` **同级**，而云函数只把 webPages 交给端上，
+ * 于是这件事在端上原本看不到 —— 要往报告里加图/视频，得先看这一眼，别凭猜写 schema。
+ */
+interface SearchProbe {
+  dataKeys: string[]
+  pageKeys: string[]
+  images: number
+  imageKeys: string[]
+  videos: number
+  videoKeys: string[]
+}
+
 /** 云函数 search 动作的返回结构（对应 cloudfunctions/aiProxy 的 runSearch） */
 interface ProxySearchResult {
   ok: boolean
   pages?: Array<Record<string, unknown>>
   kind?: string
   error?: string
+  probe?: SearchProbe
 }
 
 /** 值得重试的 kind：上游 5xx / 业务错误码 / 网络层失败 */
@@ -158,6 +175,12 @@ async function pagesViaPlatform(params: SearchParams): Promise<PagesAttempt | nu
     return { ok: false, error: msg, retryable: RETRYABLE_KINDS.has(kind) }
   }
 
+  /*
+   * 上游响应结构记一笔（一报告两次检索 = 两行）：加图/加视频之前先看这行 ——
+   * images / videos 为 0 就说明「该套餐或该请求根本没有媒体结果」，不必往报告 schema 上加字段；
+   * 非 0 时 imageKeys 直接告诉我们字段叫什么（thumbnailUrl？contentUrl？width/height？）。
+   */
+  if (res.probe) diagLog('info', 'http', '检索响应结构', res.probe as unknown as Record<string, unknown>)
   return { ok: true, pages: res.pages ?? [] }
 }
 

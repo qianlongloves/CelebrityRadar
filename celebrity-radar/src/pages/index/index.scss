@@ -249,20 +249,44 @@
       background: linear-gradient(135deg, #33a3ff 0%, $domain-tech 100%);
     }
 
+    &--internet {
+      background: linear-gradient(135deg, #67e8f9 0%, $domain-internet 100%);
+    }
+
     &--business {
       background: linear-gradient(135deg, #ff9d7c 0%, $domain-business 100%);
+    }
+
+    &--finance {
+      background: linear-gradient(135deg, #fcd34d 0%, $domain-finance 100%);
+    }
+
+    &--auto {
+      background: linear-gradient(135deg, #a5b4fc 0%, $domain-auto 100%);
     }
 
     &--ent {
       background: linear-gradient(135deg, #f472b6 0%, $domain-ent 100%);
     }
 
+    &--art {
+      background: linear-gradient(135deg, #d8b4fe 0%, $domain-art 100%);
+    }
+
     &--sports {
       background: linear-gradient(135deg, #34d399 0%, $domain-sports 100%);
     }
 
+    &--health {
+      background: linear-gradient(135deg, #fda4af 0%, $domain-health 100%);
+    }
+
     &--academia {
       background: linear-gradient(135deg, $brand-soft 0%, $domain-academia 100%);
+    }
+
+    &--edu {
+      background: linear-gradient(135deg, #5eead4 0%, $domain-edu 100%);
     }
 
     &--other {

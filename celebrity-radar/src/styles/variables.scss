@@ -23,10 +23,19 @@ $success: #10b981;
 $knowledge-warn-bg: #fff7ed;
 $knowledge-warn-text: #b45309;
 
-/* 领域色（§1.6 领域码枚举；v2 对齐样例配色） */
-$domain-tech: #0087ff;
-$domain-business: #ff7d53;
-$domain-ent: #ec4899;
-$domain-sports: #10b981;
-$domain-academia: #5f33e1;
-$domain-other: #6e6a7c;
+/* 领域色（§1.6 领域码枚举；v2 对齐样例配色）
+ * ⚠ 与 src/config/domains.ts 的 DOMAIN_CODES、src/utils/share-card.ts 的 DOMAIN_COLOR 同源：
+ * 这里加一项，各页面 SCSS 的 `--<领域码>` 变体类与 share-card.ts 都要各加一行。
+ * 12 个领域按色相拉开距离，相邻领域的浅色梯度见各页面头像样式。 */
+$domain-tech: #0087ff;      /* 科技 · 蓝 */
+$domain-internet: #06b6d4;  /* 互联网 · 青 */
+$domain-business: #ff7d53;  /* 商业 · 橙 */
+$domain-finance: #f59e0b;   /* 财经 · 琥珀 */
+$domain-auto: #6366f1;      /* 汽车 · 靛 */
+$domain-ent: #ec4899;       /* 文娱 · 粉 */
+$domain-art: #a855f7;       /* 艺术 · 紫 */
+$domain-sports: #10b981;    /* 体育 · 翠绿 */
+$domain-health: #f43f5e;    /* 健康 · 玫红 */
+$domain-academia: #5f33e1;  /* 学术 · 品牌紫 */
+$domain-edu: #14b8a6;       /* 教育 · 青绿 */
+$domain-other: #6e6a7c;     /* 其他 · 灰 */

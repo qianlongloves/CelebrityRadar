@@ -2,7 +2,7 @@ import { useState } from 'react'
 import Taro, { useDidShow, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text, ScrollView, Image } from '@tarojs/components'
 import { AtSearchBar, AtButton } from 'taro-ui'
-import { DOMAIN_CODES, DOMAIN_META, DomainCode, buildPersonKey } from '@/config/domains'
+import { DOMAIN_CODES, DOMAIN_COVERAGE_TEXT, DOMAIN_META, DomainCode, buildPersonKey } from '@/config/domains'
 import {
   DOMAIN_FILTER_CODES,
   DomainFilterCode,
@@ -520,7 +520,7 @@ export default function Index() {
 
         {state.phase === 'refused' && (
           <View className='page-index__output'>
-            <EmptyState icon='🚫' title='暂不支持查询该人物' desc='本工具仅覆盖科技、商业、文娱、体育、学术领域公众名人' />
+            <EmptyState icon='🚫' title='暂不支持查询该人物' desc={`本工具覆盖${DOMAIN_COVERAGE_TEXT}等多个领域的公众名人`} />
           </View>
         )}
 
@@ -592,6 +592,8 @@ export default function Index() {
               }}
               followPending={followPending === personKey}
               onToggleFollow={(x) => void onToggleFollow(x, 'hot_card')}
+              /* 热门位两枚入口收成图标：文字胶囊会把长名字挤到换行、把领域标签压变形 */
+              iconActions
               actionText='AI 报告'
               onAction={(x) => openPerson(x.name, x.domain)}
               onClick={(x) => openPerson(x.name, x.domain)}

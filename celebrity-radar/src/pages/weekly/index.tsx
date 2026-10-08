@@ -270,35 +270,61 @@ export default function Weekly() {
             </View>
           )}
 
-          {!!report.overview && (
+          {/*
+            本周综述 / 近 7 天动态分布 / 本周话题：一律改成「卡片照出 + 写明为什么没有内容」。
+            原先不成立就整卡不出，用户看到的是卡片一张张消失，只能怀疑是坏了
+            （报告页、主页数据 Tab 同此处理）。
+            降级周报仍不出综述卡：上方警示条已经说明「本次未生成 AI 概述」，再出一张空卡是重复。
+          */}
+          {(!!report.overview || !report.degraded) && (
             <View className='card'>
               <View className='card-title'>本周综述</View>
-              <View className='page-weekly__overview'>{report.overview}</View>
+              {report.overview ? (
+                <View className='page-weekly__overview'>{report.overview}</View>
+              ) : (
+                <Text className='page-weekly__dist-note'>
+                  本次生成没有给出综述正文（这一段的留空条件见报告契约）。
+                  下方「关注的人」里逐条列出了本次收录的动态与原文链接，可先据此阅读。
+                </Text>
+              )}
             </View>
           )}
 
-          {/* 逐日分布：标题不写「本周」——窗口是报告生成日往前 7 天的滚动窗口，不是自然周
-              （与 time.ts 的选题口径一致）；带日期条目不足 3 条时整卡不出（同主页「时间分布」门槛） */}
-          {dayDist && (
+          {/*
+            逐日分布：标题不写「本周」——窗口是报告生成日往前 7 天的滚动窗口，不是自然周
+            （与 time.ts 的选题口径一致）。
+            带日期条目不足 3 条时**不再整卡不出**（门槛一个没动，仍与主页「时间分布」一致），
+            改为照出卡片、写明为什么不出柱形图。
+          */}
+          {!report.degraded && (
             <View className='card'>
               <View className='card-title'>近 7 天动态分布</View>
-              <View className='page-weekly__days'>
-                {dayDist.items.map((d) => (
-                  <View key={d.key} className='page-weekly__day'>
-                    <Text className='page-weekly__day-count'>{d.count > 0 ? d.count : ''}</Text>
-                    <View className='page-weekly__day-track'>
-                      <View
-                        className='page-weekly__day-bar'
-                        style={{ height: `${d.count > 0 ? Math.max(10, Math.round(d.ratio * 100)) : 0}%` }}
-                      />
-                    </View>
-                    <Text className='page-weekly__day-label'>{d.label}</Text>
+              {!dayDist && (
+                <Text className='page-weekly__dist-note'>
+                  本次收录的带日期动态不足 3 条，摊到 7 天上多数格是空的，画不出分布，故不出柱形图。下方「关注的人」里逐条列了动态及其日期。
+                </Text>
+              )}
+              {dayDist && (
+                <>
+                  <View className='page-weekly__days'>
+                    {dayDist.items.map((d) => (
+                      <View key={d.key} className='page-weekly__day'>
+                        <Text className='page-weekly__day-count'>{d.count > 0 ? d.count : ''}</Text>
+                        <View className='page-weekly__day-track'>
+                          <View
+                            className='page-weekly__day-bar'
+                            style={{ height: `${d.count > 0 ? Math.max(10, Math.round(d.ratio * 100)) : 0}%` }}
+                          />
+                        </View>
+                        <Text className='page-weekly__day-label'>{d.label}</Text>
+                      </View>
+                    ))}
                   </View>
-                ))}
-              </View>
-              <Text className='page-weekly__dist-note'>
-                横轴为日期（{dayDist.from} ~ {dayDist.to}），纵轴为当日收录的动态条数（同一说法只计一次）。
-              </Text>
+                  <Text className='page-weekly__dist-note'>
+                    横轴为日期（{dayDist.from} ~ {dayDist.to}），纵轴为当日收录的动态条数（同一说法只计一次）。
+                  </Text>
+                </>
+              )}
             </View>
           )}
 
@@ -349,6 +375,15 @@ export default function Weekly() {
             </View>
           ))}
 
+          {/* 归不出话题也出卡（原先 `topics.length > 0 &&` 直接整卡不出）：说明为什么没有话题 */}
+          {report.topics.length === 0 && (
+            <View className='card'>
+              <View className='card-title'>本周话题</View>
+              <Text className='page-weekly__dist-note'>
+                本次收录的动态里，跨名人反复出现的说法不足以归出话题（话题词取自标题与摘要原文，不做语义归类），故本卡只作说明。上方「关注的人」里逐条列了每个人的动态。
+              </Text>
+            </View>
+          )}
           {report.topics.length > 0 && (
             <View className='card'>
               <View className='card-title'>本周话题</View>
