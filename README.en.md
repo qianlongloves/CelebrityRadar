@@ -6,10 +6,10 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-219%20passing-success.svg)](#development--testing)
+[![Tests](https://img.shields.io/badge/tests-243%20passing-success.svg)](#development--testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
-> A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / recent activity / quotes / commentary / timeline / sources).
+> A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), with a keyword cloud, sentiment trend and heat curve aggregated on the client.
 
 - Stack: Taro 3 (React) + Taro UI ｜ Backend: Tencent CloudBase (WeChat Cloud Development)
 - License: [Apache-2.0](./LICENSE) ｜ Changelog: [`CHANGELOG.md`](./CHANGELOG.md)
@@ -63,8 +63,8 @@ It is built around two principles:
 | Area | Module | Capability |
 |---|---|---|
 | **Content** | Discovery & disambiguation | Search box + popular-domain cards; candidate list for homonyms (with domain filters) plus a "none of them" fallback, producing a stable `personKey` (e.g. `雷军#tech`) |
-| | Report generation | Bocha web search → LLM produces structured JSON → zod validation of every field + source-URL allowlist sanitization; six card sections (bio / recent activity / notable quotes / AI commentary / timeline / sources), skeleton loading with progressive reveal, and a "generated N ago / refresh" pair of entry points |
-| | Client-side aggregates | Stance & sentiment, keyword cloud, and a heat-trend curve — **computed entirely on the client**, so existing cached reports benefit immediately with zero extra model calls or quota usage |
+| | Report generation | Bocha web search → LLM produces structured JSON → zod validation of every field + source-URL allowlist sanitization; **rendered card by card** (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies & responses / timeline / what to watch / glossary + a one-line source summary), skeleton loading with progressive reveal, and a "generated N ago / refresh" pair of entry points; every factual section must cite a real piece of material — anything unsourced is dropped entirely, and a section that is genuinely empty still renders a card explaining why |
+| | Client-side aggregates | Profile snapshot, stance & sentiment, keyword cloud, quote themes, and a heat-trend curve — **computed entirely on the client**, so existing cached reports benefit immediately with zero extra model calls or quota usage |
 | | Quote sourcing | Verifies only *verifiable* facts (is this quote's source link part of the retrieved material; does that article contain the same wording) — it does **not** render AI verdicts on authenticity |
 | **Reading & saving** | Following | Follow list + change overview (who has news) + merged feed (`feed_cache` merged with pull-to-refresh, capped at 10 refreshes per account per day) |
 | | Weekly digest | One tap summarizes the last 7 days across followed figures → per-person highlights + weekly overview + topic words; material comes from cache and **people and items follow the material**, cached locally per ISO week |
@@ -86,15 +86,44 @@ It is built around two principles:
 
 ## Screenshots
 
-> The images below are **interface mock-ups** drawn from the real page structure and copy, to show the information hierarchy;
-> to use real device screenshots, drop them into `assets/screenshots/` under the same file names — no change to this document is needed.
+> All images below are **on-device screenshots** (iPhone), grouped by feature; the caption under each one states the point of that page.
+> Images live in `assets/screenshots/` — **replacing a file with the same name updates this section**, no change to the references below.
+
+**Discovery & search**
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/01-discover.svg" width="200" alt="Discover page"><br><sub><b>Discover</b> · search / domain filters / daily hot list</sub></td>
-    <td align="center"><img src="./assets/screenshots/02-report.svg" width="200" alt="Report page"><br><sub><b>Report</b> · six card sections, revealed in order</sub></td>
-    <td align="center"><img src="./assets/screenshots/03-qa.svg" width="200" alt="AI Q&amp;A page"><br><sub><b>AI Q&amp;A</b> · answers with numbered sources</sub></td>
-    <td align="center"><img src="./assets/screenshots/04-mine.svg" width="200" alt="Profile page"><br><sub><b>Profile</b> · quota shown transparently</sub></td>
+    <td align="center"><img src="./assets/screenshots/01-home.png" width="200" alt="Home"><br><sub><b>Home</b> · search entry / featured domains / today's hot</sub></td>
+    <td align="center"><img src="./assets/screenshots/02-search.png" width="200" alt="Search and disambiguation"><br><sub><b>Search &amp; disambiguation</b> · same-name candidates + domain filters</sub></td>
+    <td align="center"><img src="./assets/screenshots/03-hot-board.png" width="200" alt="Hot board"><br><sub><b>Hot board</b> · AI-generated daily, every rank visible to everyone</sub></td>
+  </tr>
+</table>
+
+**Following & messages**
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/04-feed.png" width="200" alt="Following feed"><br><sub><b>Following feed</b> · merged stream + pull to refresh</sub></td>
+    <td align="center"><img src="./assets/screenshots/05-following.png" width="200" alt="Follow list"><br><sub><b>Follow list</b> · change overview: who has news</sub></td>
+    <td align="center"><img src="./assets/screenshots/07-message-center.png" width="200" alt="Message center"><br><sub><b>Message center</b> · updates / weekly digest / alerts in one timeline</sub></td>
+  </tr>
+</table>
+
+**Explore & Q&amp;A**
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/06-keyword-alert.png" width="200" alt="Keyword alerts"><br><sub><b>Keyword alerts</b> · only entries added since your last visit</sub></td>
+    <td align="center"><img src="./assets/screenshots/08-qa.png" width="200" alt="AI Q&amp;A"><br><sub><b>AI Q&amp;A</b> · answers from your cached reports, with numbered sources</sub></td>
+  </tr>
+</table>
+
+**Membership &amp; configuration**
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/09-mine.png" width="200" alt="Profile"><br><sub><b>Profile</b> · quota shown transparently / membership perks</sub></td>
+    <td align="center"><img src="./assets/screenshots/10-providers.png" width="200" alt="Model providers"><br><sub><b>Model provider of your choice</b> · DeepSeek / Qwen / Zhipu GLM / Moonshot</sub></td>
   </tr>
 </table>
 

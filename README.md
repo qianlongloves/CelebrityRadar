@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-243%20passing-success.svg)](#开发与测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
-> 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 动态 / 语录 / 点评 / 时间线 / 来源）。
+> 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 人物档案 / 动态 / 语录 / 点评 / 争议与回应 / 时间线 / 名词解释…），再在端上聚合出词云、情绪走势与热度趋势。
 
 - 技术形态：Taro 3（React）+ Taro UI ｜ 云后端：腾讯云 CloudBase（微信云开发）
 - 许可：[Apache-2.0](./LICENSE) ｜ 更新日志：[`CHANGELOG.md`](./CHANGELOG.md)
@@ -63,8 +63,8 @@
 | 分类 | 模块 | 能力 |
 |---|---|---|
 | **内容生产** | 发现与消歧 | 搜索框 + 热门领域卡；同名人物候选列表（带领域筛选项）+「都不是 TA」兜底，产出稳定 `personKey`（形如 `雷军#tech`） |
-| | 报告生成 | 博查联网检索 → LLM 生成结构化 JSON → zod 全字段校验 + 来源 URL 白名单清洗；六段卡片化渲染（简介 / 近期动态 / 经典语录 / AI 点评 / 时间线 / 信息来源），骨架屏 + 逐段呈现，附「生成于 xx 前 / 刷新最新」双入口 |
-| | 端上聚合卡 | 立场与舆情 / 关键词云 / 热度趋势折线 —— **纯端上聚合**，存量缓存同样生效，不新增模型调用与生成额度 |
+| | 报告生成 | 博查联网检索 → LLM 生成结构化 JSON → zod 全字段校验 + 来源 URL 白名单清洗；**逐段卡片化渲染**（简介 / 人物档案 / 关系图谱 / 近期动态 / 经典名言 / AI 点评 / 近期争议与回应 / 时间线 / 后续关注 / 名词解释 + 一行溯源摘要），骨架屏 + 逐段呈现，附「生成于 xx 前 / 刷新最新」双入口；事实类段落**必须指出素材出处**，指不出一律整条剔除，段落真的为空也出卡写明原因 |
+| | 端上聚合卡 | 人物速览 / 立场与舆情 / 关键词云 / 语录主题 / 热度趋势 —— **纯端上聚合**，存量缓存同样生效，不新增模型调用与生成额度 |
 | | 出处核对 | 只核对「能核对的事实」（这条名言的出处链接是否在本次素材内、那篇报道里有无相同表述），**不做 AI 真伪判定** |
 | **浏览与沉淀** | 关注 | 关注列表 + 变化概览（谁有新动态）+ 聚合流（`feed_cache` 归并 + 下拉刷新，每账号每日 ≤ 10 次） |
 | | 周报 | 一键汇总关注对象最近 7 天的动态 → 逐人要点 + 本周综述 + 话题词；素材取自缓存，**人与其条目以材料为准**，按 ISO 周本机缓存 |
@@ -86,15 +86,44 @@
 
 ## 界面预览
 
-> 下图为按真实页面结构绘制的**界面示意**，用于说明信息层级与文案口径；
-> 换成真机截图时，把图片放进 `assets/screenshots/` 并替换同名文件即可，本文引用无需改动。
+> 以下均为**真机截图**（iPhone），按功能分组；每张下方的说明即该页的核心口径。
+> 图片存放在 `assets/screenshots/`，**同名替换即可更新本节**，无需改动本文引用。
+
+**发现与检索**
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/01-discover.svg" width="200" alt="发现页"><br><sub><b>发现</b> · 搜索 / 领域筛选 / 今日热门</sub></td>
-    <td align="center"><img src="./assets/screenshots/02-report.svg" width="200" alt="报告页"><br><sub><b>报告</b> · 六段卡片，逐段呈现</sub></td>
-    <td align="center"><img src="./assets/screenshots/03-qa.svg" width="200" alt="AI 问答页"><br><sub><b>AI 问答</b> · 带编号来源作答</sub></td>
-    <td align="center"><img src="./assets/screenshots/04-mine.svg" width="200" alt="我的页"><br><sub><b>我的</b> · 配额透明展示</sub></td>
+    <td align="center"><img src="./assets/screenshots/01-home.png" width="200" alt="首页"><br><sub><b>首页</b> · 搜索入口 / 热门领域 / 今日热门</sub></td>
+    <td align="center"><img src="./assets/screenshots/02-search.png" width="200" alt="搜索与消歧"><br><sub><b>搜索与消歧</b> · 同名候选列表 + 领域筛选</sub></td>
+    <td align="center"><img src="./assets/screenshots/03-hot-board.png" width="200" alt="热门榜"><br><sub><b>热门榜</b> · AI 每日生产，全员可见全部位数</sub></td>
+  </tr>
+</table>
+
+**关注与消息**
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/04-feed.png" width="200" alt="关注动态"><br><sub><b>关注动态</b> · 聚合流 + 下拉刷新</sub></td>
+    <td align="center"><img src="./assets/screenshots/05-following.png" width="200" alt="关注列表"><br><sub><b>关注列表</b> · 变化概览：谁有新动态</sub></td>
+    <td align="center"><img src="./assets/screenshots/07-message-center.png" width="200" alt="消息中心"><br><sub><b>消息中心</b> · 关注更新 / 周报 / 预警一条时间流</sub></td>
+  </tr>
+</table>
+
+**探索与问答**
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/06-keyword-alert.png" width="200" alt="关键词预警"><br><sub><b>关键词预警</b> · 只列出上次看过后新增的条目</sub></td>
+    <td align="center"><img src="./assets/screenshots/08-qa.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
+  </tr>
+</table>
+
+**会员与配置**
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/09-mine.png" width="200" alt="我的页"><br><sub><b>我的</b> · 配额透明展示 / 会员权益</sub></td>
+    <td align="center"><img src="./assets/screenshots/10-providers.png" width="200" alt="模型供应商"><br><sub><b>模型供应商自选</b> · DeepSeek / 通义千问 / 智谱 GLM / Moonshot 任选</sub></td>
   </tr>
 </table>
 
