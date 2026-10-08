@@ -1,183 +1,212 @@
 # 名人雷达（Celebrity Radar）
 
-> 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网抓取近期公开信息 → AI 提炼成结构化报告（名言 / 动态 / 点评 / 时间线 / 来源）。
->
-> 技术形态：Taro 3（React）+ Taro UI ｜ 云后端：腾讯云 CloudBase（微信云开发）
-> 许可：[Apache-2.0](./LICENSE) ｜ 从零部署见 [`doc/开源部署指南.md`](./doc/开源部署指南.md)
-> 文档最后更新：2026-10-08
+[English](./README.en.md) · **简体中文**
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
+[![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
+[![Tests](https://img.shields.io/badge/tests-243%20passing-success.svg)](#开发与测试)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
+
+> 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 动态 / 语录 / 点评 / 时间线 / 来源）。
+
+- 技术形态：Taro 3（React）+ Taro UI ｜ 云后端：腾讯云 CloudBase（微信云开发）
+- 许可：[Apache-2.0](./LICENSE) ｜ 更新日志：[`CHANGELOG.md`](./CHANGELOG.md)
+- 仓库：[gitee.com/qianlonglove_admin/celebrity-radar](https://gitee.com/qianlonglove_admin/celebrity-radar) ｜ English: [`README.en.md`](./README.en.md)
+- 从零部署：见下文「[快速开始](#快速开始)」与「[部署](#部署)」；想参与贡献先看 [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 
 ---
 
-## 一、功能特性
+## 目录
 
-| 模块 | 能力 |
-|---|---|
-| 发现 | 自定义底部菜单（发现 / 关注 / 收藏 / 我的）；搜索框 + 热门领域卡；头像问候区 + 铃铛（**未读为 0 时不带红点**） |
-| 消歧 | 同名人物候选列表（带领域 chips 筛选）+「都不是 TA」兜底，产出稳定 `personKey`（形如 `雷军#tech`） |
-| 报告 | 六段卡片化渲染：简介 / 近期动态 / 经典语录 / AI 点评 / 时间线 / 信息来源，另有三张**纯端上聚合**卡（立场与舆情 / 关键词云 / 热度趋势折线，老缓存同样生效、不消耗额度）；骨架屏 + 逐段呈现；「生成于 xx 前 · 刷新最新」双入口 |
-| 关注 | 关注列表 + 关注流聚合（`feed_cache` 归并 + 下拉刷新，每账号每日 ≤ 10 次配额） |
-| 周报 | 关注流一键汇总最近 7 天动态 → 逐人要点 + 本周综述 + 话题词；素材清单取自 `feed_cache`（非模型输出），可复制全文 / 分享；按自然周存本机，跨周自动重新生成 |
-| 分享卡片 | 名言卡（Canvas 2D 端上出图）→ 保存相册或走微信图片转发；图上固定带「AI 生成，仅供参考」角标；图片**不上传**、用完即弃 |
-| 收藏 / 历史 | 名言与报告收藏（`openid#type#hash` 防重）、浏览历史（保留 50 条）；收藏页的名言可直接出**名言卡** |
-| 我的 | 生成模型（本机偏好，键 `settings:llm_model`；**标准版 / 深度推理为会员专属**，免费版锁定「极速版」，未解锁档位点击给开通引导）、今日生成配额、隐私与免责、内容举报 / 反馈、清空我的数据 |
-| 计费 | freemium：免费版每日 3 次主动生成、会员 30 次（按 `users.membership.expires_at` 判定）；缓存命中不限次、不计次，配额在「我的」页透明展示。会员三档 = 月 ¥9.9 / 季 ¥25 / 年 ¥68，**价格源唯一**（云函数 `payCreate` 的 `PLANS`，端上拉取展示，改价无需发版）。**会员另有「质」权益**：可用「标准版 / 深度推理」模型（免费版锁定「极速版」；端上锁 UI、云函数 `aiProxy` 按 `users.membership` 强校验，非会员请求会被静默降级）、报告**深度模式**（检索加厚 + 对比视角 / 风险提示 / 信源分歧三段专享内容）。**「质」权益的可见性（2026-10-08）**：报告页人物横幅**正下方**常驻一行会员价值条 —— 免费号看带专享段的报告时说「这份报告里已有…，开通会员即可查看」（报告是共享缓存，开通后就看得见，不摆灰掉的内容），看不带专享段的报告时只说「会员生成会多出什么」；会员号为「本报告已含…」+「查看 ›」页内跳转，读到老缓存时只如实说明、**不给动作**（不引导为运营需要再烧一次生成额度）。会员中心权益对比表**正下方**展示「深度解析 · 真实示例」：从 `report_cache` 取一份真实报告的三段原文节选，标注来源（取自谁、何时生成、原文未改写），**挑不到就不出卡**，绝不摆编造的示例 |
-| 合规 | 敏感名单一级拦截（命中即拒答且不发任何网络请求）、来源 URL 白名单、报告统一标注「AI 生成，仅供参考」 |
-| 消息中心 | 铃铛入口的一条时间流：关注更新（复用关注流缓存判定）/ 周报提醒（按 ISO 周）/ 平台公告（静态清单）；**已读逐条记**（点开哪条标哪条 + 顶部「全部已读」），未读为实底白卡 + 左侧紫条、已读整卡变淡；**正文超 42 字折两行，点卡片展开 / 收起，展开后「查看详情 ›」才跳转**。**零新增集合、零云函数、零模型调用**，已读记录只存本机 |
+- [这是一个什么样的项目](#这是一个什么样的项目)
+- [功能特性](#功能特性)
+- [界面预览](#界面预览)
+- [技术栈](#技术栈)
+- [架构与核心链路](#架构与核心链路)
+- [快速开始](#快速开始)
+- [配置说明](#配置说明)
+- [部署](#部署)
+- [项目结构](#项目结构)
+- [核心模块](#核心模块)
+- [安全与合规](#安全与合规)
+- [开发与测试](#开发与测试)
+- [常见问题](#常见问题)
+- [已知限制](#已知限制)
+- [贡献指南](#贡献指南)
+- [反馈与支持](#反馈与支持)
+- [版本与更新日志](#版本与更新日志)
+- [许可与致谢](#许可与致谢)
 
 ---
 
-## 二、核心链路
+## 这是一个什么样的项目
+
+一个完整、可编译运行的微信小程序工程：端上 19 个页面，云侧 9 个云函数与 14 张数据库集合，
+覆盖「搜索 → 消歧 → 检索 → 生成 → 缓存 → 订阅 / 收藏 / 分享 / 问答 / 对比」的全链路。
+
+设计重心只有两条：
+
+1. **不买也能用** —— 缓存命中的报告不限次浏览；关注 / 收藏 / 历史 / 热门榜全部免费开放，不设付费墙。
+2. **不烧冤枉钱** —— 报告是**全局共享缓存**（同一人只生成一次，所有用户复用）、`building` 字段作跨设备生成互斥锁、
+   冷却只拦「值得等待」的那类失败、配额计数服务端化。三套机制把上游成本压在可控范围。
+
+> ⚠️ **这是一份完整的代码，不是一个可以直接上线运营的产品。**
+> 仓库里**没有任何可用凭据**：appid、云开发环境 ID、上游 API Key 全部是占位符，需要你自备。
+> 要真正跑通主链路，还差三样东西，见下文「[快速开始](#快速开始)」。
+
+---
+
+## 功能特性
+
+| 分类 | 模块 | 能力 |
+|---|---|---|
+| **内容生产** | 发现与消歧 | 搜索框 + 热门领域卡；同名人物候选列表（带领域筛选项）+「都不是 TA」兜底，产出稳定 `personKey`（形如 `雷军#tech`） |
+| | 报告生成 | 博查联网检索 → LLM 生成结构化 JSON → zod 全字段校验 + 来源 URL 白名单清洗；六段卡片化渲染（简介 / 近期动态 / 经典语录 / AI 点评 / 时间线 / 信息来源），骨架屏 + 逐段呈现，附「生成于 xx 前 / 刷新最新」双入口 |
+| | 端上聚合卡 | 立场与舆情 / 关键词云 / 热度趋势折线 —— **纯端上聚合**，存量缓存同样生效，不新增模型调用与生成额度 |
+| | 出处核对 | 只核对「能核对的事实」（这条名言的出处链接是否在本次素材内、那篇报道里有无相同表述），**不做 AI 真伪判定** |
+| **浏览与沉淀** | 关注 | 关注列表 + 变化概览（谁有新动态）+ 聚合流（`feed_cache` 归并 + 下拉刷新，每账号每日 ≤ 10 次） |
+| | 周报 | 一键汇总关注对象最近 7 天的动态 → 逐人要点 + 本周综述 + 话题词；素材取自缓存，**人与其条目以材料为准**，按 ISO 周本机缓存 |
+| | 收藏 / 历史 | 四类收藏（名言 / 报告 / 动态 / 时间线，`openid#type#hash` 主键防重）+ 浏览历史（保留 50 条）；收藏页名言可直接出**名言卡** |
+| | 消息中心 | 一条时间流：关注更新 / 周报提醒 / 平台公告 / 关键词预警；已读**逐条记**，只存本机（零新增集合 / 云函数 / 模型调用） |
+| | 分享 | 名言卡（Canvas 2D 端上出图，图片不落云存储）+ 原生转发；落地页统一为「具体某个人的报告页」 |
+| **探索** | 热门榜 | AI 每日生产（`hot_board`），三级回退（AI 榜 → 已有缓存报告 → 静态清单）；**全员可见全部位数**，不分档 |
+| | 关键词预警 | 订阅关键词 → 云函数每日定时按词检索 → 端上列出「上次看过之后新增的条目」，并按订阅消息推送 |
+| | 主题知识库 | 把「以人为中心」的报告缓存翻转成「以话题为中心」的视图：一个话题 → 谁在说 / 说过什么 / 有哪些报道 / 何时被讨论 |
+| | 对比 | 两位名人横向对比（复用两方缓存报告，零模型调用），可一键关注 / 分享 |
+| | AI 问答 | 语料 = 该名人**已缓存报告**摊成的带编号片段（按可信度排序、按汉字二元组命中选片段）；提问时**额外做一次联网检索**并合流竞争预算，检索不通静默降级为「只依据报告作答」 |
+| **会员（freemium）** | 额度 | 免费版每日 3 次主动生成、会员 30 次（缓存命中不计次）；AI 提问免费 5 次 / 会员 30 次；配额在「我的」页透明展示 |
+| | 「质」权益 | **模型供应商自选**（DeepSeek / 通义千问 / 智谱 GLM / Moonshot 任选，key 全在云函数，用户零配置）+ 模型档位（免费版锁定「极速版」，会员可用「标准版 / 深度推理」；换供应商时档位清单整组跟着换，用户选的那一档不变）+ 报告**深度模式**（检索加厚 + 对比视角 / 风险提示 / 信源分歧三段专享内容） |
+| | 定价 | 月 ¥9.9 / 季 ¥25 / 年 ¥68；**价格源唯一**（云函数 `payCreate` 的 `PLANS`，端上拉取展示，改价无需发版） |
+| **平台能力** | 合规 | 敏感名单一级拦截（命中即拒答，**不发任何网络请求**）、来源 URL 白名单、全链路标注「AI 生成，仅供参考」 |
+| | 端上零密钥 | 所有上游请求经云函数代发；配额计数服务端化（原子自增 + 服务端日期）；会员闸门在云侧强校验（改包绕不过） |
+
+---
+
+## 界面预览
+
+> 下图为按真实页面结构绘制的**界面示意**，用于说明信息层级与文案口径；
+> 换成真机截图时，把图片放进 `assets/screenshots/` 并替换同名文件即可，本文引用无需改动。
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/01-discover.svg" width="200" alt="发现页"><br><sub><b>发现</b> · 搜索 / 领域筛选 / 今日热门</sub></td>
+    <td align="center"><img src="./assets/screenshots/02-report.svg" width="200" alt="报告页"><br><sub><b>报告</b> · 六段卡片，逐段呈现</sub></td>
+    <td align="center"><img src="./assets/screenshots/03-qa.svg" width="200" alt="AI 问答页"><br><sub><b>AI 问答</b> · 带编号来源作答</sub></td>
+    <td align="center"><img src="./assets/screenshots/04-mine.svg" width="200" alt="我的页"><br><sub><b>我的</b> · 配额透明展示</sub></td>
+  </tr>
+</table>
+
+---
+
+## 技术栈
+
+| 层 | 选型 | 说明 |
+|---|---|---|
+| 框架 | Taro 3.6（React 18）+ TypeScript | webpack5 编译 |
+| UI | Taro UI 3.x + SCSS（750 设计稿） | 全局主题变量位于 `src/styles/` |
+| 状态 | zustand | `src/stores/auth.ts` 等 |
+| 校验 | zod | 报告 Schema 全字段校验 |
+| 时间 | dayjs | 相对时间、ISO 周、配额日期键 |
+| 云后端 | 腾讯云 CloudBase（微信云开发） | 数据库 + 云函数；环境 ID 由本地配置提供 |
+| 检索源 | 博查 `api.bochaai.com` | 经云函数 `aiProxy` 代发 |
+| 大模型 | OpenAI 兼容端点 | 默认 `https://api.deepseek.com/v1`；可选供应商与各家的三档位见 `src/config/public.ts`，端点 / key 变量名 / 会员档位见 `cloudfunctions/aiProxy/llm.config.js` |
+
+> 依赖安装使用 `.npmrc` 中的 `legacy-peer-deps=true`；`@tarojs/plugin-platform-*` 钉在 `^3.6.25`（勿升级），webpack 钉 `~5.91.0`。
+
+---
+
+## 架构与核心链路
 
 ```
 用户输入名人名
   → 本地敏感名单拦截（命中即拒答）
   → LLM 消歧 → 候选选人 → personKey
   → 命中 report_cache？──是→ 直接渲染（不触发生成）
-        │否
-        └→ 博查联网检索（api.bochaai.com）→ 素材
-           → OpenAI 兼容大模型生成结构化 JSON → zod 校验 + URL 白名单清洗
-           → 写入 report_cache → 渲染报告
+       │否
+       └→ 博查联网检索（api.bochaai.com）→ 素材
+          → OpenAI 兼容大模型生成结构化 JSON → zod 校验 + URL 白名单清洗
+          → 写入 report_cache → 渲染报告
 ```
 
-`report_cache.state = building` 作为跨设备生成互斥锁：并发查同一人时仅一方代表生成，另一方等待读取结果。
+分层调用关系：
+
+```
+pages / components        页面与展示
+     ↓
+src/utils/**              业务逻辑与云访问层（页面唯一的调用出口）
+     ↓
+utils/db.ts               自建数据访问适配层（id ↔ _id 映射、分页续取、写兜底）
+utils/cloud.ts            CloudBase 初始化与诊断
+     ↓
+cloudfunctions/**         9 个云函数（密钥、配额、机审、定时任务、支付）
+     ↓
+上游：博查检索 / 大模型 / 微信支付 / security.msgSecCheck
+```
+
+两个关键机制：
+
+- **`report_cache.state = building` 作为跨设备生成互斥锁**：并发查同一人时仅一方代表生成，另一方等待读取结果。
+- **缓存命中优先于冷却与配额**：命中即渲染，不消耗额度、不受冷却限制。
 
 ---
 
-## 三、技术栈
+## 快速开始
 
-| 层 | 选型 | 说明 |
-|---|---|---|
-| 框架 | Taro 3.6（React 18）+ TypeScript | webpack5 编译，`framework: 'react'` |
-| UI | Taro UI 3.x + SCSS（750 设计稿） | 全局主题变量覆盖于 `src/styles/` |
-| 状态 | zustand | `src/stores/auth.ts` 等 |
-| 校验 | zod | 报告 Schema 全字段校验 |
-| 时间 | dayjs | 相对时间、配额日期键 |
-| 云后端 | 腾讯云 CloudBase（微信云开发） | envId 由本地配置 `src/config/local.ts` 提供（见 §六）；数据库 + 云函数 |
-| 搜索源 | 博查 `https://api.bochaai.com/v1/web-search` | 经云函数 `aiProxy` 代发 |
-| 大模型 | OpenAI 兼容端点 | 默认 `https://api.deepseek.com/v1`，模型名与可选清单见 `src/config/public.ts`（`llm.model` / `llm.models`） |
+### 环境要求
 
-> 依赖安装使用 `.npmrc` 中的 `legacy-peer-deps=true`；`@tarojs/plugin-platform-*` 钉在 `^3.6.25`（勿升级）、webpack 钉 `~5.91.0`。
+- Node 16 / 18（建议 LTS）
+- 微信开发者工具
+- 已开通云开发的小程序 appid
 
----
-
-## 四、目录结构
-
-```
-StartRandar/
-├── celebrity-radar/                # 小程序主体（Taro 工程）
-│   ├── src/
-│   │   ├── pages/                  # 15 个页面
-│   │   │   ├── index/              # 发现（tabBar）
-│   │   │   ├── feed/               # 关注流（tabBar）
-│   │   │   ├── collection/         # 收藏（tabBar）
-│   │   │   ├── mine/               # 我的（tabBar）
-│   │   │   ├── profile/            # 名人主页
-│   │   │   ├── report/             # 报告页（核心）
-│   │   │   ├── following/          # 关注列表
-│   │   │   ├── history/            # 浏览历史
-│   │   │   ├── records/            # 收藏/记录入口
-│   │   │   ├── weekly/             # 本周周报
-│   │   │   ├── compare/            # 两名人横向对比
-│   │   │   ├── messages/           # 消息中心
-│   │   │   ├── qa/                 # AI 问答（报告缓存 RAG + 提问时联网检索）
-│   │   │   ├── link-preview/       # 素材原文预览
-│   │   │   └── agreement/          # 隐私与免责
-│   │   ├── components/             # person-card / favorites-view / report-loading / share-poster 等
-│   │   ├── utils/                  # 业务与云访问层（见下表）
-│   │   ├── config/                 # public.ts（公共配置）/ local.ts（本地配置，不进库）/ domains / hot / filters
-│   │   ├── stores/                 # zustand store
-│   │   ├── styles/                 # 主题变量、底栏图标
-│   │   └── custom-tab-bar/         # 自定义底部菜单
-│   ├── cloudfunctions/
-│   │   ├── aiProxy/                # 平台代付密钥闸门 + 会员模型闸门（test / search / chat）
-│   │   ├── quotaGuard/             # 配额计数权威（原子自增 + 服务端日期）
-│   │   ├── payCreate/              # 会员下单（服务端定价 + 云支付统一下单）
-│   │   ├── payCallback/            # 支付结果通知（金额校验 + 幂等续期会员）
-│   │   ├── notifyFollowUpdates/    # 关注更新订阅消息（定时触发）
-│   │   ├── hotBoardRefresh/        # 热门名人榜每日生产（定时触发，写 hot_board）
-│   │   ├── contentCheck/           # 内容安全机审（云调用；送检源 = AI 问答提问）
-│   │   └── dbInit/                 # 运维工具：建集合 / 比字段 / 建·改索引（端上不调用；schema.js 是库结构单一事实源）
-│   ├── config/                     # Taro 构建配置（dev / index / prod）
-│   ├── cloudbaserc.json            # CloudBase 部署描述（函数 + 环境变量 + 定时器）
-│   └── project.config.json         # 微信开发者工具工程（miniprogramRoot: dist/）
-├── doc/                            # 设计与联调文档
-│   ├── 名人雷达_设计方案.md          # 完整设计与研发方案（v1.4，CloudBase 口径）
-│   ├── 开发计划.md                  # 功能 × 状态总表（含待办与验收门 G0~G8）
-│   ├── 联调手册.md                  # 人工配置清单 + 23 条验收用例（CloudBase 口径）
-│   └── 云开发配置手册.md              # 集合 / 字段 / 权限 / 索引 + 云函数清单与部署 / 执行 / 排错
-└── assets/                         # Figma 导出素材（图标 / 插图）
-```
-
-### 关键模块（`src/utils/`）
-
-| 文件 | 职责 |
-|---|---|
-| `cloud.ts` | CloudBase 初始化、`isCloudConfigured` 判定、诊断日志 |
-| `db.ts` | 自建数据访问适配层（`table('x').select/eq/or/upsert/maybeSingle`），`id ↔ _id` 双向映射、分页续取、写操作兜底 |
-| `auth.ts` | 微信登录 + `users` 首次初始化（写入 `last_seen_at`） |
-| `search.ts` | 博查适配器（无 key 降级），素材归一为 `NewsItem` |
-| `disambiguate.ts` | LLM 同名消歧 + 领域码枚举 + 兜底 |
-| `sensitive.ts` | 本地静态敏感名单（一级过滤，发版前人工维护） |
-| `report.ts` | 报告生成、zod 校验、URL 白名单清洗、降级纯文本 |
-| `cache.ts` | `report_cache` 读写 + `building` 互斥、`feed_cache`、`refresh_quota` 配额 |
-| `quota.ts` | freemium 报告生成配额（免费 3 次/日、会员 30 次/日；`users.membership.expires_at` 判会员），缓存命中不计次 |
-| `quota-guard.ts` | 配额计数的服务端通道（云函数 `quotaGuard` 原子自增）；未部署时静默回退端上计数 |
-| `member.ts` | 会员权益层：权益表（免费 3 / 会员 30 每日主动生成）+ 会员判定（`users.membership.expires_at`）+ 限额外取与额度用尽文案，页面与闸门同源；权益文案首条「标准版 / 深度推理模型」对应的是「质」权益，其原始定义在 `config/public.ts` 的 `memberOnly` 列，此处只做展示。另含报告页顶部**会员价值条**的判定与文案（`presentSections()` / `reportMemberValue()`，四态 = 会员 / 免费 × 报告有 / 无专享段落；**2026-10-08**） |
-| `member-sample.ts` | 会员中心「真实示例」（**2026-10-08**）：只读 `report_cache` 里**确实带专享段落**的 `state='ready'` 报告，取 `memberNotes` / `conflicts` 原文当示例（>80 字截断、不改写；信源分歧只取第一条）；扫最近 20 份、排序失败退化无排序扫描、结果 10 分钟内存缓存（含失败）；**挑不到就不出卡**（不做假示例），不做摘要、不消耗生成额度 |
-| `pay.ts` | 会员支付：拉取云函数下发的套餐（`{action:'plans'}`，24h 本机缓存 + 离线兜底）+ 下单（`payCreate`）+ 拉起收银台 + 轮询确认生效（价格与时长**只认服务端**） |
-| `sec-check.ts` | 内容安全机审：用户自由文本（**AI 问答的提问**，2026-10-07 起为唯一送检源）在组 prompt 前经云函数 `contentCheck` 送 `security.msgSecCheck`；**fail-open**（未部署 / 上游抖动一律放过），命中违规才拦 |
-| `weekly.ts` | 关注周报：材料汇总（只读 `feed_cache`）+ LLM 只写文字（人/条目以材料为准）+ 按 ISO 周本机缓存；生成消耗 1 次今日生成额度 |
-| `share-card.ts` | 分享卡片：Canvas 2D 绘制名言卡（固定尺寸、零网络图依赖）+ 导出本地临时图 + 保存相册（含拒绝授权引导）；**不落云 Storage** |
-| `llm.ts` | LLM 调用：统一经云函数 `aiProxy` 平台代付（本机 key 直连已移除）；模型名由本机偏好 + `public.ts` 的 `llm.models` 裁决，**非会员请求 `memberOnly` 档位一律回落默认模型** |
-| `settings.ts` | 本机设置：模型偏好（`settings:llm_model`）读写 + 历史遗留 key 清理入口 |
-| `trend.ts` | 热度趋势折线（M4-6）：**纯端上聚合**报告里带日期的条目（`dynamics` + `timeline`，30 天窗口 / 6 桶，同天同一说法去重），条目 < 3 时整卡不出；不引图表库（View + transform 自绘） |
-| `messages.ts` | 消息中心：关注更新（复用 `watch.ts` 的缓存判定）+ 周报提醒（ISO 周）+ 平台公告（`config/notices.ts`）合成时间流；已读**逐条记**（本机 `messages:read_ids`，点开某条或点顶部「全部已读」才清除，旧 `messages:read_at` 作迁移兜底），随「清空我的数据」清除 |
-| `qa.ts` | AI 问答（M4-8）：语料 = 该名人**已缓存报告**摊成的带编号片段（按可信度排序：简介 / 报道 / 语录 / 时间线 / 素材统计在前，`analysis` 与 `stance` 等 AI 判定在后），按问题「汉字二元组命中数」选片段（**整份放得下就全放**，避免检索把信息筛丢）；**2026-10-08 起提问时额外做一次联网检索**（`utils/search.ts#searchForAsk`，8 条 / 近 7 天，接在报告片段之后按同一套编号标注为「联网检索」、一起竞争预算），检索不通一律静默降级为「只依据报告作答」；再拼 system + user 两条消息调 `aiProxy` 的 `chat`；**只读缓存、不消耗生成额度**（本机闸门：每日提问额度 —— 免费 5 次 / 会员 30 次，计数在云端 `ask_quota`、**回答成功才计** + 3 秒连点间隔），提问经 `sec-check` 送机审 |
-| `events.ts` | 埋点写入（12 类事件，含周报生成、消息中心与 AI 问答） |
-| `follows.ts` / `favorites.ts` / `history.ts` | 关注 / 收藏 / 历史读写 |
-| `data-deletion.ts` | 「清空我的数据」（云端三类数据 + 本地凭据） |
-
----
-
-## 五、快速开始
-
-环境要求：Node 16 / 18（建议 LTS）、微信开发者工具、已开通云开发的小程序 appid。
+### 安装与运行
 
 ```bash
-cd celebrity-radar
-cp src/config/local.example.ts src/config/local.ts   # ← 必做，否则编译报 Cannot find module './local'
-npm install                 # 依赖安装（.npmrc 已开 legacy-peer-deps）
+git clone https://gitee.com/qianlonglove_admin/celebrity-radar.git
+cd celebrity-radar/celebrity-radar
 
-npm run dev:weapp           # 开发模式（watch，产物 dist/）
-npm run build:weapp         # 生产构建，产物 dist/
-npm run build:h5            # H5 端构建（调试用）
+cp src/config/local.example.ts src/config/local.ts   # ← 必做，否则编译报 Cannot find module './local'
+npm install                                           # .npmrc 已开 legacy-peer-deps
+
+npm run dev:weapp      # 开发模式（watch，产物 dist/）
+npm run build:weapp    # 生产构建，产物 dist/
+npm run build:h5       # H5 端构建（调试用）
+npm test               # 本地单测，不需要云环境
 ```
 
-用微信开发者工具导入 `celebrity-radar/` 目录（`miniprogramRoot: dist/`，`cloudfunctionRoot: cloudfunctions/`）；开发期可勾选「不校验合法域名」先行联调。
+用微信开发者工具导入 `celebrity-radar/` 目录（`miniprogramRoot: dist/`、`cloudfunctionRoot: cloudfunctions/`）；
+开发期可勾选「不校验合法域名」先行联调。
 
-> **想让它真正跑起来，还需要三样你自己的东西**：云开发环境 ID（填 `src/config/local.ts`）、
-> 上游密钥（云函数环境变量 `BOCHA_API_KEY` / `DEEPSEEK_API_KEY`）、自己的 appid。
-> 从零到能用的完整清单见 [`doc/开源部署指南.md`](./doc/开源部署指南.md)。
+### 想真正跑通主链路，还差三样东西
+
+| 你需要自备 | 用途 | 不配的后果 |
+|---|---|---|
+| 云开发环境 ID | 数据库与 9 个云函数都跑在这里 | 登录与**全部** DB 调用不会发起，「我的」页显示「云服务未配置」 |
+| `DEEPSEEK_API_KEY` | 生成报告（经云函数 `aiProxy` 代打）。用户在「我的」页可以切到别家，**列出哪几家就要配哪几家的 key**（`QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`）；没配的家用户一切过去就是「未配置额度」 | 生成报错；已缓存报告的浏览、收藏仍可用 |
+| `BOCHA_API_KEY` | 联网检索素材 | 检索为空，报告缺素材、时间线不完整 |
+
+完整清单（含权限、索引、定时任务、上线合规）见下文「[部署](#部署)」一节。
 
 ---
 
-## 六、配置说明
+## 配置说明
 
 ### 1. 端上配置：`public.ts`（进包）+ `local.ts`（不进包）
 
 | 文件 | 进版本库 | 放什么 |
 |---|---|---|
-| `src/config/public.ts` | ✅ | 与部署无关的公共配置：模型名与可选模型清单、`memberOnly` 分档。**严禁写入任何 key** |
+| `src/config/public.ts` | ✅ | 与部署无关的公共配置：可选**供应商**清单与各家的三档位、`memberOnly` 分档。**严禁写入任何 key**（key 在云函数环境变量里，用户切换供应商只是换一次请求参数） |
 | `src/config/local.example.ts` | ✅ | 本地配置**模板**，值全为占位串 |
-| `src/config/local.ts` | ❌（`.gitignore`） | 你自己小程序的真实值：环境 ID、订阅模板 ID、业务域名白名单、本地调试开关 |
+| `src/config/local.ts` | ❌（已被 `.gitignore`） | 你自己小程序的真实值：环境 ID、订阅模板 ID、业务域名白名单、本地调试开关 |
 
 `local.ts`（首次 clone 后由 `local.example.ts` 复制而来）：
 
 | 字段 | 说明 |
 |---|---|
-| `cloudbaseEnvId` | CloudBase 环境 ID。保持占位串 `REPLACE_ME` 时 `isCloudConfigured === false`，登录与 DB 调用不会发起 |
-| `subscribeTemplateId` | 订阅消息模板 ID（与云函数环境变量 `SUBSCRIBE_TEMPLATE_ID` 指向同一模板） |
-| `alertTemplateId` | 关键词舆情预警的模板 ID，**必须与上一个不同**：一次性订阅的授权按模板消耗，两个定时任务共用会互相吃掉授权位（先跑的那个把授权用掉，后跑的必得 43101） |
+| `cloudbaseEnvId` | CloudBase 环境 ID。保持占位串 `REPLACE_ME` 时云服务视为未配置，登录与 DB 调用不会发起 |
+| `subscribeTemplateId` | 关注更新订阅消息模板 ID，与云函数环境变量 `SUBSCRIBE_TEMPLATE_ID` 指向同一模板 |
+| `alertTemplateId` | 关键词预警的模板 ID，**必须与上一个不同**：微信一次性订阅授权**按模板**消耗，两个定时任务共用一个模板会互相吃掉授权位（先跑的用掉，后跑的必得 43101） |
 | `webviewDomains` | 「原文预览」页可内嵌的业务域名白名单；留空则一律走「素材预览卡 + 复制链接」降级路径 |
 | `debug` | 本地调试开关（放开额度闸门与上游冷却）。**仓库默认五项全 false**，只在本地联调时置 true |
 
@@ -185,23 +214,27 @@ npm run build:h5            # H5 端构建（调试用）
 
 | 字段 | 说明 |
 |---|---|
-| `llm.model` / `llm.models` | 默认模型名与可选模型清单（清单**首项即默认**，须与 `llm.model` 一致）。用户在「我的 → 生成模型」里切换，选择只存本机 storage（键 `settings:llm_model`，见 `src/utils/settings.ts`）。端点不在端上，固定在云函数 `aiProxy` 的 `LLM_BASE_URL`。每项带 `memberOnly`：`true` = 会员专属（免费版回落默认档 + 该档在设置页显示「会员」标）；**改这一列必须同步云函数 `aiProxy` 的 `MEMBER_ONLY_MODELS`**，那份才是计费闸门 |
+| `llm.providers` | 可选**供应商**清单：每家有 `id`（须与云函数 `llm.config.js` 的 `PROVIDERS` 键一致）、展示名，与 `models`（统一的三档：`fast` / `standard` / `reason` = 极速版 / 标准版 / 深度推理）。**只列你云端配了 key 的家** —— 用户切到哪家，云函数就用哪家的 key 代打，端上不持有任何凭据 |
+| `llm.provider` / `llm.model` / `llm.models` | 默认供应商、它的默认模型名、以及它的档位清单（后两者分别 = `providers[0]` 的 fast 档与 `providers[0].models`）。档位标签三家统一，所以会员文案（会员中心对比表、权益表）按它推导即可，加一家供应商不用改文案 |
+| `models[].memberOnly` | `true` = 会员专属：免费用户即使本机选了该档，生成时也会回落该家的极速版。**改这一列必须同步云函数 `aiProxy` 的 `llm.config.js` 里对应供应商的 `memberOnlyModels`**，那份才是计费闸门（端上这份改包即可绕过） |
 
-> 两个文件都会打进小程序包，所以**严禁**写入任何真实 key（`llm.apiKey` / `llm.baseURL` 等字段已随本机直连一并移除）。
-> `local.ts` 只该放「不是密钥、但跟机器走」的值 —— 环境 ID、模板 ID、调试开关都属此类。
-> 拆成两个文件的目的：仓库里留真实环境 ID，fork 者会直接连上原作者的云环境；而作者本地为放开额度
-> 把 `debug` 置 true 的改动，混在 `public.ts` 里也总有误提交的风险。
+> 用户的供应商 / 档位偏好只存本机 storage（`settings:llm_provider` + `settings:llm_tier`）。
+> 存的是**档位标识**而不是模型名，所以换供应商时「我选的那一档」跟着走（DeepSeek 标准版 → 通义千问标准版），
+> 不需要用户重选一次；而档位清单整组换成那家的三档，这正是「换家 = 换档位参数」。
+
+> 两个文件都会打进小程序包，所以**严禁**写入任何真实 key。
+> 拆成两个文件的目的：仓库里留真实环境 ID，避免 fork 者直接连上原作者的云环境；
+> 而作者本地为放开额度把 `debug` 置 true 的改动，混在 `public.ts` 里也总有误提交的风险。
+> ⚠️ **上线前 `debug` 节五项必须全 false**，否则免费层限流（每日 3 次生成 / 5 次提问）与 429 冷却保护都会失效。
 
 ### 2. 密钥归属：只在服务端，端上零密钥
 
 | 项 | 存放位置 |
 |---|---|
-| 搜索 / 大模型 Key | 云函数 `aiProxy` 环境变量：`BOCHA_API_KEY` / `DEEPSEEK_API_KEY` |
+| 检索 / 大模型 Key | 云函数 `aiProxy` 环境变量：`BOCHA_API_KEY` + 各家大模型的 key（`DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`）。**端上清单里列了哪几家，这里就要配齐哪几家** |
+| 部署期的密钥来源 | `celebrity-radar/.env`（由 `.env.example` 复制，**不进版本库**），由 `cloudbaserc.json` 以 `${env.XXX}` 引用 |
 
-全部请求经云函数代发，客户端不持有任何 Key，用户零配置 —— 端上已没有任何密钥或连通性入口，
-「我的」页只剩「生成模型」这一份本机偏好；渠道是否可用由开发者在云开发控制台调 `aiProxy` 的 `test` 动作确认。
-历史版本曾支持「用户填自己的 Key」的本机直连（BYOK），**已整体移除**；旧设备上残留的
-`settings:bocha_api_key` / `settings:llm_api_key` 不会再被读取，由「我的 → 清空我的数据」统一清理。
+全部请求经云函数代发，客户端不持有任何 Key，用户零配置。历史版本曾支持「用户填自己的 Key」的本机直连（BYOK），**已整体移除**。
 
 ### 3. 域名与后台
 
@@ -209,133 +242,277 @@ npm run build:h5            # H5 端构建（调试用）
 - 后台开通「客服功能」并绑定客服人员（内容举报 / 反馈依赖 `open-type="contact"`）
 - 后台配置隐私协议（收集：匿名标识 openid、本地存储）
 
-### 4. 云函数部署
-
-`cloudbaserc.json` 已声明函数、环境变量与定时器（`notifyFollowUpdates` 每日 09:00、`hotBoardRefresh` 每日 06:30）。部署前在运行环境注入：
-
-```bash
-# 以 CloudBase CLI 为例，环境变量由运行环境提供
-BOCHA_API_KEY=...  DEEPSEEK_API_KEY=...  SUBSCRIBE_TEMPLATE_ID=...
-```
-
-> **「配置是否随部署生效」取决于部署方式**：`tcb fn deploy`（CloudBase CLI）会读仓库根 `cloudbaserc.json`，把**环境变量、超时、触发器**一并下发；微信开发者工具右键「上传并部署」**只上传代码**、不读 `cloudbaserc.json`（函数目录 `config.json` 里也只有 `permissions.openapi` 会生效）⇒ 环境变量、超时、触发器都得去控制台补。逐项自检见 `doc/联调手册.md` §一 步骤 5/6/9/10。
->
-> `aiProxy` / `hotBoardRefresh` / `notifyFollowUpdates` 的执行超时必须是 **60 秒**（`aiProxy` 内还要满足 `LLM_CHAT_TIMEOUT_MS = 50000` 更小），否则长报告、热门榜一轮「6 检索 + 1 生成」、推送一轮最多 20 次检索都会被平台提前掐断（端上 `-504003`，日志 `timed out after 20 seconds`）。
->
-> `quotaGuard` 无环境变量，但**必须（重新）部署在「收紧配额表权限」之前**：三张配额表要设成
-> `{ "read": "doc._openid == auth.openid", "write": false }`（写只留给云函数）。
-> ⚠ 控制台那份**旧版本不认 `ask` 类**，须重新部署后才能收紧 `ask_quota`。
-> 顺序颠倒会让端上回退写入被拒、计数恒为 0 ⇒ 免费额度失效。详见 `doc/云开发配置手册.md` §四。
->
-> **会员支付另需三个动作**：① 云开发控制台开通微信支付并绑定商户号；② 给 `payCreate` 配环境变量
-> `WX_PAY_SUB_MCH_ID`（商户号）与 `PAY_CALLBACK_ENV_ID`（回调所在环境，不填则取调用上下文）；③ 部署 `payCallback`。
-> 支付回调函数名由 `payCreate` 内的 `functionName: 'payCallback'` 指定，**改名会收不到通知**。未配置时点开通会明确提示，不影响免费功能。
->
-> **第 7 个函数 `dbInit` 是运维工具，不是运行时依赖**（端上任何代码都不调用它）：初始化集合 / 比对字段 /
-> 补字段 / 建·改索引。要用再部署（`tcb fn deploy dbInit -e <your-env-id>`），
-> 先跑 `{ "action": "report" }` 只读巡检；写操作须先配环境变量 `DB_ADMIN_TOKEN`（未配则**写操作一律拒绝**），
-> 建索引另需 `WX_APPID` / `WX_APPSECRET`（走微信 HTTP API「更新索引」）。详见 `doc/云开发配置手册.md` §六 方式 B；
-> 用完可 `tcb fn delete dbInit`，需要时从仓库重新部署。
->
-> `contentCheck`（内容安全机审）同样**无环境变量**：它走**云调用**（`cloud.openapi.security.msgSecCheck`），凭证由平台托管。
-> 唯一前提是 `cloudfunctions/contentCheck/config.json` 里的 `permissions.openapi: ["security.msgSecCheck"]` **随上传生效** ——
-> 缺这条声明时函数报权限错误，端上按 **fail-open** 静默放过（提问照常能发，但没有机审）。
-> 送检源 = **AI 问答的提问**（`utils/qa.ts#askReport` 在组 prompt 之前送检，命中违规即拦、不发模型请求）；
-> ⚠ 本函数**没法用控制台「云端测试」验**（它要真实 `openid`，必然返回「缺少 openid」），只能在真机问答页验。
-
 ---
 
-## 七、云数据库
+## 部署
 
-12 张集合（CloudBase 文档型数据库；端上写业务字段 `id`，由 `utils/db.ts` 映射到系统主键 `_id`）。字段清单、权限与索引见 `doc/云开发配置手册.md`。
+> 后面按「云函数 → 云数据库 → 定时器 → 小程序端」的顺序列出**需要准备的每一项**与踩坑点。
+> 部署顺序有依赖（先有集合和权限，函数里的读写才不会静默失败），建议按序号做。
+> 仓库的 `doc/` 目录是**作者本地的内部文档，不随仓库分发**，故下文不引用它；所需信息本文已覆盖。
 
-12 张已于 2026-10-07 **全部建齐**；**当前待办是权限与索引**（集合建好 ≠ 可用）：**权限须在控制台手工设置**（无任何接口能改集合权限，逐表取值见《云开发配置手册.md》§四）；**索引可以程序化** —— 由运维函数 `dbInit` 走微信 HTTP API「更新索引」建 · 改，或按 §五 手工建。**哪些还没设，用 `dbInit` 的 `{"action":"report"}` 一查即知**（《云开发配置手册.md》§七 另有端上视角的自检片段）。
+### 1. 云函数（9 个）
 
-| 集合 | 用途 | 访问权限 |
+`cloudbaserc.json` 已声明函数、环境变量与定时器；部署前把密钥填进 `.env`（模板见 `.env.example`）。
+
+| 函数 | 作用 | 触发 | 环境变量 |
+|---|---|---|---|
+| `aiProxy` | 平台代付上游密钥（`test` / `search` / `chat`）+ 会员模型闸门（会员的素材加厚按 `count` 分档）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）；**供应商由端上请求指定**（用户自选），云端只兜底 | 端上调用 | `BOCHA_API_KEY` + 各家大模型 key（`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`） |
+| `quotaGuard` | 配额计数权威（原子自增 + 服务端日期），`refresh` / `generate` / `ask` 三类 | 端上调用 | — |
+| `contentCheck` | 内容安全机审（云调用 `security.msgSecCheck`），送检源 = AI 提问 | 端上调用 | — |
+| `hotBoardRefresh` | 热门名人榜每日生产（写 `hot_board`） | 定时 06:30 | `BOCHA_API_KEY` + 它用的那一家（定时任务没有端上偏好，取 `LLM_PROVIDER`，默认 DeepSeek） |
+| `notifyFollowUpdates` | 关注更新订阅消息推送 | 定时 09:00 | `BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID` |
+| `keywordAlert` | 关键词舆情预警（按订阅词检索并写 `keywords`） | 定时 09:20 | `BOCHA_API_KEY` `ALERT_TEMPLATE_ID` |
+| `payCreate` | 会员下单（服务端定价 + 云支付统一下单） | 端上调用 | `WX_PAY_SUB_MCH_ID` `PAY_CALLBACK_ENV_ID` |
+| `payCallback` | 支付结果通知（金额校验 + 幂等续期会员） | 微信支付回调 | — |
+| `dbInit` | 运维工具：建集合 / 比对字段 / 建·改索引（端上不调用） | 手动 | `DB_ADMIN_TOKEN` `WX_APPID` `WX_APPSECRET` |
+
+几条容易踩的：
+
+- **「配置是否随部署生效」取决于部署方式**：`tcb fn deploy`（CloudBase CLI）会读仓库根 `cloudbaserc.json`，把环境变量、超时、触发器一并下发；微信开发者工具右键「上传并部署」**只上传代码**，不读 `cloudbaserc.json` ⇒ 环境变量 / 超时 / 触发器都得去控制台补。
+- `aiProxy`、`hotBoardRefresh`、`notifyFollowUpdates` 的执行超时必须是 **60 秒**（`aiProxy` 内还要满足 `LLM_CHAT_TIMEOUT_MS = 50000` 更小），否则长报告、热门榜一轮「6 检索 + 1 生成」、推送一轮最多 20 次检索都会被平台提前掐断（端上 `-504003`）。
+- `quotaGuard` 无环境变量，但**必须（重新）部署在「收紧配额表权限」之前**；顺序颠倒会让端上回退写入被拒、计数恒为 0 ⇒ 免费额度失效。
+- `dbInit` 是**运维工具、不是运行时依赖**：先跑 `{ "action": "report" }` 只读巡检；写操作须先配 `DB_ADMIN_TOKEN`（未配则写操作一律拒绝）；用完可删除该函数。
+- `contentCheck` 无环境变量（走云调用，凭证由平台托管），唯一前提是 `cloudfunctions/contentCheck/config.json` 里的 `permissions.openapi` **随上传生效**；缺这条声明时端上按 **fail-open** 静默放过。⚠ 它没法用控制台「云端测试」验（需要真实 `openid`），只能在真机问答页验。
+
+### 2. 云数据库（14 张集合）
+
+CloudBase 文档型数据库。端上写业务字段 `id`，由 `utils/db.ts` 映射到系统主键 `_id`。
+
+| 集合 | 用途 | 权限 |
 |---|---|---|
-| `users` | 账号与设置（首次登录自动写入；`membership` 列由支付回调写入，客户端只读） | 仅创建者可读写 |
-| `report_cache` | 报告缓存（`state: building \| ready`，全局共享、长期复用） | **自定义规则**：所有人可读、登录可写 |
-| `feed_cache` | 检索结果结构化映射 | **自定义规则**：所有人可读、登录可写 |
-| `refresh_quota` | 关注流每日刷新配额（`_id = openid#yyyy-mm-dd`，≤10 次） | **自定义规则**：本人可读、不可写（写仅限云函数 `quotaGuard`） |
-| `generate_quota` | 报告每日生成配额（`_id = openid#yyyy-mm-dd`，免费 3 / 会员 30） | **自定义规则**：本人可读、不可写（同上） |
-| `follows` | 关注列表（`_id = openid#personKey`） | 仅创建者可读写 |
-| `favorites` | 收藏（`_id = openid#type#hash` 防重） | 仅创建者可读写 |
+| `users` | 账号与设置（首登自动写入；`membership` 由支付回调写、端上只读） | 仅创建者可读写 |
+| `report_cache` | 报告缓存 + `building` 生成互斥锁（全局共享、长期复用） | 所有人可读、登录可写 |
+| `feed_cache` | 检索结果结构化映射（不存 LLM 产物） | 所有人可读、登录可写 |
+| `hot_board` | 热门名人榜（AI 每日写，`_id` 固定 `latest` 覆盖写） | 所有人可读、客户端不可写 |
+| `keywords` | 关键词检索缓存（全局共享） | 所有人可读、客户端不可写 |
+| `refresh_quota` | 关注流每日刷新 ≤ 10 次（`openid#yyyy-MM-dd`） | 本人可读、不可写（写仅限云函数） |
+| `generate_quota` | 报告每日生成配额（免费 3 / 会员 30） | 本人可读、不可写（同上） |
+| `ask_quota` | AI 提问每日配额（免费 5 / 会员 30，成功才计数） | 本人可读、不可写（同上） |
+| `orders` | 会员订单状态机（`pending → paid` / `failed`） | 本人可读、不可写（写仅限支付云函数） |
+| `follows` | 关注列表（`openid#personKey`） | 仅创建者可读写 |
+| `favorites` | 收藏（四类，`openid#type#hash` 防重） | 仅创建者可读写 |
 | `history` | 浏览历史（保留 50 条） | 仅创建者可读写 |
 | `events` | 埋点 | 仅创建者可读写 |
-| `orders` | 会员订单状态机（`pending → paid` / `failed`，`_id = outTradeNo`） | **自定义规则**：本人可读、不可写（写仅限支付云函数） |
+| `keyword_watches` | 关键词订阅（`openid#关键词哈希`，与 `follows` 同构） | 仅创建者可读写 |
 
-配套人工配置与 23 条验收用例的操作步骤见 `doc/联调手册.md`。
+建库与权限的现状（fork 者必读）：
+
+- **集合**可由运维函数 `dbInit` 一键建齐（`cloudfunctions/dbInit/schema.js` 是库结构的**单一事实源**）。
+- **权限必须在控制台手工设置** —— 没有任何接口能改集合权限，需在上表逐张集合手工配置。
+- **索引可以程序化**：由 `dbInit` 走微信 HTTP API「更新索引」建 / 改，或按手册 §五 手工建。
+- 哪些还没设？用 `dbInit` 的 `{"action":"report"}` 一查即知。
+
+### 3. 会员支付（可选）
+
+代码已完整落地（`payCreate` / `payCallback` + `utils/pay.ts` + 「我的」页入口），但要人工配置才能用：
+
+1. 云开发控制台开通微信支付并绑定商户号；
+2. 给 `payCreate` 配环境变量 `WX_PAY_SUB_MCH_ID` 与 `PAY_CALLBACK_ENV_ID`；
+3. 部署 `payCallback`。
+
+支付回调函数名由 `payCreate` 内的 `functionName: 'payCallback'` 指定，**改名会收不到通知**。
+未配置时端上明确提示「微信支付未配置 / 支付服务未部署」，且不影响免费功能（仍按免费版 3 次/日）。
 
 ---
 
-## 八、安全与合规
+## 项目结构
 
-- 密钥永不进包：端上只存本地 storage，服务端只存云函数环境变量
-- 输入侧：本地敏感名单一级拦截，命中即拒答，**不发任何网络请求**
-- 输出侧：报告 `sources` / `dynamics` 链接强制 URL 白名单清洗，只保留检索素材中出现的链接
-- 内容口径：全链路标注「AI 生成，仅供参考」；隐私声明页 + 举报入口 + 「清空我的数据」二次确认
-- 运行成本：报告缓存共享复用、每账号每日刷新 ≤ 10 次、每账号每日主动生成 ≤ 3 次（会员 30）、`building` 互斥避免并发重复生成、关注周报按自然周本机缓存（同一周只生成一次，重开零成本）
-- 冷却只拦「值得等待」的失败：仅上游限流 429 / 网络 / 5xx 进入 10 分钟冷却；密钥无效、额度不足即时报错且不冷却（修好配置立刻可重试）；缓存命中永远优先于冷却与配额
+> 下列路径相对 `celebrity-radar/` 子目录；仓库根另有 `README.md` / `README.en.md` / `LICENSE` / `NOTICE` /
+> `CHANGELOG.md` / `CONTRIBUTING.md` / `SECURITY.md` / `CODE_OF_CONDUCT.md` / `assets/screenshots/`。
+> （另有 `doc/` 为作者本地的设计与部署文档，已在 `.gitignore` 中排除，**不随仓库分发**。）
+
+```
+celebrity-radar/
+├── src/
+│   ├── pages/                  # 19 个页面
+│   │   ├── index/              # 发现（tabBar）
+│   │   ├── ask/                # AI 提问（tabBar）
+│   │   ├── collection/         # 收藏（tabBar）
+│   │   ├── mine/               # 我的（tabBar）
+│   │   ├── report/             # 报告页（核心）
+│   │   ├── profile/            # 名人主页
+│   │   ├── feed/               # 关注流
+│   │   ├── following/          # 关注列表
+│   │   ├── weekly/             # 本周周报
+│   │   ├── compare/            # 两位名人横向对比
+│   │   ├── qa/                 # AI 问答（报告页入口）
+│   │   ├── topic/              # 主题知识库
+│   │   ├── alerts/             # 关键词舆情预警
+│   │   ├── messages/           # 消息中心
+│   │   ├── history/            # 浏览历史
+│   │   ├── records/            # 收藏 / 记录入口
+│   │   ├── link-preview/       # 素材原文预览
+│   │   ├── member/             # 会员中心
+│   │   └── agreement/          # 隐私与免责
+│   ├── components/             # person-card / favorites-view / report-loading / share-poster / qa-panel 等
+│   ├── utils/                  # 业务与云访问层（43 个模块，见「核心模块」）
+│   ├── config/                 # public.ts（公共配置）/ local.ts（本地配置，不进库）/ domains / hot / filters / notices
+│   ├── stores/                 # zustand store
+│   ├── styles/                 # 主题变量、底栏图标
+│   └── custom-tab-bar/         # 自定义底部菜单
+├── cloudfunctions/             # 9 个云函数
+│   ├── aiProxy/                # 平台代付密钥闸门 + 会员模型闸门（test / search / chat）
+│   ├── quotaGuard/             # 配额计数权威（原子自增 + 服务端日期）
+│   ├── contentCheck/           # 内容安全机审（云调用）
+│   ├── payCreate/              # 会员下单（服务端定价 + 云支付统一下单）
+│   ├── payCallback/            # 支付结果通知（金额校验 + 幂等续期）
+│   ├── notifyFollowUpdates/    # 关注更新订阅消息（定时 09:00）
+│   ├── keywordAlert/           # 关键词舆情预警（定时 09:20）
+│   ├── hotBoardRefresh/        # 热门名人榜每日生产（定时 06:30）
+│   └── dbInit/                 # 运维工具（schema.js 是库结构单一事实源）
+├── test/                       # 本地单测（3 个用例文件 / 243 条用例）
+├── config/                     # Taro 构建配置（dev / index / prod）
+├── cloudbaserc.json            # CloudBase 部署描述（函数 + 环境变量 + 定时器）
+├── .env.example                # 云函数部署密钥模板
+├── project.config.json         # 微信开发者工具工程（miniprogramRoot: dist/）
+└── project.private.config.example.json
+```
 
 ---
 
-## 九、文档索引
+## 核心模块
 
-| 文档 | 内容 |
+`src/utils/` 是全部业务逻辑与云访问的唯一出口（页面只调这里，不直接碰 DB 与上游）。
+
+| 模块 | 职责 |
 |---|---|
-| `doc/名人雷达_设计方案.md` | 需求、架构、数据模型、缓存与成本模型、合规章节（v1.4；2026-10-06 已同步至 CloudBase + 博查口径） |
-| `doc/开发计划.md` | 功能 × 状态总表、待办清单、验收门 G0~G8 |
-| `doc/联调手册.md` | 发版前人工配置清单、云 DB 建表与权限、23 条验收用例（CloudBase 口径） |
-| `doc/云开发配置手册.md` | 集合清单（字段 / 权限 / 索引 / 建库方式 / 自检）+ 云函数清单 · 部署 · 执行 · 排错 |
-| `doc/开源部署指南.md` | 面向 fork 者：从零到能跑要补哪些配置、每步「不做会怎样」、常见卡点、上线合规清单 |
+| `cloud.ts` / `db.ts` | CloudBase 初始化与诊断；自建数据访问适配层（`table('x').select/eq/or/upsert/maybeSingle`），`id ↔ _id` 双向映射、分页续取、写操作兜底 |
+| `auth.ts` | 微信登录 + `users` 首次初始化；并发登录去重、登录态落盘、脏缓存拒绝 |
+| `search.ts` | 博查适配器（无 Key 降级），素材归一为 `NewsItem`；提问用的 `searchForAsk` |
+| `disambiguate.ts` | LLM 同名消歧 + 领域码枚举 + 兜底 |
+| `report.ts` | 报告生成、zod 校验、URL 白名单清洗、降级纯文本 |
+| `cache.ts` | `report_cache` 读写 + `building` 互斥、`feed_cache`、`refresh_quota` |
+| `quota.ts` / `quota-guard.ts` | freemium 生成配额与它的服务端通道（未部署时静默回退端上计数） |
+| `llm.ts` | LLM 调用：统一经 `aiProxy` 代付；**供应商 + 档位**由本机偏好 + `public.ts` 裁决（换供应商不换档），非会员请求会员档位一律回落该家极速版 |
+| `member.ts` / `member-sample.ts` | 会员权益表（唯一事实源）+ 会员判定 + 报告页会员价值条文案；会员中心「真实示例」（只节选不改写、挑不到就不出卡） |
+| `pay.ts` | 会员支付：拉取服务端套餐（24h 本机缓存 + 离线兜底）+ 下单 + 拉起收银台 + 轮询确认（价格与时长**只认服务端**） |
+| `qa.ts` | AI 问答：报告片段选片 + 提问时联网检索 + 每日额度闸门（回答成功才计数）+ 3 秒连点间隔 |
+| `weekly.ts` | 关注周报：材料只读 `feed_cache`，LLM 只写文字（人 / 条目以材料为准），按 ISO 周本机缓存 |
+| `hot-board.ts` / `explore.ts` | 热门榜三级回退读取；「今日名人」与随机探索（种子稳定，xorshift32 去取模偏置） |
+| `keyword-alert.ts` / `keywords.ts` | 关键词订阅与预警条目；关键词云 + 高频观点（纯端上聚合，存量缓存立即生效） |
+| `topic-digest.ts` / `compare.ts` / `stats.ts` / `trend.ts` | 主题编目 / 两人对比 / 主页数据 Tab / 热度趋势折线 —— 全部纯端上聚合，不新增 Schema 字段与云函数 |
+| `quote-check.ts` / `source-link.ts` | 名言出处核对（只核对可核对的事实）；原文预览页的唯一跳转出口 |
+| `messages.ts` / `notify.ts` | 消息中心时间流与已读口径；微信订阅消息授权与推送落位 |
+| `share-card.ts` / `share.ts` | Canvas 2D 名言卡（零网络图依赖、不落云存储）；全项目唯一分享文案出口 |
+| `sensitive.ts` / `sec-check.ts` | 本地敏感名单一级拦截（发版前人工维护）；内容机审（fail-open） |
+| 基础件 | `time.ts`（相对时间 / 报告过期天数唯一阈值）、`cooldown.ts`（429 冷却 10 分钟）、`debug.ts`（调试开关集中出口）、`cloud-diagnostics.ts`（结构化诊断日志）、`settings.ts`、`events.ts`、`tabbar.ts`、`data-deletion.ts` |
 
 ---
 
-## 十、开源与许可
+## 安全与合规
 
-**许可**：[Apache License 2.0](./LICENSE) —— 可自由使用、修改、商用与闭源分发，
-需保留版权与许可声明，含专利授权条款。第三方依赖与服务的归属见 [`NOTICE`](./NOTICE)。
+- **密钥永不进包**：端上只存本地 storage，服务端只存云函数环境变量
+- **输入侧**：本地敏感名单一级拦截，命中即拒答，**不发任何网络请求**
+- **输出侧**：报告 `sources` / `dynamics` 链接强制 URL 白名单清洗，只保留检索素材中出现过的链接
+- **内容口径**：全链路标注「AI 生成，仅供参考」；隐私声明页 + 举报入口 + 「清空我的数据」二次确认
+- **运行成本**：报告缓存共享复用、每账号每日刷新 ≤ 10 次、主动生成 ≤ 3 次（会员 30）、`building` 互斥避免并发重复生成、关注周报按自然周本机缓存
+- **冷却只拦「值得等待」的失败**：仅上游限流 429 / 网络 / 5xx 进入 10 分钟冷却；密钥无效、额度不足即时报错且不冷却；缓存命中永远优先于冷却与配额
+- **漏洞报告**：请**不要**开公开 Issue，按 [`SECURITY.md`](./SECURITY.md) 的渠道私下联系。
+  判据提醒：改包让端上显示会员档**不算**漏洞（闸门在云端），云端闸门可被绕过才算
 
-**这是一份什么形态的代码**：完整可用，但**不是一个可以直接上线的产品**。仓库里没有任何可用凭据，
-环境 ID、appid、上游 key 全部是占位符或需自填 —— 从零到能跑见 [`doc/开源部署指南.md`](./doc/开源部署指南.md)。
+---
 
-| 你可能关心的 | 结论 |
+## 开发与测试
+
+```bash
+npm test          # tsc 编译测试产物 + 跑全部用例（243 条，纯本地、不连云）
+npm run test:only # 跳过 tsc，直接跑
+```
+
+测试特点：**零新增依赖**（自建内存版 CloudBase + Taro / `wx` 替身 + 极简断言库），断言对象是**编译后的产品代码本身**，
+运行不需要云环境、开发者工具或上游网络。不覆盖页面渲染、真机交互、云端函数执行、支付与推送。
+
+提交前请确认：
+
+1. `npm test` 全绿（当前 243 / 243）
+2. `npx tsc --noEmit` 无新增告警
+3. 检查小程序**主包体积**（硬上限 2MB，当前约 1.2MB）；新增依赖前先核对构建产物
+4. `src/config/local.ts` 与 `debug` 开关**不要**提交（已在 `.gitignore` 内）
+5. 改动涉及数据模型时，同步更新 `cloudfunctions/dbInit/schema.js`（库结构的单一事实源）
+
+---
+
+## 常见问题
+
+| 问题 | 结论 |
 |---|---|
-| 能直接跑起来吗 | 能编译。要跑通生成链路需自备云开发环境 + DeepSeek / 博查两个 key |
-| 会烧钱吗 | 会。检索与大模型都按量计费 —— 项目里配额、缓存、冷却三套机制正是为此而生（见 §四 成本线） |
-| 能商用吗 | 协议允许。但**上线另需你自己的主体资质、类目备案与 AI 生成内容合规措施** |
-| 会员支付能用吗 | 代码完整（`payCreate` / `payCallback` / 定价表 `PLANS`），但需要你自己的微信支付商户号；未配置时端上明确提示，且不影响免费功能 |
-| 品牌能沿用吗 | 项目名「名人雷达」属原作者，fork 后建议改成自己的名字再发布，以免混淆 |
-| 为什么保留商业化代码 | 它是一份完整参考实现：定价源唯一、端上只读、云函数强校验这些取舍都写在注释里 |
+| 能直接跑起来吗？ | 能编译。要跑通生成链路，需自备云开发环境 + DeepSeek / 博查两个 Key |
+| 会烧钱吗？ | 会。检索与大模型都按量计费 —— 项目里的配额、缓存、冷却三套机制正是为此而生 |
+| 能商用吗？ | 协议允许。但**上线另需你自己的主体资质、类目备案与 AI 生成内容合规措施** |
+| 会员支付能用吗？ | 代码完整（`payCreate` / `payCallback` / 定价表 `PLANS`），但需要你自己的微信支付商户号；未配置时端上明确提示，不影响免费功能 |
+| 品牌能沿用吗？ | 「名人雷达」属原作者，fork 后建议改成自己的名字再发布，以免混淆 |
+| 为什么保留商业化代码？ | 它是一份完整参考实现：定价源唯一、端上只读、云函数强校验，取舍都写在注释里 |
+| 换上游供应商难吗？ | 用户能自选的那几家在 `src/config/public.ts` 的 `llm.providers`；云端注册表（端点 / key 变量名 / 会员档位）在 `cloudfunctions/aiProxy/llm.config.js`（`hotBoardRefresh` 有一份逐字相同的副本，两份都要改）。加一家 = 两端各加一项 + 配一个环境变量 |
 
 **上游依赖风险**：检索源（博查）与大模型（DeepSeek，OpenAI 兼容端点）均为第三方付费服务，
-接口、价格与可用性不受本项目控制；换供应商主要改 `cloudfunctions/aiProxy` 与
-`src/config/public.ts` 里的模型清单。
+接口、价格与可用性不受本项目控制。
 
 ---
 
-## 十一、已知事项
+## 已知限制
 
-- 「我的 → 刷新最新」走 `report_cache` 条件更新抢占分支（`state=ready` 且过期时重新生成），该分支的云侧条件更新语义以真机实测为准；若失效表现为刷新后仍拿到旧缓存。
-- 环境相关配置（环境 ID、订阅模板 ID、业务域名白名单、本地调试开关）已抽到**不进版本库**的 `src/config/local.ts`，由 `local.example.ts` 复制后自填，见 §六 配置说明。
-- 敏感名单 `src/utils/sensitive.ts` 需按最新合规要求在发版前人工补充（不由开发侧生成）。
-- 会员支付链路**代码已落地**（`payCreate` / `payCallback` + `utils/pay.ts` + 「我的」页入口），但须人工配置才能用：控制台开通云支付、绑定商户号（`WX_PAY_SUB_MCH_ID`）、部署两个函数（`orders` 集合已建齐，见第七节与《联调手册》§一 步骤 7）。未配置时端上明确提示「微信支付未配置 / 支付服务未部署」，且不影响免费功能，运行时仍按免费版（3 次/日）。
-- 售价与套餐的**唯一事实源**是 `cloudfunctions/payCreate/index.js` 的 `PLANS`（2026-10-07 定稿：月 ¥9.9 / 季 ¥25 / 年 ¥68，三档锚定年卡）；端上 `src/utils/pay.ts` 用 `{action:'plans'}` 拉取展示（24h 本机缓存，失败回退离线兜底清单 `FALLBACK_MEMBERSHIP_PLANS`），**改价只改云函数、无需发版**。权益额度（免费 3 / 会员 30）集中在 `src/utils/member.ts` 的权益表，额度判定与页面展示都从那里取。
-- 配额计数已服务端化（`quotaGuard` 原子自增 + 服务端日期），但**需先（重新）部署该函数、再收紧三张配额表权限**（顺序见第七节；控制台那份旧版不认提问用的 `ask` 类，须重新部署）；未部署时端上自动回退读-改-写，此时可超发、改设备时间可绕过 —— 属过渡态。限额判定仍在端上（会员状态取 `users.membership`）。
-- **会员「质」权益（2026-10-07）**：模型档位按会员分级 —— 免费版只能用「极速版」，会员可切「标准版 / 深度推理」。端上（`config/public.ts` 的 `memberOnly` + `utils/llm.ts#resolveChatModel(member)`）只负责展示与请求值；**真正的闸门在云函数 `aiProxy`**（`MEMBER_ONLY_MODELS` 白名单 + 按 `_openid` 读 `users.membership.expires_at`，读库失败按非会员），非会员请求会员档位会被**静默降级**为默认模型并回传 `downgraded`（端上记进诊断日志；改包绕不过）。该函数**需重部署**才生效，且建议**先发端上、再部署云函数** —— 反过来的话，现网旧包中切过强模型的用户会先被降级。检索条数上限同口径分档（免费仍 20，会员 40，为后续「深度模式」预留，端上尚未接线，见《优化建议.md》O-11）。
-- 关注周报（`pages/weekly`）**代码已落地**，无新增云资源、无需人工配置即可试跑：素材只读 `feed_cache`（所以要先生成过关注流），缓存写在本机 storage（键 `weekly:<ISO 周>`，随「清空我的数据」一并清除）。周报的**人与其动态条目以缓存材料为准**，模型只写综述 / 逐人摘要 / 话题词 —— 不存在模型漏人、编链接的问题；模型拒答或没产出任何文字时降级为素材清单并在页顶提示。
-- 周报的窗口是**滚动最近 7 天**而非「本周一至今」：自然周口径下每周一打开几乎必然没素材，用户会以为功能坏了；缓存键仍按自然周（`yyyy-Www`），跨周自动失效重新生成。
-- 周报生成与报告**共用**每日生成额度（都走 `quotaGuard` 的 `generate` 计数），进入页面**不会**自动扣额度：无缓存时先展示覆盖范围，用户点「生成周报」才消耗 1 次。
-- 分享卡片（`utils/share-card.ts` + `components/share-poster`）**代码已落地**，无新增云资源、无需人工配置即可试跑（入口**一处**：收藏页名言卡片的「名言卡」；报告页语录右侧的原「卡片」按钮已于 2026-10-06 删除，报告页只保留右上角原生转发）。两处与设计文档不同的实现口径：① **不落云 Storage** —— 保存相册与图片转发都只吃本地临时路径，落库只会给云存储留下用户私人收藏的副本；② 卡片**零网络图片依赖**（头像沿用「领域色圆 + 姓名首字」），断网也能出图。
-- 分享卡片需基础库 ≥ 2.9.0（Canvas 2D）；低版本会明确显示「卡片生成失败」而不是按钮无反应。卡片高度**固定**（名言卡按 3:4 取 520），不做自适应高度 —— 真机 Canvas 2D 尺寸一经设定再改就是又一轮重绘，而卡片内容本就短。
-- 主包体积硬上限 2MB，新增依赖前先核对构建产物（热度趋势折线 + 消息中心 + 主页数据 Tab 落地后 1051KB；AI 问答落地后 1069KB；会员中心 + 底栏「AI 提问」+ 提问额度服务端化后 1099KB；**《优化建议.md》O-13 ~ O-19 一批「纯端上」优化后 1125KB**；**会员「深度模式」（O-11）+ 报告质量升级（O-20）落地后 1201KB**；**会员价值条（O-21）+ 会员中心真实示例（O-22）落地后 1209KB**；**收藏卡内容（O-23）+ 提问用量如实计数（O-24）落地后 1214KB**，无新增页面 / 组件 / 依赖）。
-- 热度趋势折线（`utils/trend.ts` + 报告页「热度趋势」卡）是**纯端上聚合**：只统计报告里带日期的条目（`dynamics` + `timeline`，同一天同一说法去重），因此**存量报告不重新生成也有这张卡、不消耗生成额度**。两点要留意：口径是「本报告收录的带日期条目」，**不等于全网报道量**（卡内脚注已写明）；带日期条目 < 3 条时整卡不渲染（与词云 < 4 词同一取舍）。折线用 View + transform 自绘（绘图区固定 630×220rpx，rpx 等比缩放所以旋转角度在任意机型成立），**未采用 uCharts** —— 2MB 硬限下不值得为一张折线引图表库。
-- 消息中心（`utils/messages.ts` + `pages/messages` + 发现页铃铛）**零新增集合 / 云函数 / 模型调用**：关注更新复用关注流页的 `watch`（同一份 60s 内存缓存），周报提醒读本机缓存（待生成时的事件时间取 ISO 周起点，否则红点永远熄不掉），平台公告是静态清单 `src/config/notices.ts`（**改历史公告的 `date` 会让它重新变未读**，新增公告加数组头部即可）。未读口径**是本机的**且**逐条记**（storage 键 `messages:read_ids`，点开某条或点「全部已读」才清除，随「清空我的数据」清除），不做多设备同步 —— 换设备红点会重新亮一次；长内容超 42 字折两行、点卡片展开，展开后点「查看详情 ›」才跳转；关注更新最多覆盖前 30 位关注（每位要读两次缓存）。
-- **分享覆盖（O-13）**：`utils/share.ts` 是**全项目唯一分享文案出口**（`personShareTitle` / `reportSharePath`），已接线名人主页、发现页、底栏「AI 提问」页与报告页。**落地页统一 `pages/report/index`** —— tabBar 页不能作分享落地页，故 tabBar 页分享时一律落到「具体某个人的报告页」（发现页落横幅上的今日名人、提问页落当前选中的人，未选出人时退回今日名人）。标题 = `姓名 · 领域` + 报告 `intro` 首句，不带未核实结论。收藏 / 我的 / 关注流 / 消息 / 历史 / 会员中心**仍未注册分享**（这些页没有「可分享的具体对象」），属记录在案的取舍。
-- **报告新鲜度 + 历史页「继续看」（O-14 / O-15）**：报告缓存「一旦 ready 长期复用、不按时间过期」，所以必须有人提示「该刷新了」—— 阈值**只有一处** `utils/time.ts#STALE_REPORT_DAYS = 14`（问答头部 / 报告页 / 收藏卡 / 历史页四处同阈值），报告页在「查看最新」前补「N 天前生成 · 建议刷新」、收藏卡补「建议刷新」暖色胶囊（**收藏是快照，报告刷新不会更新它**）。历史页在列表之上加「继续看」横滑区（最多 3 位，顺序即 `listHistory()`）；因为 `history` 表只存「谁何时看过」、不存报告版本，这一行会**多一次 `getCachedReports` 批量读**（`in` 一次往返、≤3 份），完整列表仍只用本机浏览时间。
-- **热门榜全员可见（原 O-19 会员分档已撤销，2026-10-08）**：榜单**所有用户都能看到全部位数**，不再有「免费 6 位 / 会员 24 位」这回事 —— `utils/member.ts` 的 `hotBoardShown` 与 `FREE_HOT_BOARD_LIMIT` / `MEMBER_HOT_BOARD_LIMIT` 已删除，首页不读会员态、不再截断（渲染几位只由 `utils/hot-board.ts#BOARD_LIMIT` 决定），底部那一行（展开 / 升级入口）与配套样式一并移除。撤销理由：榜单是全项目**唯一不需要等待**的内容、也是「不买也能用」这句话的样板，放进付费墙换来的是几位数的展示差异、付出的是用户在最显眼位置先撞一次墙的第一印象。会员中心对比表保留 `热门榜 · 趋势 · 对比` 行但两栏同为「**全部可见**」（写「不限次」会答非所问 —— 原来分的是**位数**不是次数），`FREE_FEATURES_NOTE` 回到「…关注 / 收藏 / 历史、热门榜均免费开放，不限次」。
-- **对比页动作 + 相关名人 + 消息中心可点（O-18 / O-16① / O-17）**：对比结果页底部先「留下」（`关注这两位`；`toggleFollow()` 的 `null`（未登录 / 写失败）必须与「取关成功」分开处理，否则失败会被误报成「已取消关注」）再「带走」（`分享这份对比`，原生 `Button open-type=share`，标题 `A vs B`）；**对比问答未做**（要动 `utils/qa.ts` 的语料组装；O-11 已落地、该阻塞已解除，仍待排期）。报告页底部新增「也在聊这些话题的名人」，候选**只取收藏过的报告**（≤3 位），共同话题**复用 `utils/compare.ts#buildComparison`**（与「和 TA 对比」页同口径），交集为空整卡不渲染、**不触发生成**。消息中心 `system` 类公告无 url 时兜底 `switchTab` 到发现页（不再点了没反应），头部补 `关注流 ›` 描边胶囊。
-- **会员价值的可见性（O-21 / O-22，2026-10-08）**：O-11 / O-20 把「质」权益做齐后，价值的**可见性**仍是零 —— 深度模式只在会员中心一行字与**会员**滑到报告页最底部的那张卡里出现，而报告是**全局共享缓存**（免费用户读到的很可能正是会员生成的那一份，三段内容当场被藏起来却无一行字解释）。**O-21** 在报告页横幅正下方加价值条，判定与文案**收口为纯函数**（`utils/member.ts#presentSections / reportMemberValue`，四态 = 会员 / 免费 × 报告有 / 无专享段），页面没有可以自己写一句的地方；免费态**分两支说真话**（有内容 → 「开通会员即可查看」，这是可兑现的承诺；没内容 → 只讲会员生成会多出什么，不承诺当前这一份），会员态读到老缓存时**不给动作**（不引导为运营需要再烧一次生成额度）。**O-22** 在会员中心对比表下加「深度解析 · 真实示例」（`utils/member-sample.ts`）：只读 `state='ready'` 的报告、**只节选不改写**（>80 字截断）、**挑不到就不出卡**，来源行（取自谁 / 何时生成 / 原文未改写）让「真实」二字可核对。两者都**不做**「把已有内容灰掉 + 开通解锁」那套（M4 起就守着「正文不设墙」），留白只有一处且当场说明白；均**不消耗生成额度**，示例卡仅多 1 次 `report_cache` 只读。
-- **收藏卡「补内容」+ 提问用量如实计数（O-23 / O-24，2026-10-08）**：① **收藏卡此前每类只有一行信息**，收藏的理由（那条新闻在讲什么、这句话在什么场合说的）全都没进卡片。**O-23** 补的是内容而不是装饰：报告卡在热度刻度 / 走势条之外摘「**最新报道 + 素材画像**」两行（`utils/favorites.ts#reportDigestOf` —— 优先取 `coverage.latest` 的博查原值，取不到才退回**日期最新**的动态；与走势条**共用同一次批量读库**，**0 额外读请求**，且仍只认版本一致，避免「热度是旧的、内容是新的」）；动态卡标出**偏离中性**的情绪（`SENTIMENT_TAG` 只列积极 / 消极，措辞与报告页 `SENTIMENT_META` 同一套）并给「原文」入口（复用 `utils/source-link` 这个唯一跳转出口，**不加「复制链接」**——预览页里已有）；名言卡 meta 补媒体名、payload 增 `background` / `note`（此前**没有落库**，所以老收藏只剩一句悬空的话 —— **重新收藏同一条即可刷新快照补上**，`created_at` 不变）。三处共同口径：**取不到就不渲染**，全页不出现「暂无」这类占位文案。② **O-24 修的是「AI 提问次数好像没有计数」** —— 根因是调试开关打开时 `qaRemainingToday()` 直接**报满额**（理由是「照实相减会显示『还可问 0 次』却仍能一直问」），代价是开挂时界面数字**永远停在 0**；而**生成**额度那条腿走的是 `peekGenerateQuota.used`（照实报），于是同一张卡上一行会涨一行不会。改法是把**数字**与**说辞**拆开：`utils/qa.ts#qaUsageOf / qaUsageToday`（`used` 始终是镜像真值、脏输入归零；`remaining` 照实相减但在开挂态不再代表「能不能问」；`unlimited` 表达闸门是否放开），两处界面按 `unlimited` 二选一措辞，**开挂态不弹升级提示**（此时并没被拦）。口径重申：**调试开关放开的只是闸门，不是计数**。
+- 敏感名单 `src/utils/sensitive.ts` 需按最新合规要求在发版前**人工补充**，代码不做远程更新
+- 内容机审 `contentCheck` 走云调用，未部署或权限未生效时按 **fail-open** 放过（可用性优先于拦截）
+- 关键词预警依赖微信**一次性订阅**授权，模板 ID 与推送时机受平台规则约束
+- 「原文预览」页能否 `webview` 内嵌取决于域名白名单与微信平台校验，未命中一律降级为预览卡
+- 报告内容由大模型生成，**可能存在事实偏差**，务必以来源链接为准
+- 测试覆盖的是逻辑与数据层，不含 UI 渲染、真机交互、云函数运行时与支付全链路
 
-- **会员「深度模式」+ 报告质量升级（O-11 / O-20，2026-10-08）**：① **深度模式只加在报告生成路径、且只对会员** —— 检索加厚（`utils/search.ts` 的 `DEEP_MAIN_COUNT(24)` / `DEEP_SOCIAL_COUNT(16)`，合计吃满给会员的 `MEMBER_SEARCH_MAX(40)`）+ 输出上限放开（`utils/llm.ts` 会员请求体带 `deep`，云函数 `aiProxy` 以 `deep = event.deep === true && await isMember()` 为闸门、仅它为真才加 `max_tokens`；**免费不传 `max_tokens`**）+ 独家段落（`memberNotes` 对比视角 / 风险提示、`conflicts` 信源分歧）。⚠ **`aiProxy` 须重部署**，否则端上带的 `deep` 被忽略（会员报告仍可能被尾部截断，不报错）。**关注流刷新（每日 10 次）刻意维持免费口径**，勿顺手放大。② **报告质量不限会员** —— 素材选取由「顺序截断（装不下丢整条）」改「按事件归组（标题归一化 + 字符二元组 Dice ≥ 0.62）→ 前 10 个**事件**给全文、其余压缩为 160 字 brief」，一件事被多家媒体报道时不再一口气吃掉多个全文名额；AI 点评由整段改 `analysisPoints` **拆条**（每条 = 一句判断 + 「依据：媒体名」，`basis` 是素材 url 的引用位、落库前按白名单换成媒体名，编造的一律收敛为「据公开资料」），**`analysis` 仍落库**（由各条拼接）—— 问答上下文与降级简版路径都读它，**拆条不牺牲下游**。③ **权限口径**：`memberNotes` / `conflicts` 是会员专享而报告是**全局共享缓存**，故 UI **二次判会员态**且两字段**各自判空**（只带 `conflicts` 的报告不该整卡消失）；会员卡标题为「会员专享 · 深度解析」。**无新增集合 / 页面 / 组件 / 依赖**。
+---
+
+## 贡献指南
+
+欢迎 Issue 与 Pull Request。**完整流程、评审标准与 Issue 模板见 [`CONTRIBUTING.md`](./CONTRIBUTING.md)**，这里是速览：
+
+1. 默认分支是 `master`，从它拉出特性分支（`feat/xxx`、`fix/xxx`、`docs/xxx`、`chore/xxx`）
+2. 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)（`feat:` / `fix:` / `docs:` / `chore:` …），一个提交只做一件事
+3. 提交前跑完上面的「提交前请确认」5 条，并在 PR 描述里说明**改动动机**与**验证方式**
+4. 涉及界面或交互的改动，请附真机截图
+5. 改到「手工同步的两处」（供应商 / 档位表、会员档位闸门）时，两份必须一起改
+6. 行为或配置变更请同步更新 `README`（中英两份）与 [`CHANGELOG.md`](./CHANGELOG.md)
+
+参与本项目即表示你同意遵守 [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)。
+
+我们不接受：提交真实密钥 / 环境 ID、绕过配额与会员闸门的「破解」改动、来源不明的素材与字体、
+与项目定位无关的大规模重写（换框架 / 整仓格式化）。
+
+---
+
+## 反馈与支持
+
+| 你想做的事 | 去哪 |
+|---|---|
+| 报告 Bug | [Gitee Issues](https://gitee.com/qianlonglove_admin/celebrity-radar/issues) —— 请按 [`CONTRIBUTING.md`](./CONTRIBUTING.md) 末尾的模板填写，**务必先删掉日志里的 key 与 openid** |
+| 提功能建议 | 先开 Issue 讨论动机与范围。本仓库的设计取舍都写在代码注释里，先对齐能省掉一次返工 |
+| 报告安全漏洞 | **不要开公开 Issue**，走 [`SECURITY.md`](./SECURITY.md) 的私下渠道 |
+| 使用求助 | 先查上方「[常见问题](#常见问题)」与「[已知限制](#已知限制)」，多数「不生效」都在那几条里；仍无解再开 Issue |
+| 想知道改了什么 | [`CHANGELOG.md`](./CHANGELOG.md) |
+
+本项目由个人维护，回复尽力而为（安全报告通常 7 个工作日内首次回复）。
+提问前请先确认「能复现 + 已读过已知限制」——不少「不生效」正是那几条里的内容。
+
+如果这个项目对你有帮助，欢迎在 Gitee 上给个 Star；把你踩到的坑补进「[常见问题](#常见问题)」，
+比笼统的鼓励更有价值。
+
+---
+
+## 版本与更新日志
+
+当前版本 **0.1.0**（见 `celebrity-radar/package.json`），全部变更记录在 [`CHANGELOG.md`](./CHANGELOG.md)。
+
+版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)：**MAJOR** = 需要部署者动手的迁移
+（数据库结构、云函数契约、配置项改名，日志里会以「**部署者注意**」标出）；**MINOR** = 向后兼容的新能力；
+**PATCH** = 修复与文案。
+
+---
+
+## 许可与致谢
+
+本项目以 [Apache License 2.0](./LICENSE) 发布，版权与第三方组件声明见 [`NOTICE`](./NOTICE)。
+
+- 上游服务：腾讯云 CloudBase（微信云开发）、博查检索、DeepSeek（或任意 OpenAI 兼容端点）、微信支付
+- 开源依赖：Taro、Taro UI、React、zustand、zod、dayjs 等，版权归各自作者
+
+**免责声明**：本项目仅用于技术学习与交流。使用者需自行承担因使用本项目产生的一切后果，
+包括但不限于上游 API 费用、内容合规责任与数据安全责任。「名人雷达」名称与品牌归原作者所有。
+

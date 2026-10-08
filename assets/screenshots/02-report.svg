@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 620" width="300" height="620" role="img" aria-label="报告页界面示意">
+  <defs>
+    <linearGradient id="head" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5f33e1"/>
+      <stop offset="100%" stop-color="#8764ff"/>
+    </linearGradient>
+    <clipPath id="screen"><rect x="0" y="0" width="300" height="620" rx="26"/></clipPath>
+    <clipPath id="headclip"><rect x="0" y="0" width="300" height="150"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#screen)">
+    <rect width="300" height="620" fill="#f7f7fb"/>
+    <rect width="300" height="150" fill="url(#head)" clip-path="url(#headclip)"/>
+
+    <!-- 状态栏 -->
+    <text x="20" y="26" font-size="11" font-weight="600" fill="#ffffff" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">9:41</text>
+    <g fill="#ffffff">
+      <rect x="248" y="18" width="14" height="8" rx="2" opacity="0.9"/>
+      <circle cx="268" cy="22" r="3.5" opacity="0.9"/>
+      <circle cx="277" cy="22" r="3" opacity="0.6"/>
+    </g>
+
+    <!-- 返回 -->
+    <path d="M26 52 L34 46 M26 52 L34 58" stroke="#ffffff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="280" y="56" font-size="10.5" fill="#ffffff" text-anchor="end" opacity="0.9" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">生成于 2 小时前</text>
+
+    <!-- 名人头部 -->
+    <rect x="22" y="72" width="46" height="46" rx="23" fill="#ffffff" opacity="0.22"/>
+    <text x="45" y="103" font-size="18" font-weight="700" fill="#ffffff" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">雷</text>
+    <text x="80" y="94" font-size="17" font-weight="700" fill="#ffffff" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">雷军</text>
+    <rect x="126" y="82" width="38" height="17" rx="8.5" fill="#ffffff" opacity="0.24"/>
+    <text x="145" y="94" font-size="9.5" fill="#ffffff" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">科技</text>
+    <text x="80" y="113" font-size="10" fill="#ffffff" opacity="0.85" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">小米集团创始人 · 董事长兼 CEO</text>
+
+    <!-- 近期动态卡 -->
+    <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect x="20" y="164" width="260" height="150" rx="16" fill="#ffffff"/>
+      <text x="34" y="188" font-size="12.5" font-weight="700" fill="#24252c">近期动态</text>
+      <line x1="34" y1="198" x2="266" y2="198" stroke="#f0eff5"/>
+
+      <text x="34" y="220" font-size="9.5" fill="#9b97ab">今天</text>
+      <text x="34" y="238" font-size="11" fill="#24252c">发布会公布新一代旗舰手机</text>
+      <line x1="34" y1="248" x2="266" y2="248" stroke="#f7f7fb"/>
+
+      <text x="34" y="266" font-size="9.5" fill="#9b97ab">3 天前</text>
+      <text x="34" y="284" font-size="11" fill="#24252c">出席行业峰会并发表主题演讲</text>
+      <line x1="34" y1="294" x2="266" y2="294" stroke="#f7f7fb"/>
+      <text x="266" y="220" font-size="9" fill="#5f33e1" text-anchor="end">来源 1</text>
+      <text x="266" y="266" font-size="9" fill="#5f33e1" text-anchor="end">来源 2</text>
+    </g>
+
+    <!-- 经典语录卡 -->
+    <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect x="20" y="326" width="260" height="86" rx="16" fill="#ffffff"/>
+      <text x="34" y="350" font-size="12.5" font-weight="700" fill="#24252c">经典语录</text>
+      <rect x="34" y="362" width="3" height="34" rx="1.5" fill="#ede8ff"/>
+      <text x="46" y="378" font-size="11" fill="#24252c">站在风口上，猪都能飞起来。</text>
+      <text x="265" y="378" font-size="9" fill="#9b97ab" text-anchor="end">AI 生成</text>
+      <rect x="216" y="386" width="50" height="18" rx="9" fill="#ede8ff"/>
+      <text x="241" y="399" font-size="9" fill="#5f33e1" text-anchor="middle">生成卡片</text>
+    </g>
+
+    <!-- AI 点评卡 -->
+    <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect x="20" y="424" width="260" height="66" rx="16" fill="#ffffff"/>
+      <text x="34" y="448" font-size="12.5" font-weight="700" fill="#24252c">AI 点评</text>
+      <rect x="34" y="458" width="228" height="7" rx="3.5" fill="#f0eff5"/>
+      <rect x="34" y="471" width="160" height="7" rx="3.5" fill="#f0eff5"/>
+    </g>
+
+    <!-- 时间线卡 -->
+    <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect x="20" y="502" width="260" height="62" rx="16" fill="#ffffff"/>
+      <text x="34" y="526" font-size="12.5" font-weight="700" fill="#24252c">时间线</text>
+      <line x1="46" y1="540" x2="46" y2="554" stroke="#ede8ff" stroke-width="2"/>
+      <circle cx="46" cy="540" r="3" fill="#5f33e1"/>
+      <text x="58" y="544" font-size="10" fill="#24252c">2024 · 发布新品</text>
+      <circle cx="46" cy="556" r="3" fill="#c7b9f7"/>
+      <text x="58" y="560" font-size="10" fill="#24252c">2021 · 宣布造车</text>
+    </g>
+
+    <text x="282" y="588" font-size="9" fill="#9b97ab" text-anchor="end" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">AI 生成，仅供参考 · 共 6 个信息源</text>
+  </g>
+</svg>

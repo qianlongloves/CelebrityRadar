@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 620" width="300" height="620" role="img" aria-label="AI 问答页界面示意">
+  <defs>
+    <linearGradient id="bubble" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5f33e1"/>
+      <stop offset="100%" stop-color="#8764ff"/>
+    </linearGradient>
+    <clipPath id="screen"><rect x="0" y="0" width="300" height="620" rx="26"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#screen)">
+    <rect width="300" height="620" fill="#f7f7fb"/>
+
+    <!-- 状态栏 -->
+    <text x="20" y="26" font-size="11" font-weight="600" fill="#24252c" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">9:41</text>
+    <g fill="#24252c">
+      <rect x="248" y="18" width="14" height="8" rx="2" opacity="0.85"/>
+      <circle cx="268" cy="22" r="3.5" opacity="0.85"/>
+      <circle cx="277" cy="22" r="3" opacity="0.5"/>
+    </g>
+
+    <!-- 标题栏 -->
+    <text x="20" y="58" font-size="15" font-weight="700" fill="#24252c" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">AI 问答 · 雷军</text>
+    <text x="280" y="58" font-size="10" fill="#9b97ab" text-anchor="end" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">免费版 · 剩 4 次</text>
+
+    <!-- 依据提示 -->
+    <rect x="20" y="70" width="260" height="30" rx="10" fill="#ede8ff"/>
+    <text x="34" y="89" font-size="10" fill="#5f33e1" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">回答依据本人报告 + 联网检索，标注编号来源</text>
+
+    <!-- 用户提问气泡 -->
+    <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect x="112" y="116" width="168" height="46" rx="14" fill="url(#bubble)"/>
+      <text x="128" y="138" font-size="11" fill="#ffffff">最近发布的新品是什么？</text>
+      <text x="128" y="154" font-size="9" fill="#ffffff" opacity="0.75">刚刚</text>
+    </g>
+
+    <!-- AI 回答气泡 -->
+    <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect x="20" y="176" width="238" height="150" rx="14" fill="#ffffff" stroke="#f0eff5"/>
+      <text x="34" y="200" font-size="11" fill="#24252c">根据近期公开报道，本次发布会公布了</text>
+      <text x="34" y="218" font-size="11" fill="#24252c">新一代旗舰机型，重点升级影像与续航。</text>
+      <rect x="34" y="230" width="200" height="7" rx="3.5" fill="#f0eff5"/>
+      <rect x="34" y="243" width="176" height="7" rx="3.5" fill="#f0eff5"/>
+
+      <rect x="34" y="262" width="28" height="18" rx="9" fill="#ede8ff"/>
+      <text x="48" y="275" font-size="9" fill="#5f33e1" text-anchor="middle">来源 1</text>
+      <rect x="68" y="262" width="28" height="18" rx="9" fill="#ede8ff"/>
+      <text x="82" y="275" font-size="9" fill="#5f33e1" text-anchor="middle">来源 2</text>
+
+      <rect x="34" y="290" width="120" height="20" rx="10" fill="#f7f7fb"/>
+      <text x="48" y="304" font-size="9" fill="#6e6a7c">生成名言卡</text>
+      <rect x="164" y="290" width="80" height="20" rx="10" fill="#f7f7fb"/>
+      <text x="178" y="304" font-size="9" fill="#6e6a7c">复制回答</text>
+    </g>
+
+    <!-- 追问气泡 -->
+    <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect x="20" y="340" width="150" height="34" rx="12" fill="#ffffff" stroke="#f0eff5"/>
+      <rect x="34" y="350" width="94" height="7" rx="3.5" fill="#f0eff5"/>
+      <rect x="34" y="361" width="60" height="7" rx="3.5" fill="#f0eff5"/>
+    </g>
+
+    <!-- 输入区 -->
+    <rect x="0" y="520" width="300" height="100" fill="#ffffff"/>
+    <line x1="0" y1="520" x2="300" y2="520" stroke="#f0eff5"/>
+    <g font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif">
+      <rect x="20" y="536" width="206" height="40" rx="12" fill="#f7f7fb"/>
+      <text x="36" y="561" font-size="11" fill="#9b97ab">继续提问…</text>
+      <rect x="236" y="536" width="44" height="40" rx="12" fill="#5f33e1"/>
+      <text x="258" y="561" font-size="11" fill="#ffffff" text-anchor="middle">发送</text>
+      <text x="20" y="598" font-size="9.5" fill="#9b97ab">内容由 AI 生成，仅供参考；请勿输入违法或侵权内容</text>
+    </g>
+  </g>
+</svg>
