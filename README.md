@@ -121,26 +121,26 @@
 **名人深度报告**
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/报告1.png" width="200" alt="关键词预警"><br><sub><b>报告</b> · 只列出上次看过后新增的条目</sub></td>
-    <td align="center"><img src="./assets/screenshots/报告2.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
-    <td align="center"><img src="./assets/screenshots/报告3.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
+    <td align="center"><img src="./assets/screenshots/bg1.png" width="200" alt="关键词预警"><br><sub><b>报告</b> · 只列出上次看过后新增的条目</sub></td>
+    <td align="center"><img src="./assets/screenshots/bg2.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
+    <td align="center"><img src="./assets/screenshots/bg3.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
   </tr>
     <tr>
-    <td align="center"><img src="./assets/screenshots/报告4.png" width="200" alt="关键词预警"><br><sub><b>报告</b> · 只列出上次看过后新增的条目</sub></td>
-    <td align="center"><img src="./assets/screenshots/报告5.png" width="200" alt="AI 问答"><br><sub><b>AI 报告</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
-    <td align="center"><img src="./assets/screenshots/报告6.png" width="200" alt="AI 问答"><br><sub><b>AI 报告</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
+    <td align="center"><img src="./assets/screenshots/bg4.png" width="200" alt="关键词预警"><br><sub><b>报告</b> · 只列出上次看过后新增的条目</sub></td>
+    <td align="center"><img src="./assets/screenshots/bg5.png" width="200" alt="AI 问答"><br><sub><b>AI 报告</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
+    <td align="center"><img src="./assets/screenshots/bg6.png" width="200" alt="AI 问答"><br><sub><b>AI 报告</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
     </tr>
     <tr>
-    <td align="center"><img src="./assets/screenshots/报告7.png" width="200" alt="关键词预警"><br><sub><b>报告</b> · 只列出上次看过后新增的条目</sub></td>
+    <td align="center"><img src="./assets/screenshots/bg7.png" width="200" alt="关键词预警"><br><sub><b>报告</b> · 只列出上次看过后新增的条目</sub></td>
   </tr>
 </table>
 
 **名人对比**
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/对比1.png" width="200" alt="关键词预警"><br><sub><b>关键词预警</b> · 只列出上次看过后新增的条目</sub></td>
-    <td align="center"><img src="./assets/screenshots/对比2.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
-    <td align="center"><img src="./assets/screenshots/对比3.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
+    <td align="center"><img src="./assets/screenshots/db1.png" width="200" alt="关键词预警"><br><sub><b>关键词预警</b> · 只列出上次看过后新增的条目</sub></td>
+    <td align="center"><img src="./assets/screenshots/db2.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
+    <td align="center"><img src="./assets/screenshots/db3.png" width="200" alt="AI 问答"><br><sub><b>AI 问答</b> · 语料为你已缓存的报告，带编号来源作答</sub></td>
   </tr>
 </table>
 
