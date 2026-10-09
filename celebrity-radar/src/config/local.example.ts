@@ -63,6 +63,35 @@ export interface LocalDebugFlags {
   disableRefreshQuota: boolean
   disableCooldown: boolean
   rawIoLog: boolean
+  /**
+   * 强制会员身份（**仅本地调试**，2026-10-09 补）。
+   *
+   *   'off'      不覆写，按云端 users.membership 的真实发货结果判定（仓库默认）
+   *   'free'     强制按免费版（真实身份是会员时也能测免费档体验）
+   *   'monthly'  强制按月度会员 ┐
+   *   'quarterly' 强制按季度会员 ├ 三个 plan id 与云函数 payCreate 的 PLANS 同名
+   *   'annual'   强制按年度会员 ┘
+   *
+   * 为什么需要它：会员行为有一半只在**会员**身上出现（报告页三段专享内容、专享段剥离、
+   * 免费档刷新冷却是否被绕过、每日 30 次的上限文案与各处的会员卡），而 users.membership
+   * 只由微信支付回调云函数 payCallback 写入 —— 没接商户号就永远测不到会员态，
+   * 于是「付费功能无法自测」。开这个开关，改一行、重编译即可切换身份。
+   *
+   * ⚠ 它只覆写**端上**的判定（utils/member.ts#readMemberState 的最外层），
+   *   不写数据库，**云端一概不认**。后果分两边，测试时别搞混：
+   *
+   *   · 强制为会员：端上按会员走（30 次上限、专享段可见、冷却绕过），
+   *     但云函数 aiProxy 仍按真实身份**钳制检索条数并回落极速版模型**，
+   *     quotaGuard 也仍按真实身份复核「会员补齐免计费」—— 所以
+   *     **「加厚检索」与「会员档位模型」这两件事测不出来**，
+   *     要看真实产物只能去改云端的 membership 字段。
+   *     另：此时**不要测支付** —— utils/pay.ts 靠「expires_at 是否变晚」确认发货，
+   *     覆写后它恒定不变，会一直等到超时。
+   *
+   *   · 强制为免费：端上按免费走，云端仍按真实身份计数（上限 30 也不会被端上拦），
+   *     测免费档体验时反而不容易误触上限。
+   */
+  memberOverride: 'off' | 'free' | 'monthly' | 'quarterly' | 'annual'
 }
 
 export interface LocalConfig {
@@ -119,6 +148,8 @@ export const localConfig: LocalConfig = {
     disableAskQuota: false,
     disableRefreshQuota: false,
     disableCooldown: false,
-    rawIoLog: false
+    rawIoLog: false,
+    /* 会员身份覆写：仓库默认不覆写（按云端真实发货结果判定） */
+    memberOverride: 'off'
   }
 }

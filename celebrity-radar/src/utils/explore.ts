@@ -69,7 +69,14 @@ async function pickPersonByAi(): Promise<PersonPick | null> {
     '5. 只输出 JSON，不要输出任何其他文字。'
   ].join('\n')
 
-  const res = await chatJSON(system, `随机种子：${Date.now()}\n请给出一个人名。`, PickSchema)
+  /*
+   * purpose='aux'：随机选题是辅助调用，不占用户当日的生成额度 ——
+   * 生成额度用完后仍应能摇人（否则用户会看到「额度已用完」，而端上并未为它计数）。
+   * 失败时上层退回静态热门池（见下方），所以它也不怕被限速闸挡下。
+   */
+  const res = await chatJSON(system, `随机种子：${Date.now()}\n请给出一个人名。`, PickSchema, {
+    purpose: 'aux'
+  })
   if (!res.ok) {
     diagLog('warn', 'llm', `AI 随机选题失败，改用静态热门池：${res.error}`)
     return null

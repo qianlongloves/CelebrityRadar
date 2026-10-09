@@ -35,7 +35,28 @@ interface QuotaGuardResult {
   date?: string
   count?: number
   created?: boolean
+  /** 云端复核后判定本次免计费（会员「补齐」共享缓存），见 cloudfunctions/quotaGuard */
+  waived?: boolean
   error?: string
+}
+
+/** 云端自增的结果：新计数 + 本次是否被免计费 */
+export interface QuotaIncrResult {
+  count: number
+  waived: boolean
+}
+
+/**
+ * 「会员补齐」申请的随行参数（P1，2026-10-09）。
+ *
+ * 语义：会员要生成的那一份，缓存里现有的还不含会员段落，那他这次刷新是替**全站**
+ * 把这行缓存升级，故申请免计费。端上这个标记只是「申请」——真伪由云函数复核
+ * （会员是否真的生效 + 目标那一行是否真的缺会员段），复核不过就按普通生成计数。
+ */
+export interface QuotaWaiveOptions {
+  waiveIf: 'member_upgrade'
+  /** 目标人物（personKey）：云函数据此读 report_cache 复核 */
+  target: string
 }
 
 /** 函数未部署时 wx 会抛错（含 FunctionName / -501000）——属预期过渡态，不打扰用户 */
@@ -44,17 +65,24 @@ function isNotDeployed(msg: string): boolean {
 }
 
 /**
- * 原子自增一次配额，返回自增后的**当日计数**；
+ * 原子自增一次配额，返回自增后的**当日计数**（含云端是否判定免计费）；
  * 云函数不可用时返回 null，由调用方回退端上读-改-写。
  */
-export async function incrQuotaViaCloud(kind: QuotaKind): Promise<number | null> {
+export async function incrQuotaViaCloud(
+  kind: QuotaKind,
+  opts?: QuotaWaiveOptions
+): Promise<QuotaIncrResult | null> {
   try {
     const res = (await callCloudFunction('quotaGuard', {
       kind,
-      action: 'consume'
+      action: 'consume',
+      /* 只在传了才带上：老版本云函数不认这个参数，多传反而干扰日志 */
+      ...(opts ? { waiveIf: opts.waiveIf, target: opts.target } : {})
     })) as QuotaGuardResult | null
 
-    if (res && res.ok && typeof res.count === 'number') return res.count
+    if (res && res.ok && typeof res.count === 'number') {
+      return { count: res.count, waived: res.waived === true }
+    }
 
     diagLog('warn', 'db', `quotaGuard(${kind}) 未生效：${res?.error ?? '无返回值'}，回退端上计数`)
     return null

@@ -33,7 +33,7 @@ import { readMemberState } from './member'
  */
 export type ChatJSONResult<T> =
   | { ok: true; data: T }
-  | { ok: false; error: string; retryable?: boolean }
+  | { ok: false; error: string; retryable?: boolean; kind?: string }
 
 interface ChatMessage {
   role: 'system' | 'user'
@@ -50,7 +50,17 @@ interface ChatMessage {
  */
 type ChatAttempt =
   | { ok: true; content: string; finishReason?: string }
-  | { ok: false; error: string; retryable: boolean }
+  | { ok: false; error: string; retryable: boolean; kind?: string }
+
+/**
+ * 这次 chat 属于哪个配额池 —— 云端闸门据此取上限（见 aiProxy/quota.config.js）。
+ * 缺省 `'generate'`（最严的一池）：调用方漏传时宁可少给，不可默默多给。
+ *
+ * `'aux'` = 辅助调用（消歧、选题等发生在生成**之前**的小请求）：**不占产品额度**，
+ * 只受防滥用限速约束。不单开这一档的话，免费用户把生成额度用完后会连「输入名字时
+ * 的候选消歧」都点不动 —— 那是被自己的额度锁在门外。
+ */
+export type QuotaPurpose = 'generate' | 'ask' | 'aux'
 
 /**
  * 云通道的超时在云函数内控制（见 aiProxy 的 LLM_CHAT_TIMEOUT_MS），端上已无直连超时。
@@ -255,7 +265,7 @@ export async function getChatModel(): Promise<string | null> {
  * 原先返回 null 表示「这条通道没准备好，请走本机直连」；本机通道移除后没有备选，
  * 于是「未就绪」不能再静默降级，必须变成一句能照着操作的报错（见下方两个分支）。
  */
-async function chatViaPlatform(messages: ChatMessage[]): Promise<ChatAttempt> {
+async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): Promise<ChatAttempt> {
   const { provider, model } = await resolveChatTarget()
   const startedAt = Date.now()
   let res: ProxyChatResult | null
@@ -269,6 +279,11 @@ async function chatViaPlatform(messages: ChatMessage[]): Promise<ChatAttempt> {
        */
       provider,
       model: model ?? undefined,
+      /*
+       * purpose 决定云端闸门按哪一池算上限（见 aiProxy/quota.config.js）：报告生成与
+       * AI 提问是两个独立额度池，云端判上限时必须知道这一趟属于哪一池。
+       */
+      purpose,
       messages
     })) as ProxyChatResult | null
   } catch (err) {
@@ -320,11 +335,18 @@ async function chatViaPlatform(messages: ChatMessage[]): Promise<ChatAttempt> {
     const msg = res.error || '平台大模型调用失败'
     const kind = res.kind ?? ''
     diagLog('warn', 'llm', `平台大模型失败（${kind}）：${msg}`)
-    return { ok: false, error: msg, retryable: RETRYABLE_KINDS.has(kind) }
+    /*
+     * kind 一并回传：调用方要据此认出「云端配额闸门拦下」（kind='quota'）——
+     * report.ts 收到它必须**跳过纯文本降级**，否则降级那次调用会被同一道闸门再拦一次，
+     * 白多等一轮往返，还把一个「额度用完」写成「生成失败」。
+     */
+    return { ok: false, error: msg, retryable: RETRYABLE_KINDS.has(kind), kind }
   }
 
   const content = typeof res.content === 'string' ? res.content : ''
-  if (!content.trim()) return { ok: false, error: '大模型返回为空', retryable: true }
+  if (!content.trim()) {
+    return { ok: false, error: '大模型返回为空', retryable: true, kind: 'empty' }
+  }
 
   diagLog(
     'info',
@@ -362,8 +384,8 @@ async function chatViaPlatform(messages: ChatMessage[]): Promise<ChatAttempt> {
  * 刻意不抛异常：失败以 { ok: false, retryable } 返回，让「要不要再试一次」只有一个裁决点
  * （chatJSON 的重试循环），而不是散在两层里各判一次。
  */
-async function chatOnce(messages: ChatMessage[]): Promise<ChatAttempt> {
-  return chatViaPlatform(messages)
+async function chatOnce(messages: ChatMessage[], purpose: QuotaPurpose): Promise<ChatAttempt> {
+  return chatViaPlatform(messages, purpose)
 }
 
 /** 聚合流式 chunks（保留：仍有个别调用方按流式契约组织数据） */
@@ -395,18 +417,26 @@ export function extractJSONText(raw: string): string | null {
  */
 export async function chatText(
   system: string,
-  user: string
-): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  user: string,
+  /**
+   * 这一趟属于哪个配额池（云端闸门据此取上限，见 aiProxy/quota.config.js）。
+   * 默认 `'generate'`：报告降级路径与报告同属生成池；AI 提问必须显式传 `'ask'`（见 qa.ts）。
+   */
+  purpose: QuotaPurpose = 'generate'
+): Promise<{ ok: true; text: string } | { ok: false; error: string; kind?: string }> {
   if (!hasLlmChannel()) {
     return { ok: false, error: '大模型通道不可用：云环境未配置（见 public.ts 的 cloudbaseEnvId）' }
   }
-  const attempt = await chatOnce([
-    { role: 'system', content: system },
-    { role: 'user', content: user }
-  ])
-  if (!attempt.ok) return { ok: false, error: attempt.error }
+  const attempt = await chatOnce(
+    [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ],
+    purpose
+  )
+  if (!attempt.ok) return { ok: false, error: attempt.error, kind: attempt.kind }
   const text = attempt.content.trim()
-  if (!text) return { ok: false, error: 'LLM 返回为空' }
+  if (!text) return { ok: false, error: 'LLM 返回为空', kind: 'empty' }
   return { ok: true, text }
 }
 
@@ -425,26 +455,38 @@ export async function chatJSON<T>(
   system: string,
   user: string,
   schema: z.ZodType<T>,
-  opts: { retries?: number } = {}
+  /* purpose 决定云端闸门按哪一池算上限；默认 'generate'（最严的一池，漏传不会默默多给） */
+  opts: { retries?: number; purpose?: QuotaPurpose } = {}
 ): Promise<ChatJSONResult<T>> {
   if (!hasLlmChannel()) {
     return { ok: false, error: '大模型通道不可用：云环境未配置（见 public.ts 的 cloudbaseEnvId）' }
   }
 
+  const purpose: QuotaPurpose = opts.purpose ?? 'generate'
   const attempts = 1 + (opts.retries ?? 1)
   let lastError = 'LLM 输出无法解析为合法 JSON'
   let lastRetryable = true // 解析/校验失败默认可重试（换一次采样可能就过了）
+  /*
+   * 最近一次**调用**失败的 kind，随结果交给上层：kind='quota' 时 report.ts 必须跳过
+   * 纯文本降级（降级那次会被同一道云端闸门再拦一次，白等一轮往返）。
+   * 解析/校验失败不算「调用失败」，那时把它清掉，免得把上一轮的 kind 带出来。
+   */
+  let lastKind: string | undefined
   for (let i = 0; i < attempts; i++) {
     /* 本次尝试是否被上游截断；截断导致的失败一律不再重试（理由见上方注释） */
     let truncated = false
     try {
-      const attempt = await chatOnce([
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ])
+      const attempt = await chatOnce(
+        [
+          { role: 'system', content: system },
+          { role: 'user', content: user }
+        ],
+        purpose
+      )
       if (!attempt.ok) {
         lastError = attempt.error
         lastRetryable = attempt.retryable
+        lastKind = attempt.kind
         diagLog('warn', 'llm', `chatJSON 第 ${i + 1} 次调用失败：${lastError}`)
         /* 密钥无效 / 额度不足这类错误，重试也是同样的结果，早点收手省一次往返 */
         if (!attempt.retryable) break
@@ -462,16 +504,18 @@ export async function chatJSON<T>(
         return { ok: true, data: parsed.data }
       }
       lastError = `LLM 输出未过校验：${parsed.error.issues[0]?.message ?? '字段不合法'}`
+      lastKind = undefined
       diagLog('warn', 'llm', `chatJSON 第 ${i + 1} 次输出不合法：${lastError}`)
       if (truncated) return truncatedFail(lastError)
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)
       lastRetryable = true
+      lastKind = undefined
       diagLog('warn', 'llm', `chatJSON 第 ${i + 1} 次调用失败：${lastError}`)
       if (truncated) return truncatedFail(lastError)
     }
   }
-  return { ok: false, error: lastError, retryable: lastRetryable }
+  return { ok: false, error: lastError, retryable: lastRetryable, kind: lastKind }
 }
 
 /**
@@ -480,5 +524,5 @@ export async function chatJSON<T>(
  */
 function truncatedFail(error: string): ChatJSONResult<never> {
   diagLog('warn', 'llm', `输出被上游截断，不再重试（重发同一请求只会再撞上限）：${error}`)
-  return { ok: false, error, retryable: false }
+  return { ok: false, error, retryable: false, kind: 'truncated' }
 }

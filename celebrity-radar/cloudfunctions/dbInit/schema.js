@@ -19,7 +19,13 @@ const ACL = {
   creator: { label: '仅创建者可读写', rule: null },
   publicRead: { label: '自定义规则：所有人可读、登录可写', rule: { read: true, write: 'auth.openid != null' } },
   selfRead: { label: '自定义规则：本人可读、不可写（写仅限云函数）', rule: { read: 'doc._openid == auth.openid', write: false } },
-  publicReadOnly: { label: '自定义规则：所有人可读、客户端不可写（写仅限云函数）', rule: { read: true, write: false } }
+  publicReadOnly: { label: '自定义规则：所有人可读、客户端不可写（写仅限云函数）', rule: { read: true, write: false } },
+  /*
+   * 客户端完全不可读写（连读都读不到），只有云函数的管理员身份能动。
+   * 给「服务端权威数据」用：这类数据的价值恰在于「端上碰不到」——
+   * 端上若要展示，读的是别处那份可被它读到的镜像（如 users.membership）。
+   */
+  cloudOnly: { label: '自定义规则：客户端不可读写（仅云函数）', rule: { read: false, write: false } }
 }
 
 /** 字段简写：type 带 `?` 表示 nullable（允许显式写入 null） */
@@ -41,7 +47,7 @@ const ix = (name, keys, o = {}) => ({
 const collections = [
   {
     name: 'users',
-    purpose: '账号与设置（首登写入；membership 由支付回调写，端上只读）',
+    purpose: '账号与设置（首登写入）；membership 是端上读口的**镜像**，权威在 memberships（下方）',
     acl: ACL.creator,
     fields: [
       f('_id', 'string', { system: true }),
@@ -62,8 +68,42 @@ const collections = [
          「先跑的吃掉授权，后跑的必得 43101」。 */
       f('risk_ok', 'boolean', { def: false }),
       f('membership', 'object?', { def: null })
+      /* ⚠ 上面这条是**镜像**：云端的会员判定（aiProxy 的档位闸门与配额闸门、quotaGuard 的
+         免计费复核）一律读下面的 memberships。理由：users 的权限是「仅创建者可读写」，
+         端上能改自己那一行 —— 以它为准等于把会员身份交给客户端自证
+         （自授会员 = 白用最贵模型 + 生成不计费）。镜像存在的唯一理由是端上所有界面都读它，
+         于是这次搬迁对端上零改动。两者由 payCallback 一次写入，一致性命中靠用例钉住。 */
     ],
     indexes: [ix('idx_subscribe_ok', [['subscribe_ok', 'asc']], { optional: true, supports: '云函数筛「已授权提醒」的用户' })]
+  },
+  {
+    name: 'memberships',
+    purpose: '会员权益的**服务端权威**（_id = openid，_openid 冗余存一份便于人工排查）：只由云函数 payCallback 发货时写',
+    acl: ACL.cloudOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('_openid', 'string', { system: true, required: true }),
+      /* 用户最后一次购买的档位（只决定天数，判定只认 expires_at —— 与端上口径一致） */
+      f('plan', 'string?', { required: true }),
+      f('expires_at', 'string', { required: true }),
+      /* 幂等标记：同一订单只发一次货（跨权威行与 users 镜像行判，见 payCallback/grantMembership） */
+      f('last_order_id', 'string?', { required: true }),
+      f('updated_at', 'string?', { def: null })
+    ],
+    /* 无索引：只按 _id（= openid）单点取，doc().get() 走主键，不需要额外索引 */
+    indexes: []
+  },
+  {
+    name: 'ai_calls',
+    purpose: '防滥用限速计数（_id = openid#yyyy-MM-dd）：aiProxy 在放行上游调用前就地原子自增，端上不可读写',
+    acl: ACL.cloudOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('_openid', 'string', { system: true, required: true }),
+      f('count', 'number', { required: true }),
+      f('date', 'string', { required: true })
+    ],
+    indexes: []
   },
   {
     name: 'report_cache',
@@ -207,7 +247,7 @@ const collections = [
   },
   {
     name: 'orders',
-    purpose: '会员订单状态机（pending → paid / failed），回调据此发货；端上只读',
+    purpose: '会员订单状态机（pending → granting → paid / failed）；paid = 已发货完成，回调据此发货；端上只读',
     acl: ACL.selfRead,
     fields: [
       f('_id', 'string', { system: true, required: true }),
@@ -215,9 +255,13 @@ const collections = [
       f('plan', 'string', { required: true }),
       f('amount_fen', 'number', { required: true }),
       f('days', 'number', { required: true }),
-      f('status', 'string', { required: true, enumHint: ['pending', 'paid', 'failed', 'refunded'] }),
+      f('status', 'string', { required: true, enumHint: ['pending', 'granting', 'paid', 'failed', 'refunded'] }),
       f('created_at', 'string', { required: true }),
+      /* 收到支付成功通知的时刻（抢到发货权时写） */
       f('paid_at', 'string?', { def: null }),
+      /* 发货完成时刻（users.membership 已写入）。granting 残留 = paid_at 有值而 granted_at 为空，
+         即「付了钱还没拿到会员」：微信重试会继续发货补救，重试耗尽仍为空则客服据此排查 */
+      f('granted_at', 'string?', { def: null }),
       f('transaction_id', 'string?', { def: null }),
       f('callback_fee', 'number?', { def: null })
     ],

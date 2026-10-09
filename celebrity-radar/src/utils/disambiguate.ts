@@ -66,7 +66,14 @@ export async function disambiguate(
     domainHint === 'all'
       ? `名字：${name.trim()}`
       : `名字：${name.trim()}\n限定行业：${DOMAIN_META[domainHint].label}`
-  const result = await chatJSON(buildSystemPrompt(domainHint), userMessage, DisambiguationSchema)
+  /*
+   * purpose='aux'：消歧发生在生成**之前**，不该占用户当日的生成额度 ——
+   * 否则额度用完的用户连名字都输入不了（会被报成「额度已用完」，而端上并未为消歧计数）。
+   * 详见 aiProxy/quota.config.js 的 AUX_PURPOSE。
+   */
+  const result = await chatJSON(buildSystemPrompt(domainHint), userMessage, DisambiguationSchema, {
+    purpose: 'aux'
+  })
   if (!result.ok) return result
 
   const data = result.data

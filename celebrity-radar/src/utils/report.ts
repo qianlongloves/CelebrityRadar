@@ -736,6 +736,15 @@ export async function buildReport(
   const result = await chatJSON(system, user, LlmReportSchema)
   if (!result.ok) {
     /*
+     * 云端闸门拦下（kind='quota' / 'abuse'）时**不降级**：降级本身也是一次真实调用，
+     * 会被同一道闸门再拦一次 —— 白多等一轮往返，还把「额度用完」记成「生成失败」。
+     * 直接把云端文案交回上层：它与端上 quotaExhaustedMessage 同构，用户看不出是哪一端判的。
+     */
+    if (result.kind === 'quota' || result.kind === 'abuse') {
+      diagLog('warn', 'auth', `云端闸门拦下，不降级走纯文本：${result.error}`)
+      return { ok: false, error: result.error, retryable: false, kind: result.kind }
+    }
+    /*
      * 冷却只拦「值得等待」的失败（随用随查原则）：
      *   - retryable（网络 / 上游 5xx）：等一会儿可能真就好了；
      *   - 429 限流（文案含「频繁」）：上游明确要求等。

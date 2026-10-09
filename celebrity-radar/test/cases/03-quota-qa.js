@@ -82,11 +82,11 @@ describe('配额云端通道 utils/quota-guard', () => {
       return { ok: true, kind: data.kind, date: todayKey(), count: 7, created: false }
     })
 
-    eq(await incrQuotaViaCloud('ask'), 7)
+    /* 通道返回 { count, waived }（2026-10-09 起）：waived 是「会员补齐免计费」的云端裁决 */
+    deepEq(await incrQuotaViaCloud('ask'), { count: 7, waived: false })
     eq(seen.kind, 'ask')
     eq(seen.action, 'consume')
   })
-
   it('云端返回 ok:false 时返回 null（不把失败当成功）', async () => {
     const { load } = fresh()
     const { incrQuotaViaCloud } = load('utils/quota-guard')
@@ -116,9 +116,9 @@ describe('配额云端通道 utils/quota-guard', () => {
       kinds.push(data.kind)
       return { ok: true, count: kinds.length }
     })
-    eq(await incrQuotaViaCloud('generate'), 1)
-    eq(await incrQuotaViaCloud('refresh'), 2)
-    eq(await incrQuotaViaCloud('ask'), 3)
+    eq((await incrQuotaViaCloud('generate')).count, 1)
+    eq((await incrQuotaViaCloud('refresh')).count, 2)
+    eq((await incrQuotaViaCloud('ask')).count, 3)
     deepEq(kinds, ['generate', 'refresh', 'ask'])
   })
 })

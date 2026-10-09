@@ -2,6 +2,7 @@ import { table } from './db'
 import { todayKey } from './time'
 import { diagLog } from './cloud-diagnostics'
 import { incrQuotaViaCloud } from './quota-guard'
+import type { QuotaWaiveOptions } from './quota-guard'
 import { GENERATE_QUOTA_DISABLED } from './debug'
 import {
   FREE_DAILY_GENERATE_LIMIT,
@@ -25,7 +26,13 @@ import type { GenerateQuotaRow } from '@/types/db'
  *
  * 公平性原则：只对「成功拿到报告」的生成计数——
  *   缓存命中不计数（零成本）、生成失败不计数（用户没拿到东西）、
- *   LLM 拒答不计数（合规拦截不是用户过错）。上游成本损失由冷却兜底。
+ *   LLM 拒答不计数（合规拦截不是用户过错）、
+ *   「只升不降」拦下的刷新也不计数（交回的是缓存里更完整的那一版，用户没拿到新东西）。
+ *   上游成本损失由冷却兜底。
+ *
+ * 会员「补齐」免计费（2026-10-09）：缓存里那版还不含会员段落时，会员这次生成实际是把
+ * 共享缓存从免费档升到会员档，产出归全站所有，故不该扣他的每日次数。端上只**申请**，
+ * 复核在云函数 `quotaGuard`（会员是否生效 + 那一行是否真的缺会员段落），复核不过照常计数。
  *
  * 计数已服务端化：优先走云函数 `quotaGuard` 原子自增（并发不丢数、日期取服务端、
  * 不可被改包篡改）；函数未部署时静默回退端上读-改-写。
@@ -94,9 +101,24 @@ export async function peekGenerateQuota(userId: string): Promise<GenerateQuotaSu
  * 消耗一次配额：仅在生成成功落库后调用（best-effort，计数失败不影响已生成的报告）。
  *
  * 优先由云函数原子自增；不可用时回退本地读-改-写（与 refresh_quota 同构，不做重试）。
+ *
+ * waive（P1，2026-10-09）：会员「补齐」共享缓存（缓存那版缺会员段落、他这次生成是替
+ * 全站升级）本该免计费。端上只**申请**，复核在云函数 quotaGuard（会员是否生效 +
+ * 目标那一行是否真的缺会员段）；复核不过就照常计数。
+ * ⚠ 回退路径（函数未部署）**不认**这个申请 —— 端上无法自证身份，宁可多算一次，
+ *   也不留下「改包即免次数」的口子（回退态本来就是过渡态，部署函数后即消除）。
  */
-export async function consumeGenerateQuota(userId: string): Promise<void> {
-  if ((await incrQuotaViaCloud('generate')) !== null) return
+export async function consumeGenerateQuota(
+  userId: string,
+  waive?: QuotaWaiveOptions
+): Promise<void> {
+  const cloud = await incrQuotaViaCloud('generate', waive)
+  if (cloud !== null) {
+    if (cloud.waived) {
+      diagLog('info', 'db', `会员补齐共享缓存，本次生成不计入配额：${waive?.target ?? ''}`)
+    }
+    return
+  }
 
   const id = `${userId}#${todayKey()}`
   const count = await readCount(userId)

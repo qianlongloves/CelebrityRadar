@@ -30,7 +30,6 @@ import { addHistory } from '@/utils/history'
 import {
   dismissPromo,
   isPromoDismissed,
-  presentSections,
   promoRoll,
   readMemberState,
   reportMemberPromo
@@ -248,14 +247,39 @@ export default function ReportPage() {
   const [monitorBusy, setMonitorBusy] = useState(false)
   /** 上一版报告：仅当用户点「刷新最新」且真的重新生成了才有值 */
   const [prevReport, setPrevReport] = useState<Report | null>(null)
+  /**
+   * 本次刷新被「只升不降」拦下（P0，2026-10-09）：缓存里那版含会员段落，本次较简略的
+   * 产物没有覆盖它（见 utils/cache.ts#shouldKeepMemberVersion）。必须给一句解释 ——
+   * 用户点了「刷新最新」却看不出任何变化，最容易理解成按钮坏了。
+   */
+  const [keptMember, setKeptMember] = useState(false)
+  /**
+   * 本次刷新被「免费档刷新冷却」拦下（批 2，2026-10-09）：这份报告是 12 小时内生成的，
+   * 免费档不重复买一遍（见 utils/cache.ts#isFreeRefreshCooling）。
+   * 同样是「点了刷新却没变」，故与 keptMember 共用同一个提示位、同样先回答「为什么刷不动」。
+   * 只有免费读者会看到它 —— 冷却只对非会员生效。
+   */
+  const [refreshCooled, setRefreshCooled] = useState(false)
   /** 相关名人（O-16）：报告就绪后异步算，算不出来就是空数组（整卡不渲染） */
   const [related, setRelated] = useState<RelatedPerson[]>([])
   /**
-   * 会员态（O-11）：报告是全局共享缓存，会员生成过的那一份带着 memberNotes，
-   * 免费用户读到同一份缓存时必须把这两段藏起来 —— 不能只看「报告里有没有这个字段」。
+   * 会员态（O-11）：报告是全局共享缓存，会员生成过的那一份带着 memberNotes。
+   *
+   * 批 1（2026-10-09）起「把会员段藏起来」已经下沉到数据层（utils/cache.ts#exposeReport）：
+   * 页面拿到的 report 里，非会员**根本没有**那两段，不再需要逐卡判身份 ——
+   * 这里留一份会员态只为一件事：会员卡本身要不要渲染（以及促销条对会员整条不渲染）。
    * 初值 false（非会员）：宁可先藏后现，也不让会员权益先漏出去再收回。
    */
   const [member, setMember] = useState(false)
+  /**
+   * 本次交回的报告里**被数据层藏起来的会员段落名**（批 1）：免费读者才有值。
+   *
+   * 促销条靠它说清「这份报告里有什么你看不到」（文案见 utils/member.ts#reportMemberPromo）：
+   * 内容虽然已经从 report 里剥掉了，但「有没有」这个事实必须留下来 ——
+   * 否则那句可兑现的承诺（「已含对比视角、风险提示、信源分歧」）会退化成泛泛的招揽。
+   * 也不能从 report 自己算：剥离之后它恒为空数组。
+   */
+  const [memberLocked, setMemberLocked] = useState<string[]>([])
   /**
    * 会员态是否已读到（O-21）：促销条的免费态文案写着「…开通会员 / 了解会员」，
    * 若在 readMemberState 返回前就渲染，**会员会先看到一句与自己身份不符的话**再整条消失
@@ -275,11 +299,17 @@ export default function ReportPage() {
       }
       setState({ phase: 'loading' })
       setPrevReport(null)
+      setKeptMember(false)
+      setRefreshCooled(false)
+      setMemberLocked([])
       const outcome: ReportOutcome = await getOrBuildReport(personKey, { force, focus })
       switch (outcome.kind) {
         case 'report':
           setState({ phase: 'ready', report: outcome.report, fromCache: outcome.fromCache })
           setPrevReport(outcome.prev ?? null)
+          setKeptMember(outcome.keptMember === true)
+          setRefreshCooled(outcome.refreshCooled === true)
+          setMemberLocked(outcome.memberLocked ?? [])
           break
         case 'coldstart':
           setState({ phase: 'coldstart' })
@@ -729,11 +759,13 @@ export default function ReportPage() {
 
   /**
    * 顶部「会员促销条」（O-21 立起、O-25 收敛、O-26 降频）：文案只剩免费态一种，
-   * 判定在 utils/member.ts#reportMemberPromo —— 页面只把「这份报告里实际有哪些专享段落」喂进去。
+   * 判定在 utils/member.ts#reportMemberPromo —— 页面把数据层交回的「这份报告里实际藏了哪些
+   * 专享段落」（memberLocked）喂进去。批 1 之后不能再用 report 自己算：会员段内容已被剥离，
+   * presentSections(report) 恒为空，促销条会退化成泛泛的招揽。
    * 会员态整条不渲染（见下方渲染条件），故这里不再需要「是不是会员」这个入参。
    * memberReady 仍要等：免费态文案写着「开通会员」，会员提前读到它就是被推销。
    */
-  const promo = reportMemberPromo(presentSections(report))
+  const promo = reportMemberPromo(memberLocked)
 
   /**
    * 促销条这一趟要不要出现（O-26）。
@@ -752,8 +784,8 @@ export default function ReportPage() {
     if (!report || !memberReady || member) return
     if (promoRolled.current === report.personKey) return
     promoRolled.current = report.personKey
-    setPromoOn(!isPromoDismissed() && promoRoll(presentSections(report)))
-  }, [report, member, memberReady])
+    setPromoOn(!isPromoDismissed() && promoRoll(memberLocked))
+  }, [report, member, memberReady, memberLocked])
 
   /**
    * 促销条的唯一动作：去会员中心。
@@ -946,6 +978,40 @@ export default function ReportPage() {
           <Text className='page-report__diff-head'>已更新为最新版本</Text>
           <Text className='page-report__diff-body'>
             相比 {fromNow(diff.prevAt)} 的版本：{diffParts.join(' · ')}
+          </Text>
+        </View>
+      )}
+
+      {/*
+        刷新被「只升不降」拦下（P0）：报告是全局共享缓存，同一人物全站只有一行，
+        免费档产物若覆盖掉含会员段落的那一版，全站会员都会看到「深度解析」整块消失，
+        且不会自愈 —— 故缓存里已含会员段落时拒绝降级覆盖（utils/cache.ts）。
+        这一条必须出现：用户点了「刷新最新」却什么都没变，没有解释就等于按钮坏了。
+        文案按会员态分开 —— 免费用户看不到会员段落，对他来说重点是「为什么刷不动、差在哪」。
+      */}
+      {keptMember && (
+        <View className='page-report__diff'>
+          <Text className='page-report__diff-head'>已保留更完整的版本</Text>
+          <Text className='page-report__diff-body'>
+            {member
+              ? '这位人物的报告已含会员专属段落（对比视角 / 风险提示 / 信源分歧），本次刷新生成的内容更基础，故未覆盖它。'
+              : '这位人物已有一份更完整的报告（含会员专属段落：对比视角 / 风险提示 / 信源分歧），本次刷新生成的内容更基础，故未覆盖它。开通会员后即可查看这三段。'}
+          </Text>
+        </View>
+      )}
+
+      {/*
+        刷新被「免费档冷却」拦下（批 2）：这份报告是 12 小时内生成的，免费档不重复买一遍
+        （utils/cache.ts#isFreeRefreshCooling）。与上一条同为「点了刷新却没变」，故同一处提示位。
+        文案要先回答「那我现在看的是不是旧的」——否则「没重新生成」听着像降级；
+        再如实说明会员不受此限（对免费用户说，会员根本看不到这条）。
+      */}
+      {refreshCooled && (
+        <View className='page-report__diff'>
+          <Text className='page-report__diff-head'>这份报告刚刚更新过</Text>
+          <Text className='page-report__diff-body'>
+            它生成于 12 小时内，内容不会有实质变化（素材时间窗为 30 天），所以本次直接交回现有的一版、没有重新生成
+            —— 你看到的就是最新的。会员可随时按自己的档位重新生成一份更厚的。
           </Text>
         </View>
       )}
@@ -1537,13 +1603,14 @@ export default function ReportPage() {
           )}
 
           {/*
-            会员专享：对比视角 + 风险提示 + 信源分歧（O-11 / 本轮）。
+            会员专享：对比视角 + 风险提示 + 信源分歧（O-11 / 批 1 2026-10-09）。
             这些段落只在会员生成时被请求（见 utils/report.ts 的 MEMBER_HINT_REALTIME），但它们**不是**
             免费的：报告是全局共享缓存、不按身份切分（否则同一个人会有两份报告，热度与来源
-            还不一致），免费用户完全可能读到会员生成的那一份 —— 所以这里必须用会员态再拦一道，
-            否则「会员专享」等于对所有人开放。因此条件缺一不可：
-              · report.memberNotes / report.conflicts —— 这份缓存里确实有这些段；
-              · member —— 读它的人此刻是会员（权益到期即收回）。
+            还不一致），免费用户完全可能读到会员生成的那一份。
+            批 1 起「不给免费用户看」已下沉到数据层（utils/cache.ts#exposeReport）：
+            非会员拿到的 report 里**根本没有**这两个字段，所以这里的 `member` 不再是防泄漏的
+            第二道闸 —— 它是「这张卡属于谁」：本卡是页面上唯一的会员身份确认位（见下方注释），
+            非会员整卡不出。即便这个判断以后被人挪掉，漏出去的也只是一张空卡，不再是内容。
             免费用户整卡不出，刻意不做「灰掉 + 开通会员」的诱导样式：
             免费用户看到的每一处留白都得额外解释一遍，报告页已经够长了。
             ⚠ 两个字段要**各自**判空：老会员报告只有 memberNotes，新报告才可能有 conflicts，
@@ -1561,11 +1628,14 @@ export default function ReportPage() {
               {/* 会员段落整体缺失时，把原因写清楚，而不是让整卡消失（2026-10-08 改）。
                   报告是**全局共享缓存**，所以会员也会读到免费生成（或分配置更早）的那一份 ——
                   那种报告里根本没有这两个字段（提示词里没要过）。此时若无提示，会员看到的是
-                  「深度解析」整块不见，很容易理解成权益没生效。 */}
+                  「深度解析」整块不见，很容易理解成权益没生效。
+                  2026-10-09 补：这一次「补齐」是替**全站**把这行共享缓存升级成会员版，
+                  不该让他掏自己的每日次数，故明说（复核与免计费见 cloudfunctions/quotaGuard）。
+                  文案里的「三段」与下方三段一一对应：对比视角 / 风险提示 / 信源分歧。 */}
               {!report.memberNotes && !report.conflicts && (
                 <Text className='page-report__empty'>
-                  这份报告生成时没有包含会员段落（可能是免费生成、或较早的缓存）。点上方「查看最新」重新生成，
-                  即可得到对比视角、风险提示与信源分歧这三段。
+                  这份报告生成时没有包含会员段落（可能是免费生成、或较早的缓存）。点上方「查看最新」用会员档重新生成，
+                  即可得到对比视角、风险提示与信源分歧这三段 —— 这次补齐不消耗你的每日生成次数。
                 </Text>
               )}
               {/* 两段各自判空：memberNotes 可能整个不存在（只带 conflicts 的缓存），

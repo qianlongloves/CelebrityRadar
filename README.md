@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-300%20passing-success.svg)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-399%20passing-success.svg)](#开发与测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 人物档案 / 动态 / 语录 / 点评 / 争议与回应 / 时间线 / 名词解释…），再在端上聚合出词云、情绪走势与热度趋势。
@@ -42,7 +42,7 @@
 
 ## 这是一个什么样的项目
 
-一个完整、可编译运行的微信小程序工程：端上 19 个页面，云侧 10 个云函数与 16 张数据库集合，
+一个完整、可编译运行的微信小程序工程：端上 19 个页面，云侧 10 个云函数与 18 张数据库集合，
 覆盖「搜索 → 消歧 → 检索 → 生成 → 缓存 → 订阅 / 收藏 / 分享 / 问答 / 对比」的全链路。
 
 设计重心只有两条：
@@ -283,7 +283,9 @@ npm run build:h5       # H5 端构建（调试用）
 - **`alertTemplateId`** —— 关键词预警的模板 ID，**必须与上一个不同**：微信一次性订阅授权**按模板**消耗，两个定时任务共用一个模板会互相吃掉授权位（先跑的用掉，后跑的必得 43101）
 - **`riskTemplateId`** —— 名人风险监控的模板 ID，**同样必须与上面两个都不同**（同一个「按模板消耗」的道理）。留空则功能照常可用、只是不推送，风险信号仍在预警页展示
 - **`webviewDomains`** —— 「原文预览」页可内嵌的业务域名白名单；留空则一律走「素材预览卡 + 复制链接」降级路径
-- **`debug`** —— 本地调试开关（放开额度闸门与上游冷却）。**仓库默认五项全 false**，只在本地联调时置 true
+- **`debug`** —— 本地调试开关（放开额度闸门与上游冷却）。**仓库默认全为安全值**（五项 `false` + `memberOverride: 'off'`），只在本地联调时改
+- **`debug.memberOverride`** —— 强制会员身份，用于**自测付费功能**：`'off'`（默认）按云端真实发货结果判定；`'free'` 强制免费；`'monthly'` / `'quarterly'` / `'annual'` 强制对应档位会员。
+  ⚠ 它只覆写**端上**判定（`utils/member.ts#readMemberState` 的最外层），**云端一概不认**：强制会员时检索条数仍被 `aiProxy` 按真实身份钳制、`quotaGuard` 的免计费复核也照旧 —— 所以「加厚检索」与「会员档位模型」这两件事测不出来，要看真实产物只能改云端的 `memberships` 集合（会员权威数据；`users.membership` 只是端上读的镜像，云函数不认它）。另：调试为会员时**不要测支付**（`utils/pay.ts` 靠 `expires_at` 是否变晚确认发货，覆写后它恒定不变）
 
 `public.ts`：
 
@@ -304,6 +306,7 @@ npm run build:h5       # H5 端构建（调试用）
 - **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** —— 三个定时云函数各自的环境变量（**三者必须是不同模板**，否则互相吃掉一次性订阅授权）。❌ 不进包
 - **`WX_APPSECRET`** —— 仅 `dbInit` 的环境变量（换 access_token 建索引时用）。❌ 不进包
 - **`DB_ADMIN_TOKEN`** —— 仅 `dbInit` 的环境变量（自定义口令，写操作的闸门）。❌ 不进包
+- **`AI_PROXY_TEST_TOKEN`** —— 仅 `aiProxy` 的环境变量（`test` 付费探针的口令；**不配则该动作一律拒绝**，这是期望的默认状态）。为运维口令而非部署项，通常只在控制台排障时临时加。❌ 不进包
 - **`WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID`** —— `payCreate` 的环境变量。❌ 不进包
 - **部署期的密钥来源（`.env` 本身）** —— `celebrity-radar/.env`（由 `.env.example` 复制，**不进版本库**），由 `cloudbaserc.json` 以 `${env.XXX}` 引用。❌ 不进包
 - **环境 ID / 订阅模板 ID** —— `src/config/local.ts`。✅ 进包（**它们不是密钥**）
@@ -381,7 +384,7 @@ tcb fn deploy aiProxy       -e <your-env-id>
 
 `cloudbaserc.json` 已声明函数、环境变量与定时器，逐个 `tcb fn deploy <函数名>` 即可。
 
-- **`aiProxy`** —— 平台代付上游密钥（`test` / `search` / `chat`）+ 会员模型闸门（会员的素材加厚按 `count` 分档）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）；**供应商由端上请求指定**（用户自选），云端只兜底。触发：端上调用；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`）+ `OPENAI_API_KEY`（默认用不上）
+- **`aiProxy`** —— 平台代付上游密钥（`search` / `chat`）+ **云端闸门**（会员身份读 `memberships`、每日上限按 `quota.config.js`、防滥用就地自增 `ai_calls`、素材加厚按 `count` 分档）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）；**供应商由端上请求指定**（用户自选），云端只兜底。触发：端上调用；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`）+ `OPENAI_API_KEY`（默认用不上）+ `AI_PROXY_TEST_TOKEN`（可选：`test` 探针口令，**不配则该动作一律拒绝**）
 - **`quotaGuard`** —— 配额计数权威（原子自增 + 服务端日期），`refresh` / `generate` / `ask` 三类。触发：端上调用；环境变量：—
 - **`contentCheck`** —— 内容安全机审（云调用 `security.msgSecCheck`），送检源 = AI 提问。触发：端上调用；环境变量：—
 - **`hotBoardRefresh`** —— 热门名人榜每日生产（写 `hot_board`）。触发：定时 06:30；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（定时任务没有端上偏好，取 `LLM_PROVIDER`，默认 DeepSeek，因此**这家必须配 Key**）
@@ -402,17 +405,19 @@ tcb fn deploy aiProxy       -e <your-env-id>
 **没有必装清单，按需部署即可**（不用的功能不部署，也不影响其他部分）：
 
 - **必装**：`aiProxy` —— 生成报告 / 检索 / AI 问答都走它。
-- **建议**：`quotaGuard` —— 配额服务端化，部署顺序见第 3 节。
+- **建议（现在实际算必装）**：`quotaGuard` —— 云端闸门读的就是它写的计数；不部署 = 三张配额表恒空 ⇒ 每日上限在云端形同不存在（端上仍会自己拦，但那正是「改包即可绕过」的那半边）。部署顺序见第 3 节。
 - **可选**：`contentCheck`（机审，fail-open，不部署只是少一道合规兜底）、`hotBoardRefresh`（首页热门榜，需定时触发器 06:30）、`notifyFollowUpdates` / `keywordAlert` / `riskWatch`（三路订阅推送，各需一枚独立模板 + 定时触发器）、`payCreate` / `payCallback`（会员支付，需自己的商户号）。
 - **运维工具**：`dbInit`，用完即删。
 
-### 3. 建集合与权限（16 张集合）
+### 3. 建集合与权限（18 张集合）
 
 CloudBase 文档型数据库。端上写业务字段 `id`，由 `utils/db.ts` 映射到系统主键 `_id`。
 
 | 集合 | 用途 | 权限 |
 |---|---|---|
-| `users` | 账号与设置（首登自动写入；`membership` 由支付回调写、端上只读） | 仅创建者可读写 |
+| `users` | 账号与设置（首登自动写入）；`membership` 是端上读口的**镜像**，权威在下方 `memberships` | 仅创建者可读写 |
+| `memberships` | **会员权益权威**（`_id` = openid）：只由 `payCallback` 发货时写；云端判档位与免计费都读它 | **客户端不可读写**（仅云函数） |
+| `ai_calls` | 防滥用限速计数（`_id` = openid#yyyy-MM-dd）：`aiProxy` 放行上游前就地自增，是成本侧的硬边界 | **客户端不可读写**（仅云函数） |
 | `report_cache` | 报告缓存 + `building` 生成互斥锁（全局共享、长期复用） | 所有人可读、登录可写 |
 | `feed_cache` | 检索结果结构化映射（不存 LLM 产物） | 所有人可读、登录可写 |
 | `hot_board` | 热门名人榜（AI 每日写，`_id` 固定 `latest` 覆盖写） | 所有人可读、客户端不可写 |
@@ -420,7 +425,7 @@ CloudBase 文档型数据库。端上写业务字段 `id`，由 `utils/db.ts` �
 | `refresh_quota` | 关注流每日刷新 ≤ 10 次（`openid#yyyy-MM-dd`） | 本人可读、不可写（写仅限云函数） |
 | `generate_quota` | 报告每日生成配额（免费 3 / 会员 30） | 本人可读、不可写（同上） |
 | `ask_quota` | AI 提问每日配额（免费 5 / 会员 30，成功才计数） | 本人可读、不可写（同上） |
-| `orders` | 会员订单状态机（`pending → paid` / `failed`） | 本人可读、不可写（写仅限支付云函数） |
+| `orders` | 会员订单状态机（`pending → granting → paid` / `failed`） | 本人可读、不可写（写仅限支付云函数） |
 | `follows` | 关注列表（`openid#personKey`） | 仅创建者可读写 |
 | `favorites` | 收藏（四类，`openid#type#hash` 防重） | 仅创建者可读写 |
 | `history` | 浏览历史（保留 50 条） | 仅创建者可读写 |
@@ -444,6 +449,7 @@ CloudBase 文档型数据库。端上写业务字段 `id`，由 `utils/db.ts` �
 | 所有人可读、登录可写 | `{"read": true, "write": "auth.openid != null"}` | `report_cache` / `feed_cache` |
 | 本人可读、不可写 | `{"read": "doc._openid == auth.openid", "write": false}` | `refresh_quota` / `generate_quota` / `ask_quota` / `orders` |
 | 所有人可读、客户端不可写 | `{"read": true, "write": false}` | `hot_board` / `keywords` / `risk_scans` / `risk_signals` |
+| 客户端不可读写 | `{"read": false, "write": false}` | `memberships` / `ai_calls` |
 
 ```bash
 tcb fn deploy dbInit -e <your-env-id>
@@ -455,10 +461,11 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<口�
 未配置该变量时写操作**一律拒绝**（只读巡检不受限）—— 这是防止「云函数被端上任意调用」的闸门，别省。
 `action` 另有 `fields`（字段比对）/ `indexes`（索引计划）/ `sync`（一步到位），带 `apply: true` 才真正落库。
 
-**权限最容易出事的两条**：
+**权限最容易出事的三条**：
 
 - 三张配额表（`generate_quota` / `refresh_quota` / `ask_quota`）必须设成「本人可读、**不可写**」，否则用户能自己改额度 ⇒ 免费层失效。
   ⚠ 必须先部署 `quotaGuard` 再收紧权限，顺序颠倒会让端上回退写入被拒、计数恒为 0。
+- `memberships` / `ai_calls` 必须设成「**客户端不可读写**」：它们是服务端权威（会员身份、防滥用计数），端上碰得到就等于自己发会员、自己清计数。端上要显示的会员信息读的是 `users.membership` 那份镜像。
 - `report_cache` / `feed_cache` 是「所有人可读、登录可写」的共享缓存。
 
 ### 4. 域名与后台配置
@@ -494,6 +501,8 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<口�
 | 免费额度怎么点都不减 | 配额表权限没收紧，或 `quotaGuard` 部署顺序颠倒 | 见第 3 节 |
 | 订阅推送收不到（43101） | 三个定时任务共用了同一枚模板 | `subscribeTemplateId` / `alertTemplateId` / `riskTemplateId` 必须是三个不同模板 |
 | 会员开通点击无反应 | 未配商户号 / 未部署 `payCallback` | 见第 5 节，不影响免费功能 |
+| 改包后额度形同不存在 | `ai_calls` / 三张配额表的权限没收紧 | 见第 3 节：`ai_calls` 与 `memberships` 必须是「客户端不可读写」 |
+| 端上显示会员、云端却按免费档 | `memberships` 里没有这一行（发货只写了镜像） | 让用户重进一次支付回调所在的订单页触发重试；或核对 `payCallback` 日志 |
 
 ### 上线前检查清单
 
@@ -501,7 +510,9 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<口�
 - [ ] 隐私协议已配置，且与实际收集项（openid、本地存储）一致
 - [ ] 保留 AI 生成内容标识（项目内置：「AI 生成，仅供参考」角标与报告页声明）
 - [ ] `src/utils/sensitive.ts` 的 `SENSITIVE_NAMES` 已按最新要求补充（⚠ 这是**留给运营人工填**的，仓库里是空数组）
-- [ ] `src/config/local.ts` 的 `debug` 五项全部为 `false`（仓库默认即为 false；否则免费层限流与 429 冷却保护失效）
+- [ ] `src/config/local.ts` 的 `debug` 五项全为 `false`、`memberOverride` 为 `'off'`（仓库默认即为安全值；否则免费层限流与 429 冷却保护失效，且会把自己伪装成会员去自测付费功能）
+- [ ] `memberships` / `ai_calls` 已在控制台设为「**客户端不可读写**」（会员与成本两道权威都在这里；没设 = 端上能自己发会员、自己清计数）
+- [ ] `aiProxy` **未**配置 `AI_PROXY_TEST_TOKEN`（或已配置但不外泄）：`test` 探针每次调用都真花钱，未配置时它会一律拒绝
 - [ ] 已在真机跑过主要验收路径（搜索 → 消歧 → 生成 → 收藏 / 分享 / 问答）
 
 ---
@@ -542,7 +553,7 @@ celebrity-radar/
 │   ├── styles/                 # 主题变量、底栏图标
 │   └── custom-tab-bar/         # 自定义底部菜单
 ├── cloudfunctions/             # 10 个云函数
-│   ├── aiProxy/                # 平台代付密钥闸门 + 会员模型闸门（test / search / chat）
+│   ├── aiProxy/                # 平台代付密钥闸门 + 会员 / 配额 / 限速闸门（test / search / chat）
 │   ├── quotaGuard/             # 配额计数权威（原子自增 + 服务端日期）
 │   ├── contentCheck/           # 内容安全机审（云调用）
 │   ├── payCreate/              # 会员下单（服务端定价 + 云支付统一下单）
@@ -552,7 +563,7 @@ celebrity-radar/
 │   ├── riskWatch/              # 名人风险监控（定时 09:40）
 │   ├── hotBoardRefresh/        # 热门名人榜每日生产（定时 06:30）
 │   └── dbInit/                 # 运维工具（schema.js 是库结构单一事实源）
-├── test/                       # 本地单测（3 个用例文件 / 300 条用例）
+├── test/                       # 本地单测（7 个用例文件 / 399 条用例）
 ├── config/                     # Taro 构建配置（dev / index / prod）
 ├── cloudbaserc.json            # CloudBase 部署描述（函数 + 环境变量 + 定时器）
 ├── .env.example                # 云函数部署密钥模板
@@ -598,6 +609,8 @@ celebrity-radar/
 - **输出侧**：报告 `sources` / `dynamics` 链接强制 URL 白名单清洗，只保留检索素材中出现过的链接
 - **内容口径**：全链路标注「AI 生成，仅供参考」；隐私声明页 + 举报入口 + 「清空我的数据」二次确认
 - **运行成本**：报告缓存共享复用、每账号每日刷新 ≤ 10 次、主动生成 ≤ 3 次（会员 30）、`building` 互斥避免并发重复生成、关注周报按自然周本机缓存
+- **档位决定检索厚度**：免费档只发主线检索（10 条素材），会员档主线 24 + 社交支线 16（共 40 条）—— 检索调用与素材量都随档位走
+- **免费档刷新冷却**：同一人物的「刷新最新」在报告生成后 12 小时内不重复生成（内容本就不会变，直接交回现有的一版并说明），会员不受此限。**注意它与上一条「上游失败冷却」不是一回事**，两者判据、时长、目的都不同
 - **冷却只拦「值得等待」的失败**：仅上游限流 429 / 网络 / 5xx 进入 10 分钟冷却；密钥无效、额度不足即时报错且不冷却；缓存命中永远优先于冷却与配额
 - **漏洞报告**：请**不要**开公开 Issue，按 [`SECURITY.md`](./SECURITY.md) 的渠道私下联系。
   判据提醒：改包让端上显示会员档**不算**漏洞（闸门在云端），云端闸门可被绕过才算
@@ -607,7 +620,7 @@ celebrity-radar/
 ## 开发与测试
 
 ```bash
-npm test          # tsc 编译测试产物 + 跑全部用例（300 条，纯本地、不连云）
+npm test          # tsc 编译测试产物 + 跑全部用例（399 条，纯本地、不连云）
 npm run test:only # 跳过 tsc，直接跑
 ```
 
@@ -616,7 +629,7 @@ npm run test:only # 跳过 tsc，直接跑
 
 提交前请确认（5 条）：
 
-1. `npm test` 全绿（当前 300 / 300）
+1. `npm test` 全绿（当前 399 / 399）
 2. `npx tsc --noEmit` 无新增告警
 3. 检查小程序**主包体积**（硬上限 2MB，当前构建产物约 1.3MB）；新增依赖前先核对构建产物
 4. `src/config/local.ts` 与 `debug` 开关**不要**提交（已在 `.gitignore` 内）
@@ -648,6 +661,12 @@ npm run test:only # 跳过 tsc，直接跑
 - 内容机审 `contentCheck` 走云调用，未部署或权限未生效时按 **fail-open** 放过（可用性优先于拦截）
 - 关键词预警依赖微信**一次性订阅**授权，模板 ID 与推送时机受平台规则约束
 - 「原文预览」页能否 `webview` 内嵌取决于域名白名单与微信平台校验，未命中一律降级为预览卡
+- 报告的**会员段落取决于缓存里那一版是谁生成的**：同一个人只有一行全局缓存，若免费档先生成过，
+  会员打开时看到的是不含三段专享内容的版本，需点「查看最新」用会员档补齐（**这次补齐不消耗每日次数**）；
+  反过来，已含会员段落的版本不会被免费档刷新覆盖，而那三段对非会员**在数据层就不下发**
+  （所有读取口统一剥离，见 `utils/cache.ts` 与 `utils/member.ts#stripMemberSections`），
+  不依赖每个页面各自判身份 —— 端上直连云数据库，改包 / 抓包本就能拿到原文，
+  这条保证的是「非会员拿到的对象里没有会员段」这个不变式，不是安全边界
 - 报告内容由大模型生成，**可能存在事实偏差**，务必以来源链接为准
 - 测试覆盖的是逻辑与数据层，不含 UI 渲染、真机交互、云函数运行时与支付全链路
 

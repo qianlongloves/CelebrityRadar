@@ -53,9 +53,14 @@ export interface OrderRow {
   plan: string
   /** 实付金额（分）；回调必须与此值一致才落库 */
   amount_fen: number
-  status: 'pending' | 'paid' | 'failed' | 'refunded'
+  /* granting = 已收到支付成功通知、正在发货（写 memberships 权威 + users.membership 镜像），
+     **不是**终态；paid = 已发货完成。残留的 granting 即「付了钱还没拿到会员」，靠回调重试补救 */
+  status: 'pending' | 'granting' | 'paid' | 'failed' | 'refunded'
   created_at: string
+  /** 收到支付成功通知的时刻（回调抢到发货权时写） */
   paid_at: string | null
+  /** 发货完成（两处会员数据都已写入）的时刻；granting 残留时为空 */
+  granted_at: string | null
   transaction_id: string | null
 }
 
@@ -111,3 +116,11 @@ export interface RiskScanRow {
   scanned: number
   signals_total: number
 }
+
+/*
+ * 刻意**不在这里**声明的两张表：`memberships`（会员权威）与 `ai_calls`（防滥用计数）。
+ * 它们的权限是「客户端完全不可读写」，端上任何读写都会失败 —— 也就是说并不存在
+ * 「给它们定义行类型」的场景；反过来在这里留一份看着能用的类型，会诱导后来者把端上
+ * 接到会员权威上去读（那就把「会员身份不由端上自证」这条边界又绕回去了）。
+ * 端上要显示的会员信息读 `users.membership` 那份镜像（见 utils/member.ts#readMemberState）。
+ */

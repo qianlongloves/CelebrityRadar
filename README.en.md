@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-300%20passing-success.svg)](#development--testing)
+[![Tests](https://img.shields.io/badge/tests-399%20passing-success.svg)](#development--testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), with a keyword cloud, sentiment trend and heat curve aggregated on the client.
@@ -42,7 +42,7 @@
 
 ## What This Project Is
 
-A complete, compilable WeChat mini program: 19 pages on the client, 10 cloud functions and 16 database collections on the server,
+A complete, compilable WeChat mini program: 19 pages on the client, 10 cloud functions and 18 database collections on the server,
 covering the full chain of *search → disambiguation → retrieval → generation → caching → follow / favorite / share / Q&A / compare*.
 
 It is built around two principles:
@@ -283,7 +283,9 @@ None of the three is committed (all are in `.gitignore`), so your edits never po
 - **`alertTemplateId`** — Template ID for keyword alerts; **it must differ from the one above**: WeChat one-time subscription grants are consumed **per template**, so sharing one template between two scheduled jobs means the first job consumes the grant and the second always fails with 43101
 - **`riskTemplateId`** — Template ID for person risk monitoring; **also must differ from both above** (grants are consumed per template). Leave it empty and the feature still works — it just sends no push, while risk signals remain visible in the alerts page
 - **`webviewDomains`** — Allowlist of domains the "original article preview" page may embed; leave empty to always fall back to a preview card plus a copy-link action
-- **`debug`** — Local debug switch (opens quota gates and upstream cooldowns). **All five flags default to false**, enable only for local integration work
+- **`debug`** — Local debug switch (opens quota gates and upstream cooldowns). **All flags default to safe values** (five `false` plus `memberOverride: 'off'`), change them only for local integration work
+- **`debug.memberOverride`** — Forces a membership identity so the paid features can be self-tested: `'off'` (default) keeps the real server-side grant, `'free'` forces the free tier, `'monthly'` / `'quarterly'` / `'annual'` force that tier.
+  ⚠ It only overrides the **client-side** verdict (`utils/member.ts#readMemberState`, outermost layer) and is **never recognised by the cloud**: with a forced membership, `aiProxy` still clamps retrieval counts by the real identity and `quotaGuard` still re-checks the waiver — so "thicker retrieval" and "member-tier models" cannot be tested this way; to see the real output, add a row to the authoritative `memberships` collection (`_id` = your openid) in the cloud. Also: do **not** test payments while a membership is forced (`utils/pay.ts` confirms the grant by `expires_at` moving later, which the override keeps constant)
 
 `public.ts`:
 
@@ -305,6 +307,7 @@ None of the three is committed (all are in `.gitignore`), so your edits never po
 - **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** — environment variables of the three scheduled functions (**three different templates**, or they consume each other's one-time grants). ❌ not in the bundle
 - **`WX_APPSECRET`** — `dbInit` only (to exchange an access_token for index updates). ❌ not in the bundle
 - **`DB_ADMIN_TOKEN`** — `dbInit` only (custom token, the gate for write actions). ❌ not in the bundle
+- **`AI_PROXY_TEST_TOKEN`** — `aiProxy` only (token for the paid `test` probe; **unset means that action is always rejected**, which is the intended default). It is an ops token rather than a deployment item, so normally you add it in the console only while troubleshooting. ❌ not in the bundle
 - **`WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID`** — `payCreate`. ❌ not in the bundle
 - **Deploy-time secret source (the `.env` file itself)** — `celebrity-radar/.env` (copied from `.env.example`, **not committed**), referenced from `cloudbaserc.json` as `${env.XXX}`. ❌ not in the bundle
 - **Environment ID / subscription template IDs** — `src/config/local.ts`. ✅ in the bundle (**they are not secrets**)
@@ -381,7 +384,7 @@ tcb fn deploy aiProxy       -e <your-env-id>
 
 `cloudbaserc.json` already declares the functions, environment variables and timers, so deploy each one with `tcb fn deploy <name>`.
 
-- **`aiProxy`** — platform-paid upstream keys (`test` / `search` / `chat`) + member model gate (thicker retrieval is gated by `count`) + a chat output cap applied to **every** request (see `chatMaxTokens`); **the provider comes from the client request** (user-selectable), the cloud only falls back. Trigger: client call; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`) + `OPENAI_API_KEY` (unused by default)
+- **`aiProxy`** — platform-paid upstream keys (`search` / `chat`) + **server-side gates** (membership read from `memberships`; daily caps from `quota.config.js`; anti-abuse counter incremented in place in `ai_calls`; thicker retrieval gated by `count`) + a chat output cap applied to **every** request (see `chatMaxTokens`); **the provider comes from the client request** (user-selectable), the cloud only falls back. Trigger: client call; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`) + `OPENAI_API_KEY` (unused by default) + `AI_PROXY_TEST_TOKEN` (optional: token for the `test` probe — **unset means that action is always rejected**)
 - **`quotaGuard`** — authoritative quota counting (atomic increments with server dates): `refresh` / `generate` / `ask`. Trigger: client call; environment variables: —
 - **`contentCheck`** — content moderation via `security.msgSecCheck`, applied to AI questions. Trigger: client call; environment variables: —
 - **`hotBoardRefresh`** — builds the daily hot board (writes `hot_board`). Trigger: cron 06:30; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (a cron job has no client preference, so it takes `LLM_PROVIDER`, DeepSeek by default — **that provider must therefore have a key**)
@@ -402,17 +405,19 @@ Common pitfalls:
 **There is no mandatory install list — deploy what you need** (skipping a function does not affect the others):
 
 - **Required**: `aiProxy` — report generation / retrieval / AI Q&A all go through it.
-- **Recommended**: `quotaGuard` — server-side quota counting; step 3 states the deployment order you must follow.
+- **Recommended (effectively required)**: `quotaGuard` — the server-side gates read the counters it writes; skip it and the three quota collections stay empty, so the daily caps effectively do not exist in the cloud (the client still enforces them, but that is exactly the half a repackaged client can bypass). Step 3 states the deployment order you must follow.
 - **Optional**: `contentCheck` (moderation; fails open, so skipping it only drops one compliance fallback), `hotBoardRefresh` (daily hot board, timer 06:30), `notifyFollowUpdates` / `keywordAlert` / `riskWatch` (three subscription pushes, each needs its own template + timer), `payCreate` / `payCallback` (membership payments, needs your own merchant account).
 - **Ops tool**: `dbInit`, delete it when you are done.
 
-### 3. Collections & permissions (16 collections)
+### 3. Collections & permissions (18 collections)
 
 A CloudBase document database. The client writes the `id` field; `utils/db.ts` maps it to the system primary key `_id`.
 
 | Collection | Purpose | Permission |
 |---|---|---|
-| `users` | Account and settings (created on first login; `membership` is written by the payment callback and read-only for the client) | Creator only |
+| `users` | Account and settings (created on first login; `membership` is a **mirror** of the authoritative record, for the client UI only) | Creator only |
+| `memberships` | **Authoritative membership** (`_id` = openid): written only by `payCallback` when an order ships; the cloud reads it for model tier and for the quota waiver | **Client cannot read or write** (cloud functions only) |
+| `ai_calls` | Anti-abuse rate-limit counter (`_id` = openid#yyyy-MM-dd): incremented in place by `aiProxy` right before paying an upstream call — the hard cost boundary | **Client cannot read or write** (cloud functions only) |
 | `report_cache` | Report cache + `building` generation mutex (globally shared, long-lived) | Read: everyone; write: signed-in users |
 | `feed_cache` | Structured mapping of retrieval results (no LLM output stored) | Read: everyone; write: signed-in users |
 | `hot_board` | Hot board (written daily by AI, always at `_id = latest`) | Read: everyone; client cannot write |
@@ -420,7 +425,7 @@ A CloudBase document database. The client writes the `id` field; `utils/db.ts` m
 | `refresh_quota` | Feed refreshes, ≤ 10 per day (`openid#yyyy-MM-dd`) | Owner reads; writes via cloud functions only |
 | `generate_quota` | Daily report generation quota (3 free / 30 member) | Owner reads; writes via cloud functions only |
 | `ask_quota` | Daily AI question quota (5 free / 30 member, counted only on success) | Owner reads; writes via cloud functions only |
-| `orders` | Membership order state machine (`pending → paid` / `failed`) | Owner reads; writes by payment functions only |
+| `orders` | Membership order state machine (`pending → granting → paid` / `failed`) | Owner reads; writes by payment functions only |
 | `follows` | Follow list (`openid#personKey`) | Creator only |
 | `favorites` | Favorites, four types (deduplicated by `openid#type#hash`) | Creator only |
 | `history` | Browsing history (last 50) | Creator only |
@@ -436,7 +441,7 @@ Current state of schema and permissions (important for forks):
 - **Indexes can be automated**: `dbInit` creates and updates them through the WeChat HTTP "update index" API (requires `WX_APPID` / `WX_APPSECRET`), or you can create them manually in the console.
 - To see what is still missing, run `dbInit` with `{"action":"report"}` — the `permissions_manual` block in the result is the very list you must click through.
 
-The console has **no** "everyone reads, signed-in users write" preset, so pick "custom security rules" and fill in one of the four levels below (values map one-to-one to `ACL` in `cloudfunctions/dbInit/schema.js`):
+The console has **no** "everyone reads, signed-in users write" preset, so pick "custom security rules" and fill in one of the five levels below (values map one-to-one to `ACL` in `cloudfunctions/dbInit/schema.js`):
 
 | Level | Security rule (JSON) | Collections |
 |---|---|---|
@@ -444,6 +449,7 @@ The console has **no** "everyone reads, signed-in users write" preset, so pick "
 | Read: everyone; write: signed-in | `{"read": true, "write": "auth.openid != null"}` | `report_cache` / `feed_cache` |
 | Owner reads; client cannot write | `{"read": "doc._openid == auth.openid", "write": false}` | `refresh_quota` / `generate_quota` / `ask_quota` / `orders` |
 | Read: everyone; client cannot write | `{"read": true, "write": false}` | `hot_board` / `keywords` / `risk_scans` / `risk_signals` |
+| Client cannot read or write | `{"read": false, "write": false}` | `memberships` / `ai_calls` |
 
 ```bash
 tcb fn deploy dbInit -e <your-env-id>
@@ -455,10 +461,11 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<token
 When that variable is unset, write actions are **rejected outright** (the read-only audit is unaffected) — this is the gate that stops the function from being called arbitrarily by the client, so do not skip it.
 `action` also accepts `fields` (field comparison) / `indexes` (index plan) / `sync` (all of it), and only writes for real with `apply: true`.
 
-**The two permission settings that bite hardest**:
+**The three permission settings that bite hardest**:
 
 - The three quota collections (`generate_quota` / `refresh_quota` / `ask_quota`) must be "owner reads, **cannot write**", otherwise users can edit their own quota and the free tier is gone.
   ⚠ Deploy `quotaGuard` *before* tightening them, or the client's fallback writes are rejected and the counters stay at zero.
+- `memberships` / `ai_calls` must be "**client cannot read or write**": they hold server-side authority (membership status, anti-abuse counter). If the client can touch them, it can grant itself membership and clear its own counter. What the client UI shows comes from the `users.membership` mirror.
 - `report_cache` / `feed_cache` are shared caches: "read: everyone, write: signed-in users".
 
 ### 4. Domains & console setup
@@ -494,6 +501,8 @@ When unconfigured, the client clearly reports "WeChat Pay not configured / payme
 | Free quota never decreases | Quota collections were not tightened, or `quotaGuard` was deployed after the fact | See step 3 |
 | Subscription pushes never arrive (43101) | The scheduled jobs share one template | `subscribeTemplateId` / `alertTemplateId` / `riskTemplateId` must be three different templates |
 | Tapping "become a member" does nothing | No merchant account / `payCallback` not deployed | See step 5; free features are unaffected |
+| After repackaging, the quota effectively does not exist | `ai_calls` / the three quota collections were not tightened | See step 3: `ai_calls` and `memberships` must be "client cannot read or write" |
+| UI shows a member but the cloud uses the free tier | No row in `memberships` (the grant only wrote the mirror) | Have the user reopen the order page so the payment callback retries; or check the `payCallback` logs |
 
 ### Pre-launch checklist
 
@@ -501,7 +510,9 @@ When unconfigured, the client clearly reports "WeChat Pay not configured / payme
 - [ ] The privacy policy is configured and matches what is actually collected (openid, local storage)
 - [ ] AI-generated content labelling is kept (built in: the "AI-generated, for reference only" badge and the report-page statement)
 - [ ] `SENSITIVE_NAMES` in `src/utils/sensitive.ts` is up to date (⚠ it is left **for operators to fill in by hand**; the repository ships an empty array)
-- [ ] All five `debug` flags in `src/config/local.ts` are `false` (they default to false in the repository; otherwise free-tier limits and the 429 cooldown protection are disabled)
+- [ ] The five `debug` flags in `src/config/local.ts` are `false` and `memberOverride` is `'off'` (those are the repository defaults; otherwise free-tier limits and the 429 cooldown protection are disabled, and you would masquerade as a member while self-testing)
+- [ ] `memberships` / `ai_calls` are set to "**client cannot read or write**" in the console (they hold both the membership and the cost authority; skip it and a repackaged client can grant itself membership and clear its own counter)
+- [ ] `aiProxy` has **no** `AI_PROXY_TEST_TOKEN` configured (or it is configured and kept private): the `test` probe pays for two real upstream calls every time, and is rejected outright while unset
 - [ ] The main acceptance paths have been exercised on a real device (search → disambiguation → generation → favorite / share / Q&A)
 
 ---
@@ -551,7 +562,7 @@ celebrity-radar/
 │   ├── riskWatch/              # Person risk monitoring (cron 09:40)
 │   ├── hotBoardRefresh/        # Daily hot board (cron 06:30)
 │   └── dbInit/                 # Ops tool (schema.js is the schema source of truth)
-├── test/                       # Local unit tests (3 case files / 300 cases)
+├── test/                       # Local unit tests (7 case files / 399 cases)
 ├── config/                     # Taro build config (dev / index / prod)
 ├── cloudbaserc.json            # CloudBase deployment descriptor (functions + env vars + timers)
 ├── .env.example                # Deployment secret template
@@ -597,6 +608,9 @@ celebrity-radar/
 - **Output side**: `sources` / `dynamics` links are sanitized against an allowlist and must have appeared in the retrieved material
 - **Content policy**: every report is labeled "AI-generated, for reference only"; there is a privacy statement page, a reporting entry point and a two-step "delete my data" flow
 - **Cost control**: shared report cache, ≤ 10 feed refreshes and ≤ 3 generations per account per day (30 for members), a `building` mutex to prevent duplicate concurrent generation, and weekly digests cached per calendar week
+- **Retrieval depth follows the tier**: the free tier issues the main search line only (10 items); members get 24 main + 16 social (40). Both the number of search calls and the material volume scale with the tier
+- **Free-tier refresh cooldown**: within 12 hours of a report being generated, "refresh latest" on a free account returns the existing version with an on-page explanation instead of regenerating (the content would not have changed); members are exempt. **Do not confuse this with the upstream-failure cooldown** — different criteria, duration and purpose
+- **Feed refresh uses the main search line only**: one pull-to-refresh queries each followed person once (the social line is dropped: 20 → 10 search calls per refresh), rotates by "least recently refreshed" so people beyond the 10-per-refresh cap get a turn, and runs 4 requests at a time
 - **Cooldowns only block failures worth waiting for**: only upstream 429s, network errors and 5xx responses trigger the 10-minute cooldown; invalid keys and exhausted quota fail immediately without cooldown, and a cache hit always outranks both
 - **Vulnerability reports**: please **do not** open a public Issue — use the private channel described in [`SECURITY.md`](./SECURITY.md).
   For calibration: patching the client so it *displays* a member tier is **not** a vulnerability (the gate lives in the cloud); bypassing the cloud gate is
@@ -606,7 +620,7 @@ celebrity-radar/
 ## Development & Testing
 
 ```bash
-npm test          # compile tests with tsc, then run everything (300 cases, fully local, no cloud)
+npm test          # compile tests with tsc, then run everything (399 cases, fully local, no cloud)
 npm run test:only # skip tsc and run directly
 ```
 
@@ -615,7 +629,7 @@ It needs no cloud environment, no DevTools and no network. It does not cover pag
 
 Before submitting a change, confirm these five:
 
-1. `npm test` is green (currently 300 / 300)
+1. `npm test` is green (currently 399 / 399)
 2. `npx tsc --noEmit` reports no new warnings
 3. The mini program **main package size** is within the hard 2MB limit (the current build output is about 1.3MB); check the build output before adding dependencies
 4. `src/config/local.ts` and the `debug` flags are **not** committed (already in `.gitignore`)
@@ -647,6 +661,7 @@ their APIs, pricing and availability are outside this project's control.
 - Content moderation (`contentCheck`) uses cloud calls and **fails open** when not deployed or when its permission is not effective (availability over blocking)
 - Keyword alerts depend on WeChat **one-time subscription** grants, so template IDs and push timing are constrained by platform rules
 - Whether the article preview page can embed content in a webview depends on the domain allowlist and WeChat platform checks; otherwise it degrades to a preview card
+- A report's **member-only sections depend on who generated the cached copy**: each person has a single global cache row, so if a free-tier user generated it first, a member opening that person sees a version without the three exclusive sections and must tap "Refresh" to upgrade it with the member tier (**that upgrade does not consume daily generations**). Conversely, a version that already contains member sections is never overwritten by a free-tier refresh — but free users cannot see those three sections in the UI either
 - Reports are generated by an LLM and **may contain factual errors** — always check the source links
 - Tests cover logic and data layers only, not UI rendering, on-device interaction, cloud-function runtime, or the full payment flow
 

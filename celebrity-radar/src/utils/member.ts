@@ -1,6 +1,7 @@
 import Taro from '@tarojs/taro'
 import { readSelf } from './auth'
 import { diagLog } from './cloud-diagnostics'
+import { MEMBER_OVERRIDE } from './debug'
 
 /**
  * 会员权益层 —— **付费功能唯一的判定入口**。
@@ -10,13 +11,17 @@ import { diagLog } from './cloud-diagnostics'
  * 页面与闸门都从这里取数。
  *
  * 与相邻两层的分工（互不越界）：
- *   - 本文件：**权益**（会员能不能用、用多少）—— 数据源 `users.membership`
+ *   - 本文件：**权益**（会员能不能用、用多少）—— 端上读 `users.membership`（**镜像**）
  *   - utils/pay.ts：**价格与购买**（多少钱、买多久）—— 权威在云函数 payCreate
  *   - utils/quota.ts：**计数**（今天已经用了多少）—— 权威在云函数 quotaGuard
  *
- * 可信性：`users.membership` 只由云函数 `payCallback`（微信支付结果通知）写入，
- * 端上永不写该字段，故这里判定的是**服务端发货结果**，不是用户输入；
- * 判定用本机时间，改设备时间最多影响「自己看到的额度」，不影响订单与发货。
+ * 可信性（2026-10-09 起）：真权威在 `memberships`（客户端完全不可读写），云端
+ * （aiProxy / quotaGuard）一律读它；本文件读的 `users.membership` 是**界面镜像**，
+ * 「仅创建者可读写」⇒ 改包者能改自己那一行，故**它只决定界面显示，不决定任何一次付费调用**。
+ * 两处由 payCallback 一次写入、内容必须一致（用例 06 钉住）。
+ * 镜像存在的唯一理由：端上所有界面都读它，于是这次搬迁对端上零改动。
+ * 判定用本机时间，改设备时间最多影响「自己看到的界面」，不影响订单、发货与云端闸门。
+ * 权益表数值与云端 quota.config.js 必须同值（用例 07 钉住），改这里要同步改那份。
  */
 
 /** 会员权益表：数值即策略本身，改这里即改策略（端上唯一事实源） */
@@ -145,8 +150,42 @@ function daysUntil(expiresAt: string | null): number {
   return left > 0 ? Math.ceil(left / 86400000) : -1
 }
 
+/** 调试覆写表：键与云函数 payCreate 的 PLANS id 同名（月度 / 季度 / 年度），值是套餐天数 */
+const OVERRIDE_PLAN_DAYS: Record<string, number> = { monthly: 30, quarterly: 90, annual: 365 }
+
+/**
+ * 本地调试用的会员身份覆写（开关见 `config/local.ts` 的 `debug.memberOverride`）。
+ * 返回 `null` = 不覆写，由调用方按云端真实发货结果判定。
+ *
+ * 为什么贴在这个入口做：端上「谁是会员」只有 readMemberState 一个读口（配额上限、
+ * 专享段剥离、报告页促销条、会员中心都从它取数），覆写贴着它做就不会出现
+ * 「配额认定是会员、报告页认定是免费」这种半生效状态 —— 那比不覆写更难排查。
+ *
+ * ⚠ 它**不写数据库**：`users.membership` 仍然只由 payCallback 写（见文件头），
+ *   这里改的只是本机判定结果，**云端一概不认**；能测与不能测的清单见 local.example.ts。
+ *   配错值（类型上不会，运行时兜一层）按「不覆写」处理 —— 宁可测不出会员，
+ *   也不要把人卡在一个不存在的档位上。
+ */
+export function forcedMemberState(): MemberState | null {
+  if (MEMBER_OVERRIDE === 'off') return null
+  if (MEMBER_OVERRIDE === 'free') return NOT_MEMBER
+  const days = OVERRIDE_PLAN_DAYS[MEMBER_OVERRIDE] ?? 0
+  if (days <= 0) return null
+  return {
+    member: true,
+    plan: MEMBER_OVERRIDE,
+    expiresAt: new Date(Date.now() + days * 86400000).toISOString(),
+    daysLeft: days
+  }
+}
+
 /** 读会员状态。读库失败按**非会员**处理（保守，不放大免费额度） */
 export async function readMemberState(): Promise<MemberState> {
+  /* 调试覆写必须**先于**真实判定（仅本地开关非 off 时命中，见上方）：
+     放在读库之前，既省一次库读，也让「强制免费」能盖住真实会员身份 —— 否则
+     真实是会员的账号测不出免费档。它不做任何 I/O，不会抛错。 */
+  const forced = forcedMemberState()
+  if (forced) return forced
   try {
     const m = (await readSelf())?.membership ?? null
     if (!isMembershipActive(m)) return NOT_MEMBER
@@ -238,6 +277,30 @@ export function presentSections(
   if (report?.memberNotes?.risk) present.push(MEMBER_SECTIONS[1])
   if (report?.conflicts && report.conflicts.length > 0) present.push(MEMBER_SECTIONS[2])
   return present
+}
+
+/**
+ * 非会员读到的报告：把会员专属段落**从数据里摘掉**，而不是靠 UI 不渲染（批 1，2026-10-09）。
+ *
+ * 为什么要下沉到数据层：此前只有报告页卡片与目录两处判会员态，而报告是全局共享缓存 ——
+ * 会员生成的那一份带着三段内容，免费用户拿到的 Report 对象里**原样带着**它们，只是页面不画。
+ * 口径散在页面上的后果是：任何新增的消费方（AI 问答把报告当上下文、以后的分享 / 导出）
+ * 只要忘了判会员态，就等于把付费内容送出去 —— 而「忘了判」不会有任何报错提示。
+ *
+ * ⚠ 端上直连云数据库，改包 / 抓包本就能拿到原文，本函数**不是安全防线**：
+ *   它的价值是让「非会员拿到的对象里没有会员段」成为不变式，UI 侧从此不必再各自判一次。
+ *
+ * 无会员段落时**返回原对象**（引用相等）：绝大多数报告走这条，不产生拷贝、不读任何库 ——
+ * 这是调用方可以放心到处调它的前提（见 utils/cache.ts#exposeReport 的快路径）。
+ */
+export function stripMemberSections<
+  T extends { memberNotes?: { compare?: string; risk?: string }; conflicts?: Array<{ topic?: string }> }
+>(report: T): T {
+  if (presentSections(report).length === 0) return report
+  const copy: T = { ...report }
+  delete copy.memberNotes
+  delete copy.conflicts
+  return copy
 }
 
 export interface ReportMemberPromo {

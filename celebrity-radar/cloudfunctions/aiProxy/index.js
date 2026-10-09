@@ -14,7 +14,10 @@
  * 严禁把 key 写进本文件或任何提交进 git 的文件。
  *
  * action：
- *   'test'   （默认）真实各打一次上游，验证「环境变量已生效 + 能出网」。
+ *   'test'   运维探针：真实各打一次上游，验证「环境变量已生效 + 能出网」。
+ *            ⚠ 它**不是默认动作**，且要口令（环境变量 AI_PROXY_TEST_TOKEN，未配置一律拒绝）——
+ *            每次调用都真花钱，而 action 是客户端可构造的字段：把缺省值绑在付费探针上，
+ *            等于给任何调用者留一个「一次调用烧两笔上游钱」的开关（2026-10-09 修，见 exports.main）。
  *            端上「我的 → 测试连通性」入口已于 2026-10-07 移除（改为只保留「生成模型」选择），
  *            此动作现在只供控制台 / 云调用人工排障使用，业务链路只走 search / chat。
  *   'search' 业务转发：代理一次博查检索，供端上 search.ts 在用户未自配 key 时使用
@@ -42,6 +45,15 @@ const cloud = require('wx-server-sdk')
 const https = require('https')
 /* 供应商注册表 + 解析（换一家改它，不改本文件）。⚠ 与 hotBoardRefresh 目录下的副本逐字一致 */
 const { resolveLlm } = require('./llm.config')
+/* 服务端配额与限速（B8）：数值须与端上 MEMBER_BENEFITS 同值，用例钉住 */
+const {
+  QUOTA_POOLS,
+  DEFAULT_PURPOSE,
+  AUX_PURPOSE,
+  ABUSE_TABLE,
+  ABUSE_LIMITS,
+  todayKey
+} = require('./quota.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
@@ -102,8 +114,13 @@ function keyInfo(key) {
 /**
  * 调用者是不是有效期内的会员。
  *
- * 只读 users.membership.expires_at —— 与端上 utils/member.ts 同一口径：有效期是唯一事实，
- * plan 只决定天数。云函数是管理员身份，故必须显式按 _openid 过滤，否则会读到别人的行。
+ * 读 `memberships`（服务端权威，_id = openid，客户端完全不可见）—— **刻意不读
+ * users.membership**：后者所在的那张表是「仅创建者可读写」，端上能改自己那一行，
+ * 以它为准等于把「谁能用最贵那一档模型」交给客户端自证（改包者给自己写上 membership
+ * 即可白用）。端上读的 users.membership 只是界面镜像，见 dbInit/schema.js 的两条 purpose。
+ *
+ * 与端上 utils/member.ts 同一口径：只认 expires_at，不校验 plan —— 有效期是唯一事实，
+ * plan 只决定天数。
  *
  * 读库失败一律按**非会员**：方向与端上 readMemberState 一致 ——
  * 宁可让真会员这一次拿到降级模型（体验损失），也不能让非会员刷走最贵的那一档（成本损失）。
@@ -111,13 +128,113 @@ function keyInfo(key) {
 async function isActiveMember(openid) {
   if (!openid) return false
   try {
-    const res = await db.collection('users').where({ _openid: openid }).limit(1).get()
-    const m = res && res.data && res.data[0] && res.data[0].membership
+    const res = await db.collection('memberships').doc(openid).get()
+    const m = (res && res.data) || null
     const t = m && m.expires_at ? Date.parse(m.expires_at) : NaN
     return Number.isFinite(t) && t > Date.now()
   } catch (err) {
     return false
   }
+}
+
+/**
+ * 当日配额计数：行不存在时 doc().get() 直接抛错（与 quotaGuard 的 readCount 同一现象），
+ * 读失败一律按 0。
+ *
+ * 按 0 = **放行**是有意的：闸门自己读不到库，不能把所有人挡在生成之外。
+ * 这里也不存在「攻击者把闸门打瘫」的口子 —— 这几张表的读写权限都在我们手上，
+ * 端上既不能让它们读失败，也改不动其中的计数。
+ */
+async function readQuotaCount(table, id) {
+  try {
+    const res = await db.collection(table).doc(id).get()
+    const c = res && res.data && res.data.count
+    return typeof c === 'number' && c > 0 ? c : 0
+  } catch (err) {
+    return 0
+  }
+}
+
+/**
+ * 防滥用计数：**由本函数自己原子自增**，端上无法阻止 —— 这是它区别于产品额度的关键。
+ *
+ * 先 update(inc) 再按需 add：正常路径只有一次写；首次调用（行不存在）时 update 不生效
+ * （updated === 0），再 add 建行。并发时两个请求可能同时走到 add，撞 _id 的那个由 catch
+ * 兜住 —— 那一刻行已经建好，这一趟少计 1 次，比抛错打断用户要好。
+ *
+ * 自增失败不拦调用（只记一行 warn）：闸门的作用是限速，不该把一次写库抖动放大成
+ * 「所有人都不能用」。而攻击者也没有办法让这里的写失败 —— 表的权限在我们手上。
+ */
+async function bumpAbuseCount(key, openid) {
+  try {
+    const upd = await db
+      .collection(ABUSE_TABLE)
+      .doc(key)
+      .update({ data: { count: db.command.inc(1) } })
+    const updated = upd && upd.stats ? upd.stats.updated : 0
+    if (!updated) {
+      await db
+        .collection(ABUSE_TABLE)
+        .add({ data: { _id: key, _openid: openid, count: 1, date: todayKey() } })
+    }
+  } catch (err) {
+    console.warn('aiProxy 防滥用计数自增失败（本次放行）:', err instanceof Error ? err.message : err)
+  }
+}
+
+/**
+ * 真正付费的上游调用之前的闸门（B8，2026-10-09）。返回 null = 放行，否则返回拒绝体。
+ *
+ * ## 两道闸，防两件不同的事（详述见 quota.config.js 顶部）
+ *
+ * 1. **产品额度**（辅助调用除外）：读 quotaGuard 维护的当日计数，比对与端上同值的上限。
+ *    它防的是「端上与云端口径不一致」——多设备各算一份、或设备时钟偏差让端上以为还有额度。
+ *    ⚠ 这道闸的计数是端上主动调 quotaGuard 才写的，改包者不调就永远是 0，
+ *      所以它**不是安全边界**，只是口径兜底（旧注释曾称云端是最终判定，那是不准确的）。
+ *
+ * 2. **防滥用限速**：计数由本函数就地原子自增（bumpAbuseCount），端上无法阻止 ——
+ *    于是「解包把上限改大、随便调」的代价被压进 ABUSE_LIMITS 之内。**这才是成本侧的硬边界**。
+ *
+ * 会员档位一律取自 `memberships`（端上不可读写，见 isActiveMember），故自授会员无助于成本。
+ *
+ * 拒绝体的 kind：'quota'（产品额度用完，文案与端上 utils/member.ts#quotaExhaustedMessage
+ * 同构 —— 同一种「额度用完」在不同路径上应当说同一句话）与 'abuse'（触发限速）。
+ * 两者都不在端上 llm.ts 的 RETRYABLE_KINDS 里 ⇒ 不重试、不点冷却，文案原样透传。
+ */
+async function quotaGate(openid, purpose, isMember) {
+  const member = await isMember()
+  const kind = purpose || DEFAULT_PURPOSE
+  const today = todayKey()
+
+  /* ① 产品额度：辅助调用不占额度（理由见 quota.config.js 的 AUX_PURPOSE） */
+  if (kind !== AUX_PURPOSE) {
+    const pool = QUOTA_POOLS[kind] || QUOTA_POOLS[DEFAULT_PURPOSE]
+    const limit = member ? pool.member : pool.free
+    const count = await readQuotaCount(pool.table, `${openid}#${today}`)
+    if (count >= limit) {
+      const who = member ? '会员' : '免费版'
+      const head =
+        kind === 'ask'
+          ? `今日提问次数已用完（${who}每日 ${limit} 次），明日 0 点恢复`
+          : `今日报告生成额度已用完（${who}每日 ${limit} 次），明日 0 点恢复`
+      const upsell = member ? '' : `；开通会员可提到每日 ${pool.member} 次`
+      return { ok: false, kind: 'quota', error: `${head}${upsell}` }
+    }
+  }
+
+  /* ② 防滥用限速：先判（这一次还没记）再记，然后才放行去花钱 */
+  const abuseLimit = member ? ABUSE_LIMITS.member : ABUSE_LIMITS.free
+  const abuseKey = `${openid}#${today}`
+  const abuseCount = await readQuotaCount(ABUSE_TABLE, abuseKey)
+  if (abuseCount >= abuseLimit) {
+    return {
+      ok: false,
+      kind: 'abuse',
+      error: `今日调用次数已达上限（${abuseLimit} 次），明日 0 点恢复；如确实需要更多请向我们反馈`
+    }
+  }
+  await bumpAbuseCount(abuseKey, openid)
+  return null
 }
 
 function snippet(v) {
@@ -381,6 +498,18 @@ function normalizeMessages(raw) {
  */
 async function handleChat(event) {
   /*
+   * 先要求登录身份（A3，2026-10-09）：chat 是「平台付钱、客户端随便调」的通道，
+   * 配额要按人计、会员要按人判 —— 取不到 openid 时两者都无从谈起，闸门形同虚设，
+   * 只剩「谁都能白调一次最贵的模型」。故直接拒绝。
+   * 云函数之间不会调本函数（hotBoardRefresh / riskWatch 等自带环境变量 key 直连上游），
+   * 所以这道要求不会打断任何定时任务。
+   */
+  const openid = (cloud.getWXContext() || {}).OPENID
+  if (!openid) {
+    return { ok: false, kind: 'auth', error: '取不到调用者 openid：chat 只允许从小程序端调用' }
+  }
+
+  /*
    * 用哪家、哪个端点、哪把 key、哪个模型，全部由 llm.config.js 裁决（换一家不改这里）。
    * event.provider 即用户在「我的 → 模型供应商」选的那家，**以它为准**；key 仍是平台自己的
    * （该家环境变量里的那一枚），用户为零配置 —— 他付的是额度，不是 key。
@@ -416,8 +545,7 @@ async function handleChat(event) {
    */
   let model = requested
   let downgraded = false
-  const openid = (cloud.getWXContext() || {}).OPENID
-  /* 会员身份一次读库、两处共用（模型闸门 + 深度模式）：同一次请求不查两遍 users */
+  /* 会员身份一次读库、两处共用（模型闸门 + 配额闸门）：同一次请求不查两遍权威表 */
   let memberKnown = null
   const isMember = async () => {
     if (memberKnown === null) memberKnown = await isActiveMember(openid)
@@ -427,6 +555,14 @@ async function handleChat(event) {
     model = llm.defaultModel
     downgraded = true
   }
+
+  /*
+   * 配额闸门（B8）：放在这里 —— 上面全是不花钱的前置校验，下面才开始真正付费。
+   * 端上发起生成前也判一次（utils/quota.ts / qa.ts），那道门管的是界面与提前拦截；
+   * 这道门管的是「改包者把端上那份上限改大」—— 上限、计数、会员身份三者全在云端。
+   */
+  const gate = await quotaGate(openid, event.purpose, isMember)
+  if (gate) return gate
 
   /*
    * 输出上限对所有请求下发（理由见文件上方 chatMaxTokens 那段）：不给它，上游就用默认上限，
@@ -478,11 +614,31 @@ async function handleChat(event) {
 }
 
 exports.main = async (event) => {
-  const action = (event && event.action) || 'test'
+  /*
+   * 默认值刻意**不是** 'test'（A3，2026-10-09）：'test' 会向博查与大模型各发一次真实付费探测，
+   * 而 action 是客户端可构造的字段 —— 把缺省值与付费探针绑在一起，等于给任何调用者
+   * 留一个「一次调用烧两笔上游钱」的开关。缺省 / 未知一律落在下面的错误分支里，不触达上游。
+   */
+  const action = (event && event.action) || ''
   if (action === 'search') return handleSearch(event || {})
   if (action === 'chat') return handleChat(event || {})
   if (action !== 'test') {
     return { ok: false, error: `未知 action：${action}（支持 test / search / chat）` }
+  }
+
+  /*
+   * 运维探针要口令：它不是业务动作，而是「把两家上游 key 的有效性与余额探一遍」，
+   * 每次调用都真花钱。口令取环境变量 AI_PROXY_TEST_TOKEN，**未配置时一律拒绝**
+   * （fail-closed：宁可让开发者多配一个变量，也不留一个匿名可调的付费探针）。
+   * 与 dbInit 的 DB_ADMIN_TOKEN 同一模式。
+   */
+  const testToken = readEnv('AI_PROXY_TEST_TOKEN')
+  if (!testToken || (event && event.token) !== testToken) {
+    return {
+      ok: false,
+      error:
+        '探测动作需要口令：请在云函数环境变量里配置 AI_PROXY_TEST_TOKEN，并在 event.token 里带上同一个值'
+    }
   }
 
   const bochaKey = readEnv('BOCHA_API_KEY')

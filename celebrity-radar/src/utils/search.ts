@@ -272,6 +272,12 @@ function mergeNews(groups: Array<NewsItem[] | null>): NewsItem[] {
  * 支线是「锦上添花」，失败一律吞掉 —— 上游不认 include（报错或空集）、支线被限流，
  * 都只是拿不到社交维度，结果等价于改造前；只有主线才是判据。
  * 代价是每次生成由 1 次博查调用变为 2 次（成本相关取舍见《开发计划.md》§七 待办 14）。
+ *
+ * `socialCount: 0` = 明确不要支线（批 2，2026-10-09）：**连那一路请求都不发**。
+ * 免费档生成走这条（应用点见 cache.ts）—— 钱花在「发起了一次检索」上，
+ * 只把条数降到 0 而不跳过请求是省不下钱的。
+ * 于是支线成了会员「质」权益的一部分（与 DEEP_* 同一方向）：免费档回到支线上线前的口径
+ * （1 次调用 + 主线 10 条），会员档才是 2 次调用 + 40 条。
  */
 export async function fetchNews(
   name: string,
@@ -283,10 +289,18 @@ export async function fetchNews(
     freshness,
     count: Math.min(opts.maxResults ?? MAIN_COUNT, MAX_RESULTS_CAP)
   }
+
+  /* 不要支线：只发主线这一路（成本口径见函数头注释） */
+  const socialCount = Math.min(opts.socialCount ?? SOCIAL_COUNT, MAX_RESULTS_CAP)
+  if (socialCount <= 0) {
+    const only = await requestChannel(main)
+    return only === null ? null : mergeNews([only, null])
+  }
+
   const social: SearchParams = {
     query: `${name} 近期 动态`,
     freshness,
-    count: Math.min(opts.socialCount ?? SOCIAL_COUNT, MAX_RESULTS_CAP),
+    count: socialCount,
     include: SOCIAL_SITES
   }
 

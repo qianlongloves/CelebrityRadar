@@ -629,7 +629,7 @@ export async function noteQaUsed(): Promise<void> {
   const usage = readUsage()
   const cloud = await incrQuotaViaCloud('ask')
   /* 云端成功则以它为准（权威），失败则镜像 +1 —— 两条路都不会漏掉这次消费 */
-  raiseMirror(cloud ?? usage.count + 1)
+  raiseMirror(cloud ? cloud.count : usage.count + 1)
 }
 
 /**
@@ -858,7 +858,8 @@ export async function askReports(reports: Report[], question: string): Promise<Q
   ]
     .filter(Boolean)
     .join('\n')
-  const asked = await chatText(system, buildUserPrompt(reports, picked, q))
+  /* purpose='ask'：云端闸门按提问池算上限（与端上 checkQaGate 同池），不能落到生成池 */
+  const asked = await chatText(system, buildUserPrompt(reports, picked, q), 'ask')
   if (!asked.ok) return { ok: false, error: asked.error }
 
   await noteQaUsed()
