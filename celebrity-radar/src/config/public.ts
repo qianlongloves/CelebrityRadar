@@ -5,7 +5,7 @@
  *
  * 【哪些值不在这里】环境相关项与本地调试开关已抽到 **未跟踪** 的 `src/config/local.ts`：
  *
- *   cloudbaseEnvId / subscribeTemplateId / alertTemplateId / webviewDomains / debug
+ *   cloudbaseEnvId / subscribeTemplateId / alertTemplateId / riskTemplateId / webviewDomains / debug
  *
  * 仓库里只有 `local.example.ts`（值为占位串）。首次 clone 后先执行：
  *
@@ -188,6 +188,19 @@ export const publicConfig = {
    * （云端已写库，照样看得到），不发一个必然失败的授权请求。
    */
   alertTemplateId: localConfig.alertTemplateId,
+
+  /**
+   * 订阅消息模板 ID（名人风险监控，第 1 期）。
+   *
+   * **必须是第三枚独立模板**：现在有三个定时任务（notifyFollowUpdates 09:00 /
+   * keywordAlert 09:20 / riskWatch 09:40），一次性订阅的授权按模板消耗，
+   * 任何两个共用一枚模板就会「先跑的吃掉授权，后跑的必得 43101」。
+   * 云函数侧读同名环境变量 RISK_TEMPLATE_ID，两边必须指向同一个模板。
+   *
+   * 字段要求与预警模板相同（thing1 + date2）。空串 = 未配置：此时「监控此人」
+   * 照常可用（信号照样落库、预警页看得到），只是不出现推送授权按钮。
+   */
+  riskTemplateId: localConfig.riskTemplateId,
 
   /**
    * 业务域名白名单：「原文预览」页里能真正内嵌打开的站点（见 pages/link-preview）。

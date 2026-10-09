@@ -127,6 +127,17 @@ export default function Index() {
     void Taro.navigateTo({ url: '/pages/feed/index' })
   }
 
+  /**
+   * 关键词预警入口（2026-10-09 从消息页顶部搬到首页，铃铛左侧，图标代替文字）。
+   *
+   * 铃铛是「有事情发生」的统一落点，但关键词命中新报道既不是某个名人的更新（不该混进关注流），
+   * 也不该只靠订阅消息触达（订阅授权会耗尽）。原先它藏在消息页顶部的胶囊里，等于「被召回后
+   * 才有机会发现入口」；搬到首页与铃铛并排常显，用户想翻历史命中时有地方可去，不至于「点完就断」。
+   */
+  const goAlerts = () => {
+    void Taro.navigateTo({ url: '/pages/alerts/index' })
+  }
+
   /** 铃铛：进消息中心（关注更新 / 周报提醒 / 平台公告，见 utils/messages） */
   const onBellTap = () => {
     void Taro.navigateTo({ url: '/pages/messages/index' })
@@ -251,7 +262,7 @@ export default function Index() {
 
   return (
     <View className='page-index glow-page safe-tab'>
-      {/* 问候区（头像 + 昵称 + 右侧铃铛，点击头像进「我的」） */}
+      {/* 问候区（头像 + 昵称 + 右侧「关注流 / 关键词预警 / 消息」三个图标入口，点击头像进「我的」） */}
       <View className='page-index__header'>
         <View className='page-index__avatar' onClick={goMine} hoverClass='page-index__tap'>
           {avatarUrl ? (
@@ -265,12 +276,10 @@ export default function Index() {
         <View className='page-index__greet'>
           <Text className='page-index__username'>{userId ? nickname || '名人观察员' : '名人观察员'}</Text>
         </View>
-        {/* 关注流入口：带关注人数，让「有没有关注人」一眼可见（0 人也保留入口，点了才知道怎么用） */}
-        <View className='page-index__feed' onClick={goFeed} hoverClass='page-index__tap'>
-          <Text className='page-index__feed-text'>
-            {followedKeys.size > 0 ? `关注 ${followedKeys.size}` : '关注流'}
-          </Text>
-        </View>
+        {/* 关注流入口：图标按钮，紧挨预警图标左侧（无文字，理由见 index.scss 的 __feed 注释） */}
+        <View className='page-index__feed' onClick={goFeed} hoverClass='page-index__tap' />
+        {/* 关键词预警入口：图标按钮，紧挨铃铛左侧（无文字，文案见 index.scss 的 __alert 注释） */}
+        <View className='page-index__alert' onClick={goAlerts} hoverClass='page-index__tap' />
         <View className='page-index__bell' onClick={onBellTap} hoverClass='page-index__tap'>
           {/* 红点按未读数显隐：铃铛图标自带的那颗紫点是装饰，这里才是「有消息」 */}
           {unread > 0 && <View className='page-index__bell-dot' />}

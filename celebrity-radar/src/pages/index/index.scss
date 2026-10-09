@@ -1,5 +1,7 @@
 @import '../../styles/variables.scss';
 @import './_bell.scss';
+@import './_alert.scss';
+@import './_feed.scss';
 
 /* 雷达扫描（加载态）：命名加 pi- 前缀，避免与其他页面/组件的动画同名冲突 */
 @keyframes pi-radar-spin {
@@ -70,21 +72,44 @@
     text-overflow: ellipsis;
   }
 
-  /* 关注流入口（原底部菜单第二格）：胶囊 + 关注人数，位置在铃铛左侧，
-     不占纵向空间 —— 首页首屏每一行都挤，入口不能靠再加一块卡片来解决 */
+  /* 关注流入口（原底部菜单第二格，2026-10-09 由文字胶囊改为图标按钮）。
+     与铃铛 / 预警同构：白圆 56rpx + 卡片阴影 + 居中图标 —— 头部右侧三个入口
+     同形同尺寸，扫一眼就能定位，不再靠文字宽窄分主次。
+     原先胶囊里的「关注 N」计数随之去掉：计数属于页面内的信息，而三个圆钮并排时
+     多一个数字只会让这一行显得参差；关注态在榜单卡片上本来就有（已关注 / + 关注）。
+     入口依然常显（0 关注也在）：它是本页通向「关注的人都在说什么」的唯一出口，
+     按有没有关注人决定藏不藏，会让新用户找不到它。 */
   &__feed {
     flex-shrink: 0;
+    width: 56rpx;
+    height: 56rpx;
     margin-left: auto;
     margin-right: 16rpx;
-    padding: 10rpx 22rpx;
-    border-radius: 999rpx;
-    background: rgba(95, 51, 225, 0.08);
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: $shadow-card;
+    background-image: $icon-feed;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 44% 44%;
   }
 
-  &__feed-text {
-    color: $brand;
-    font-size: 24rpx;
-    font-weight: 600;
+  /* 关键词预警入口（2026-10-09 从消息页移到首页，与铃铛并排、图标代替文字）。
+     与铃铛同构：白圆 + 卡片阴影 + 居中图标，尺寸也一致 —— 两者是同一行的对等入口，
+     不靠大小分主次。差别只在图标与配色（预警用品牌紫，消息用深灰）。
+     这里不留红点：命中数量属于页面内的信息，常驻头部的圆点只会让人误以为「有未读消息」。 */
+  &__alert {
+    flex-shrink: 0;
+    width: 56rpx;
+    height: 56rpx;
+    margin-right: 16rpx;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: $shadow-card;
+    background-image: $icon-alert;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 44% 44%;
   }
 
   &__bell {

@@ -1,5 +1,5 @@
 import { table } from './db'
-import { Report, buildReport, isRefusedResult } from './report'
+import { Report, buildReport, isRefusedResult, REPORT_SCHEMA_VERSION } from './report'
 import { FocusCode } from '@/config/filters'
 import { fetchNews, hasSearchChannel, DEEP_MAIN_COUNT, DEEP_SOCIAL_COUNT, NewsItem } from './search'
 import { parsePersonKey } from '@/config/domains'
@@ -64,6 +64,23 @@ function isUsable(row: ReportCacheRow | null): row is ReportCacheRow & { report:
 }
 
 /**
+ * 读一行的报告 Schema 版本，缺失按 1 处理（前置项 1，2026-10-09）。
+ *
+ * 为什么需要这个助手，而不是直接读 row.schemaVersion：
+ *   · `report_cache` 由端上直写，2026-10-09 之前落库的行没有这个字段，`undefined` 是**正常**的；
+ *   · 版本号只有一处读法，才能保证「报告页判版本」「将来按版本决定要不要重生成」口径一致
+ *     （与 utils/report-toc.ts 收口目录条件同一个理由：散在各处的判空没人钉得住）。
+ *
+ * ⚠ 现在**不**因版本低而丢弃缓存：那会让全部存量报告当场失效（用户点开就是重新生成）。
+ *   老报告照旧可读，判空逻辑照旧逐字段 —— 版本号是给「将来新增段落」用的，
+ *   升级时再用它回答「这一段该不该有」，而不是「这份报告还能不能用」。
+ */
+export function reportSchemaVersion(row: ReportCacheRow | null): number {
+  const v = row?.schemaVersion
+  return typeof v === 'number' && v > 0 ? v : 1
+}
+
+/**
  * 抢锁：无行时条件插入；已有行则条件更新（ready 过期 / building 失联超时可抢占）。
  *
  * 迁移注意：原实现靠 PostgREST 的 23505 唯一冲突码判断"行已存在"，CloudBase 不产生该错误码，
@@ -76,7 +93,15 @@ async function acquire(personKey: string, userId: string): Promise<'acquired' | 
 
   if (!existing) {
     const { error } = await table('report_cache')
-      .insert({ id: personKey, report: null, generated_at: now, state: 'building', builder: userId, search_meta: null })
+      .insert({
+        id: personKey,
+        report: null,
+        generated_at: now,
+        state: 'building',
+        builder: userId,
+        search_meta: null,
+        schemaVersion: REPORT_SCHEMA_VERSION
+      })
       .select()
     if (!error) return 'acquired'
     const again = await getRow(personKey)
@@ -85,8 +110,10 @@ async function acquire(personKey: string, userId: string): Promise<'acquired' | 
   }
 
   const expireIso = new Date(Date.now() - BUILDING_TIMEOUT_MS).toISOString()
+  /* 抢占同时刷新版本：这一轮的产物是**当前端上**生成的，building 行也带上版本，
+     免得排障时看到「state=building 却没有 schemaVersion」而要再想一遍是哪种情况。 */
   const { data: upd, error: updErr } = await table('report_cache')
-    .update({ state: 'building', builder: userId, generated_at: now, report: null })
+    .update({ state: 'building', builder: userId, generated_at: now, report: null, schemaVersion: REPORT_SCHEMA_VERSION })
     .eq('id', personKey)
     .or(`state.eq.ready,generated_at.lt.${expireIso}`)
     .select()
@@ -124,7 +151,9 @@ async function saveReady(
     state: 'ready',
     generated_at: report.generatedAt,
     builder: null,
-    search_meta: { news_count: newsCount }
+    search_meta: { news_count: newsCount },
+    /* 落库时打版本：这是「这份报告由哪个版本的端上生成」的唯一记录点 */
+    schemaVersion: REPORT_SCHEMA_VERSION
   })
   if (!error) return true
   diagLog('error', 'db', `报告落库失败：${error.message ?? error}`)

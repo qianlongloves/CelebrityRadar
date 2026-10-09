@@ -1993,3 +1993,63 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
     }
   })
 })
+
+/* --------------------------------- 生成耗时：截断不重试（P0） */
+
+/**
+ * 报告是长 JSON 生成，最坏情况不是「模型慢」，而是**一次失败被放大成三次往返**：
+ * 输出撞上 max_tokens 被截断（finish_reason=length）→ 解析失败 → chatJSON 原样重发
+ * （必然再撞同一道墙，白等一整轮 30~40s）→ 再失败 → 走 chatText 降级（第三次往返）。
+ *
+ * 这里钉住的判据只有一条：**上游已明说「撞上限」时，重试是无效动作。** 于是 chatJSON
+ * 必须一次往返就收手（retryable=false），把时间让给后面的快速降级。
+ */
+describe('大模型调用（输出截断不再盲目重试）', () => {
+  const { z } = require('zod')
+  const schema = z.object({ intro: z.string() })
+
+  const chat = (load) => load('utils/llm').chatJSON('S', 'U', schema)
+
+  it('截断且解析不过：一次往返就收手，不再白等第二轮生成', async () => {
+    const { load } = fresh()
+    let calls = 0
+    env.registerCloudFn('aiProxy', () => {
+      calls++
+      /* 撞上 max_tokens：JSON 被从中间切断，既不含完整对象也过不了校验 */
+      return { ok: true, content: '{"intro":"很长的一段开头还没写完', finishReason: 'length' }
+    })
+
+    const res = await chat(load)
+    eq(res.ok, false)
+    eq(calls, 1, '截断是「必然再撞同一道墙」，重发同一请求只是白等一整轮生成')
+    eq(res.retryable, false, 'retryable=false 让上层直接走快速降级，而不是再排一轮长生成')
+  })
+
+  it('截断但恰好是合法 JSON：仍然采用（能救则救，不为省一次往返丢掉正好可用的输出）', async () => {
+    const { load } = fresh()
+    let calls = 0
+    env.registerCloudFn('aiProxy', () => {
+      calls++
+      /* 截断点恰好落在合法闭合处：这种输出不该被「截断」这个标签一票否决 */
+      return { ok: true, content: '{"intro":"x"}', finishReason: 'length' }
+    })
+
+    const res = await chat(load)
+    eq(res.ok, true)
+    eq(res.data.intro, 'x')
+    eq(calls, 1)
+  })
+
+  it('非截断的非法 JSON 仍重试一次：截断才特殊，采样运气问题照旧再试', async () => {
+    const { load } = fresh()
+    let calls = 0
+    env.registerCloudFn('aiProxy', () => {
+      calls++
+      return { ok: true, content: '这次模型没给 JSON', finishReason: 'stop' }
+    })
+
+    const res = await chat(load)
+    eq(res.ok, false)
+    eq(calls, 2, '正常结束但没产出 JSON，换一次采样可能就过了 —— 这条重试路径不能被顺手砍掉')
+  })
+})

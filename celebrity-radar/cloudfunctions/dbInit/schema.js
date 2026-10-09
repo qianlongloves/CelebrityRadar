@@ -57,6 +57,10 @@ const collections = [
          微信一次性订阅的授权**按模板**消耗，两个模板两枚授权，共用一个布尔位
          会让两个定时任务互相吃掉对方的授权（一个推成功、另一个必得 43101）。 */
       f('alert_ok', 'boolean', { def: false }),
+      /* 风险提醒推送的授权位（2026-10-09，第 1 期 riskWatch）。与 alert_ok 分开同样是必须的：
+         微信一次性订阅按**模板**消耗授权，两个定时任务共用一个布尔位就会出现
+         「先跑的吃掉授权，后跑的必得 43101」。 */
+      f('risk_ok', 'boolean', { def: false }),
       f('membership', 'object?', { def: null })
     ],
     indexes: [ix('idx_subscribe_ok', [['subscribe_ok', 'asc']], { optional: true, supports: '云函数筛「已授权提醒」的用户' })]
@@ -71,7 +75,11 @@ const collections = [
       f('generated_at', 'string', { required: true }),
       f('state', 'string', { required: true, enumHint: ['building', 'ready'] }),
       f('builder', 'string?', { required: true }),
-      f('search_meta', 'object?', { def: null })
+      f('search_meta', 'object?', { def: null }),
+      /* 报告 Schema 版本（前置项，2026-10-09；取值见 src/utils/report.ts#REPORT_SCHEMA_VERSION）。
+         **故意不给 def**：缺失 = 版本未知的老报告，读取方按 1 处理。若在这里 def 成当前版本，
+         巡检回填会把第一批的老报告一并标成新版本，这个字段就失去意义了。 */
+      f('schemaVersion', 'number?')
     ],
     indexes: [ix('idx_state', [['state', 'asc']], { optional: true, supports: '运维扫描 building 脏行' })]
   },
@@ -224,6 +232,13 @@ const collections = [
       f('_id', 'string', { system: true, required: true }),
       f('openid', 'string', { required: true }),
       f('keyword', 'string', { required: true }),
+      /* 订阅类型：'keyword' 关键词（第 0 期 keywordAlert）/ 'person' 监控某人（第 1 期 riskWatch）。
+         `def: 'keyword'` 正好把 2026-10-09 之前的老行标成关键词订阅；端上与云函数仍按
+         「缺失 = keyword」读，因为回填只在跑过 dbInit 的环境才生效。 */
+      f('type', 'string', { def: 'keyword', enumHint: ['keyword', 'person'] }),
+      /* type='person' 时才有意义：人名存在 keyword 字段里（复用同一张表的显示与读取逻辑），
+         真正的主键用 person_key（人名可能重名，person_key 带领域消歧）。 */
+      f('person_key', 'string?', { def: null }),
       f('created_at', 'string', { required: true }),
       /* 我在预警页最后一次看这个词的时间；端上据此判断「哪些条目是新的」。
          放端上写（而不是云函数）是因为「看过没有」只有端上知道。 */
@@ -246,6 +261,52 @@ const collections = [
       f('watchers', 'number', { def: 0 })
     ],
     indexes: []
+  },
+  /* ↓ 名人风险监控（2026-10-09，第 1 期）：三张表分工 = 「在监控谁」复用 keyword_watches
+     （type='person'）、「上次扫到哪」= risk_scans、「扫到了什么」= risk_signals */
+  {
+    name: 'risk_scans',
+    purpose: '名人风险扫描快照（_id = personKey，云函数写、端上只读）：判断「哪些条目是新的」',
+    acl: ACL.publicReadOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('person_key', 'string', { required: true }),
+      f('name', 'string', { required: true }),
+      f('scanned_at', 'string', { required: true }),
+      /* 首次扫描时刻：只把这一刻**之后**新出现的条目当信号。首轮只建档、不落信号也不推送 ——
+         否则用户刚加监控，就会收到一串「历史报道里的旧表述」提醒（典型误报）。 */
+      f('baseline_at', 'string', { required: true }),
+      f('seen_urls', 'array', { required: true }),
+      f('scanned', 'number', { def: 0 }),
+      f('signals_total', 'number', { def: 0 })
+    ],
+    indexes: []
+  },
+  {
+    name: 'risk_signals',
+    purpose: '风险信号流水（_id = personKey#url 哈希，云函数写、端上只读）',
+    acl: ACL.publicReadOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('person_key', 'string', { required: true }),
+      f('name', 'string', { required: true }),
+      /* 级别只由「命中的是哪一类词」决定，不是对事件的定性；端上仅用于排序与推送门槛 */
+      f('level', 'string', { required: true, enumHint: ['high', 'mid', 'low'] }),
+      f('category', 'string', { required: true, enumHint: ['judicial', 'tax', 'contract', 'rights', 'statement'] }),
+      f('category_label', 'string', { required: true }),
+      f('keyword', 'string', { required: true }),
+      f('title', 'string', { required: true }),
+      f('quote', 'string', { required: true }),
+      f('source', 'string', { required: true }),
+      f('url', 'string', { required: true }),
+      /* 我们自己的时钟打的「第一次见到这条」：不用媒体发布时间判断新旧（同 keywordAlert 取舍 4） */
+      f('first_seen_at', 'string', { required: true })
+    ],
+    indexes: [
+      ix('idx_person_key_first_seen_at', [['person_key', 'asc'], ['first_seen_at', 'desc']], {
+        supports: 'listRiskSignals()：按人取信号、新的在前'
+      })
+    ]
   }
 ]
 

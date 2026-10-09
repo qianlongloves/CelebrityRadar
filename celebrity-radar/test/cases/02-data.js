@@ -605,3 +605,224 @@ describe('查询历史 utils/history', () => {
     for (let i = 1; i < rows.length; i++) ok(rows[i - 1].ts >= rows[i].ts, '应按 ts 倒序')
   })
 })
+
+/* ------------------------------- 关键词订阅 / 名人监控共用表 utils/keyword-alert */
+
+/**
+ * 2026-10-09 起 `keyword_watches` 同时住着两类行：关键词订阅（type='keyword'）与
+ * 名人监控（type='person'）。老行没有 type 字段 —— 这几条用例钉住「缺失 = keyword」
+ * 这条迁移规则，以及「两类行互不占用额度、互不影响已读」的边界。
+ */
+describe('关键词订阅与名人监控共用表 utils/keyword-alert', () => {
+  it('splitWatches：缺失 type 一律按 keyword（老订阅不能被漏掉）', () => {
+    const { load } = fresh()
+    const { splitWatches } = load('utils/keyword-alert')
+    const legacy = { id: 'u#雷军', openid: 'u', keyword: '雷军', created_at: '', seen_at: null }
+    const kw = { id: 'u#华为', openid: 'u', keyword: '华为', created_at: '', seen_at: null, type: 'keyword' }
+    const person = {
+      id: 'u#person#雷军#tech',
+      openid: 'u',
+      keyword: '雷军',
+      created_at: '',
+      seen_at: null,
+      type: 'person',
+      person_key: '雷军#tech'
+    }
+    const { keywords, persons } = splitWatches([legacy, person, kw])
+    deepEq(keywords.map((w) => w.keyword), ['雷军', '华为'])
+    deepEq(persons.map((w) => w.person_key), ['雷军#tech'])
+  })
+
+  it('addWatch 写 type=keyword，且监控行不占用「最多 5 个词」的额度', async () => {
+    const { db, load } = fresh()
+    const me = login()
+    const { addWatch, listWatches } = load('utils/keyword-alert')
+    /* 先塞满 5 个监控行：若上限把监控行算进去，下面的 addWatch 会被误拒 */
+    db.__seed(
+      'keyword_watches',
+      Array.from({ length: 5 }, (_, i) => ({
+        _id: `${me}#person#P${i}#tech`,
+        openid: me,
+        keyword: `P${i}`,
+        type: 'person',
+        person_key: `P${i}#tech`,
+        created_at: '2026-10-01T00:00:00.000Z',
+        seen_at: '2026-10-01T00:00:00.000Z'
+      }))
+    )
+    const res = await addWatch('雷军')
+    ok(res.ok, `监控行不该占关键词额度：${res.message}`)
+    const mine = (await listWatches()).find((w) => w.keyword === '雷军')
+    eq(mine.type, 'keyword')
+  })
+
+  it('loadAlerts 只读关键词缓存，忽略同名的监控行', async () => {
+    const { db, load } = fresh()
+    const me = login()
+    const { loadAlerts } = load('utils/keyword-alert')
+    db.__seed('keyword_watches', [
+      { _id: `${me}#雷军`, openid: me, keyword: '雷军', created_at: '2026-10-01T00:00:00.000Z', seen_at: '2026-10-05T00:00:00.000Z' },
+      {
+        _id: `${me}#person#雷军#tech`,
+        openid: me,
+        keyword: '雷军',
+        type: 'person',
+        person_key: '雷军#tech',
+        created_at: '2026-10-01T00:00:00.000Z',
+        seen_at: '2026-10-01T00:00:00.000Z'
+      }
+    ])
+    db.__seed('keywords', [
+      {
+        _id: '雷军',
+        keyword: '雷军',
+        fetched_at: '2026-10-06T00:00:00.000Z',
+        items: [{ title: '标题', url: 'https://a', source: '来源', first_seen_at: '2026-10-06T00:00:00.000Z' }]
+      }
+    ])
+    const res = await loadAlerts()
+    eq(res.groups.length, 1, '只应有一组（监控行不产生预警组）')
+    eq(res.groups[0].keyword, '雷军')
+  })
+
+  it('markAllSeen 只盖章关键词行，监控行的 seen_at 不动', async () => {
+    const { db, load } = fresh()
+    const me = login()
+    const { markAllSeen } = load('utils/keyword-alert')
+    db.__seed('keyword_watches', [
+      { _id: `${me}#雷军`, openid: me, keyword: '雷军', created_at: '2026-10-01T00:00:00.000Z', seen_at: '2026-10-01T00:00:00.000Z' },
+      {
+        _id: `${me}#person#P#tech`,
+        openid: me,
+        keyword: 'P',
+        type: 'person',
+        person_key: 'P#tech',
+        created_at: '2026-10-01T00:00:00.000Z',
+        seen_at: '2026-10-01T00:00:00.000Z'
+      }
+    ])
+    await markAllSeen(['雷军'])
+    const kw = db.__dump('keyword_watches').find((r) => r._id === `${me}#雷军`)
+    const person = db.__dump('keyword_watches').find((r) => r._id === `${me}#person#P#tech`)
+    ok(kw.seen_at > '2026-10-01T00:00:00.000Z', '关键词行的 seen_at 应被更新')
+    eq(person.seen_at, '2026-10-01T00:00:00.000Z', '监控行不该被盖章')
+  })
+})
+
+/* --------------------------------------- 名人监控写库 utils/risk-watch */
+
+describe('名人监控写库 utils/risk-watch', () => {
+  it('monitorPerson 写一行 type=person，listPersonWatches 只返回监控行', async () => {
+    const { db, load } = fresh()
+    const me = login()
+    const { monitorPerson, listPersonWatches, isMonitored } = load('utils/risk-watch')
+    /* 同表里已有的关键词订阅行不该被当成监控行读出来 */
+    db.__seed('keyword_watches', [
+      { _id: `${me}#雷军`, openid: me, keyword: '雷军', created_at: '2026-10-01T00:00:00.000Z', seen_at: '2026-10-01T00:00:00.000Z' }
+    ])
+
+    const res = await monitorPerson('雷军#tech', '雷军')
+    ok(res.ok, res.message)
+
+    const rows = await listPersonWatches()
+    deepEq(rows.map((w) => w.person_key), ['雷军#tech'])
+    ok(isMonitored(rows, '雷军#tech'))
+    const raw = db.__dump('keyword_watches').find((r) => r.type === 'person')
+    eq(raw.keyword, '雷军', '人名存在 keyword 字段里（显示名复用同一套读法）')
+  })
+
+  it('monitorPerson：未登录直接失败、不落库', async () => {
+    const { db, load } = fresh()
+    load('stores/auth')
+    const { monitorPerson } = load('utils/risk-watch')
+    const res = await monitorPerson('雷军#tech', '雷军')
+    notOk(res.ok)
+    eq(db.__dump('keyword_watches').length, 0)
+  })
+
+  it('unmonitorPerson 只删监控行，不动关键词订阅', async () => {
+    const { db, load } = fresh()
+    const me = login()
+    const { unmonitorPerson, listPersonWatches } = load('utils/risk-watch')
+    db.__seed('keyword_watches', [
+      { _id: `${me}#雷军`, openid: me, keyword: '雷军', created_at: '2026-10-01T00:00:00.000Z', seen_at: '2026-10-01T00:00:00.000Z' },
+      {
+        _id: `${me}#person#雷军#tech`,
+        openid: me,
+        keyword: '雷军',
+        type: 'person',
+        person_key: '雷军#tech',
+        created_at: '2026-10-01T00:00:00.000Z',
+        seen_at: '2026-10-01T00:00:00.000Z'
+      }
+    ])
+    ok(await unmonitorPerson('雷军#tech'))
+    deepEq(await listPersonWatches(), [])
+    eq(db.__dump('keyword_watches').length, 1, '关键词订阅应原样保留')
+  })
+
+  it('集合没建 / 权限未开时，监控失败要说清修法，而不是「请重试」', async () => {
+    const { db, load } = fresh()
+    login()
+    const { monitorPerson } = load('utils/risk-watch')
+    /* __setFailing 复刻真机上的「集合不存在 / 权限未开」：读也会失败 —— 而
+       listPersonWatches 吞掉读错误返回 []，于是流程一路走到写库，用户看到的就是这一句 */
+    db.__setFailing('keyword_watches', true)
+
+    const res = await monitorPerson('雷军#tech', '雷军')
+    notOk(res.ok)
+    eq(res.fatal, true, '环境问题要带 fatal，页面据此把 toast 换成弹窗')
+    ok(res.message.includes('keyword_watches'), `要点名是哪张表，实际：${res.message}`)
+    notOk(/请重试/.test(res.message), '这类错误重试一万次都一样，不能建议重试')
+  })
+
+  it('订阅关键词撞上同一张表不可用时，同样带 fatal 与表名', async () => {
+    const { db, load } = fresh()
+    login()
+    const { addWatch } = load('utils/keyword-alert')
+    db.__setFailing('keyword_watches', true)
+
+    const res = await addWatch('雷军发布会')
+    notOk(res.ok)
+    eq(res.fatal, true)
+    ok(res.message.includes('keyword_watches'), `实际：${res.message}`)
+  })
+
+  it('错误对象不能退化成 [object Object]：真机 reject 的是普通对象', async () => {
+    const { load } = fresh()
+    const { normalizeDbError, explainDbFailure } = load('utils/db')
+
+    /* 真机上 wx.cloud 失败时 reject 的是 { errCode, errMsg } 而非 Error 实例：
+       原先 `err instanceof Error ? err.message : String(err)` 取不到原因，
+       把「-502005 集合不存在 / -502003 无权限」全压成 "[object Object]" */
+    const e = normalizeDbError({ errCode: -502005, errMsg: 'database collection not exists' })
+    eq(e.errCode, -502005)
+    eq(e.message, 'database collection not exists')
+    eq(explainDbFailure('keyword_watches', e, '监控').fatal, true)
+
+    /* 认不出来的错误返回 null，调用方保留「请重试」—— 网络类失败重试确实是对的 */
+    eq(explainDbFailure('keyword_watches', normalizeDbError(new Error('timeout')), '监控'), null)
+    eq(explainDbFailure('keyword_watches', normalizeDbError({ errMsg: 'network timeout' }), '监控'), null)
+  })
+})
+
+/* ------------------------------------ 报告缓存版本号（前置项 1）utils/cache */
+
+describe('报告缓存版本号 utils/cache#reportSchemaVersion', () => {
+  it('缺失 / 0 / 负数一律按 v1（2026-10-09 之前落库的行没有这个字段）', () => {
+    const { load } = fresh()
+    const { reportSchemaVersion } = load('utils/cache')
+    eq(reportSchemaVersion(null), 1)
+    eq(reportSchemaVersion({}), 1)
+    eq(reportSchemaVersion({ schemaVersion: 0 }), 1)
+    eq(reportSchemaVersion({ schemaVersion: -3 }), 1)
+  })
+
+  it('有版本号就如实返回，且当前端写出的版本与常量一致', () => {
+    const { load } = fresh()
+    const { reportSchemaVersion } = load('utils/cache')
+    const { REPORT_SCHEMA_VERSION } = load('utils/report')
+    eq(reportSchemaVersion({ schemaVersion: 2 }), 2)
+    ok(REPORT_SCHEMA_VERSION >= 2, `当前应为 v2 及以上，实际 ${REPORT_SCHEMA_VERSION}`)
+  })
+})

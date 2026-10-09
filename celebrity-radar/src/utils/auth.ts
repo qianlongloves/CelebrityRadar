@@ -231,3 +231,28 @@ export async function setAlertOptIn(ok: boolean): Promise<boolean> {
     return false
   }
 }
+
+/**
+ * 记录「名人风险监控」推送的订阅授权（2026-10-09，第 1 期）。
+ *
+ * 第三枚模板、第三位授权，理由与 setAlertOptIn 完全一样：一次性订阅按**模板**消耗授权，
+ * 现在三个定时任务各有模板，共用任何一位都会让其中一方必得 43101。
+ * 语义不变：端上只置位，复位由云函数 riskWatch 推送成功后执行。
+ */
+export async function setRiskOptIn(ok: boolean): Promise<boolean> {
+  const userId = useAuth.getState().userId
+  if (!userId) return false
+  try {
+    const row = await readSelf()
+    if (!row?.id) return false
+    const { error } = await table('users')
+      .update({ risk_ok: ok })
+      .eq('id', row.id)
+    if (error) throw new Error(error.message)
+    diagLog('info', 'auth', `风险提醒授权标记：${ok ? '已开启' : '已复位'}`)
+    return true
+  } catch (err) {
+    diagLog('error', 'auth', `风险提醒授权落库失败：${err instanceof Error ? err.message : String(err)}`)
+    return false
+  }
+}

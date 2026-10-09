@@ -1,38 +1,46 @@
 @import '../../styles/variables.scss';
 
 .page-report {
-  /* ===== 头部紫色横幅 ===== */
+  /* ===== 头部紫色横幅（2026-10-09 重排：身份带 / 状态行 / 操作行 三段）=====
+     结构见 pages/report/index.tsx 里该块的注释。这里只记三条布局口径：
+       · 三段是**纵向流**，宽度各自吃满（不再共享一条 flex 行，故没有窄栏争宽度的老问题）；
+       · 热度环绝对定位贴右上角，只有身份带为它让位，状态行与操作行都是全幅；
+       · 间距统一由 __banner 的 gap 决定，子块不再各自写 margin（此前 __meta/__follow
+         各带 margin-top:4rpx 与 gap 叠加，视觉上对不齐，且与底部按钮行共用 class 时被
+         另一处的 margin:24rpx 污染 —— 见文件末尾 __foot-actions 的注释）。 */
   &__banner {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 16rpx;
     margin: 24rpx 32rpx;
-    padding: 36rpx 32rpx;
+    padding: 32rpx;
     border-radius: 48rpx;
     background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
     box-shadow: 0 16rpx 48rpx rgba(95, 51, 225, 0.28);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 24rpx;
   }
 
-  &__banner-left {
-    /* flex:1 = 让头像贴左、热度环贴右，中间这段吃掉剩余宽度（内部再省略长名字） */
-    flex: 1;
+  /* 身份带 = 头像 + 名字。min-height 与热度环等高，把状态行顶到环下方，
+     长文案才不会从环底下穿过去。 */
+  &__ident {
     display: flex;
-    flex-direction: column;
-    gap: 12rpx;
-    min-width: 0;
+    align-items: center;
+    gap: 20rpx;
+    min-height: 128rpx;
+    /* 给右上角的热度环让位（环宽 128 + 28 间距）：名字行还剩 ≈ 330rpx，约 7 个汉字 */
+    padding-right: 156rpx;
   }
 
   /* 人物头像：领域色渐变 + 姓名首字，与 person-card / 名人主页同一套占位规则 */
   &__avatar {
     flex-shrink: 0;
-    width: 104rpx;
-    height: 104rpx;
+    width: 96rpx;
+    height: 96rpx;
     border-radius: 50%;
     border: 4rpx solid rgba(255, 255, 255, 0.55);
     box-sizing: border-box;
     color: #fff;
-    font-size: 44rpx;
+    font-size: 40rpx;
     font-weight: 600;
     display: flex;
     align-items: center;
@@ -61,21 +69,24 @@
     flex-shrink: 0;
   }
 
-  /* 热度环（conic-gradient 白描边） */
+  /* 热度环（conic-gradient 白描边）：绝对定位贴右上角，与 __ident 的 min-height 等高。
+     角度值由 tsx 以内联 background 给出（这里保留一份同规则的兜底）。 */
   &__ring {
-    width: 152rpx;
-    height: 152rpx;
+    position: absolute;
+    top: 32rpx;
+    right: 32rpx;
+    width: 128rpx;
+    height: 128rpx;
     border-radius: 50%;
     background: conic-gradient(#fff 0 var(--heat-turn, 75%), rgba(255, 255, 255, 0.22) var(--heat-turn, 75%) 100%);
     display: flex;
     align-items: center;
     justify-content: center;
-    flex-shrink: 0;
   }
 
   &__ring-inner {
-    width: 118rpx;
-    height: 118rpx;
+    width: 100rpx;
+    height: 100rpx;
     border-radius: 50%;
     background: $brand-soft;
     display: flex;
@@ -86,7 +97,7 @@
 
   &__ring-value {
     color: #fff;
-    font-size: 40rpx;
+    font-size: 36rpx;
     font-weight: 700;
     line-height: 1.1;
   }
@@ -137,7 +148,7 @@
     gap: 16rpx;
   }
 
-  /* 名字行：名字 + 领域 + 生成时间。不换行 + 裁剪，行高恒定一行 */
+  /* 名字行：名字 + 领域。不换行 + 裁剪，行高恒定一行 */
   &__name-row {
     display: flex;
     align-items: center;
@@ -147,7 +158,7 @@
     overflow: hidden;
   }
 
-  /* 名字是可让位的一方：左侧栏仅 ~318rpx，名字过长时收成省略号，领域与时间保持完整 */
+  /* 名字是可让位的一方：名字行可用 ≈ 330rpx，过长时收成省略号，领域保持完整 */
   &__name {
     flex-shrink: 1;
     min-width: 0;
@@ -159,63 +170,64 @@
     text-overflow: ellipsis;
   }
 
-  /* 生成时间：与名字同行的小字。用最短的相对写法（「刚刚生成」/「2 小时前」），
-     不加「生成于」前缀 —— 那 3 个字会让名字行挤到必须省略名字的地步 */
-  &__time {
-    flex-shrink: 0;
-    font-size: 20rpx;
-    color: rgba(255, 255, 255, 0.72);
-    white-space: nowrap;
-  }
-
+  /* 状态行（全幅）：时间与素材出处 / 刷新入口合成一行弱文字。
+     原先这一格在两种视觉语言之间交替（胶囊 vs 下划线链接），切换时整块在跳；
+     现在统一成「弱文字 + 白下划线链接」，只让真正可点的「查看最新」亮起来。 */
   &__meta {
-    margin-top: 4rpx;
-  }
-
-  &__refresh {
-    color: rgba(255, 255, 255, 0.85);
     font-size: 24rpx;
+    line-height: 1.5;
   }
 
+  &__meta-text {
+    color: rgba(255, 255, 255, 0.78);
+  }
+
+  /* 「查看最新」：横幅上唯一的内联链接（O-14 说年龄是依据、它是行动），故保持最亮的白 + 下划线 */
   &__refresh-link {
     color: #fff;
     font-weight: 600;
     text-decoration: underline;
   }
 
-  /* 报告年龄（O-14）：跟在一行半透明的说明文字位置，弱于「查看最新」的白色下划线链接 ——
-     它是让人自己判断要不要刷新的依据，不是行动号召本身 */
-  &__stale {
-    color: rgba(255, 255, 255, 0.72);
+  /* 关注 / 监控：两个按钮同行。横幅现在是全幅宽度（≈622rpx），两个胶囊 ≈ 400rpx，
+     不再需要换行兜底 —— 固定一行，横幅高度才可预期。 */
+  &__actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 16rpx;
   }
 
-  /* 「引用 N 篇实时素材」：横幅左栏只有 ~318rpx，9 个字的胶囊正好一行；line-height 兜住万一的折行 */
-  &__fresh {
-    display: inline-block;
-    color: rgba(255, 255, 255, 0.85);
-    font-size: 24rpx;
-    line-height: 1.4;
-    background: rgba(255, 255, 255, 0.16);
-    border-radius: 999rpx;
-    padding: 6rpx 16rpx;
-    align-self: flex-start;
-  }
-
-  /* 关注按钮：与横幅同色系（半透明白描边），已关注态转实底以便一眼区分 */
+  /* 关注按钮：与横幅同色系（半透明白描边），已关注态转实底以便一眼区分。
+     min-height 64rpx：横幅上只有这两个可点区域，此前靠 padding 8 撑出的高度约 52rpx，
+     点上去容易落空。 */
   &__follow {
-    margin-top: 4rpx;
-    align-self: flex-start;
-    padding: 8rpx 26rpx;
+    display: flex;
+    align-items: center;
+    min-height: 64rpx;
+    padding: 0 30rpx;
     border-radius: 999rpx;
     border: 2rpx solid rgba(255, 255, 255, 0.55);
     color: #fff;
-    font-size: 24rpx;
+    font-size: 26rpx;
     line-height: 1.5;
 
     &--on {
       background: rgba(255, 255, 255, 0.22);
       border-color: transparent;
       color: rgba(255, 255, 255, 0.9);
+    }
+  }
+
+  /* 监控按钮：用虚线边把「订阅云端检索」与「本机关注」区分开
+     （两者动作相邻但语义不同，见 tsx 处注释） */
+  &__monitor {
+    border-style: dashed;
+
+    /* 已监控态：与「已关注」同一套实底（border--on 已把 border-color 设为透明，
+       这里把虚线换回实线兜住 border-style 的覆盖） */
+    &.page-report__follow--on {
+      border-style: solid;
     }
   }
 
@@ -733,6 +745,211 @@
     color: $text-3;
   }
 
+  /* ===== 风险雷达（第 0 期，端上聚合） =====
+     这张卡的排版语言刻意比事实卡更「素」：类别标签一律同一套中性底色，没有红黄绿分档，
+     也没有强调块。理由见 utils/risk.ts 顶部 —— 平台只陈列素材里的表述，不判定风险等级；
+     配色一旦分档，读者会先看到「橙色＝危险」再看文案，那是配色替我们下了结论。 */
+  &__risk-lead {
+    display: block;
+    font-size: 24rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  &__risk-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10rpx;
+    margin-top: 16rpx;
+  }
+
+  &__risk-item {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__risk-head {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  /* 类别标签：中性胶囊，四类共用一套（不分档、不染红，见本块顶部说明） */
+  &__risk-tag {
+    flex-shrink: 0;
+    padding: 2rpx 12rpx;
+    border: 1rpx solid $line;
+    border-radius: 999rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-2;
+    background: $bg;
+  }
+
+  &__risk-from {
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__risk-text {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 26rpx;
+    line-height: 1.7;
+    color: $text-1;
+  }
+
+  /* 出处：与 __entry-basis 同源（小、灰）—— 它是附注，不是第二个结论 */
+  &__risk-src {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+
+    /* 只有带 url 的条目能点，才给品牌色：颜色本身就是「这里能点」的提示 */
+    &--link {
+      color: $brand;
+    }
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  &__risk-note {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* ===== 商业价值速览（第 0 期，端上聚合） =====
+     三段各一行结论 + 一条口径。排版语言与风险雷达同一套「素」：没有星级、没有评分、
+     没有红黄绿 —— 热度高不等于好、消极多也不等于差，配色一旦分档，就等于我们替用户
+     下了结论（同 utils/commercial.ts 的三条边界）。 */
+  &__cv-lead {
+    display: block;
+    font-size: 24rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  &__cv-item {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__cv-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12rpx;
+  }
+
+  &__cv-label {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 结论：比标签重一档（它是这一行的答案），但不给颜色 */
+  &__cv-value {
+    flex: 1;
+    font-size: 28rpx;
+    font-weight: 600;
+    line-height: 1.6;
+    color: $text-1;
+    text-align: right;
+
+    /* 没成立的那一项：字重降回去，免得「未收录」被当成一个结论读 */
+    &--none {
+      font-weight: 400;
+      color: $text-3;
+    }
+  }
+
+  &__cv-note {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* 「明细见『某某』›」：与目录条目同一个动作（跳锚点），故用品牌色标出可点 */
+  &__cv-more {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $brand;
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  /* ===== 折叠目录（本轮） =====
+     报告页 18 节平铺，目录回答「后面还有什么、怎么直接过去」。
+     收起态只占一行：它是入口，不是内容，不能自己再占一屏。 */
+  &__toc-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    /* 收起时标题自带的 16rpx 下边距会留个空档；展开时间距交给 __toc-list */
+    .card-title {
+      margin-bottom: 0;
+    }
+  }
+
+  &__toc-toggle {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $brand;
+  }
+
+  &__toc-hint {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__toc-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12rpx;
+    margin-top: 18rpx;
+  }
+
+  &__toc-item {
+    padding: 8rpx 20rpx;
+    border: 1rpx solid $line;
+    border-radius: 999rpx;
+    font-size: 24rpx;
+    line-height: 1.4;
+    color: $text-2;
+
+    /* 刚跳过的那一节：点完目录就收起，靠这个记号回答「我到了哪」 */
+    &--active {
+      border-color: $brand;
+      color: $brand;
+      background: $brand-weak;
+    }
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
   /* ===== 第二批：结构化事实条目（人物档案 / 关系图谱 / 后续关注 / 争议与回应 / 名词解释） =====
      五张卡的数据形态不同（字段-值 / 人名-关系 / 时间-事件 / 争议-回应 / 词-释义），
      但排版语言统一为三层：主行 → 说明 → 依据。
@@ -1244,7 +1461,14 @@
     color: rgba(255, 255, 255, 0.82);
   }
 
-  &__actions {
+  /*
+    底部「收藏报告 / 刷新最新」一行（2026-10-09 改名）。
+    原先与头部横幅的关注按钮行共用 `page-report__actions`，而两条规则同时命中同一个
+    class：这里给横幅按钮行带来了 `margin: 24rpx`（左边缘比名字缩进 24rpx），
+    横幅那条又反过来给底部这行加了 `flex-wrap: wrap` + `margin-top: 4rpx`。
+    两行长得很像但没有任何共同点，故拆开：本行 = 卡片内的一行按钮，横幅行另起名字。
+  */
+  &__foot-actions {
     display: flex;
     gap: 20rpx;
     margin: 24rpx;

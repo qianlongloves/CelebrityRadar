@@ -11,6 +11,24 @@ import { diagLog } from './cloud-diagnostics'
  */
 
 /**
+ * 当前报告 Schema 版本（前置项，2026-10-09）。
+ *
+ * 为什么现在才加：第二批五段（人物档案 / 关系图谱 / 后续关注 / 名词解释 / 争议与回应）
+ * 上线时，靠的是「键缺失就整卡不出」的逐字段判空（报告页里十来处 `report.x ?? []`）。
+ * 再加三个方向的字段（见 `docs/commercial-audience-risk-plan.md` 五、前置项 1）会明显失控，
+ * 所以先把版本号落到 `report_cache` 行上，后续才能按版本回答「这份报告该不该有这一段」。
+ *
+ * 数值口径：
+ *   1 = 第一批（2026-10-06 之前落库：没有 `stance` / `controversies` / `profile` 这些键）
+ *   2 = 当前形态（含第二批五段）
+ *
+ * ⚠ 老行没有这个字段，读取一律按 1 处理（`utils/cache.ts#reportSchemaVersion`）。
+ *   **不要**用 dbInit 的 `def` 去回填：那会把第一批的老报告一起标成 2，版本号就废了。
+ *   升级这一常量时必须同时想清楚「新客户端读到旧版本行怎么办」——只加字段不改行为才安全。
+ */
+export const REPORT_SCHEMA_VERSION = 2
+
+/**
  * 宽容字符串：类型不对（null / 数字 / 对象）时回落成空串，而不是让**整份报告**校验失败。
  *
  * 为什么值得单独写一个 helper：报告的契约是一个大对象 + 十个数组，而 zod 是「一处不合法、
@@ -436,7 +454,7 @@ const MAX_ITEM_CHARS = 1000
  * user 消息整体上限，取两级约束的小值再留余量：
  *   云函数侧 MAX_CHAT_CHARS = 24000（超了返回 badrequest「提示词过长」）；
  *   callFunction 链路侧官方建议大字段不超过 100KB（中文 UTF-8 3 字节/字，15000 字 ≈ 45KB）。
- * 15000 字叠加 system 提示词（约 600 字）后两端都不贴边。
+ * 15000 字叠加 system 提示词（SYSTEM_REALTIME 实测约 2250 字，改了提示词要重新量）后两端都不贴边。
  * 起因：素材不裁剪时请求体可超链路建议上限，callFunction 直接抛错，
  * 再被 chatViaPlatform 的 catch 合并成「平台通道未就绪」，表现为「配好了却生成失败」。
  */
@@ -446,7 +464,8 @@ const MAX_USER_CHARS = 15000
  * 会员深度模式的 user 消息预算（O-11）：深度检索会多拿一倍素材，
  * 沿用 15000 字会把加厚的那部分**直接截掉**（等于花了检索钱却没用上）。
  * 放宽到 20000 后两级约束仍不贴边：
- *   云函数 MAX_CHAT_CHARS = 24000（本函数产出的 user + system 约 600 字，余量 3400）；
+ *   云函数 MAX_CHAT_CHARS = 24000（本函数产出的 user 20000 + system 约 2750（会员在 free 段末尾追加
+ *   MEMBER_HINT_REALTIME 约 500 字），余量约 1250 —— 提示词再加长就要同步抬高 MAX_CHAT_CHARS）；
  *   callFunction 链路建议 100KB（20000 中文字 ≈ 60KB）。
  */
 const MAX_USER_CHARS_MEMBER = 20000

@@ -2,6 +2,8 @@
 
 /** 纯逻辑层：时间 / 敏感词 / 领域键 / 筛选 / 词云 / 数据聚合 / 两人对比 */
 
+const fs = require('fs')
+const path = require('path')
 const dayjs = require('dayjs')
 const env = require('../harness/env')
 const { describe, it, ok, notOk, eq, deepEq } = require('../harness/t')
@@ -1041,5 +1043,476 @@ describe('主题知识库 utils/topic-digest', () => {
 
   it('主题名长度门槛常量存在（1 个字的说法聚合出来都是噪声）', () => {
     eq(TOPIC_MIN_CHARS, 2)
+  })
+})
+
+/* -------------------------------------------------- 风险雷达 utils/risk（第 0 期，端上聚合） */
+
+describe('风险雷达 utils/risk', () => {
+  const { buildRiskSignals, RISK_CATEGORIES, RISK_CATEGORY_LABEL, MAX_SIGNALS } = env.load('utils/risk')
+
+  it('字面命中即陈列：类别、原词、出处、原文链接都带出来', () => {
+    const r = buildRiskSignals(
+      mkReport({
+        dynamics: [
+          dyn({ title: '工作室起诉造谣者', source: '新浪娱乐', url: 'https://a.com/1', date: '2026-10-01' })
+        ]
+      })
+    )
+    eq(r.signals.length, 1)
+    eq(r.signals[0].category, 'judicial')
+    eq(r.signals[0].keyword, '起诉')
+    eq(r.signals[0].from, 'dynamics')
+    eq(r.signals[0].url, 'https://a.com/1')
+    eq(r.signals[0].source, '新浪娱乐')
+    eq(r.signals[0].date, '2026-10-01')
+    eq(r.byCategory.judicial, 1)
+    eq(r.byCategory.contract, 0)
+    eq(r.total, 1)
+    eq(r.scanned, 1)
+  })
+
+  it('否定表述整条不计入（「未被起诉」「否认解约」都不该被读成信号）', () => {
+    const r = buildRiskSignals(
+      mkReport({
+        dynamics: [dyn({ title: '工作室否认解约传闻' }), dyn({ title: '本人未被起诉' })]
+      })
+    )
+    deepEq(r.signals, [])
+    eq(r.total, 0)
+    eq(r.scanned, 2, '扫描过仍要如实计数，只是没命中')
+  })
+
+  it('算不出就说算不出：没有可扫描素材时给 null 而不是 0', () => {
+    const r = buildRiskSignals(mkReport())
+    eq(r.scanned, 0)
+    eq(r.signals.length, 0)
+    eq(r.negative, null, '「没数据」与「数据是 0」必须分开')
+    eq(r.negativeShare, null)
+  })
+
+  it('不给结论：返回结构里没有等级 / 评分 / 概率这类字段', () => {
+    const r = buildRiskSignals(mkReport({ dynamics: [dyn({ title: '被起诉风波' })] }))
+    eq(r.signals.length, 1)
+    for (const bad of ['level', 'score', 'risk', 'probability', 'grade', 'severity']) {
+      notOk(bad in r, `聚合结果不应出现 ${bad} 字段（本卡只陈列素材表述）`)
+    }
+    for (const s of r.signals) {
+      for (const bad of ['level', 'score', 'severity']) notOk(bad in s, `信号条目不应出现 ${bad}`)
+    }
+  })
+
+  it('带日期的信号按新的在前排，无日期的跟在后面（不混进时间序列）', () => {
+    const r = buildRiskSignals(
+      mkReport({
+        dynamics: [dyn({ title: '早的起诉', date: '2026-09-01' }), dyn({ title: '晚的立案', date: '2026-10-05' })],
+        quotes: [{ text: '谈到解约', context: '采访', source: '某台' }]
+      })
+    )
+    eq(r.signals.map((s) => s.date).join(','), '2026-10-05,2026-09-01,')
+    eq(r.signals[2].from, 'quotes')
+  })
+
+  it('四段素材都参与扫描，出处字段各取各的（争议只有依据、时间线没有出处）', () => {
+    const r = buildRiskSignals(
+      mkReport({
+        dynamics: [dyn({ title: '起诉相关' })],
+        controversies: [{ topic: '税务问题', claim: '被指漏税', response: '', basis: '某媒体 2026-09-01' }],
+        quotes: [{ text: '已委托律师处理侵权', context: '发布会', source: '某台' }],
+        timeline: [{ date: '2026-09-20', event: '品牌方宣布终止合作' }]
+      })
+    )
+    eq(r.scanned, 4)
+    eq(r.signals.length, 4)
+    const byFrom = Object.fromEntries(r.signals.map((s) => [s.from, s]))
+    eq(byFrom.controversies.source, '某媒体 2026-09-01')
+    eq(byFrom.controversies.url, '', '争议段没有 url 字段，不能假装能给链接')
+    eq(byFrom.quotes.source, '某台')
+    eq(byFrom.timeline.source, '', '时间线没有出处字段')
+  })
+
+  it('未回应争议单独计数（素材没收录到回应，不等于没有回应）', () => {
+    const r = buildRiskSignals(
+      mkReport({
+        controversies: [
+          { topic: '甲', claim: 'c', response: '', basis: 'b1' },
+          { topic: '乙', claim: 'c', response: '已回应', basis: 'b2' }
+        ]
+      })
+    )
+    eq(r.unanswered, 1)
+  })
+
+  it('负面占比与情绪口径同源（只数 dynamics 的 sentiment）', () => {
+    const r = buildRiskSignals(
+      mkReport({
+        dynamics: [
+          dyn({ title: '甲', sentiment: 'negative' }),
+          dyn({ title: '乙', sentiment: 'positive' }),
+          dyn({ title: '丙', sentiment: 'neutral' }),
+          dyn({ title: '丁', sentiment: 'negative' })
+        ]
+      })
+    )
+    eq(r.negative, 2)
+    eq(r.negativeShare, 0.5)
+  })
+
+  it('命中超过上限时截断，但总数如实给出（页面要写「另有 N 条」）', () => {
+    const many = Array.from({ length: MAX_SIGNALS + 3 }, (_, i) => dyn({ title: `第${i}次起诉` }))
+    const r = buildRiskSignals(mkReport({ dynamics: many }))
+    eq(r.total, MAX_SIGNALS + 3)
+    eq(r.signals.length, MAX_SIGNALS)
+  })
+
+  it('超长原文截断，不把整篇报道搬进索引卡', () => {
+    const long = '起诉'.repeat(200)
+    const r = buildRiskSignals(mkReport({ dynamics: [dyn({ title: long })] }))
+    ok(r.signals[0].text.length < long.length, '应被截断')
+    ok(r.signals[0].text.endsWith('…'), `截断应留省略号，实际结尾：${r.signals[0].text.slice(-5)}`)
+  })
+
+  it('类别常量与标签一一对应（页面按 RISK_CATEGORIES 出分布标签）', () => {
+    eq(RISK_CATEGORIES.length, 5)
+    for (const c of RISK_CATEGORIES) ok(!!RISK_CATEGORY_LABEL[c], `缺标签：${c}`)
+  })
+
+  it('同一份报告多次扫描结果一致（纯函数）', () => {
+    const rep = mkReport({ dynamics: [dyn({ title: '起诉' })] })
+    deepEq(buildRiskSignals(rep), buildRiskSignals(rep))
+  })
+})
+
+/* -------------------------------------------------- 报告目录 utils/report-toc（本轮） */
+
+describe('报告目录 utils/report-toc', () => {
+  const { buildReportToc } = env.load('utils/report-toc')
+
+  /* 顺序必须与 pages/report/index.tsx 的卡片渲染顺序一致：
+     目录点了却到别处，比没有目录更糟。 */
+  const FULL_ORDER = [
+    'sec-overview',
+    'sec-intro',
+    'sec-profile',
+    'sec-relations',
+    'sec-commercial',
+    'sec-dynamics',
+    'sec-quotes',
+    'sec-analysis',
+    'sec-controversies',
+    'sec-risk',
+    'sec-member',
+    'sec-stance',
+    'sec-cloud',
+    'sec-qtheme',
+    'sec-trend',
+    'sec-timeline',
+    'sec-watchlist',
+    'sec-glossary'
+  ]
+
+  const fullReport = () =>
+    mkReport({
+      profile: [{ label: '职业', value: '演员', basis: 'b' }],
+      relations: [{ name: '某某', relation: '合作', note: 'n', basis: 'b' }],
+      controversies: [{ topic: 't', claim: 'c', response: 'r', basis: 'b' }],
+      watchlist: [{ item: 'i', why: 'w', basis: 'b' }],
+      glossary: [{ term: 't', explain: 'e', basis: 'b' }]
+    })
+
+  it('完整报告 + 会员：18 节齐、顺序与卡片一致', () => {
+    const toc = buildReportToc(fullReport(), { member: true, hasOverview: true })
+    deepEq(toc.map((s) => s.id), FULL_ORDER)
+  })
+
+  it('免费用户没有「会员专享」这一节（那张卡本来就不渲染）', () => {
+    const toc = buildReportToc(fullReport(), { member: false, hasOverview: true })
+    notOk(toc.some((s) => s.id === 'sec-member'))
+    eq(toc.length, FULL_ORDER.length - 1)
+  })
+
+  it('算不出覆盖范围时也不列「人物速览」的空态卡', () => {
+    const toc = buildReportToc(fullReport(), { member: true, hasOverview: false })
+    notOk(toc.some((s) => s.id === 'sec-overview'))
+  })
+
+  it('降级简版：结构化节全部不收，只留确实会渲染的那几张兜底卡', () => {
+    const toc = buildReportToc(
+      mkReport({ degraded: true, intro: '一段简版简介', analysis: '简版点评' }),
+      { member: true, hasOverview: false }
+    )
+    deepEq(toc.map((s) => s.id), ['sec-intro', 'sec-analysis'])
+  })
+
+  it('降级简版且没有 intro 时连「简介」也不列（空态卡与实体卡两个分支都不成立）', () => {
+    const toc = buildReportToc(mkReport({ degraded: true }), { member: true, hasOverview: false })
+    deepEq(toc.map((s) => s.id), ['sec-analysis'])
+  })
+
+  it('老报告（缺第二批字段）不列这些节 —— 键不存在与键为空数组是两回事', () => {
+    const toc = buildReportToc(mkReport(), { member: false, hasOverview: true })
+    for (const id of ['sec-profile', 'sec-relations', 'sec-controversies', 'sec-watchlist', 'sec-glossary']) {
+      notOk(toc.some((s) => s.id === id), `老报告不该出现 ${id}`)
+    }
+  })
+
+  it('没有报告时给空目录（页面据此不出目录条）', () => {
+    deepEq(buildReportToc(null, { member: true, hasOverview: true }), [])
+    deepEq(buildReportToc(undefined, { member: false, hasOverview: false }), [])
+  })
+
+  it('id 不重复（锚点重复会跳到第一处）、label 都不为空', () => {
+    const toc = buildReportToc(fullReport(), { member: true, hasOverview: true })
+    eq(new Set(toc.map((s) => s.id)).size, toc.length)
+    for (const s of toc) ok(s.id.startsWith('sec-') && !!s.label, `异常条目：${JSON.stringify(s)}`)
+  })
+})
+
+/* -------------------------------------------------- 商业价值速览 utils/commercial（第 0 期） */
+
+describe('商业价值速览 utils/commercial', () => {
+  const { buildCommercialSummary, COMMERCIAL_AXES, MIN_AXES } = env.load('utils/commercial')
+  const { buildProfileStats } = env.load('utils/stats')
+  const { buildRiskSignals } = env.load('utils/risk')
+
+  /** 一份「要什么有什么」的报告：有素材画像、有动态、有争议段 */
+  const richReport = () =>
+    mkReport({
+      coverage: { items: 12, recent: 4, firstAt: '2026-09-10T00:00:00.000Z', latestAt: '2026-10-05T00:00:00.000Z' },
+      dynamics: [dyn({ sentiment: 'positive' }), dyn({ sentiment: 'negative' }), dyn({ sentiment: 'neutral' })],
+      controversies: [{ topic: 't', claim: 'c', response: '', basis: 'b' }]
+    })
+
+  it('三段齐全：顺序固定、每段一句结论 + 一条口径，可跳明细', () => {
+    const s = buildCommercialSummary(richReport())
+    eq(s.ready, true)
+    deepEq(
+      s.axes.map((a) => a.key),
+      COMMERCIAL_AXES
+    )
+    eq(s.gaps.length, 0)
+    eq(s.axes[0].value, '近 30 天 12 条报道')
+    ok(s.axes[0].note.includes('近 7 天 4 条'), '热度口径要摊开近 7 天')
+    ok(s.axes[0].note.includes('不是平台热度指数'), '热度必须标明不是平台指数')
+    eq(s.axes[1].value, '积极 1 · 中性 1 · 消极 1')
+    eq(s.axes[2].value, '收录 1 条，其中 1 条未见公开回应')
+  })
+
+  it('锚点都指向本页真实存在的节（否则点了没反应）', () => {
+    const s = buildCommercialSummary(richReport())
+    for (const a of s.axes) {
+      ok(a.anchor.startsWith('sec-'), `锚点异常：${a.anchor}`)
+      ok(!!a.anchorLabel, `缺节名：${a.anchor}`)
+    }
+  })
+
+  it('老报告（无 coverage）用热度分兜底，并写明「本报告没记录原始条数」', () => {
+    const s = buildCommercialSummary(mkReport({ heat: 42, dynamics: [dyn({})] }))
+    eq(s.axes[0].value, '热度 42/100')
+    ok(s.axes[0].note.includes('老报告'), '必须说明是字段缺失，而不是没热度')
+  })
+
+  it('算不出就说算不出：没取到报道时热度分项进 gaps（而不是显示 0 条）', () => {
+    const s = buildCommercialSummary(mkReport({ heat: 0, coverage: { items: 0, recent: 0 } }))
+    notOk(s.axes.some((a) => a.key === 'heat'))
+    ok(s.gaps.some((g) => g.label === '报道热度'))
+  })
+
+  it('无动态时「报道倾向」进 gaps 并说明对象为 0 条', () => {
+    const s = buildCommercialSummary(
+      mkReport({ coverage: { items: 5, recent: 1 }, controversies: [] })
+    )
+    eq(s.gaps.map((g) => g.label).join(','), '报道倾向')
+    ok(s.gaps[0].reason.includes('0 条'))
+  })
+
+  it('争议段：空数组成立（= 确认没有），字段缺失不成立（= 不知道有没有）', () => {
+    const cov = { items: 5, recent: 1 }
+    const none = buildCommercialSummary(mkReport({ coverage: cov, controversies: [] }))
+    eq(none.axes.find((a) => a.key === 'controversy').value, '素材中未见公开争议')
+
+    const old = buildCommercialSummary(mkReport({ coverage: cov }))
+    ok(old.gaps.some((g) => g.label === '争议状况' && g.reason.includes('上线前')))
+  })
+
+  it('门槛：成立的分项不足 MIN_AXES 时 ready=false（页面据此出「缺什么」说明）', () => {
+    eq(MIN_AXES, 2)
+    const s = buildCommercialSummary(mkReport({ heat: 0 }))
+    eq(s.axes.length, 0)
+    eq(s.ready, false)
+    eq(s.gaps.length, 3, '三个分项都要说明为什么没有')
+  })
+
+  it('数字与数据 Tab、风险雷达同源（不另算一套）', () => {
+    const rep = richReport()
+    const s = buildCommercialSummary(rep)
+    const st = buildProfileStats(rep)
+    eq(s.axes[1].value, `积极 ${st.sentiment.positive} · 中性 ${st.sentiment.neutral} · 消极 ${st.sentiment.negative}`)
+    eq(s.axes[2].value, `收录 1 条，其中 ${buildRiskSignals(rep).unanswered} 条未见公开回应`)
+  })
+
+  it('传入已算好的聚合结果与内部现算完全一致（页面复用同一趟计算）', () => {
+    const rep = richReport()
+    deepEq(buildCommercialSummary(rep, { stats: buildProfileStats(rep), risk: buildRiskSignals(rep) }), buildCommercialSummary(rep))
+  })
+
+  it('不给结论：结果里没有评分 / 星级 / 指数这类字段', () => {
+    const s = buildCommercialSummary(richReport())
+    for (const bad of ['score', 'rating', 'grade', 'index', 'probability', 'level']) {
+      notOk(bad in s, `速览不应出现 ${bad}（它需要推断，不只是素材）`)
+    }
+    for (const a of s.axes) for (const bad of ['score', 'rating', 'grade']) notOk(bad in a, `分项不应出现 ${bad}`)
+  })
+
+  it('同一份报告多次汇总结果一致（纯函数）', () => {
+    const rep = richReport()
+    deepEq(buildCommercialSummary(rep), buildCommercialSummary(rep))
+  })
+})
+
+/* ------------------------------- 风险词典两端一致（cloudfunctions/riskWatch ↔ src/utils/risk） */
+
+/**
+ * 云函数不能 require 端上 TS（各自独立打包），故 riskWatch 复制了一份词典与判定规则。
+ * 这份「同源」是承诺，不是巧合 —— 一旦有人只改一端，两处就会对同一条报道给出不同判断
+ * （雷达卡说有、每天检索说没有，或反之）。这里读云函数**源码**抠出字面量逐条比对，
+ * 漂移即红。改动词典必须两端一起改。
+ */
+describe('风险词典两端一致（cloudfunctions/riskWatch ↔ src/utils/risk）', () => {
+  const { RISK_TERMS, NEG_WORDS, NEG_WINDOW, RISK_CATEGORY_LABEL } = env.load('utils/risk')
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'cloudfunctions', 'riskWatch', 'index.js'),
+    'utf8'
+  )
+
+  /** 从云函数源码里抠出顶层 `const NAME = <字面量>` 并求值（数组 / 对象 / 数字） */
+  function literal(name) {
+    const head = `const ${name} = `
+    const at = src.indexOf(head)
+    if (at < 0) throw new Error(`云函数源码里未找到 ${head}`)
+    const start = at + head.length
+    const open = src[start]
+    if (open !== '[' && open !== '{') {
+      const nl = src.indexOf('\n', start)
+      return new Function(`return (${src.slice(start, nl).trim()})`)()
+    }
+    const close = open === '[' ? ']' : '}'
+    let depth = 0
+    for (let j = start; j < src.length; j++) {
+      if (src[j] === open) depth++
+      else if (src[j] === close) {
+        depth--
+        if (depth === 0) return new Function(`return (${src.slice(start, j + 1)})`)()
+      }
+    }
+    throw new Error(`const ${name} 字面量未闭合`)
+  }
+
+  it('词表逐条相同、顺序也相同（命中取第一个词，顺序变了结果就变）', () => {
+    const expected = RISK_TERMS.map((t) => ({ word: t.word, category: t.category }))
+    deepEq(literal('RISK_TERMS'), expected)
+  })
+
+  it('否定词表与窗口相同（「未被起诉」这类必须两端都排除）', () => {
+    deepEq(literal('NEG_WORDS'), NEG_WORDS)
+    eq(literal('NEG_WINDOW'), NEG_WINDOW)
+  })
+
+  it('类别标签相同（预警页按 category_label 展示，两端口径须一致）', () => {
+    deepEq(literal('CATEGORY_LABEL'), RISK_CATEGORY_LABEL)
+  })
+
+  it('级别只由类别决定：司法/税务高、合作/维权中、回应低', () => {
+    deepEq(literal('LEVEL_OF'), { judicial: 'high', tax: 'high', contract: 'mid', rights: 'mid', statement: 'low' })
+  })
+})
+
+/* --------------------------------------- 名人风险监控 utils/risk-watch（纯逻辑） */
+
+describe('名人风险监控 utils/risk-watch（纯逻辑）', () => {
+  const {
+    personWatchId,
+    isMonitored,
+    isMonitoredName,
+    sortSignals,
+    groupSignals,
+    seenLabel,
+    SIGNALS_PER_PERSON
+  } = env.load('utils/risk-watch')
+
+  const sig = (over = {}) =>
+    Object.assign(
+      {
+        id: 'x',
+        person_key: '雷军#tech',
+        name: '雷军',
+        level: 'low',
+        category: 'statement',
+        category_label: '回应表态',
+        keyword: '澄清',
+        title: '标题',
+        quote: '摘录',
+        source: '来源',
+        url: 'https://example.com/a',
+        first_seen_at: '2026-10-01T00:00:00.000Z'
+      },
+      over
+    )
+
+  it('监控主键带 person# 前缀（与关键词订阅 openid#关键词 不撞主键）', () => {
+    eq(personWatchId('u1', '雷军#tech'), 'u1#person#雷军#tech')
+  })
+
+  it('isMonitored 只看 person_key', () => {
+    const rows = [{ id: 'a', openid: 'u1', keyword: '雷军', person_key: '雷军#tech', created_at: '', seen_at: null }]
+    ok(isMonitored(rows, '雷军#tech'))
+    notOk(isMonitored(rows, '其他人#tech'))
+  })
+
+  it('isMonitoredName：只认字面相同的人名（预警页「开始监测」前的重复提醒）', () => {
+    const rows = [{ id: 'a', openid: 'u1', keyword: '雷军', person_key: '雷军#tech', created_at: '', seen_at: null }]
+    /* 归一化后相同即命中（首尾空白、连续空白都不算差异，与 addWatch 同一口径） */
+    eq(isMonitoredName(rows, ' 雷军 ')?.person_key, '雷军#tech')
+    eq(isMonitoredName(rows, '雷军')?.keyword, '雷军')
+    /* 更长/更短的字面不拦：这类词只能靠关键词监测收到，拦下就是误报 */
+    eq(isMonitoredName(rows, '雷军 发布会'), null)
+    eq(isMonitoredName(rows, '雷'), null)
+    /* 空输入与空名单不炸 */
+    eq(isMonitoredName(rows, ''), null)
+    eq(isMonitoredName(rows, '   '), null)
+    eq(isMonitoredName([], '雷军'), null)
+  })
+
+  it('排序：司法/税务（high）在前，同类按「第一次见到」倒序', () => {
+    const rows = sortSignals([
+      sig({ id: 'a', level: 'low', first_seen_at: '2026-10-05T00:00:00.000Z' }),
+      sig({ id: 'b', level: 'high', first_seen_at: '2026-10-01T00:00:00.000Z' }),
+      sig({ id: 'c', level: 'mid', first_seen_at: '2026-10-03T00:00:00.000Z' })
+    ])
+    deepEq(rows.map((r) => r.id), ['b', 'c', 'a'])
+  })
+
+  it('分组：按人聚合，组间按最近一条信号时间倒序，组名取信号里的 name', () => {
+    const groups = groupSignals([
+      sig({ id: '1', person_key: 'A#tech', name: 'A', first_seen_at: '2026-10-01T00:00:00.000Z' }),
+      sig({ id: '2', person_key: 'B#tech', name: 'B', first_seen_at: '2026-10-05T00:00:00.000Z' })
+    ])
+    deepEq(groups.map((g) => g.personKey), ['B#tech', 'A#tech'])
+    eq(groups[0].name, 'B')
+  })
+
+  it('每人最多列 SIGNALS_PER_PERSON 条（不把页面撑成流水账）', () => {
+    const many = Array.from({ length: SIGNALS_PER_PERSON + 5 }, (_, i) =>
+      sig({ id: `s${i}`, first_seen_at: `2026-10-${String((i % 9) + 1).padStart(2, '0')}T00:00:00.000Z` })
+    )
+    eq(groupSignals(many)[0].signals.length, SIGNALS_PER_PERSON)
+  })
+
+  it('seenLabel：今天 / 昨天 / 具体月日，now 可注入；非法时间返回空串', () => {
+    const now = new Date('2026-10-09T12:00:00.000Z')
+    eq(seenLabel('2026-10-09T08:00:00.000Z', now), '今天')
+    eq(seenLabel('2026-10-08T08:00:00.000Z', now), '昨天')
+    eq(seenLabel('2026-09-28T08:00:00.000Z', now), '09-28')
+    eq(seenLabel('', now), '')
   })
 })

@@ -20,6 +20,32 @@
  *
  * ⚠ `local.ts` 必须存在：`src/config/public.ts` 直接 import 它，
  *    未复制时编译会报 `Cannot find module './local'`。
+ *
+ * ## 订阅消息模板：三个 ID 怎么来（2026-10-09 补）
+ *
+ * 端上三处推送入口各要一枚**独立**模板，两个地方各填一次（两端必须同模板）：
+ *
+ * | 用途             | 端上字段             | 云函数环境变量           | 定时任务                |
+ * | ---------------- | -------------------- | ------------------------ | ----------------------- |
+ * | 关注更新提醒     | `subscribeTemplateId`| `SUBSCRIBE_TEMPLATE_ID`  | notifyFollowUpdates 09:00 |
+ * | 关键词舆情预警   | `alertTemplateId`    | `ALERT_TEMPLATE_ID`      | keywordAlert 09:20      |
+ * | 名人风险提醒     | `riskTemplateId`     | `RISK_TEMPLATE_ID`       | riskWatch 09:40         |
+ *
+ * 步骤：
+ *
+ * 1. 公众平台 → 功能 → 订阅消息 → 公共模板库，挑字段是 `thing1`（提醒内容，≤20 字）
+ *    + `date2`（时间）的那一类模板。**选三次**，拿到三个不同的模板 ID
+ *    —— 可以标题相同，但不能是同一个 ID（原因见下方 `alertTemplateId`）。
+ * 2. 把三个 ID 填进 `localConfig`。这几个值会被编进包，**改完必须重新编译**
+ *    （`npm run build:weapp`），热更新不生效。
+ * 3. 云开发控制台 → 云函数 → 各自的「环境变量」，按上表填同名模板 ID。
+ *    漏填不会报错也不阻断：云函数只跳过推送、把原因写进 `summary.skipped`。
+ * 4. 真机跑一次：登录后点三处入口的授权按钮，确认 `users` 表对应行的
+ *    `subscribe_ok` / `alert_ok` / `risk_ok` 已置 true —— 定时任务只给 true 的用户发。
+ *
+ * 三个 ID 全留空**不是坏状态**：端上只保留站内提醒（数据照样落库、预警页看得到），
+ * 只是不渲染授权按钮（见 `notify.ts` 里的三个 `*NotifyConfigured()`；模板没申请就摆按钮，
+ * 点下去必然失败）。授权为什么必须按模板分开，见 `utils/notify.ts` 顶部注释。
  */
 export interface LocalDebugFlags {
   /**
@@ -64,6 +90,15 @@ export interface LocalConfig {
   alertTemplateId: string
 
   /**
+   * 订阅消息模板 ID（名人风险监控，第 1 期）。
+   * **又得是一枚独立的模板**：现在有三个定时任务（notifyFollowUpdates 09:00 /
+   * keywordAlert 09:20 / riskWatch 09:40），三枚模板三位授权，任何两个共用都会互相吃授权。
+   * 云函数侧同名环境变量 `RISK_TEMPLATE_ID`。空串 = 未配置：
+   * 此时只做站内预警（信号照样落库，进预警页看得到），不出现授权按钮。
+   */
+  riskTemplateId: string
+
+  /**
    * 业务域名白名单（原文预览页可内嵌的站点）。
    * 只填主域名，不带协议/路径/www；默认留空 = 全部走「素材预览卡 + 复制链接」降级路径。
    */
@@ -77,6 +112,7 @@ export const localConfig: LocalConfig = {
   cloudbaseEnvId: 'REPLACE_ME',
   subscribeTemplateId: '',
   alertTemplateId: '',
+  riskTemplateId: '',
   webviewDomains: [],
   debug: {
     disableGenerateQuota: false,

@@ -40,8 +40,17 @@ interface ChatMessage {
   content: string
 }
 
-/** 单次尝试的结果：失败时标明「是否值得重试」，交由上层唯一的重试循环裁决 */
-type ChatAttempt = { ok: true; content: string } | { ok: false; error: string; retryable: boolean }
+/**
+ * 单次尝试的结果：失败时标明「是否值得重试」，交由上层唯一的重试循环裁决。
+ *
+ * ok 分支带上 `finishReason`（上游原样回传）：`'length'` = 输出撞上 max_tokens 被截断。
+ * 报告是长 JSON，截断必然解析失败 —— 而**原样重发同一请求只会再次撞上同一个上限**，
+ * 白白多等一整轮生成（约 30~40s）。故把这一信号交给 chatJSON，让它据此放弃重试、
+ * 直接走快速降级（见 chatJSON 里那段）。非长生成的调用方可以忽略它。
+ */
+type ChatAttempt =
+  | { ok: true; content: string; finishReason?: string }
+  | { ok: false; error: string; retryable: boolean }
 
 /**
  * 云通道的超时在云函数内控制（见 aiProxy 的 LLM_CHAT_TIMEOUT_MS），端上已无直连超时。
@@ -344,7 +353,7 @@ async function chatViaPlatform(messages: ChatMessage[]): Promise<ChatAttempt> {
       { model: res.model, outputChars: content.length }
     )
   }
-  return { ok: true, content }
+  return { ok: true, content, finishReason: res.finishReason }
 }
 
 /**
@@ -404,6 +413,13 @@ export async function chatText(
 /**
  * 调 LLM 并解析为 JSON（zod 校验）。
  * 非法 JSON / 校验失败自动重试一次（§2.4）；仍失败返回错误。
+ *
+ * **截断例外（本轮，耗时优化 P0）**：上游把 `finish_reason` 回传成 `'length'` 时，
+ * 说明这次输出是撞上 max_tokens 被**切断**的。此时原样重发同一请求几乎必然再次撞上
+ * 同一道上限 —— 重试不是「再试一次运气」，而是**白等一整轮生成**（报告这类长生成约 30~40s），
+ * 两次都失败后还要再走一次降级调用，最坏把一次失败放大成三次往返。
+ * 故一旦本次输出被截断且解析失败，就**不再重试**（retryable=false，直接交给上层降级）。
+ * 注意：截断的输出仍先尝试解析 —— 偶发情况下截断点恰好落在合法闭合处，能救则救。
  */
 export async function chatJSON<T>(
   system: string,
@@ -419,6 +435,8 @@ export async function chatJSON<T>(
   let lastError = 'LLM 输出无法解析为合法 JSON'
   let lastRetryable = true // 解析/校验失败默认可重试（换一次采样可能就过了）
   for (let i = 0; i < attempts; i++) {
+    /* 本次尝试是否被上游截断；截断导致的失败一律不再重试（理由见上方注释） */
+    let truncated = false
     try {
       const attempt = await chatOnce([
         { role: 'system', content: system },
@@ -432,9 +450,11 @@ export async function chatJSON<T>(
         if (!attempt.retryable) break
         continue
       }
+      truncated = attempt.finishReason === 'length'
       const jsonText = extractJSONText(attempt.content)
       if (!jsonText) {
         lastError = 'LLM 输出不含 JSON'
+        if (truncated) return truncatedFail(lastError)
         continue
       }
       const parsed = schema.safeParse(JSON.parse(jsonText))
@@ -443,11 +463,22 @@ export async function chatJSON<T>(
       }
       lastError = `LLM 输出未过校验：${parsed.error.issues[0]?.message ?? '字段不合法'}`
       diagLog('warn', 'llm', `chatJSON 第 ${i + 1} 次输出不合法：${lastError}`)
+      if (truncated) return truncatedFail(lastError)
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)
       lastRetryable = true
       diagLog('warn', 'llm', `chatJSON 第 ${i + 1} 次调用失败：${lastError}`)
+      if (truncated) return truncatedFail(lastError)
     }
   }
   return { ok: false, error: lastError, retryable: lastRetryable }
+}
+
+/**
+ * 截断失败的统一出口：记一笔诊断（便于在日志里把「撞上限」与「解析/校验不过」分开），
+ * 并以 retryable=false 返回 —— 让上层的重试循环立刻收手，直接走降级或报错。
+ */
+function truncatedFail(error: string): ChatJSONResult<never> {
+  diagLog('warn', 'llm', `输出被上游截断，不再重试（重发同一请求只会再撞上限）：${error}`)
+  return { ok: false, error, retryable: false }
 }

@@ -20,11 +20,84 @@ import { diagLog } from './cloud-diagnostics'
 export interface DbError {
   message: string
   code?: string
+  /**
+   * 云开发的数值错误码（-502005 集合不存在 / -502003 无权限 / -502001 其他请求失败）。
+   *
+   * 与上面的 `code` 并存是历史原因：`code` 是 PostgREST 时代的字段（当时存 "23505" 这类
+   * 约束冲突串），迁到 CloudBase 后一直没人写也没人读，留着只为不破坏既有类型引用。
+   * 需要按错误类型分支时一律看 `errCode`。
+   */
+  errCode?: number
 }
 
 export interface DbResult<T = unknown> {
   data: T | null
   error: DbError | null
+}
+
+/**
+ * 把云开发 reject 的东西归一化成 DbError。
+ *
+ * ⚠ 这里踩过一个坑，别再踩第二次：`wx.cloud` 失败时 reject 的是**普通对象**
+ * `{ errCode, errMsg }`，不是 `Error` 实例。原先写的是
+ * `err instanceof Error ? err.message : String(err)` —— 前者为假、后者把对象拍成
+ * `"[object Object]"`，于是「集合不存在」「无写入权限」这些**唯一能指明修法**的信息
+ * 全被丢掉，诊断日志里只剩一句无用的 `keyword_watches insert 失败：[object Object]`，
+ * 上层只能对用户说「监控失败，请重试」—— 而这类错误重试一万次都一样。
+ */
+export function normalizeDbError(err: unknown): DbError {
+  if (err && typeof err === 'object') {
+    const e = err as { errCode?: unknown; errMsg?: unknown; message?: unknown }
+    const errCode = typeof e.errCode === 'number' ? e.errCode : undefined
+    const errMsg = typeof e.errMsg === 'string' ? e.errMsg : ''
+    const message = errMsg || (typeof e.message === 'string' ? e.message : '')
+    if (message) return { message, errCode, code: errCode != null ? String(errCode) : undefined }
+  }
+  if (err instanceof Error) return { message: err.message }
+  return { message: String(err) }
+}
+
+/** -502005 集合不存在；-502003 无权限；-502001 请求失败（丢包，或撞主键/并发冲突） */
+const ERR_COLLECTION_NOT_EXIST = -502005
+const ERR_PERMISSION_DENIED = -502003
+
+export interface DbFailure {
+  /** true = **环境没配好**（集合没建 / 权限不对）：重试无用，要人去云开发控制台改 */
+  fatal: boolean
+  /** 给用户看的话，含「该做什么」 */
+  message: string
+}
+
+/**
+ * 把写库失败翻译成「该谁去处理」。
+ *
+ * 起因：报告页点「+ 监控风险」只得到一句「监控失败，请重试」，而真实原因是
+ * `keyword_watches` 集合没建（或权限不是「仅创建者可读写」）—— 这类错误在文案上
+ * 与「网络抖了一下」长得一模一样，用户只会反复点同一个按钮。
+ *
+ * 返回 `null` = 不是已知的环境问题（断网 / 超时 / 并发），调用方保留自己那句通用提示，
+ * 因为对这类失败「重试」确实是正确的建议。
+ *
+ * @param table  出错的那张表：写进文案，用户才知道去哪建表 / 改权限
+ * @param error  db.ts 归一化后的错误（`normalizeDbError`）
+ * @param action 正在做的事（「监控」「订阅」），文案里拼成「…无法进行」
+ */
+export function explainDbFailure(table: string, error: DbError | null, action: string): DbFailure | null {
+  const text = error?.message ?? ''
+  const code = error?.errCode
+  if (code === ERR_COLLECTION_NOT_EXIST || /collection not exist|集合不存在/i.test(text)) {
+    return {
+      fatal: true,
+      message: `云数据库里还没有「${table}」集合，${action}无法进行。请部署者在云开发控制台跑一次 dbInit（action: init）建表后重试。`
+    }
+  }
+  if (code === ERR_PERMISSION_DENIED || /permission denied|no permission|无权限/i.test(text)) {
+    return {
+      fatal: true,
+      message: `「${table}」集合不允许端上写入，${action}无法进行。请部署者在云开发控制台把它的权限设为「仅创建者可读写」。`
+    }
+  }
+  return null
 }
 
 /** 小程序端单次 get 上限（超出一律分页续取） */
@@ -213,9 +286,11 @@ class Builder implements PromiseLike<DbResult<any>> {
       }
       return { data: null, error: null }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      diagLog('warn', 'db', `${this.name} ${this.kind} 失败：${message}`)
-      return { data: null, error: { message } }
+      /* 走 normalizeDbError 而不是 `err.message`：云开发 reject 的是 { errCode, errMsg }，
+         直接取 message 会得到 "[object Object]"（详见该函数注释） */
+      const error = normalizeDbError(err)
+      diagLog('warn', 'db', `${this.name} ${this.kind} 失败：${error.message}`)
+      return { data: null, error }
     }
   }
 }

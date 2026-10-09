@@ -1,7 +1,7 @@
 import Taro from '@tarojs/taro'
 import { publicConfig } from '@/config/public'
 import { useAuth } from '@/stores/auth'
-import { setAlertOptIn, setSubscribeOptIn } from './auth'
+import { setAlertOptIn, setRiskOptIn, setSubscribeOptIn } from './auth'
 import { diagLog } from './cloud-diagnostics'
 
 /**
@@ -115,4 +115,54 @@ export async function requestAlertNotify(): Promise<{ ok: boolean; message: stri
   const saved = await setAlertOptIn(true)
   if (!saved) return { ok: false, message: '授权成功但记录失败，请重试' }
   return { ok: true, message: '已开启：订阅的关键词有新增报道时提醒你一次' }
+}
+
+/* ── 名人风险提醒的推送（2026-10-09，第 1 期 riskWatch）──────────────
+   第三枚模板、第三位授权。与前两条链路同构：端上只做「请求授权 + 置位」，发送由云函数
+   riskWatch 在每天 09:40 的定时任务里做（命中风险类表述且级别够时），发完复位 users.risk_ok。
+   模板分开的理由与前一对相同：一次性订阅按**模板**消耗授权。 */
+
+/** 风险提醒模板是否已配置（未配置时入口只做站内预警，不发一个必然失败的授权请求） */
+export function riskNotifyConfigured(): boolean {
+  return Boolean(publicConfig.riskTemplateId)
+}
+
+/**
+ * 请求风险提醒授权并落库。
+ *
+ * 与 requestAlertNotify 一样，第一次 await 必须就是 requestSubscribeMessage 本身
+ * （微信要求授权由用户点击直接触发），调用方直接挂到 onClick 上即可。
+ */
+export async function requestRiskNotify(): Promise<{ ok: boolean; message: string }> {
+  if (!useAuth.getState().userId) return { ok: false, message: '请先登录' }
+  if (!riskNotifyConfigured()) {
+    return { ok: false, message: '风险提醒未配置：请先在小程序后台创建订阅消息模板' }
+  }
+
+  const tmplId: string = publicConfig.riskTemplateId
+  const subscribe = Taro.requestSubscribeMessage as unknown as (
+    o: { tmplIds: string[] }
+  ) => Promise<Record<string, string>>
+
+  let status: string | undefined
+  try {
+    const res = await subscribe({ tmplIds: [tmplId] })
+    status = res[tmplId]
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    diagLog('warn', 'auth', `风险提醒授权失败：${msg}`)
+    return { ok: false, message: `授权失败：${msg}` }
+  }
+
+  if (status !== 'accept') {
+    diagLog('info', 'auth', `风险提醒授权未通过：${status ?? '无返回'}`)
+    return {
+      ok: false,
+      message: status === 'ban' ? '提醒已被关闭，请到小程序设置里开启' : '已取消，未开启提醒'
+    }
+  }
+
+  const saved = await setRiskOptIn(true)
+  if (!saved) return { ok: false, message: '授权成功但记录失败，请重试' }
+  return { ok: true, message: '已开启：监控的人出现风险类报道时提醒你一次' }
 }

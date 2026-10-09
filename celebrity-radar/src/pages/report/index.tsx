@@ -14,6 +14,9 @@ import { Report } from '@/utils/report'
 import { extractKeywords, extractQuoteThemes } from '@/utils/keywords'
 import { buildComparison } from '@/utils/compare'
 import { buildHeatTrend, TrendPoint } from '@/utils/trend'
+import { buildRiskSignals, RISK_CATEGORIES, RISK_CATEGORY_LABEL, RISK_FROM_LABEL } from '@/utils/risk'
+import { buildReportToc } from '@/utils/report-toc'
+import { buildCommercialSummary, MIN_AXES } from '@/utils/commercial'
 import {
   favoriteQuote,
   favoriteReport,
@@ -22,6 +25,7 @@ import {
   removeFavorite
 } from '@/utils/favorites'
 import { isFollowed, toggleFollow } from '@/utils/follows'
+import { isMonitored, listPersonWatches, monitorPerson, unmonitorPerson } from '@/utils/risk-watch'
 import { addHistory } from '@/utils/history'
 import {
   dismissPromo,
@@ -238,6 +242,10 @@ export default function ReportPage() {
   /** 已收藏的内容 id（名言 / 动态 / 履历节点三类共用；整份报告单独用 reportFaved） */
   const [favedIds, setFavedIds] = useState<Set<string>>(new Set())
   const [followed, setFollowed] = useState(false)
+  /** 是否在「监控此人」（风险信号订阅，见 utils/risk-watch.ts）；与关注相互独立 */
+  const [monitored, setMonitored] = useState(false)
+  /** 监控按钮提交中：防止连点写出两行（后一个会撞主键） */
+  const [monitorBusy, setMonitorBusy] = useState(false)
   /** 上一版报告：仅当用户点「刷新最新」且真的重新生成了才有值 */
   const [prevReport, setPrevReport] = useState<Report | null>(null)
   /** 相关名人（O-16）：报告就绪后异步算，算不出来就是空数组（整卡不渲染） */
@@ -344,6 +352,9 @@ export default function ReportPage() {
   useDidShow(() => {
     if (!personKey || !useAuth.getState().userId) return
     void isFollowed(personKey).then(setFollowed)
+    /* 监控态与关注态一起同步：用户可能刚在预警页取消监控（本页实例还在、personKey 没变），
+       只在别处读一次会留下一个显示「监控中」的僵尸按钮 */
+    void listPersonWatches().then((rows) => setMonitored(isMonitored(rows, personKey)))
   })
 
   /** 关注 / 取关。报告页此前没有关注入口，看完报告想关注必须退回名人主页，动线是断的。 */
@@ -353,6 +364,53 @@ export default function ReportPage() {
     if (next === null) return
     setFollowed(next)
     Taro.showToast({ title: next ? '已关注' : '已取消关注', icon: 'none' })
+  }
+
+  /**
+   * 监控此人 / 取消监控（第 1 期名人风险监控，见 utils/risk-watch.ts）。
+   *
+   * 与关注是两回事：关注只是本机记号，监控会把这个人交给云端每天检索一次公开报道，
+   * 命中「司法 / 税务 / 维权 / 表态」这类词时写风险信号并推送 —— 故按钮文案必须
+   * 说清它订阅的是「风险情况」，不能与「关注」混成同一个动作。
+   *
+   * 取消走二次确认（与预警页取消监测同一套交互）：监控是每天真金白银的检索，误触取消
+   * 会让用户第二天收不到提醒却不知道发生了什么。
+   */
+  const onToggleMonitor = async () => {
+    if (monitorBusy) return
+    if (monitored) {
+      void Taro.showModal({
+        title: '取消监控',
+        content: `不再监控「${name}」的风险情况？已收集的信号会从预警页移除。`,
+        confirmText: '取消监控',
+        cancelText: '再想想',
+        success: async (r) => {
+          if (!r.confirm) return
+          const ok = await unmonitorPerson(personKey)
+          if (ok) {
+            setMonitored(false)
+            Taro.showToast({ title: '已取消监控', icon: 'none' })
+          }
+        }
+      })
+      return
+    }
+    setMonitorBusy(true)
+    const res = await monitorPerson(personKey, name)
+    setMonitorBusy(false)
+    if (res.ok) {
+      setMonitored(true)
+      Taro.showToast({ title: res.message, icon: 'success' })
+      return
+    }
+    /* 环境问题（集合没建 / 权限不允许端上写入）的文案长且不是「再点一次」能解决的，
+       toast 会把它截成半句 —— 改用弹窗把「去哪建表、改成什么权限」说完（同 saveImageToAlbum
+       对权限类失败的处理）。其余失败（断网 / 超时）仍是一句 toast 让用户重试。 */
+    if (res.fatal) {
+      await Taro.showModal({ title: '监控没能开启', content: res.message, showCancel: false, confirmText: '知道了' })
+      return
+    }
+    Taro.showToast({ title: res.message, icon: 'none' })
   }
 
   /** 进入页面 / 报告就绪时同步收藏状态 */
@@ -549,6 +607,27 @@ export default function ReportPage() {
   const trendGeo = trend ? trendGeometry(trend.points) : null
 
   /**
+   * 风险雷达（第 0 期）：从报告已收录的四段素材里**字面**挑出司法 / 监管 / 商业合作 /
+   * 名誉维权类表述，逐条给出处。纯端上聚合，存量报告立即生效，不消耗生成额度。
+   *
+   * ⚠ 这张卡刻意不产出「风险等级 / 塌房概率」这类结论，措辞一律是「收录到 N 条相关表述」——
+   *   口径与三条边界（只做字面命中、宁可漏报、算不出就说算不出）写死在 utils/risk.ts 顶部，
+   *   改动前先读那段说明。
+   */
+  const risk = report ? buildRiskSignals(report) : null
+
+  /**
+   * 商业价值速览（第 0 期）：给「读完这份报告，值不值得进一步接触」一个一屏入口 ——
+   * 报道热度 / 报道倾向 / 争议状况，每段一句话结论 + 一条口径，明细靠锚点跳过去。
+   *
+   * ⚠ 一个数字都不新算：三段全部复用 utils/stats.ts 与 utils/risk.ts 的既有口径，
+   *   并把上面已经算好的 risk 传进去，避免同一趟里把四段素材扫两遍。
+   *   门槛（成立的分项 < MIN_AXES 不出速览）与措辞都在 utils/commercial.ts 里，
+   *   页面只负责渲染 —— 改动前先读那个文件顶部的说明。
+   */
+  const commercial = report ? buildCommercialSummary(report, { risk: risk ?? undefined }) : null
+
+  /**
    * 人物速览的数据源：本版新增的博查素材画像（utils/report.ts 的 ReportCoverage）。
    *
    * 这里替换掉了原来的「同领域名人」推荐位 —— 那是**别的人**，而读完报告最需要确认的
@@ -699,6 +778,35 @@ export default function ReportPage() {
     Taro.showToast({ title: '已关闭，不再出现', icon: 'none', duration: 1500 })
   }
 
+  /**
+   * 折叠目录（本轮）：卡片从六段涨到十七节，报告页要滑十几屏 ——
+   * 目录回答的是「这里有什么、怎么直接过去」，默认收起（它是入口，不是内容）。
+   *
+   * 口径全在 utils/report-toc.ts：那里与下面卡片的渲染条件是**平行维护的一对**，
+   * 改任何一张卡的显示条件都要同步改它（两边都有注释互相指路）。页面只做两件事：
+   * 折叠/展开，以及拿 id 跳转。
+   */
+  const [tocOpen, setTocOpen] = useState(false)
+  /** 刚跳过去的那一节：点完目录就收起，需要留个「我到了哪」的记号 */
+  const [tocActive, setTocActive] = useState('')
+  const tocSections = buildReportToc(report, {
+    member,
+    /* 「人物速览」可见的充要条件：不是降级简版，或有覆盖数据（与卡片那两个分支的条件等价） */
+    hasOverview: !(!!report && report.degraded && !cov && coverageSpan === '')
+  })
+
+  const jumpToSection = useCallback((id: string) => {
+    setTocActive(id)
+    setTocOpen(false)
+    /*
+     * 用原生 pageScrollTo + 元素 id，不把整页换成 ScrollView：报告页是原生页面滚动
+     * （下拉刷新、返回顶部都依赖它），为一个目录条换容器不值当。offsetTop 留一点，
+     * 让卡片标题不贴着屏幕顶端。跳转失败不做提示 —— 目标一定存在（目录与卡片条件同源），
+     * 失败只可能是页面正在重渲染。
+     */
+    Taro.pageScrollTo({ selector: `#${id}`, offsetTop: -12, duration: 260 }).catch(() => {})
+  }, [])
+
   return (
     <View className='page-report glow-page safe-bottom'>
 
@@ -723,52 +831,20 @@ export default function ReportPage() {
         </View>
       )}
 
+      {/*
+        人物横幅（2026-10-09 重排）。原先是一行 flex：头像 | 左栏（名字行 / 状态行 / 按钮行）| 热度环，
+        左栏只剩 ~318rpx，于是名字行里硬塞了「名字 + 领域 + 生成时间」三样东西 —— 名字被挤成省略号；
+        而头像与热度环按 align-items:center 居中在一列三行的旁边，跟名字不在一条基线上。
+        另外「生成于 3 小时前」（时间）与「33 天前生成 · 建议刷新」（状态行）说的是同一件事，写了两遍。
+
+        现在压成三段，每段只讲一件事，宽度也各归各位：
+          ① 身份带  头像 + 名字 + 领域       —— 名字独占一行，长名字才有地方待
+          ② 状态行  时间 · 素材出处 / 刷新入口 —— 全幅宽度，长句不折行
+          ③ 操作行  「+ 关注」「+ 监控风险」   —— 全幅宽度，两个按钮不再挤在 318rpx 里
+        热度环绝对定位贴右上角：它只跟身份带等高，下面两行就能吃满整幅宽度。
+      */}
       {report && (
         <View className='page-report__banner'>
-          {/* 人物头像：平台没有名人真实头像素材（LLM 也不产图），全项目统一用
-              「领域色渐变 + 姓名首字」占位，这里与 person-card / 主页保持一致。
-              白色描边是为了在紫色横幅上把头像和背景分开。 */}
-          <View className={`page-report__avatar page-report__avatar--${domain}`}>
-            {report.name.slice(0, 1)}
-          </View>
-          <View className='page-report__banner-left'>
-            {/* 名字行 = 名字 + 领域 + 生成时间。时间原先独占一行（「生成于 3 小时前 · 查看最新」），
-                把左栏顶成三行；并进这一行后，左栏高度只由「名字行 + 一行状态 + 关注按钮」决定。
-                本行不换行且 overflow:hidden：名字过长时由名字出省略号让位 —— 时间被裁成
-                「2 小…」没有任何意义，名字省略到「雷…」同样没有意义，但两者必须选一个，
-                故时间用最短的相对写法（「刚刚生成」/「2 小时前」），让位基本不会触发。 */}
-            <View className='page-report__name-row'>
-              <Text className='page-report__name'>{report.name}</Text>
-              <View className='page-report__banner-chip'>{DOMAIN_META[domain]?.label ?? '其他'}</View>
-              <Text className='page-report__time'>
-                {showFresh ? '刚刚生成' : fromNow(report.generatedAt)}
-              </Text>
-            </View>
-            {/* 状态行：刚生成 → 这一版引用了多少实时素材（报告自证）；已有更新版本 → 刷新入口。
-                「查看最新」只在确实存在更新版本的可能时才是入口：刚生成完的那一版本身最新，
-                再留个热区只会让手滑白白烧掉一次生成配额（底部还有「刷新最新」按钮兜底）。 */}
-            <View className='page-report__meta' onClick={showFresh ? undefined : () => void load(true)}>
-              {showFresh ? (
-                <Text className='page-report__fresh'>{sourceNote}</Text>
-              ) : (
-                <Text className='page-report__refresh'>
-                  {/* 把年龄写在刷新入口前面：一个孤零零的「查看最新」不构成点击理由，
-                      而「33 天前生成」会让用户自己得出「该刷一下」的结论（O-14）。 */}
-                  {staleReport && (
-                    <Text className='page-report__stale'>{`${ageDays} 天前生成 · 建议刷新 `}</Text>
-                  )}
-                  <Text className='page-report__refresh-link'>查看最新</Text>
-                </Text>
-              )}
-            </View>
-            {/* 关注入口：此前报告页无处关注，看完报告想关注必须先退回名人主页 */}
-            <View
-              className={`page-report__follow ${followed ? 'page-report__follow--on' : ''}`}
-              onClick={() => void onToggleFollow()}
-            >
-              {followed ? '已关注' : '+ 关注'}
-            </View>
-          </View>
           <View
             className='page-report__ring'
             style={{
@@ -778,6 +854,59 @@ export default function ReportPage() {
             <View className='page-report__ring-inner'>
               <Text className='page-report__ring-value'>{report.heat}</Text>
               <Text className='page-report__ring-label'>热度</Text>
+            </View>
+          </View>
+
+          <View className='page-report__ident'>
+            {/* 人物头像：平台没有名人真实头像素材（LLM 也不产图），全项目统一用
+                「领域色渐变 + 姓名首字」占位，这里与 person-card / 主页保持一致。
+                白色描边是为了在紫色横幅上把头像和背景分开。 */}
+            <View className={`page-report__avatar page-report__avatar--${domain}`}>
+              {report.name.slice(0, 1)}
+            </View>
+            {/* 名字行 = 名字 + 领域。不换行且 overflow:hidden：名字过长时收省略号让位。
+                领域跟在名字后面而不是另起一行 —— 它是名字的定语，两三个字，值得花这点宽度。 */}
+            <View className='page-report__name-row'>
+              <Text className='page-report__name'>{report.name}</Text>
+              <View className='page-report__banner-chip'>{DOMAIN_META[domain]?.label ?? '其他'}</View>
+            </View>
+          </View>
+
+          {/* 状态行（全幅）：刚生成 → 这一版引用了多少实时素材（报告自证）；已有更新版本 → 刷新入口。
+              「查看最新」只在确实存在更新版本的可能时才是入口：刚生成完的那一版本身最新，
+              再留个热区只会让手滑白白烧掉一次生成配额（底部还有「刷新最新」按钮兜底）。
+              时间也归到这一行 —— 原先名字行里的「3 小时前」与这里的「33 天前生成」是同一件事，
+              一行写完既省高度也不再自相矛盾（O-14 要的是「N 天前生成 · 建议刷新」这个完整因果）。 */}
+          <View className='page-report__meta' onClick={showFresh ? undefined : () => void load(true)}>
+            {showFresh ? (
+              <Text className='page-report__meta-text'>{`刚刚生成 · ${sourceNote}`}</Text>
+            ) : (
+              <Text className='page-report__meta-text'>
+                {staleReport
+                  ? `${ageDays} 天前生成 · 建议刷新 `
+                  : `${fromNow(report.generatedAt)}生成 · `}
+                <Text className='page-report__refresh-link'>查看最新</Text>
+              </Text>
+            )}
+          </View>
+
+          {/* 关注 / 监控入口：此前报告页无处关注，看完报告想关注必须先退回名人主页。
+              两个按钮同行：关注是「记一笔」，监控是「让云端每天替你盯风险」——
+              动作相邻、语义不同，故监控按钮用**虚线边**区分（原先还试过加「🛡」图标，
+              在小程序部分机型不渲染，已撤），文案把「风险」二字写出来，避免被当成关注去点。
+              两者宽度都不固定（各自按文案撑开），中间 16rpx 间距由 __actions 的 gap 给。 */}
+          <View className='page-report__actions'>
+            <View
+              className={`page-report__follow ${followed ? 'page-report__follow--on' : ''}`}
+              onClick={() => void onToggleFollow()}
+            >
+              {followed ? '已关注' : '+ 关注'}
+            </View>
+            <View
+              className={`page-report__follow page-report__monitor ${monitored ? 'page-report__follow--on' : ''}`}
+              onClick={() => void onToggleMonitor()}
+            >
+              {monitored ? '监控中' : '+ 监控风险'}
             </View>
           </View>
         </View>
@@ -889,6 +1018,44 @@ export default function ReportPage() {
       {report && (
         <View>
           {/*
+            折叠目录（本轮）：18 节卡片一屏一屏往下滑，读的人既不知道后面还有什么，
+            也不好回头对照。目录默认只占一行（它是入口，不是内容），展开后按节直达。
+
+            ⚠ 条目与下方卡片的对应关系由 utils/report-toc.ts 的可见性条件保证：
+              这里渲染出的每一条，下面都真的有一张对应的卡；卡片上的 id 必须与条目 id
+              一字不差（改 id 时两处一起改，否则点了没反应）。
+              只有一节时不出目录 —— 这不是统计数据，是导航，套「不成立也出卡」没意义。
+          */}
+          {tocSections.length > 1 && (
+            <View className='card page-report__toc'>
+              <View
+                className='page-report__toc-head'
+                hoverClass='page-report__toc-head--tap'
+                onClick={() => setTocOpen(!tocOpen)}
+              >
+                <View className='card-title'>{`目录 · ${tocSections.length} 节`}</View>
+                <Text className='page-report__toc-toggle'>{tocOpen ? '收起' : '展开'}</Text>
+              </View>
+              {tocOpen ? (
+                <View className='page-report__toc-list'>
+                  {tocSections.map((s) => (
+                    <View
+                      key={s.id}
+                      className={`page-report__toc-item${tocActive === s.id ? ' page-report__toc-item--active' : ''}`}
+                      hoverClass='page-report__toc-item--tap'
+                      onClick={() => jumpToSection(s.id)}
+                    >
+                      {s.label}
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text className='page-report__toc-hint'>按节直达，不必一路滑到底。</Text>
+              )}
+            </View>
+          )}
+
+          {/*
             人物速览：把博查返回的素材聚合成「本人近来的公开信息覆盖」，全部字段原样统计、
             不经模型改写，因此可以当作事实读。三行分别回答三个此前没人回答的问题：
             热度怎么来的（近 30 天 / 近 7 天报道量）、最近一次公开动态是什么时候、
@@ -898,7 +1065,7 @@ export default function ReportPage() {
           {/* 端上算得出覆盖范围就出真卡；算不出时也出一张卡说明（原先 `(cov || coverageSpan !== '') &&`
               不成立就整卡消失，用户只看到「卡片不见了」）。降级简版除外：整份只留上方警示条，不堆空卡。 */}
           {!report.degraded && !cov && coverageSpan === '' && (
-            <View className='card'>
+            <View id='sec-overview' className='card'>
               <View className='card-title'>人物速览</View>
               <Text className='page-report__empty'>
                 这份报告没有记录素材覆盖范围（多为较早生成的缓存报告），收录的动态也都没有可用日期，故算不出报道热度与覆盖区间。点右上角「查看最新」重新生成即可补上。
@@ -906,7 +1073,7 @@ export default function ReportPage() {
             </View>
           )}
           {(cov || coverageSpan !== '') && (
-            <View className='card'>
+            <View id='sec-overview' className='card'>
               <View className='card-title'>人物速览</View>
 
               {cov && (
@@ -965,7 +1132,7 @@ export default function ReportPage() {
           {/* 简介留空也出卡说明（原先 `report.intro &&` 不成立就整卡消失）。
               降级简版除外：那种报告整份只留上方警示条。 */}
           {!report.degraded && !report.intro && (
-            <View className='card'>
+            <View id='sec-intro' className='card'>
               <View className='card-title'>简介</View>
               <Text className='page-report__empty'>
                 本次生成没有给出简介（模型未返回这一段的正文）。下方的人物档案、动态与语录不受影响，可照常阅读。
@@ -973,7 +1140,7 @@ export default function ReportPage() {
             </View>
           )}
           {report.intro && (
-            <View className='card'>
+            <View id='sec-intro' className='card'>
               <View className='card-title'>简介</View>
               <View className='page-report__text'>{report.intro}</View>
             </View>
@@ -995,7 +1162,7 @@ export default function ReportPage() {
             指不出出处的条目在落库前就被剔除了 —— 所以这里的每条依据都点得回去。
           */}
           {report.profile && (
-            <View className='card'>
+            <View id='sec-profile' className='card'>
               <View className='card-title'>人物档案</View>
               {report.profile.length === 0 && (
                 <Text className='page-report__empty'>
@@ -1018,7 +1185,7 @@ export default function ReportPage() {
           {/* 关系图谱（第二批）：人-人维度。关系必须是素材里明确写到的，
               故这里的依据与档案同规格；四档关系标签一律中性配色，不因「对手」染色。 */}
           {report.relations && (
-            <View className='card'>
+            <View id='sec-relations' className='card'>
               <View className='card-title'>关系图谱</View>
               {report.relations.length === 0 && (
                 <Text className='page-report__empty'>
@@ -1039,12 +1206,78 @@ export default function ReportPage() {
             </View>
           )}
 
+          {/*
+            商业价值速览（第 0 期，端上聚合）：把报告已有素材换成「一屏看结论」的商业读法。
+
+            它与数据 Tab 的关系是「同一批数字的两种读法」：那边是核对用的面板（分布 / 交叉 /
+            走势），这边是决策用的入口（一句话结论 + 点回明细）。所以这张卡**刻意不画图、
+            不铺明细**，否则报告页会出现第二份统计面板。三段的口径与取舍见 utils/commercial.ts。
+
+            门槛（成立的分项 < MIN_AXES）没过时仍出卡，改为逐条写明缺什么 —— 这一屏最怕的是
+            「某一项不见了」被读成「这一项没问题」。降级简版没有结构化素材，整卡不出。
+          */}
+          {commercial && !report.degraded && (
+            <View id='sec-commercial' className='card'>
+              <View className='card-title'>商业价值速览</View>
+              <Text className='page-report__cv-lead'>
+                把本报告已收录的素材换个角度汇总：有没有人在报道、媒体怎么写、有没有争议。
+                不新增检索与推断，每个数字的明细都能点回去核对。
+              </Text>
+
+              {commercial.ready ? (
+                <>
+                  {commercial.axes.map((a) => (
+                    <View key={a.key} className='page-report__cv-item'>
+                      <View className='page-report__cv-head'>
+                        <Text className='page-report__cv-label'>{a.label}</Text>
+                        <Text className='page-report__cv-value'>{a.value}</Text>
+                      </View>
+                      <Text className='page-report__cv-note'>{a.note}</Text>
+                      {a.anchor !== '' && (
+                        /* 用 View 而非 Text：小程序里 hover-class 只对 view / button 生效，
+                           Text 上的 hoverClass 既不生效、也不被 Taro 类型接受 */
+                        <View
+                          className='page-report__cv-more'
+                          hoverClass='page-report__cv-more--tap'
+                          onClick={() => jumpToSection(a.anchor)}
+                        >
+                          明细见「{a.anchorLabel}」›
+                        </View>
+                      )}
+                    </View>
+                  ))}
+
+                  {/* 没成立的分项照写原因：与其它卡的「不成立也出卡说明」同一条约定 */}
+                  {commercial.gaps.map((g) => (
+                    <View key={g.label} className='page-report__cv-item'>
+                      <View className='page-report__cv-head'>
+                        <Text className='page-report__cv-label'>{g.label}</Text>
+                        <Text className='page-report__cv-value page-report__cv-value--none'>未收录</Text>
+                      </View>
+                      <Text className='page-report__cv-note'>{g.reason}</Text>
+                    </View>
+                  ))}
+                </>
+              ) : (
+                <Text className='page-report__empty'>
+                  {`本报告能汇总的分项不足 ${MIN_AXES} 项，故不出速览 —— 硬凑出来的「一屏结论」比没有更误导。${commercial.gaps
+                    .map((g) => `${g.label}：${g.reason}`)
+                    .join('')}`}
+                </Text>
+              )}
+
+              <Text className='page-report__entry-foot'>
+                只汇总本报告已收录的素材，不含评分、预测或结论；明细见各节的原始条目与出处。
+              </Text>
+            </View>
+          )}
+
           {/* 近期动态：报告的主体。素材里确实没有时也出卡并写明原因 —— 空数组意味着
               「本次生成确认没有」（与老报告的「没有这个字段」不是一回事），
               此前直接不出卡，用户只能把它读成「页面坏了、模块丢了」。
               降级简版除外：那种报告整份都没有结构化内容，只留上方那条警示条。 */}
           {!report.degraded && (
-            <View className='card'>
+            <View id='sec-dynamics' className='card'>
               <View className='card-title'>近期动态（{dynamicsView.length}）</View>
               {dynamicsView.length === 0 && (
                 <Text className='page-report__empty'>
@@ -1092,7 +1325,7 @@ export default function ReportPage() {
           )}
 
           {!report.degraded && (
-            <View className='card'>
+            <View id='sec-quotes' className='card'>
               <View className='card-title'>经典名言</View>
               {report.quotes.length === 0 && (
                 <Text className='page-report__empty'>
@@ -1136,7 +1369,7 @@ export default function ReportPage() {
           {/* 点评为空也出卡说明（原先 `report.analysis &&` 不成立就整卡消失）。
               降级简版有整段 analysis 时照旧出「AI 点评 · 简版」，故这里不排除 degraded。 */}
           {!report.degraded && !report.analysis && (
-            <View className='card'>
+            <View id='sec-analysis' className='card'>
               <View className='card-title'>AI 点评</View>
               <Text className='page-report__empty'>
                 本次生成没有给出点评正文（模型未返回这一段的正文）。上方的人物档案、动态与语录不受影响，可照常阅读。
@@ -1144,7 +1377,7 @@ export default function ReportPage() {
             </View>
           )}
           {report.analysis && (
-            <View className='card'>
+            <View id='sec-analysis' className='card'>
               <View className='card-title'>{report.degraded ? 'AI 点评 · 简版' : 'AI 点评'}</View>
               {/*
                 点评（本轮修正）：原先把 3~4 条判断**一条一条摆成列表**、每条下面挂一行
@@ -1192,7 +1425,7 @@ export default function ReportPage() {
             而不是补一句「暂无回应」——「暂无」是我们替素材下的结论，素材本身没这么说。
           */}
           {report.controversies && (
-            <View className='card'>
+            <View id='sec-controversies' className='card'>
               <View className='card-title'>近期争议与回应</View>
               {report.controversies.length === 0 && (
                 <Text className='page-report__empty'>
@@ -1212,6 +1445,98 @@ export default function ReportPage() {
           )}
 
           {/*
+            风险雷达（第 0 期）：与上面「近期争议与回应」的分工 —— 争议卡是**叙述**
+            （模型整理过的争议与回应），本卡是**索引**（从全篇素材里字面挑出的表述），
+            因此能覆盖「不构成争议、但有出处」的动作（例如「起诉造谣者」这类维权表态）。
+
+            与下面会员段 memberNotes.risk 的分工：本卡是**已发生**的表述（事实，免费），
+            会员段是**面向未来**的判断 —— 与 controversies / risk 是同一套边界口径，禁止互相搬运。
+
+            ⚠ 整卡不出现「风险等级 / 高危 / 疑似」，也不给排序评分：平台只指出素材里写了什么，
+              是否构成问题由读者拿着原文判断（口径见 utils/risk.ts 顶部注释）。
+              降级简版（degraded）没有结构化素材，整卡不出。
+          */}
+          {risk && !report.degraded && (
+            <View id='sec-risk' className='card'>
+              <View className='card-title'>风险雷达</View>
+              <Text className='page-report__risk-lead'>
+                从本报告收录的 {risk.scanned} 条素材里，挑出涉及司法监管、商业合作、名誉维权的字面表述，
+                逐条给出处。平台只陈列素材写法，不作判定，也不作预测。
+              </Text>
+
+              {/* 类别分布：给条数、不给分档 —— 「3 条」是事实，「高风险」是结论 */}
+              {risk.signals.length > 0 && (
+                <View className='page-report__risk-tags'>
+                  {RISK_CATEGORIES.filter((c) => risk.byCategory[c] > 0).map((c) => (
+                    <Text key={c} className={`page-report__risk-tag page-report__risk-tag--${c}`}>
+                      {RISK_CATEGORY_LABEL[c]} {risk.byCategory[c]}
+                    </Text>
+                  ))}
+                </View>
+              )}
+
+              {/* 空态照出卡说明（2026-10-08 约定：端上聚合不成立也要写明为什么没内容） */}
+              {risk.signals.length === 0 && (
+                <Text className='page-report__empty'>
+                  {risk.scanned > 0
+                    ? `本次收录的 ${risk.scanned} 条素材里没有出现上述类型的表述。只按字面统计，没出现过的不会被推测出来。`
+                    : '本报告没有可扫描的结构化素材（纯文本简版），这一块无法统计。'}
+                </Text>
+              )}
+
+              {risk.signals.map((s, i) => (
+                <View key={`${s.from}-${i}-${s.keyword}`} className='page-report__risk-item'>
+                  <View className='page-report__risk-head'>
+                    <Text className={`page-report__risk-tag page-report__risk-tag--${s.category}`}>
+                      {RISK_CATEGORY_LABEL[s.category]}
+                    </Text>
+                    <Text className='page-report__risk-from'>
+                      {RISK_FROM_LABEL[s.from]}
+                      {s.date ? ` · ${s.date}` : ''}
+                    </Text>
+                  </View>
+                  <Text className='page-report__risk-text'>
+                    出现「{s.keyword}」：{s.text}
+                  </Text>
+                  {s.url ? (
+                    <View
+                      className='page-report__risk-src page-report__risk-src--link'
+                      hoverClass='page-report__risk-src--tap'
+                      onClick={() =>
+                        openSourceLink({ url: s.url, title: s.text, source: s.source, date: s.date })
+                      }
+                    >
+                      出处：{s.source || '素材未标注'} · 查看原文 ›
+                    </View>
+                  ) : (
+                    <Text className='page-report__risk-src'>出处：{s.source || '素材未标注'}</Text>
+                  )}
+                </View>
+              ))}
+
+              {risk.total > risk.signals.length && (
+                <Text className='page-report__risk-note'>
+                  另有 {risk.total - risk.signals.length} 条同类表述未逐条列出。
+                </Text>
+              )}
+              {risk.unanswered > 0 && (
+                <Text className='page-report__risk-note'>
+                  争议记录中有 {risk.unanswered} 条未见公开回应（素材没收录到回应，不等于没有回应）。
+                </Text>
+              )}
+              {risk.negative !== null && risk.negativeShare !== null && (
+                <Text className='page-report__risk-note'>
+                  收录条目中标注为消极的 {risk.negative} 条（占 {Math.round(risk.negativeShare * 100)}%），
+                  情绪归类口径与上方「立场与舆情」一致。
+                </Text>
+              )}
+              <Text className='page-report__entry-foot'>
+                只做字面命中统计，不含语义判定；「未被起诉」这类否定表述已排除。每条都可回溯到原文。
+              </Text>
+            </View>
+          )}
+
+          {/*
             会员专享：对比视角 + 风险提示 + 信源分歧（O-11 / 本轮）。
             这些段落只在会员生成时被请求（见 utils/report.ts 的 MEMBER_HINT_REALTIME），但它们**不是**
             免费的：报告是全局共享缓存、不按身份切分（否则同一个人会有两份报告，热度与来源
@@ -1225,7 +1550,7 @@ export default function ReportPage() {
               用 memberNotes 的存在与否去决定整卡出不出，会让只带 conflicts 的报告整张消失。
           */}
           {member && !report.degraded && (
-            <View className='card page-report__notes'>
+            <View id='sec-member' className='card page-report__notes'>
               {/* 标题行兼作「会员权益已生效」的确认位（O-25）：顶部促销条已对会员隐藏，
                   这张卡能出现本身就是确认 —— 再补一个「已生效」小标，比一句推销语诚实，也更省地方。
                   原先这里的 id="report-notes" 是给顶部条的「查看 ›」做页内滚动锚点的，随该分支一并删除。 */}
@@ -1282,7 +1607,7 @@ export default function ReportPage() {
           {/* 立场与舆情：两块内容（本地统计的情绪走向 + 模型判定的话题态度）都可能为空，
               但卡片本身照出 —— 空的那块写明口径，别让整卡消失。降级简版除外。 */}
           {!report.degraded && (
-            <View className='card'>
+            <View id='sec-stance' className='card'>
               <View className='card-title'>立场与舆情</View>
               {!sentimentStats && (
                 <Text className='page-report__empty'>
@@ -1367,7 +1692,7 @@ export default function ReportPage() {
             降级简版除外：那种报告整份没有结构化内容，只留上方那条警示条。
           */}
           {!report.degraded && (
-            <View className='card'>
+            <View id='sec-cloud' className='card'>
               <View className='card-title'>关键词云</View>
               {keywords.length < 4 && (
                 <Text className='page-report__empty'>
@@ -1439,7 +1764,7 @@ export default function ReportPage() {
             免得被读成功能坏了。降级简版除外（整份只有警示条）。
           */}
           {!report.degraded && (
-            <View className='card'>
+            <View id='sec-qtheme' className='card'>
               <View className='card-title'>语录主题</View>
               {quoteThemes.length < 2 && (
                 <Text className='page-report__empty'>
@@ -1479,7 +1804,7 @@ export default function ReportPage() {
             降级简版除外：那种报告整份没有结构化内容，只留上方那条警示条。
           */}
           {!report.degraded && (
-            <View className='card'>
+            <View id='sec-trend' className='card'>
               <View className='card-title'>热度趋势</View>
               {(trend == null || trendGeo == null) && (
                 <Text className='page-report__empty'>
@@ -1547,7 +1872,7 @@ export default function ReportPage() {
           )}
 
           {!report.degraded && (
-            <View className='card'>
+            <View id='sec-timeline' className='card'>
               <View className='card-title'>时间线</View>
               {timelineView.length === 0 && (
                 <Text className='page-report__empty'>
@@ -1570,7 +1895,7 @@ export default function ReportPage() {
               变成「一份可以跟踪的东西」。只收素材里已公布的时间点，故 when 常是「2026-11」
               这种刻度而不是精确日期；素材没公布就不写（猜档期是推断，不是信息）。 */}
           {report.watchlist && (
-            <View className='card'>
+            <View id='sec-watchlist' className='card'>
               <View className='card-title'>后续关注</View>
               {report.watchlist.length === 0 && (
                 <Text className='page-report__empty'>
@@ -1592,7 +1917,7 @@ export default function ReportPage() {
               读到这里遇到没看懂的词，往回翻不如就地查。也是全项目唯一不带出处的模型段落
               （它答的是词义，不是关于本人的事实断言，理由见 utils/report.ts 的 Schema 注释）。 */}
           {report.glossary && (
-            <View className='card'>
+            <View id='sec-glossary' className='card'>
               <View className='card-title'>名词解释</View>
               {report.glossary.length === 0 && (
                 <Text className='page-report__empty'>
@@ -1659,7 +1984,7 @@ export default function ReportPage() {
           {/* 底部动作一行两个：收藏报告是「读完之后留一份」，刷新最新是「要新版本」。
               分享由右上角原生分享承担；单条名言出图的入口只在收藏页（「名言卡」），
               报告页里不重复摆第二个出口。 */}
-          <View className='page-report__actions'>
+          <View className='page-report__foot-actions'>
             <AtButton type='secondary' circle onClick={() => void toggleReportFav()}>
               {reportFaved ? '已收藏' : '收藏报告'}
             </AtButton>

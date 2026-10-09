@@ -1,7 +1,7 @@
 import Taro from '@tarojs/taro'
 import { useAuth } from '@/stores/auth'
 import { diagLog } from './cloud-diagnostics'
-import { table } from './db'
+import { explainDbFailure, table } from './db'
 
 /**
  * 关键词舆情预警（2026-10-08）。
@@ -31,10 +31,21 @@ import { table } from './db'
 export interface WatchRow {
   id: string
   openid: string
+  /** 关键词订阅存关键词；人脸监控（type='person'）存人名，仅用于显示 */
   keyword: string
   created_at: string
   /** 我最后一次看这个词的时间；null 只可能出现在历史数据里（新订阅都会写时间） */
   seen_at: string | null
+  /**
+   * 订阅类型（第 1 期名人风险监控引入，见 utils/risk-watch.ts）。
+   *
+   * **可选是刻意的**：2026-10-08 那批关键词订阅没有这个字段，读库时一律按
+   * 「缺失 = keyword」处理（见 splitWatches）。用 `.eq('type','keyword')` 去筛选
+   * 会把全部老订阅漏掉 —— 这是本次改动最容易踩的坑。
+   */
+  type?: 'keyword' | 'person'
+  /** 仅 type='person' 有效：名人主键（人名可能重名，person_key 带领域消歧） */
+  person_key?: string | null
 }
 
 /** 检索到的单条报道 */
@@ -137,17 +148,41 @@ export async function listWatches(): Promise<WatchRow[]> {
 }
 
 /**
+ * 按类型拆订阅行（预警页与人脸监控共用同一张表，见第 1 期名人风险监控）。
+ *
+ * 为什么在内存里拆、而不是查库时 `.eq('type', 'keyword')`：
+ * 2026-10-09 之前的行没有 type 字段，按 type 过滤会把**全部老订阅**漏掉 ——
+ * 用户会发现自己的关键词监测一夜之间全没了。这里把「缺失 = keyword」这条规则
+ * 收在一个函数里，端上与云函数（keywordAlert 的 `w.type === 'person'` 跳过）同一口径。
+ */
+export function splitWatches(rows: WatchRow[]): { keywords: WatchRow[]; persons: WatchRow[] } {
+  const keywords: WatchRow[] = []
+  const persons: WatchRow[] = []
+  for (const w of rows) {
+    if (!w) continue
+    if (w.type === 'person') persons.push(w)
+    else keywords.push(w)
+  }
+  return { keywords, persons }
+}
+
+/**
  * 订阅一个关键词。
  *
  * seen_at 写当前时间的原因见文件头取舍 3；重复订阅直接返回提示而不重复写库。
+ * 上限与去重都只算**关键词**行：监控名人（type='person'）有它自己的上限，
+ * 不该占用「最多监测 5 个词」的额度。
+ *
+ * 失败时若判定为环境问题（集合没建 / 权限不允许端上写入），返回值带 `fatal: true`，
+ * 调用方改用弹窗说清修法（见 db.ts#explainDbFailure）—— 与 monitorPerson 同一套。
  */
-export async function addWatch(raw: string): Promise<{ ok: boolean; message: string }> {
+export async function addWatch(raw: string): Promise<{ ok: boolean; message: string; fatal?: boolean }> {
   const userId = useAuth.getState().userId
   if (!userId) return { ok: false, message: '请先到「我的」页登录' }
   const check = validateKeyword(raw)
   if (!check.ok) return { ok: false, message: check.message ?? '关键词不合法' }
 
-  const watches = await listWatches()
+  const { keywords: watches } = splitWatches(await listWatches())
   if (watches.some((w) => w.keyword === check.keyword)) {
     return { ok: false, message: '这个词已经在监测中了' }
   }
@@ -161,10 +196,13 @@ export async function addWatch(raw: string): Promise<{ ok: boolean; message: str
     openid: userId,
     keyword: check.keyword,
     created_at: now,
-    seen_at: now
+    seen_at: now,
+    type: 'keyword'
   })
   if (error) {
     diagLog('warn', 'db', `keyword_watches 写入失败：${error.message ?? error}`)
+    const failure = explainDbFailure('keyword_watches', error, '订阅')
+    if (failure) return { ok: false, message: failure.message, fatal: failure.fatal }
     return { ok: false, message: '订阅失败，请重试' }
   }
   return { ok: true, message: `已开始监测「${check.keyword}」` }
@@ -190,7 +228,8 @@ export async function removeWatch(keyword: string): Promise<boolean> {
  * 小程序端每次 get 都要一次网络往返，5 个词逐个查就是 5 倍等待。
  */
 export async function loadAlerts(): Promise<{ groups: AlertGroup[]; watched: number }> {
-  const watches = await listWatches()
+  /* 只取关键词订阅：同一张表里的「监控某人」行（type='person'）由预警页的风险信号板块自己读 */
+  const { keywords: watches } = splitWatches(await listWatches())
   if (!watches.length) return { groups: [], watched: 0 }
 
   const { data, error } = await table('keywords')

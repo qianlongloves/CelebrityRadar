@@ -178,6 +178,10 @@ exports.main = async () => {
   const byKeyword = new Map()
   const watchRows = []
   for (const w of watchesRes.data || []) {
+    /* 同一张表还存着「监控某人」的行（type='person'，第 1 期 riskWatch 用）：它们的 keyword
+       存的是人名，不是要检索的关键词 —— 不过滤就会把名人名当关键词再查一遍（白花钱）。
+       老行没有 type 字段（2026-10-08 那批关键词订阅），故只有显式 person 才跳过。 */
+    if (w && w.type === 'person') continue
     if (!w || !w.openid || !w.keyword) continue
     watchRows.push(w)
     if (!byKeyword.has(w.keyword)) byKeyword.set(w.keyword, [])

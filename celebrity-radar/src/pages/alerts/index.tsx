@@ -13,9 +13,19 @@ import {
   markAllSeen,
   MAX_WATCHES,
   removeWatch,
+  splitWatches,
   WatchRow
 } from '@/utils/keyword-alert'
-import { alertNotifyConfigured, requestAlertNotify } from '@/utils/notify'
+import {
+  groupSignals,
+  isMonitoredName,
+  loadRiskSignals,
+  MAX_PERSON_WATCHES,
+  PersonSignalGroup,
+  seenLabel,
+  unmonitorPerson
+} from '@/utils/risk-watch'
+import { alertNotifyConfigured, requestAlertNotify, requestRiskNotify, riskNotifyConfigured } from '@/utils/notify'
 import { openSourceLink } from '@/utils/source-link'
 import EmptyState from '@/components/empty-state'
 import './index.scss'
@@ -35,10 +45,14 @@ import './index.scss'
 export default function Alerts() {
   const { userId } = useAuth()
 
-  /** 我的订阅（用来渲染 chips 与「已监测 N/5」） */
+  /** 我的关键词订阅（用来渲染 chips 与「已监测 N/5」）—— 不含监控行 */
   const [watches, setWatches] = useState<WatchRow[]>([])
+  /** 监控中的名人（keyword_watches 里 type='person' 的行） */
+  const [persons, setPersons] = useState<WatchRow[]>([])
   /** 预警分组（按等级 + 最近检索时间排序） */
   const [groups, setGroups] = useState<AlertGroup[]>([])
+  /** 风险信号分组（按人；按最近一条信号时间倒序） */
+  const [riskGroups, setRiskGroups] = useState<PersonSignalGroup[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(true)
   /** 提交中：防止连点造成两个并发的 addWatch（后一个会撞主键） */
@@ -47,14 +61,25 @@ export default function Alerts() {
   const refresh = useCallback(async () => {
     if (!userId) {
       setWatches([])
+      setPersons([])
       setGroups([])
+      setRiskGroups([])
       setLoading(false)
       return
     }
     const [rows, res] = await Promise.all([listWatches(), loadAlerts()])
-    setWatches(rows)
+    /* 同一张表混着两类行，必须拆开：关键词订阅归上方「关键词监测」，监控行归下方风险信号板块。
+       直接用整表长度会让「已监测 N/5」把监控中的人算进关键词额度（见 keyword-alert.ts#splitWatches） */
+    const { keywords, persons: personRows } = splitWatches(rows)
+    setWatches(keywords)
+    setPersons(personRows)
     setGroups(res.groups)
     setLoading(false)
+
+    /* 风险信号一次 in 查询取回（空名单不发请求）：把结果按人分组，交给下方板块渲染 */
+    const keys = personRows.map((p) => p.person_key).filter((k): k is string => !!k)
+    setRiskGroups(groupSignals(await loadRiskSignals(keys)))
+
     /* 标记已看必须在读之后：反了会把本次刚读出的条目直接算成已读 */
     if (res.groups.length) void markAllSeen(res.groups.map((g) => g.keyword))
   }, [userId])
@@ -63,16 +88,51 @@ export default function Alerts() {
     void refresh()
   })
 
-  const handleAdd = async () => {
+  const submitWatch = async () => {
     if (submitting) return
     setSubmitting(true)
     const res = await addWatch(input)
     setSubmitting(false)
-    Taro.showToast({ title: res.message, icon: res.ok ? 'success' : 'none' })
     if (res.ok) {
       setInput('')
+      Taro.showToast({ title: res.message, icon: 'success' })
       void refresh()
+      return
     }
+    /* 环境问题（集合没建 / 权限不对）用弹窗说清修法，理由同报告页的监控入口 */
+    if (res.fatal) {
+      await Taro.showModal({ title: '订阅没能开启', content: res.message, showCancel: false, confirmText: '知道了' })
+      return
+    }
+    Taro.showToast({ title: res.message, icon: 'none' })
+  }
+
+  /**
+   * 提交前先看一眼输入的是不是**已在监控名单里的人名**。
+   *
+   * 命中时**不直接拦下**：两种订阅的覆盖范围本来就不同（关键词收全部报道、风险监控只收命中
+   * 风险词的那部分），用户完全可能两个都要。所以只把代价说清 —— 云端会把同一批内容再检索
+   * 一次（两条链路各有跨用户去重，但互不共享）—— 然后把选择权交回去。
+   *
+   * 用回调式的 showModal（而不是 await 一个 Promise 版）：与下方两个取消确认同一套写法，
+   * 页面里不为此再引入一个工具函数。
+   */
+  const handleAdd = () => {
+    if (submitting) return
+    const dup = isMonitoredName(persons, input)
+    if (!dup) {
+      void submitWatch()
+      return
+    }
+    void Taro.showModal({
+      title: '已在风险监控中',
+      content: `「${dup.keyword}」只收命中风险词的报道。关键词监测收的是全部报道，但同一批内容会被云端再检索一次。`,
+      confirmText: '同时订阅关键词',
+      cancelText: '只保留监控',
+      success: (r) => {
+        if (r.confirm) void submitWatch()
+      }
+    })
   }
 
   const handleRemove = (keyword: string) => {
@@ -89,8 +149,29 @@ export default function Alerts() {
     })
   }
 
+  /** 取消监控某个人（列表里的显式操作；与关键词取消同一套二次确认） */
+  const handleUnmonitor = (personKey: string, name: string) => {
+    void Taro.showModal({
+      title: '取消监控',
+      content: `不再监控「${name}」的风险情况？已收集的信号会一并从列表移除。`,
+      confirmText: '取消监控',
+      cancelText: '再想想',
+      success: async (r) => {
+        if (!r.confirm) return
+        const ok = await unmonitorPerson(personKey)
+        if (ok) void refresh()
+      }
+    })
+  }
+
   const handleNotify = async () => {
     const res = await requestAlertNotify()
+    Taro.showToast({ title: res.message, icon: res.ok ? 'success' : 'none' })
+  }
+
+  /** 风险提醒授权（与关键词提醒是两个模板、两份授权，见 utils/notify.ts） */
+  const handleRiskNotify = async () => {
+    const res = await requestRiskNotify()
     Taro.showToast({ title: res.message, icon: res.ok ? 'success' : 'none' })
   }
 
@@ -118,6 +199,7 @@ export default function Alerts() {
 
   const newTotal = groups.reduce((n, g) => n + g.newCount, 0)
   const notifyReady = alertNotifyConfigured()
+  const riskNotifyReady = riskNotifyConfigured()
 
   return (
     <View className='page-alerts'>
@@ -127,7 +209,15 @@ export default function Alerts() {
         <Text className='page-alerts__intro'>
           {watches.length
             ? `正在监测 ${watches.length}/${MAX_WATCHES} 个词，云端每天检索一次公开报道。`
-            : `最多可监测 ${MAX_WATCHES} 个词（人名、公司、事件都行），云端每天检索一次公开报道。`}
+            : `最多可监测 ${MAX_WATCHES} 个词，云端每天检索一次公开报道。`}
+        </Text>
+        {/* 定位说明（2026-10-09）：本卡片与下方「监控中的名人」是两种订阅，同页并列时
+            不写清就会被当成同一件事（甚至同一个人出现两遍）。一句话讲清各自的筛法即可。 */}
+        <Text className='page-alerts__intro'>
+          盯的是话题（人名、公司、事件都行）：词面命中公开报道就收，不筛内容。
+        </Text>
+        <Text className='page-alerts__intro page-alerts__intro--guide'>
+          想盯某个人的风险，去 TA 的报告页点「监控风险」—— 那边按风险词过滤，比关键词更准。
         </Text>
 
         {userId ? (
@@ -187,17 +277,19 @@ export default function Alerts() {
         )}
       </View>
 
-      {/* 预警列表 */}
-      {!userId || watches.length === 0 ? (
+      {/* 预警列表：只在「没有任何监测」时走整块空态；只监控了人、没订阅关键词时
+          这里整块不渲染（免得摆一句「已开始监测，暂无相关报道」把人误导成关键词也白监测了） */}
+      {!userId ? (
         <EmptyState
-          title={userId ? '还没有监测中的关键词' : '登录后可用'}
-          desc={
-            userId
-              ? '添加一个关键词，比如你关心的名人、公司或事件；有新的公开报道时会汇总到这里'
-              : '关键词预警按账号保存，登录后即可订阅'
-          }
+          title='登录后可用'
+          desc='关键词预警与名人监控按账号保存，登录后即可订阅'
         />
-      ) : loading ? (
+      ) : watches.length === 0 && persons.length === 0 ? (
+        <EmptyState
+          title='还没有监测中的关键词'
+          desc='添加一个关键词，或在某人的深度报告页点「监控风险」；有新的公开报道时会汇总到这里'
+        />
+      ) : watches.length === 0 ? null : loading ? (
         <View className='card page-alerts__hint'>
           <Text>正在读取预警…</Text>
         </View>
@@ -268,6 +360,110 @@ export default function Alerts() {
             </View>
           ))}
         </>
+      )}
+
+      {/*
+        监控中的名人（第 1 期名人风险监控）：与上方关键词订阅**同一张表**（keyword_watches 的
+        type='person' 行），但这里是「人」，管理动作（取消监控）与风险信号于是都收在这一段。
+        入口在报告页横幅的「+ 监控风险」按钮 —— 本页只做取消，不做新增（新增要知道 personKey，
+        而 personKey 只有报告页/主页拿得到）。
+      */}
+      {userId && persons.length > 0 && (
+        <View className='card'>
+          <View className='card-title'>监控中的名人</View>
+          <Text className='page-alerts__intro'>
+            {`正在监控 ${persons.length}/${MAX_PERSON_WATCHES} 位，云端每天按人检索一次公开报道。`}
+          </Text>
+          {/* 与上方「关键词监测」互为镜像的说明：一个讲「这里收什么」，一个讲「这里不收什么」 */}
+          <Text className='page-alerts__intro'>
+            {`盯的是人物风险：只有命中「司法 / 税务 / 合作 / 维权 / 表态」这类词的报道才会进下方信号列表，其余报道不收。想看 TA 的全部报道，用上面的关键词监测。`}
+          </Text>
+          <View className='page-alerts__chips'>
+            {persons.map((p) => (
+              <View
+                key={p.id}
+                className='page-alerts__chip'
+                hoverClass='page-alerts__chip--tap'
+                onClick={() => handleUnmonitor(p.person_key ?? '', p.keyword)}
+              >
+                <Text>{p.keyword}</Text>
+                <Text className='page-alerts__chip-x'>×</Text>
+              </View>
+            ))}
+          </View>
+          {riskNotifyReady && (
+            <View className='page-alerts__notify'>
+              <View
+                className='page-alerts__notify-btn'
+                hoverClass='page-alerts__notify-btn--tap'
+                onClick={() => void handleRiskNotify()}
+              >
+                <Text>开启风险提醒</Text>
+              </View>
+              <Text className='page-alerts__notify-tip'>
+                微信一次性订阅：开一次收一次；未开启也能在下方看到全部信号
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* 风险信号（按人分组）*/}
+      {userId && persons.length > 0 && (
+        loading ? (
+          <View className='card page-alerts__hint'>
+            <Text>正在读取风险信号…</Text>
+          </View>
+        ) : riskGroups.length === 0 ? (
+          <View className='card page-alerts__hint'>
+            <Text className='page-alerts__hint-title'>已开始监控，暂无风险信号</Text>
+            <Text className='page-alerts__hint-desc'>
+              云端每天上午按人检索一次公开报道，命中「司法 / 税务 / 合作 / 维权 / 表态」这类词时汇总到这里。
+            </Text>
+          </View>
+        ) : (
+          <>
+            {riskGroups.map((grp) => (
+              <View key={grp.personKey} className='card page-alerts__group'>
+                <View className='page-alerts__group-head'>
+                  <Text className='page-alerts__group-keyword'>{grp.name}</Text>
+                  <Text className='page-alerts__group-count'>{`最近 ${grp.signals.length} 条`}</Text>
+                </View>
+
+                {grp.signals.map((s) => (
+                  <View
+                    key={s.id}
+                    className='page-alerts__item'
+                    hoverClass='page-alerts__item--tap'
+                    onClick={() =>
+                      openSourceLink({
+                        url: s.url,
+                        title: s.title,
+                        source: s.source,
+                        date: seenLabel(s.first_seen_at),
+                        summary: s.quote || s.title
+                      })
+                    }
+                  >
+                    <View className='page-alerts__item-head'>
+                      {/* 类别标签（司法/税务…）说明「命中的是哪类词」，是词典的固定分类，
+                          不是对事件的判断 —— 级别（高/中/低）刻意不显示（见 utils/risk-watch.ts 取舍 2） */}
+                      <Text className='page-alerts__risk-tag'>{s.category_label}</Text>
+                      <Text className='page-alerts__item-title'>{s.title}</Text>
+                    </View>
+                    <Text className='page-alerts__item-meta'>
+                      {[s.source, seenLabel(s.first_seen_at)].filter(Boolean).join(' · ')}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ))}
+            <Text className='page-alerts__note'>
+              信号 = 公开报道里出现了上述某类词，不代表平台对 TA 的评价；类别标签只是词的归类，
+              不是对事情的定性。点开每条可查看原文出处。
+            </Text>
+          </>
+        )
       )}
 
       <Text className='disclaimer'>

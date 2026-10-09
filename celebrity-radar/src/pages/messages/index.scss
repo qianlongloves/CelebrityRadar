@@ -39,16 +39,6 @@
     color: $brand;
   }
 
-  /* 「关注流 ›」（O-17）：与「全部已读」并排，但用一个描边胶囊把它标成**去向**
-     而不是动作 —— 两者的差别是「跳走」和「就地改状态」，长得一样会点错 */
-  &__feed {
-    padding: 8rpx 22rpx;
-    border: 2rpx solid $brand-weak;
-    border-radius: 999rpx;
-    font-size: 22rpx;
-    color: $brand;
-  }
-
   &__sub {
     display: block;
     margin-top: 10rpx;

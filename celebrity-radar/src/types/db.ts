@@ -14,6 +14,14 @@ export interface ReportCacheRow {
   state: 'building' | 'ready'
   builder: string | null // openid，用于安全释放锁
   search_meta: { news_count: number } | null
+  /**
+   * 报告 Schema 版本（见 utils/report.ts#REPORT_SCHEMA_VERSION）。
+   *
+   * **可选是刻意的**：`report_cache` 由端上直写，2026-10-09 之前落库的行没有这个字段，
+   * 声明成必填只会让「读老行」在类型层被当成合法数据。读取一律走
+   * utils/cache.ts#reportSchemaVersion（缺失按 1 处理），不要在这里 `?.` 后直接比较。
+   */
+  schemaVersion?: number
 }
 
 /** feed_cache：检索结果结构化映射（不存 LLM 产物） */
@@ -59,4 +67,47 @@ export interface EventRow {
   person_key: string | null
   props: Record<string, unknown> | null
   created_at: string
+}
+
+/**
+ * risk_signals：风险信号流水（id = `${person_key}#${url 哈希}`）。
+ * 由云函数 `riskWatch` 写、端上**只读**（第 1 期名人风险监控）。
+ */
+export interface RiskSignalRow {
+  id: string
+  person_key: string
+  name: string
+  /**
+   * 只由「命中的是哪一类词」决定（司法/税务 → high、合作/维权 → mid、回应 → low），
+   * **不是对事件严重性的评估**（判定规则见 cloudfunctions/riskWatch/index.js 取舍 5）。
+   * 端上仅用它排序与决定「值不值得推送」，界面上不出现等级字样。
+   */
+  level: 'high' | 'mid' | 'low'
+  category: 'judicial' | 'tax' | 'contract' | 'rights' | 'statement'
+  category_label: string
+  /** 命中的原词（与报告页风险雷达同一份词典，两端一致性由测试钉住） */
+  keyword: string
+  title: string
+  /** 素材原文摘录（截断）；为空时退回 title */
+  quote: string
+  source: string
+  url: string
+  /** 我们自己的时钟打的「第一次见到这条」 */
+  first_seen_at: string
+}
+
+/**
+ * risk_scans：名人风险扫描快照（id = personKey，云函数写、端上只读）。
+ * 用来回答「这个人的哪些条目已经见过」，以及「从哪一刻起算新」。
+ */
+export interface RiskScanRow {
+  id: string
+  person_key: string
+  name: string
+  scanned_at: string
+  /** 首次扫描时刻：只把这一刻之后新出现的条目当信号（首轮只建档、不推送） */
+  baseline_at: string
+  seen_urls: string[]
+  scanned: number
+  signals_total: number
 }

@@ -72,22 +72,6 @@ export default function Messages() {
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, unread: false } : i)))
   }
 
-  /** 去看关注流（O-17）：消息里的「关注的人有新内容」，内容本体在关注流页 */
-  const goFeed = () => {
-    void Taro.navigateTo({ url: '/pages/feed/index' })
-  }
-
-  /**
-   * 去看关键词预警。
-   *
-   * 铃铛是「有事情发生」的统一落点：关键词命中新报道既不该混进关注流（它不是某个名人
-   * 的更新），也不该只靠订阅消息触达（订阅授权会耗尽）。放一个常显入口在这里，
-   * 用户被推送召回后也有地方能翻历史命中，不至于「点完就断」。
-   */
-  const goAlerts = () => {
-    void Taro.navigateTo({ url: '/pages/alerts/index' })
-  }
-
   const readAll = () => {
     if (unread === 0) return
     markAllMessagesRead(items.map((i) => i.id))
@@ -142,17 +126,11 @@ export default function Messages() {
           <Text className='page-messages__title'>消息中心</Text>
           <View className='page-messages__head-ops'>
             {/*
-              去看关注流（O-17）：消息中心是「关注的人有新内容」的落点，但看完消息之后
-              最该去的下一步是关注流本身 —— 这里原本没有任何通向内容本体的入口，
-              等于把人送进一条死胡同。入口常显（0 关注时也可点，由关注流页自己引导）。
+              这里原本有两个描边胶囊：「关键词预警 ›」与「关注流 ›」。
+              2026-10-09 全部迁出：预警入口移到首页铃铛左侧（图标），关注流入口首页已有
+              「关注 N」胶囊 —— 同一页顶部塞三条去向，等于替用户做选择，去掉后本页只留
+              「消息中心」这一件事，右上角仅保留作用于本页的「全部已读」。
             */}
-            {/* 关键词预警入口：与「关注流 ›」同为描边胶囊（都是「去向」而非「动作」） */}
-            <Text className='page-messages__feed' onClick={goAlerts}>
-              关键词预警 ›
-            </Text>
-            <Text className='page-messages__feed' onClick={goFeed}>
-              关注流 ›
-            </Text>
             {!loading && unread > 0 && (
               <Text className='page-messages__read-all' onClick={readAll}>
                 全部已读

@@ -59,6 +59,23 @@
       ]
     },
     {
+      "name": "riskWatch",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
+        "RISK_TEMPLATE_ID": "${env.RISK_TEMPLATE_ID}"
+      },
+      "triggers": [
+        {
+          "name": "dailyRiskWatch",
+          "type": "timer",
+          "config": "0 40 9 * * * *"
+        }
+      ]
+    },
+    {
       "name": "hotBoardRefresh",
       "timeout": 60,
       "runtime": "Nodejs16.13",
