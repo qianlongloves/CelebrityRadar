@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-522%20passing-success.svg)](#development--testing)
+[![Tests](https://img.shields.io/badge/tests-572%20passing-success.svg)](#development--testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), with a keyword cloud, sentiment trend and heat curve aggregated on the client.
@@ -579,7 +579,7 @@ celebrity-radar/
 │   ├── riskWatch/              # Person risk monitoring (cron 09:40, client calls rejected)
 │   ├── hotBoardRefresh/        # Daily hot board (cron 06:30; client may `ensure`, `force` is ops-only)
 │   └── dbInit/                 # Ops tool (schema.js is the schema source of truth)
-├── test/                       # Local unit tests (9 case files / 522 cases)
+├── test/                       # Local unit tests (11 case files / 572 cases)
 ├── config/                     # Taro build config (dev / index / prod)
 ├── cloudbaserc.json            # CloudBase deployment descriptor (functions + env vars + timers)
 ├── .env.example                # Deployment secret template
@@ -639,7 +639,7 @@ celebrity-radar/
 ## Development & Testing
 
 ```bash
-npm test          # compile tests with tsc, then run everything (522 cases, fully local, no cloud)
+npm test          # compile tests with tsc, then run everything (572 cases, fully local, no cloud)
 npm run test:only # skip tsc and run directly
 ```
 
@@ -648,7 +648,7 @@ It needs no cloud environment, no DevTools and no network. It does not cover pag
 
 Before submitting a change, confirm these five:
 
-1. `npm test` is green (currently 522 / 522)
+1. `npm test` is green (currently 572 / 572)
 2. `npx tsc --noEmit` reports no new warnings
 3. The mini program **main package size** is within the hard 2MB limit (the current build output is about 1.3MB); check the build output before adding dependencies
 4. `src/config/local.ts` and the `debug` flags are **not** committed (already in `.gitignore`)

@@ -28,6 +28,7 @@ const proxySrc = read(AI_PROXY)
 const storeSrc = read(STORE_JS)
 const schemaSrc = read(SCHEMA)
 const cacheSrc = read(path.join(ROOT, 'src', 'utils', 'cache.ts'))
+const storeClientSrc = read(path.join(ROOT, 'src', 'utils', 'report-store.ts'))
 
 const DAY_MS = 86400000
 
@@ -267,6 +268,59 @@ describe('P0-2 写口：落库校验', () => {
     eq(row.schemaVersion, 2)
   })
 
+  /* ── P1-9（2026-10-09 复审）：只升不降，写在权威侧 ── */
+
+  it('P1-9 只升不降：既有版本含会员段，不许被不含会员段的产物覆盖', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [
+      lockRow({ report: report({ memberNotes: { compare: '上一版的会员段' } }) })
+    ])
+
+    const res = await callStore(fn, { op: 'save', personKey: 'A#tech', report: report() })
+
+    eq(res.ok, false)
+    eq(res.kind, 'stale', '端上的守卫（shouldKeepMemberVersion）改包就能绕过，权威在写口')
+    const row = env.db.__dump('report_cache')[0]
+    eq(row.report.memberNotes.compare, '上一版的会员段', '全站共享的那一份会员段落必须原样留住')
+    eq(row.state, 'building', '被拒就不落库，锁照旧交还')
+  })
+
+  it('P1-9 是单向的：既有版本本就不含会员段，免费档照旧可覆盖', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow({ report: report({ name: '旧免费版' }) })])
+
+    const res = await callStore(fn, { op: 'save', personKey: 'A#tech', report: report({ name: '新免费版' }) })
+
+    eq(res.result, 'saved', '刷新免费档报告是正常路径，不能被这条守卫误伤')
+    eq(env.db.__dump('report_cache')[0].report.name, '新免费版')
+  })
+
+  it('会员段口径是「真值」：既有版本是纯空白也算「有」，同样拒绝覆盖', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow({ report: report({ memberNotes: { compare: '   ' } }) })])
+
+    const res = await callStore(fn, { op: 'save', personKey: 'A#tech', report: report() })
+
+    eq(
+      res.kind,
+      'stale',
+      '端上 presentSections / quotaGuard 都按真值判，写口若 trim 后判就出现了第三种口径'
+    )
+  })
+
+  it('非会员提交纯空白会员段：按「有会员段」拒绝（同一口径的另一面）', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow()])
+
+    const res = await callStore(fn, {
+      op: 'save',
+      personKey: 'A#tech',
+      report: report({ memberNotes: { risk: '  ' } })
+    })
+
+    eq(res.kind, 'auth', '三个口径（端上 / 写口 / quotaGuard）必须是同一个')
+  })
+
   it('非会员写**无**会员段的报告：放行（免费档生成照旧）', async () => {
     const fn = loadProxy()
     env.db.__seed('report_cache', [lockRow()])
@@ -383,6 +437,31 @@ describe('P0-2 端上写口：三态映射', () => {
     eq(env.db.__dump('report_cache')[0].state, 'building', '被拒的内容绝不能绕过写口落库')
   })
 
+  it('写口返回 stale（只升不降）：同样归入 rejected，绝不回退直写', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [
+      {
+        _id: 'A#tech',
+        state: 'ready',
+        builder: null,
+        generated_at: '2026-01-01T00:00:00.000Z',
+        report: { personKey: 'A#tech', name: 'A', memberNotes: { compare: '上一版会员段' } }
+      }
+    ])
+    env.registerCloudFn('aiProxy', (data, ctx) => fn.main(data, ctx))
+    const api = env.load('utils/report-store')
+    await api.acquireLockViaCloud('A#tech')
+
+    const r = await api.saveReportViaCloud('A#tech', { personKey: 'A#tech', name: 'A' }, 0)
+
+    eq(r, 'rejected', 'stale 漏出 REJECTED_KINDS 就会落到 unavailable，然后回退直写把会员段抹掉')
+    eq(
+      env.db.__dump('report_cache')[0].report.memberNotes.compare,
+      '上一版会员段',
+      '会员段必须还在'
+    )
+  })
+
   it('写口可用且是会员：save 走通并落 ready', async () => {
     const fn = loadProxy()
     env.db.__seed('memberships', [memberRow()])
@@ -425,6 +504,12 @@ describe('P0-2 端上降级：写库不通不该让用户看不到报告', () =>
 
   it('saveReady 遇写口明确拒绝：不回退直写', () => {
     ok(/viaCloud === 'rejected'[\s\S]{0,220}return 'failed'/.test(cacheSrc), '回退等于把刚被拦下的内容塞进库')
+  })
+
+  it('REJECTED_KINDS 覆盖写口全部「拒绝」类 kind（含 P1-9 新增的 stale）', () => {
+    for (const k of ['auth', 'badrequest', 'lock', 'abuse', 'stale']) {
+      ok(storeClientSrc.includes(`'${k}'`), `端上 REJECTED_KINDS 缺 '${k}' —— 它会退化成「回退直写」`)
+    }
   })
 
   it('feed_cache 收敛到一个写入出口，直写只剩回退那一处', () => {

@@ -3,6 +3,7 @@ import { diagLog } from './cloud-diagnostics'
 import { explainDbFailure, table } from './db'
 import { normalizeKeyword, splitWatches, WatchRow } from './keyword-alert'
 import { requestRiskNotify, riskNotifyConfigured } from './notify'
+import { shortDay8 } from './time'
 import { RiskSignalRow } from '@/types/db'
 
 /**
@@ -130,6 +131,22 @@ export async function monitorPerson(
     if (failure) return { ok: false, message: failure.message, fatal: failure.fatal }
     return { ok: false, message: '监控失败，请重试' }
   }
+
+  /*
+   * P2-29：与 keyword-alert.ts#addWatch 同一处理。上面的 `rows.length >= MAX_PERSON_WATCHES`
+   * 是「先查数、再插入」，并发点击会落到第 6 条；而云端 riskWatch 的每人上限判定会把
+   * **第 6 行整行忽略**（永不扫描），端上却显示「已开始监控」—— 静默失效。
+   * 端上做不了原子计数，故插完复核一次：超了就撤回刚插的这条。
+   */
+  const afterCount = (await listPersonWatches()).length
+  if (afterCount > MAX_PERSON_WATCHES) {
+    const { error: rollbackErr } = await table('keyword_watches')
+      .delete()
+      .eq('id', personWatchId(userId, personKey))
+    if (rollbackErr) diagLog('warn', 'db', `回滚超限监控失败：${rollbackErr.message ?? rollbackErr}`)
+    return { ok: false, message: `最多同时监控 ${MAX_PERSON_WATCHES} 个人，先取消一个再加` }
+  }
+
   return { ok: true, message: `已开始监控「${name}」${notifyNote}` }
 }
 
@@ -227,6 +244,7 @@ export function seenLabel(iso: string, now: Date = new Date()): string {
   const days = Math.floor((now.getTime() - t) / 86400000)
   if (days <= 0) return '今天'
   if (days === 1) return '昨天'
-  const d = new Date(t)
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  /* P2-36：月日按 UTC+8 取，不再用 getMonth()/getDate()（设备本地）——
+     信号时间由云端按 UTC+8 落库，用设备时区去格式化它，跨时区用户看到的日期会差一天。 */
+  return shortDay8(t)
 }

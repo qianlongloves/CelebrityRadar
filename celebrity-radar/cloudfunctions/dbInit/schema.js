@@ -100,10 +100,21 @@ const collections = [
          这正是它比订单行上的 refund_revoked_at 更可靠的地方：后者要多一次写，中途失败就会再扣一遍。
          只保留最近若干条（见 payCallback/after-sales.js 的 REFUND_LOG_MAX）。 */
       f('refunded_orders', 'array?', { def: [] }),
-      f('updated_at', 'string?', { def: null })
+      f('updated_at', 'string?', { def: null }),
+      /* 镜像对账的轮转游标（P2-23，2026-10-09）：payReconcile 第 ② 步按它升序取一批校验，
+         校验完写回当前时间 ⇒ 下一轮排到队尾，N 行数据最多 ⌈N/100⌉ 轮全部轮到。
+         它不是会员数据，只是「上次校验时间」；payCallback 发货/退款用的整篇 set 会自然清掉它，
+         于是那一行会重新排回队首再校验一次 —— 正是我们想要的。 */
+      f('mirror_checked_at', 'string?', { def: null })
     ],
-    /* 无索引：只按 _id（= openid）单点取，doc().get() 走主键，不需要额外索引 */
-    indexes: []
+    /* 主键（_id = openid）满足所有单点取；这里只为对账轮转加一条升序索引，
+       让 orderBy('mirror_checked_at').limit(100) 不必全表排序。 */
+    indexes: [
+      ix('idx_mirror_checked_at', [['mirror_checked_at', 'asc']], {
+        optional: true,
+        supports: 'payReconcile 镜像对账：按最久未校验升序轮转（缺失字段的行排最前，优先校验新发货的行）'
+      })
+    ]
   },
   {
     name: 'ai_calls',
@@ -296,13 +307,22 @@ const collections = [
          而「撤销」与「标记」之间没有事务，所以标记只在撤销成功（或确认无需撤销）之后才写 */
       f('refund_revoked_at', 'string?', { def: null }),
       /* 撤销结果说明：扣了几天，或为什么没扣（未发过货 / 权威行缺失） */
-      f('refund_revoke_note', 'string?', { def: null })
+      f('refund_revoke_note', 'string?', { def: null }),
+      /* 对账自动补救失败次数（P2-24，2026-10-09）。存在的唯一目的是**队列公平性**：
+         对账每轮按它升序取单，坏单失败一次就往后沉一位，最多 MAX_RECONCILE_ATTEMPTS 轮
+         就沉到队尾、不再占名额（否则一条永远补不成的单会把 20 个名额慢慢吃光，
+         后面的单再也排不进来）。到上限后不再自动重试，只留日志等人工。 */
+      f('reconcile_attempts', 'number?', { def: 0 })
     ],
     indexes: [
       ix('idx_openid_created_at', [['openid', 'asc'], ['created_at', 'desc']], { optional: true, supports: '客服按用户查单' }),
-      /* 对账任务每小时按 status 扫两类残留（granting / refunded）。数据量小的时候全表扫也跑得动，
-         这个索引是给它留的余地，不是必需的 */
-      ix('idx_status_paid_at', [['status', 'asc'], ['paid_at', 'asc']], { optional: true, supports: 'payCallback 对账：扫 granting 残留与待撤销的退款单' })
+      /* 对账任务每小时按 status 扫两类残留（granting / refunded），P2-24 起还要按排序键取单。
+         排序键必须进索引，否则 orderBy 会在内存里排全表（云函数侧有内存与耗时上限）。
+         原先声明的 idx_status_paid_at 已被下面两条取代，控制台里若还留着可以手工删（留着只是白付写放大）。 */
+      ix('idx_status_attempts_id', [['status', 'asc'], ['reconcile_attempts', 'asc'], ['_id', 'asc']], {
+        optional: true,
+        supports: 'payCallback 对账①③：两类残留（granting / 待撤销退款单）共用 —— 按「失败次数 + 下单时间」升序，坏单沉底'
+      })
     ]
   },
   /* ↓ 关键词舆情预警（2026-10-08）：两张表分工 = 「谁在听什么」与「听到了什么」 */

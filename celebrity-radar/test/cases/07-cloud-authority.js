@@ -221,9 +221,16 @@ const searchOk = (n = 3) => ({
   }
 })
 
-/** 清掉一切可能干扰的 LLM_* 覆写，只留两把「key」 */
+/** 清掉一切可能干扰的 LLM_* 覆写与联调开关，只留两把「key」 */
 function clearLlmEnv() {
-  for (const k of ['LLM_PROVIDER', 'LLM_MODEL', 'LLM_BASE_URL', 'LLM_API_KEY', 'AI_PROXY_TEST_TOKEN']) {
+  for (const k of [
+    'LLM_PROVIDER',
+    'LLM_MODEL',
+    'LLM_BASE_URL',
+    'LLM_API_KEY',
+    'AI_PROXY_TEST_TOKEN',
+    cfg.QUOTA_GUARD_ENV
+  ]) {
     delete process.env[k]
   }
   process.env.BOCHA_API_KEY = 'bocha-test'
@@ -462,6 +469,79 @@ describe('aiProxy 配额与限速闸门', () => {
 
     eq(res.ok, true)
     eq(calls.length, 1)
+  })
+})
+
+/*
+ * 本地联调开关（AI_PROXY_QUOTA_GUARD，2026-10-09 补）。
+ *
+ * 现场：端上 debug.disableGenerateQuota 打开后，端上闸门放行、但记账照旧（见 utils/quota.ts），
+ * 计数涨到上限后仍被**云端**这两道闸拦下 —— 现象是「debug 明明开了，生成第 4 次仍报额度用完」。
+ * 云端不信端上标记（改包可伪造），故两处各一枚开关，这些用例钉住云端那枚的语义：
+ * 只放开判定、不放开设账；只认 'off'，其余取值一律按生产口径。
+ */
+describe('aiProxy 联调开关（AI_PROXY_QUOTA_GUARD）', () => {
+  it('off：产品额度用完 + 限速超限都放行，但计数照旧自增', async () => {
+    const h = fakeHttps([chatOk()])
+    const { fn, calls } = loadProxy({ https: h })
+    process.env.AI_PROXY_QUOTA_GUARD = 'off'
+    try {
+      env.db.__seed('generate_quota', [
+        { _id: quotaKey(), _openid: 'u1', count: cfg.QUOTA_POOLS.generate.free + 10 }
+      ])
+      env.db.__seed('ai_calls', [
+        { _id: quotaKey(), _openid: 'u1', count: cfg.ABUSE_LIMITS.free + 10 }
+      ])
+
+      const res = await chat(fn)
+
+      eq(res.ok, true, '联调时两道闸都不该拦，否则生成报告永远卡在「额度用完」')
+      eq(calls.length, 1, '放行后确实打了一次上游')
+      const row = env.db.__dump('ai_calls').find((r) => r._id === quotaKey())
+      eq(
+        row.count,
+        cfg.ABUSE_LIMITS.free + 11,
+        '与端上 debug 同一取舍：只放开闸门，记数照旧（排查时能看到真实调用量）'
+      )
+    } finally {
+      delete process.env.AI_PROXY_QUOTA_GUARD
+    }
+  })
+
+  it('只认 off：其它取值一律按生产口径拦下（fail-closed）', async () => {
+    const h = fakeHttps([])
+    const { fn, calls } = loadProxy({ https: h })
+    process.env.AI_PROXY_QUOTA_GUARD = 'offf'
+    try {
+      env.db.__seed('generate_quota', [
+        { _id: quotaKey(), _openid: 'u1', count: cfg.QUOTA_POOLS.generate.free }
+      ])
+
+      const res = await chat(fn)
+
+      eq(res.kind, 'quota', '拼错的开关值不能让闸门静默失效')
+      eq(calls.length, 0)
+    } finally {
+      delete process.env.AI_PROXY_QUOTA_GUARD
+    }
+  })
+
+  it('off 同样放开共享缓存写口的限速（同一枚开关）', async () => {
+    const h = fakeHttps([])
+    const { fn } = loadProxy({ https: h })
+    process.env.AI_PROXY_QUOTA_GUARD = 'off'
+    try {
+      env.db.__seed('ai_calls', [
+        { _id: `u1#${cfg.todayKey()}#store`, _openid: 'u1', count: 999 }
+      ])
+
+      const res = await fn.main({ action: 'report', op: 'acquire', personKey: 'A#tech' })
+
+      eq(res.ok, true, '写口被拦的表现是「抢不到锁 / 写不进缓存」，比额度用完更难归因')
+      eq(res.result, 'acquired')
+    } finally {
+      delete process.env.AI_PROXY_QUOTA_GUARD
+    }
   })
 })
 
@@ -765,5 +845,178 @@ describe('端上把 purpose 带上去、并按 kind 决定要不要重试', () =
 
     eq(res.ok, false)
     eq(calls, 3, '1 + retries：网络 / 上游抖动值得等一等')
+  })
+})
+
+/* ═══════════════ ④ 复审批次（P2-25 / P2-22，2026-10-09 全文复审） ═══════════════ */
+
+describe('P2-25 免计费复核的 target 上限与写口同源', () => {
+  it('长 personKey（64 < 长度 ≤ 120）也认会员补齐免计费', async () => {
+    const guard = loadGuard()
+    /* 70 个汉字 → 长度 76：恰好落在「旧的 64」与「写口的 120」之间 —— 正是会被误伤的那一段 */
+    const longKey = `${'长'.repeat(70)}#tech`
+    ok(longKey.length > 64 && longKey.length <= 120, '用例前提：这个 key 落在两个上限之间')
+
+    env.db.__seed('memberships', [memberRow()])
+    env.db.__seed('report_cache', [{ _id: longKey, state: 'ready', report: { name: '长名字' } }])
+
+    const res = await guard.main({
+      kind: 'generate',
+      action: 'consume',
+      waiveIf: 'member_upgrade',
+      target: longKey
+    })
+
+    eq(res.ok, true)
+    eq(res.waived, true, '复核上限若比写口小，长名字的会员补齐会白白多算一次额度')
+    eq(env.db.__dump('generate_quota').length, 0, '豁免即不自增')
+  })
+
+  it('禁路径分隔符与空串的判定没被顺手改掉', async () => {
+    const guard = loadGuard()
+    env.db.__seed('memberships', [memberRow()])
+
+    const empty = await guard.main({ kind: 'generate', action: 'consume', waiveIf: 'member_upgrade', target: '' })
+    eq(empty.waived, false, '空 target 不能免计费')
+
+    const slash = await guard.main({
+      kind: 'generate',
+      action: 'consume',
+      waiveIf: 'member_upgrade',
+      target: 'a/b#tech'
+    })
+    eq(slash.waived, false, 'doc(id) 里不能出现路径分隔符')
+  })
+
+  it('两个上限必须同值（改一个忘另一个就红）', () => {
+    const store = read(path.join(CLOUD, 'aiProxy', 'report-store.js'))
+    ok(/MAX_KEY_LEN = 120/.test(guardSrc), 'quotaGuard 的复核上限')
+    ok(/MAX_KEY_LEN = 120/.test(store), 'aiProxy 写口的落库上限')
+  })
+
+  /*
+   * P2-30：刷新额度的**判定**搬到这里。此前端上把计数取回来自己比一遍
+   * `count <= DAILY_REFRESH_LIMIT`（同一份业务规则的另一个副本，可被改包改掉，
+   * 且越界尝试在云端零留痕）。现在云端回报 `limit` / `allowed`，端上直接采用。
+   */
+  it('P2-30：refresh 的判定由云端给出（peek 回报 limit + allowed）', async () => {
+    const guard = loadGuard()
+    const res = await guard.main({ kind: 'refresh', action: 'peek' })
+    eq(res.ok, true)
+    eq(res.limit, 10)
+    eq(res.allowed, true, 'count=0 时应当允许')
+  })
+
+  it('P2-30：refresh 越界时 allowed=false（先自增再判定 ⇒ 越界尝试也留痕）', async () => {
+    const guard = loadGuard()
+    const date = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+    env.db.__seed('refresh_quota', [{ _id: `u1#${date}`, _openid: 'u1', count: 10 }])
+
+    const res = await guard.main({ kind: 'refresh', action: 'consume' })
+
+    eq(res.ok, true)
+    eq(res.count, 11, '越界的尝试在云端也要留痕，不能悄悄放过')
+    eq(res.allowed, false)
+    eq(res.limit, 10)
+  })
+
+  it('P2-30：generate / ask 不回报 limit / allowed（上限仍在 aiProxy 入口）', async () => {
+    const guard = loadGuard()
+    const gen = await guard.main({ kind: 'generate', action: 'consume' })
+    const ask = await guard.main({ kind: 'ask', action: 'consume' })
+    eq(gen.limit, undefined)
+    eq(gen.allowed, undefined)
+    eq(ask.limit, undefined)
+    eq(ask.allowed, undefined)
+  })
+})
+
+/** 加载一个定时任务云函数：wx-server-sdk → 内存 DB（无 openid = 定时器），https → 假上游 */
+function loadScheduled(name, https) {
+  env.resetAll()
+  clearLlmEnv()
+  const db = env.db.database()
+  const fakeSdk = {
+    DYNAMIC_CURRENT_ENV: 'test-env',
+    init() {},
+    database: () => db,
+    /* 定时触发没有调用方 openid —— 这正是 P0-21 那道调用方闸门的通过条件 */
+    getWXContext: () => ({})
+  }
+  const p = path.join(CLOUD, name, 'index.js')
+  const orig = Module.prototype.require
+  Module.prototype.require = function (id) {
+    if (id === 'wx-server-sdk') return fakeSdk
+    if (id === 'https') return https.module
+    return orig.apply(this, arguments)
+  }
+  try {
+    delete require.cache[require.resolve(p)]
+    return { fn: require(p), calls: https.calls }
+  } finally {
+    Module.prototype.require = orig
+  }
+}
+
+const wordWatch = (openid, keyword) => ({
+  _id: `${openid}#${keyword}`,
+  _openid: openid,
+  openid,
+  keyword,
+  type: 'keyword',
+  created_at: '2026-10-01T00:00:00.000Z'
+})
+
+const personWatch = (openid, personKey, name) => ({
+  _id: `${openid}#person#${personKey}`,
+  _openid: openid,
+  openid,
+  type: 'person',
+  person_key: personKey,
+  keyword: name,
+  created_at: '2026-10-01T00:00:00.000Z'
+})
+
+describe('P2-22 定时任务：每人订阅上限的云侧兜底', () => {
+  it('keywordAlert：同一人的第 6 个词被云端挡下（端上那道可被改包绕过）', async () => {
+    const https = fakeHttps(Array.from({ length: 30 }, () => searchOk(1)))
+    const { fn, calls } = loadScheduled('keywordAlert', https)
+    env.db.__seed('keyword_watches', [
+      ...['甲', '乙', '丙', '丁', '戊', '己'].map((k) => wordWatch('u1', k)),
+      wordWatch('u2', '庚')
+    ])
+
+    const res = await fn.main({})
+
+    eq(res.ok, true)
+    eq(res.over_limit, 1, '第 6 个订阅必须被云端挡下，否则一个人能吃掉整轮检索预算')
+    const queries = calls.map((c) => (c.body && c.body.query) || '').filter(Boolean)
+    eq(
+      queries.length,
+      6,
+      `7 条订阅（同一人 6 条 + 别人 1 条）只该检索 6 个词 —— 被挡下的那个不花上游的钱，实际 ${JSON.stringify(queries)}`
+    )
+    ok(queries.indexOf('庚') >= 0, '别人的词照常检索')
+  })
+
+  it('riskWatch：同一人的第 6 个监控对象被挡下', async () => {
+    const https = fakeHttps(Array.from({ length: 30 }, () => searchOk(1)))
+    const { fn, calls } = loadScheduled('riskWatch', https)
+    env.db.__seed('keyword_watches', [
+      ...[1, 2, 3, 4, 5, 6].map((i) => personWatch('u1', `P${i}#tech`, `名人${i}`)),
+      personWatch('u2', 'P9#tech', '名人九')
+    ])
+
+    const res = await fn.main({})
+
+    eq(res.ok, true)
+    eq(res.over_limit, 1, '第 6 个监控必须被云端挡下（每天只有 20 次上游预算）')
+    const queries = calls.map((c) => (c.body && c.body.query) || '').filter(Boolean)
+    eq(
+      queries.length,
+      6,
+      `7 条监控（同一人 6 条 + 别人 1 条）只该检索 6 位名人，实际 ${JSON.stringify(queries)}`
+    )
+    ok(queries.indexOf('名人九') >= 0, '别人的监控照常检索')
   })
 })

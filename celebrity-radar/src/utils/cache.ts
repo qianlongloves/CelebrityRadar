@@ -826,8 +826,13 @@ export async function getFeedDetail(
  * 检查并消耗一次刷新配额（每账号/日 ≤10，§3.8）。
  *
  * 计数优先走云函数 `quotaGuard` 原子自增；未部署时回退本地读-改-写。
- * 注意云端是「先自增、再由本函数判定」：已超限时再刷新会让计数多涨 1
- * （只影响展示，`remaining` 已夹到 0），闸门是否放行不受影响。
+ *
+ * P2-30：判定改为**以云端为准**（云函数回报 `allowed` / `limit`）。此前端上把计数取回来
+ * 自己比一遍 `count <= DAILY_REFRESH_LIMIT` —— 同一份业务规则存了两个副本，端上那份可被
+ * 改包改掉，越界的尝试在云端也不留痕。现在云端说了算，端上只在「云函数不可用」时才用
+ * 同源常量兜底（此时本就无法强判）。
+ * 注意云端是「先自增、再判定」：已超限时再刷新会让计数多涨 1（只影响展示，
+ * `remaining` 已夹到 0），闸门是否放行不受影响。
  */
 export async function consumeRefreshQuota(userId: string): Promise<{ allowed: boolean; remaining: number }> {
   const real = await tallyRefreshQuota(userId)
@@ -841,12 +846,13 @@ export async function consumeRefreshQuota(userId: string): Promise<{ allowed: bo
 
 /** 刷新额度的真实口径：自增计数并据此判定（不感知调试开关） */
 async function tallyRefreshQuota(userId: string): Promise<{ allowed: boolean; remaining: number }> {
-  const cloudCount = await incrQuotaViaCloud('refresh')
-  if (cloudCount !== null) {
-    return {
-      allowed: cloudCount.count <= DAILY_REFRESH_LIMIT,
-      remaining: Math.max(0, DAILY_REFRESH_LIMIT - cloudCount.count)
-    }
+  const cloud = await incrQuotaViaCloud('refresh')
+  if (cloud !== null) {
+    /* P2-30：服务端给了判定就用它（`limit` 一并采用，顺带消掉两份常量漂移的风险）；
+       老版本云函数不返回这两个字段 ⇒ 回落到同源常量，行为与从前一致。 */
+    const limit = typeof cloud.limit === 'number' ? cloud.limit : DAILY_REFRESH_LIMIT
+    const allowed = typeof cloud.allowed === 'boolean' ? cloud.allowed : cloud.count <= limit
+    return { allowed, remaining: Math.max(0, limit - cloud.count) }
   }
 
   const id = `${userId}#${todayKey()}`

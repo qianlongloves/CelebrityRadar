@@ -270,6 +270,76 @@ function today() {
   return `${cst.getUTCFullYear()}-${p(cst.getUTCMonth() + 1)}-${p(cst.getUTCDate())}`
 }
 
+/**
+ * 构建锁的行号（P2-32）。与 `latest` 共用一个集合：端上只按 `doc('latest')` 读，
+ * 多出来的这一行谁也读不到，不必为它再开一张需要配权限的表。
+ */
+const LOCK_ID = 'building'
+/**
+ * 锁的存活时间（P2-32）。锁只用来挡「同时」，不挡「已经建过」——后者归上面那道 20 小时
+ * 新鲜度闸门管。成功路径会显式放锁（见 releaseBuildLock 的调用点）；而失败路径**故意不放**，
+ * 让它在 TTL 内继续挡着 —— 上游刚刚才失败过，几秒后立刻重试大概率还是失败，只是再烧一次额度。
+ * 万一函数在中途崩掉，锁行会留在这里，超过这个时长即视为死锁、可被后来者清掉重抢。
+ * 取值只需大于「一次构建的最坏耗时」（检索 6 组并行 + 一次生成，实测 1 分钟内）。
+ */
+const BUILDING_TTL_MS = 5 * 60 * 1000
+
+/** 放锁（P2-32）：只删锁行，不动榜单本身 */
+async function releaseBuildLock() {
+  await db
+    .collection(COLLECTION)
+    .doc(LOCK_ID)
+    .remove()
+    .catch((err) => console.warn(`[hotBoardRefresh] 放锁失败（不影响结果）：${(err && err.message) || err}`))
+}
+
+/**
+ * 抢构建锁（P2-32）：返回 true = 可以开始构建，false = 已经有人在建。
+ *
+ * 原来那道幂等闸门是「读 `generated_at` → 比时间 → 开工」，两个人同时冷启动会**双双通过**，
+ * 于是同一轮检索与生成被做了两遍（6 组领域检索 + 一次大模型调用，白花上游额度）。
+ * 这里换成一个真原子操作：往集合里 `add` 一条 `_id` 固定的锁行 —— 主键唯一由存储层保证，
+ * 抢到的写入成功，另一个必得重复键错误，没有「读了再写」的空隙。
+ */
+async function acquireBuildLock() {
+  const nowIso = new Date().toISOString()
+  try {
+    await db.collection(COLLECTION).add({ data: { _id: LOCK_ID, at: nowIso } })
+    return true
+  } catch (err) {
+    const msg = String((err && err.errMsg) || (err && err.message) || err)
+    /* 只有「主键冲突」才解释成「已经有人在建」。其它错（集合没建、权限没开）是环境问题，
+       而锁只是省钱的手段、不是正确性闸门 —— 不能因为它把榜单整个卡死，故放过并记一笔。 */
+    if (!/already exists|duplicate|-502001/i.test(msg)) {
+      console.warn(`[hotBoardRefresh] 构建锁不可用，按无锁继续：${msg}`)
+      return true
+    }
+  }
+
+  /* 锁被持有：先分清「真有人在建」和「上一轮崩了留下的死锁」 */
+  let heldAt = NaN
+  try {
+    const res = await db.collection(COLLECTION).doc(LOCK_ID).get()
+    heldAt = Date.parse((res && res.data && res.data.at) || '')
+  } catch (e) {
+    /* 读不到锁行：保守当成「有人在建」（最坏不过是晚一轮生成，不影响正确性） */
+  }
+  if (Number.isFinite(heldAt) && Date.now() - heldAt < BUILDING_TTL_MS) return false
+
+  /* 死锁：清掉再抢一次；这次仍抢不到就认输（另一个实例也在清，交给它建） */
+  await db
+    .collection(COLLECTION)
+    .doc(LOCK_ID)
+    .remove()
+    .catch(() => undefined)
+  try {
+    await db.collection(COLLECTION).add({ data: { _id: LOCK_ID, at: nowIso } })
+    return true
+  } catch (err) {
+    return false
+  }
+}
+
 /** 读当前榜单；集合不存在 / 无数据都返回 null，不算错误 */
 async function readBoard() {
   try {
@@ -334,13 +404,21 @@ exports.main = async (event) => {
   }
 
   /* 幂等闸门。定时器重试、端上冷启动补跑、人为多点几次，都会撞在这里 ——
-     一天最多打一轮上游，成本可控。force 只留给运维手动重建。 */
+     一天最多打一轮上游，成本可控。force 只留给运维手动重建。
+     注意这道闸门只管「不重复」，管不了「不同时」：两个冷启动实例会双双通过，
+     所以紧接着还有一道构建锁（P2-32）。 */
   const cur = await readBoard()
   const curAt = cur && cur.generated_at ? Date.parse(cur.generated_at) : NaN
   if (!event || event.force !== true) {
     if (Number.isFinite(curAt) && Date.now() - curAt < FRESH_MS) {
       return { ok: true, skipped: 'fresh', generated_at: cur.generated_at, count: (cur.items || []).length }
     }
+  }
+
+  /* 抢构建锁（P2-32）：上面那道闸门只保证「不重复生成」，保证不了「不同时生成」。
+     抢不到就当作已经有人在建 —— 这也是端上冷启动补跑最常见的撞车场景。 */
+  if (!(await acquireBuildLock())) {
+    return { ok: true, skipped: 'building', generated_at: cur && cur.generated_at }
   }
 
   // ① 分域检索（并行）：单个领域失败只丢它自己的素材，不拖垮整轮
@@ -389,6 +467,8 @@ exports.main = async (event) => {
   }
   try {
     const w = await writeBoard(doc)
+    /* 构建成功、榜单已落库，锁的使命结束，立刻放掉（P2-32） */
+    await releaseBuildLock()
     /* 正式路径只回摘要：端上冷启动补跑也会调到这里，返回整份榜单只会把端上日志刷满 */
     return { ok: true, date, count: judged.count, domains: judged.domains, created: w.created, failed }
   } catch (err) {

@@ -36,7 +36,19 @@
 const GRANTING_TIMEOUT_MS = 30 * 60 * 1000
 /** 每轮最多处理多少单：一轮跑太久会撞云函数超时（payCallback 是 60 秒） */
 const SCAN_LIMIT = 20
-/** memberships 每轮最多扫多少行（与其它定时任务的 limit 100 同口径） */
+/**
+ * 同一单最多自动补救几次（P2-24）。超过就只记日志、不再自动重试 —— 交给人工。
+ *
+ * 为什么需要「有界」：`where({ status:'granting' }).limit(20)` 取的是**前 20 个**，
+ * 一条怎么都补不成功的坏单（比如 users 行被删了）会永远留在结果集里 ——
+ * 每轮占一个名额、每轮重试一次，把 20 个名额慢慢吃光，后面的单再也进不来（队列饿死）。
+ * 配合「按 reconcile_attempts 升序」取单，坏单每失败一次就往后排一点，最多 5 轮就沉到队尾。
+ */
+const MAX_RECONCILE_ATTEMPTS = 5
+/**
+ * memberships 每轮校验多少行（P2-23：按 mirror_checked_at 轮转，不是「每次都扫前 100 行」）。
+ * 取 100 是因为一轮里每行都要多打一次 users 查询，行数再多容易撞云函数超时；靠轮转保证覆盖。
+ */
 const MIRROR_SCAN_LIMIT = 100
 /** 权威行上「已撤销退款的订单号」名单保留多少条（真正的幂等判据在订单行的 refund_revoked_at，
  *  这个名单只用来自愈「扣了权威、还没写标记」那一段，留 20 条远够） */
@@ -138,9 +150,29 @@ module.exports = function createAfterSales(deps) {
 
   /** ① granting 残留：付了钱、微信重试也放弃了、货还停在半路 */
   async function reconcileStaleGrants(summary) {
-    const res = await db.collection('orders').where({ status: 'granting' }).limit(SCAN_LIMIT).get()
+    /*
+     * P2-24：**按 reconcile_attempts 升序 + _id 升序**取单，而不是裸 limit(20)。
+     * 裸 limit 的问题：`where({status:'granting'})` 是一个**不断有成员进出、但坏成员只进不出**的集合，
+     * 不排序时取哪 20 条完全由存储顺序决定 —— 一条补不成功的坏单会长期占着名额并反复重试，
+     * 把队列堵死（其余待补单永远排不进前 20）。排序后：没试过的单据最前，试得多的沉到后面。
+     * 缺失 `reconcile_attempts` 的老行按 undefined 排最前 —— 正好是「优先补偿积压」。
+     */
+    const res = await db
+      .collection('orders')
+      .where({ status: 'granting' })
+      .orderBy('reconcile_attempts', 'asc')
+      .orderBy('_id', 'asc')
+      .limit(SCAN_LIMIT)
+      .get()
     for (const order of res.data || []) {
       if (!order || !order._id) continue
+      const attempts = Number(order.reconcile_attempts) || 0
+      if (attempts >= MAX_RECONCILE_ATTEMPTS) {
+        /* 自动补救已到上限：不再重试、也不再让它占着名额，只留一条显眼的日志等人工 */
+        summary.stuck++
+        summary.skipped.push(`${order._id}: 自动补发货已试 ${attempts} 次仍未成功，转人工核查`)
+        continue
+      }
       const waited = Date.now() - tsOf(order.paid_at)
       if (waited < GRANTING_TIMEOUT_MS) {
         /* paid_at 缺失时 tsOf 给 0 ⇒ waited 极大 ⇒ 视为超时：畸形行更该被补，不该被放过 */
@@ -154,19 +186,54 @@ module.exports = function createAfterSales(deps) {
         summary.granted++
         log(`对账补发货：订单 ${order._id} 已推至 paid（原先停在 granting ${Math.round(waited / 60000)} 分钟）`)
       } catch (err) {
-        /* 一条坏不拖垮整轮：下一轮还会扫到它（`granting` 没被改过） */
+        /* 一条坏不拖垮整轮：下一轮还会扫到它（`granting` 没被改过），但要记一次失败次数，
+           否则它会一直占着前 20 个名额，把后面的单饿死（见 MAX_RECONCILE_ATTEMPTS） */
+        await bumpReconcileAttempts(order._id, attempts)
         summary.skipped.push(`${order._id}: ${msgOf(err)}`)
-        log(`对账补发货失败（下一轮再试）：订单 ${order._id} —— ${msgOf(err)}`)
+        log(`对账补发货失败（第 ${attempts + 1} 次，下一轮再试）：订单 ${order._id} —— ${msgOf(err)}`)
       }
+    }
+  }
+
+  /**
+   * 记一次自动补救失败（P2-24）。写失败只记日志、不改变本轮结论 ——
+   * 它是「队列公平性」的元数据，丢一次至多多重试一轮，不该让它把整轮对账带崩。
+   */
+  async function bumpReconcileAttempts(outTradeNo, attempts) {
+    try {
+      await db
+        .collection('orders')
+        .doc(outTradeNo)
+        .update({ data: { reconcile_attempts: attempts + 1 } })
+    } catch (err) {
+      log(`记录对账重试次数失败（不影响本轮）：订单 ${outTradeNo} —— ${msgOf(err)}`)
     }
   }
 
   /** ② 镜像与权威不一致：以权威覆盖镜像（含「端上改了自己那一行」这种） */
   async function reconcileMirrors(summary) {
-    const res = await db.collection('memberships').limit(MIRROR_SCAN_LIMIT).get()
+    /*
+     * P2-23：**按 mirror_checked_at 升序轮转**，而不是裸 `limit(100)`。
+     *
+     * 裸 limit 的问题不在「只取一批」，而在「每一轮都取同一批」：memberships 超过 100 行之后，
+     * 第 101 个及以后的会员永远不会被校验，镜像漂移在那里永久保留 —— 而且日志一切正常，
+     * 没有任何迹象表明「对账只覆盖了前 100 个人」。
+     *
+     * 游标就是权威行上的 `mirror_checked_at`（缺字段的行排最前，正好优先校验新发货的行）：
+     * 本轮校验过的写入「现在」，下一轮自然排到队尾，于是 N 行数据最多 ⌈N / MIRROR_SCAN_LIMIT⌉ 轮
+     * 一定全部轮到。**成败都写回**：失败的行若一直占着队首，就会把后面的行饿死（与 P2-24 同理）。
+     */
+    const res = await db
+      .collection('memberships')
+      .orderBy('mirror_checked_at', 'asc')
+      .limit(MIRROR_SCAN_LIMIT)
+      .get()
+
+    const checked = []
     for (const auth of res.data || []) {
       const openid = auth && (auth._id || auth._openid)
       if (!openid) continue
+      checked.push(openid)
       try {
         const row = await findUserRow(openid)
         if (!row) {
@@ -180,32 +247,97 @@ module.exports = function createAfterSales(deps) {
           m.expires_at === auth.expires_at &&
           m.last_order_id === auth.last_order_id
         if (same) continue
+        /*
+         * P2-35：上面 `auth` 来自**批量快照**，而批量读到逐行写之间有真实的时间差（本轮最多 100 行）。
+         * 这期间若有人刚发货或刚退款，权威的有效期已经变了，而我们拿快照里的旧值去覆盖镜像 ——
+         * 于是镜像被写成一个「权威已经否掉」的有效期，用户端上看到的是错的会员状态。
+         * 这种不一致会靠下一轮自愈，但下一轮是 ⌈N/100⌉ 轮之后，可能很久。
+         *
+         * 修法：**真要写之前再读一次权威**，以最新值为准。漂移是少数情况，所以这次额外读
+         * 只发生在「已判定需要写」的时候，不改变正常路径的读放大。
+         */
+        const fresh = await readMembership(openid)
+        if (!fresh) {
+          summary.skipped.push(`镜像 ${openid}: 读回权威行时已消失，跳过本轮`)
+          continue
+        }
+        const fm = row.membership || null
+        const stillSame =
+          fm && fm.plan === fresh.plan && fm.expires_at === fresh.expires_at && fm.last_order_id === fresh.last_order_id
+        if (stillSame) continue
         await writeMirror(row._id, openid, {
-          plan: auth.plan,
-          expires_at: auth.expires_at,
-          last_order_id: auth.last_order_id
+          plan: fresh.plan,
+          expires_at: fresh.expires_at,
+          last_order_id: fresh.last_order_id
         })
         summary.mirrors++
-        log(`对账补镜像：openid=${openid}（权威 last_order_id=${auth.last_order_id}）`)
+        log(`对账补镜像：openid=${openid}（权威 last_order_id=${fresh.last_order_id}）`)
       } catch (err) {
         summary.skipped.push(`镜像 ${openid}: ${msgOf(err)}`)
         log(`对账补镜像失败（下一轮再试）：openid=${openid} —— ${msgOf(err)}`)
       }
     }
+
+    /* 批量写回轮转游标（一次 update 覆盖本轮所有行，别逐行打 100 次往返）。
+       注意这个字段是「对账进度」，不是会员数据 —— 它由 writeMembership 的整篇 set 自然清掉，
+       所以每次发货/退款后那一行会重新排回队首再校验一次，正是我们想要的。 */
+    if (!checked.length) return
+    try {
+      await db
+        .collection('memberships')
+        .where({ _id: db.command.in(checked) })
+        .update({ data: { mirror_checked_at: nowIso() } })
+    } catch (err) {
+      summary.skipped.push(`镜像轮转游标写回失败：${msgOf(err)}`)
+      log(`镜像轮转游标写回失败（下一轮会重复校验这一批）：${msgOf(err)}`)
+    }
   }
 
   /** ③ 已退款但还没撤销过会员的订单 */
   async function reconcileRefunds(summary) {
-    const res = await db.collection('orders').where({ status: 'refunded' }).limit(SCAN_LIMIT).get()
+    /*
+     * P2-24（本类的问题比 ① 更严重）：撤销完成的单**不会离开** `status:'refunded'` 结果集 ——
+     * 它只是被下面那个 `if (order.refund_revoked_at) continue` 跳过。于是裸
+     * `where({status:'refunded'}).limit(20)` 的前 20 名，迟早会被「已撤销完的历史单」占满，
+     * 此后**新的退款单一条也扫不到**（症状：退了款却不扣会员，日志里连一行都没有）。
+     *
+     * 修法：查询上就把已结清的单排除掉 —— 「待撤销」= `refund_revoked_at` 字段缺席**或**为 null
+     * （老行不带这个字段、显式撤销过的写的是时间串、新建/中途的行可能是 null，三种都要覆盖）。
+     * 再叠 ① 那套 attempts 升序（坏单下沉）与 _id 升序（先来先处理），与 ① 保持同一套排队规则。
+     *
+     * 注意**不要**改回「按 refund_revoked_at 升序取一批」：升序在真机上确实把缺席值排最前，
+     * 但「缺席 vs 字符串」的大小比较在 JS 侧不是全序（null > 'x' 与 'x' > null 同时为假），
+     * 排序结果会退化成「取决于原始顺序」—— 正确性不能建立在这种隐式排序上。
+     */
+    const _ = db.command
+    const res = await db
+      .collection('orders')
+      .where(
+        _.and([
+          { status: 'refunded' },
+          _.or([{ refund_revoked_at: _.exists(false) }, { refund_revoked_at: null }])
+        ])
+      )
+      .orderBy('reconcile_attempts', 'asc')
+      .orderBy('_id', 'asc')
+      .limit(SCAN_LIMIT)
+      .get()
     for (const order of res.data || []) {
       if (!order || !order._id || order.refund_revoked_at) continue
+      const attempts = Number(order.reconcile_attempts) || 0
+      if (attempts >= MAX_RECONCILE_ATTEMPTS) {
+        summary.stuck++
+        summary.skipped.push(`退款 ${order._id}: 自动撤销已试 ${attempts} 次仍未成功，转人工核查`)
+        continue
+      }
       summary.refunded++
       try {
         const r = await settleRefund(order)
         if (r.revoked) summary.revoked++
       } catch (err) {
+        await bumpReconcileAttempts(order._id, attempts)
         summary.skipped.push(`退款 ${order._id}: ${msgOf(err)}`)
-        log(`退款撤销失败（下一轮再试）：订单 ${order._id} —— ${msgOf(err)}`)
+        log(`退款撤销失败（第 ${attempts + 1} 次，下一轮再试）：订单 ${order._id} —— ${msgOf(err)}`)
       }
     }
   }
@@ -224,6 +356,8 @@ module.exports = function createAfterSales(deps) {
       mirrors: 0,
       refunded: 0,
       revoked: 0,
+      /** 自动补救次数用尽的单（P2-24）：>0 就该有人去看一眼，别只看 skipped 的总数 */
+      stuck: 0,
       skipped: []
     }
     await reconcileStaleGrants(summary)
@@ -232,8 +366,11 @@ module.exports = function createAfterSales(deps) {
     log(
       `对账完成：granting 候选 ${summary.granting} / 补发货 ${summary.granted}，` +
       `补镜像 ${summary.mirrors}，退款单 ${summary.refunded} / 撤销 ${summary.revoked}，` +
-      `跳过 ${summary.skipped.length}`
+      `转人工 ${summary.stuck}，跳过 ${summary.skipped.length}`
     )
+    if (summary.stuck > 0) {
+      log(`⚠ 有 ${summary.stuck} 笔订单自动补救已达 ${MAX_RECONCILE_ATTEMPTS} 次上限，请人工核查（见 skipped 明细）`)
+    }
     return summary
   }
 

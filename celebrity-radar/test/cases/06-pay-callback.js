@@ -26,7 +26,7 @@
 const path = require('path')
 const Module = require('module')
 const env = require('../harness/env')
-const { describe, it, eq, ok } = require('../harness/t')
+const { describe, it, eq, ok, deepEq } = require('../harness/t')
 
 const FN = path.resolve(__dirname, '..', '..', 'cloudfunctions', 'payCallback', 'index.js')
 
@@ -280,5 +280,66 @@ describe('支付回调状态机 cloudfunctions/payCallback', () => {
       `应在剩余 10 天上再叠 31 天，实际 ${authority().expires_at}`
     )
     eq(membership().expires_at, authority().expires_at, '两处同步顺延')
+  })
+})
+
+/*
+ * P1-10（2026-10-09）：退款名单 `refunded_orders` 是「这几单已经扣过天数」的唯一凭据，
+ * 而权威行是 `set` 全量覆盖。发货路径有两个地方会把它写没：
+ *   ① 分支②「镜像已记本单、权威没有」补权威时**没有带**这个字段；
+ *   ② `readMembership` 用 `doc().get()` + `catch → null`，把「读失败」也当成「没有行」，
+ *      于是走新发货分支、拿镜像重算有效期并写一个 `refunded_orders: undefined`。
+ * 两种都**不报错**，代价是下一轮对账会对同一单再扣一次用户已付的天数。下面两条分别钉住。
+ */
+describe('P1-10 退款名单不得被发货路径抹掉', () => {
+  it('分支②（镜像已记本单、权威记的是另一单）：补权威时把已有退款名单原样带回', async () => {
+    const fn = loadFn()
+    const future = new Date(Date.now() + 40 * DAY_MS).toISOString()
+    /* 权威行存在，但 `last_order_id` 是更早的另一单，且带着退款名单 */
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: future, last_order_id: 'OLD', refunded_orders: ['R0'] }
+    ])
+    /* 镜像记的正是本次要补的这一单 ⇒ 命中分支② */
+    env.db.__seed('users', [
+      Object.assign({}, USER, {
+        membership: { plan: 'month', expires_at: future, last_order_id: 'T1' }
+      })
+    ])
+    env.db.__seed('orders', [Object.assign({}, ORDER, { status: 'granting', paid_at: '2026-10-09T00:00:01.000Z' })])
+
+    const res = await fn.main(notify())
+
+    eq(res.errcode, 0)
+    eq(authority().last_order_id, 'T1', '权威要补上这一单')
+    eq(authority().expires_at, future, '照抄镜像有效期，不重算（重算就是白送）')
+    deepEq(
+      authority().refunded_orders,
+      ['R0'],
+      '名单丢了下一轮对账就会对 R0 再扣一次天数 —— 吃用户已付的天数是最不能接受的失败'
+    )
+  })
+
+  it('读权威失败：与「没有权威行」区分开，本趟不写、返回非 0，名单原样不动', async () => {
+    const fn = loadFn()
+    const future = new Date(Date.now() + 40 * DAY_MS).toISOString()
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: future, last_order_id: 'OLD', refunded_orders: ['R0'] }
+    ])
+    /* 镜像记的是旧单（与本单无关）：若把读失败错当成「没有行」，就会走新发货分支重算并清空名单 */
+    env.db.__seed('users', [
+      Object.assign({}, USER, {
+        membership: { plan: 'month', expires_at: future, last_order_id: 'OLD' }
+      })
+    ])
+    env.db.__seed('orders', [Object.assign({}, ORDER, { status: 'granting', paid_at: '2026-10-09T00:00:01.000Z' })])
+    /* 只让 memberships 的**读**失败（写照常）——这正是 `doc().get()+catch` 会吞掉的那种情形 */
+    env.db.__setReadFailing('memberships', true)
+
+    const res = await fn.main(notify())
+
+    eq(res.errcode, -1, '读失败要原样冒泡让微信重试，而不是被吞成「没有权威行」')
+    eq(authority().last_order_id, 'OLD', '一趟失败的调用不得改写权威行')
+    eq(authority().expires_at, future, '更不得拿镜像重算有效期')
+    deepEq(authority().refunded_orders, ['R0'], '名单必须原样还在（旧写法会把它清掉）')
   })
 })

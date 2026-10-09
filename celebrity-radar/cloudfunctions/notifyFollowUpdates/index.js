@@ -17,7 +17,7 @@
  * ⚠ 缺这条声明时平台会直接拒绝 openapi 调用（报 openapi permission denied，而**不是** 43101），
  * 表现是日志里天天 failed、用户一条提醒都收不到 —— 排查先看 config.json。
  *
- * 三个设计取舍：
+ * 四个设计取舍：
  * 1. 主动检索而非只读现成缓存。feed_cache / report_cache 只在用户手动触发时才更新，
  *    若纯读缓存，「关注了一个月没打开过的人」永远不会有可推的更新，提醒也就永不发生。
  * 2. 一次授权一条。微信一次性订阅的规则如此，故推送成功后立刻把 subscribe_ok 复位；
@@ -25,6 +25,9 @@
  * 3. 写回 feed_cache 的条目必须与端上 utils/search.ts 的 NewsItem **同构**（含 content）：
  *    这张缓存是端上关注流卡片与 utils/weekly.ts 的数据源，定时任务若只写「标题 + 链接」，
  *    同一个人会出现「端上刷过就有摘要、云端刷过就变空」的脏数据，周报读 e.content 还会直接抛错。
+ * 4. **推送在前、写回在后**（P2-28）。写回 feed_cache 就等于宣布「这批条目已经推过了」，
+ *    所以它只能在推送跑完之后做；顺序颠倒会把「没送出去」当成「送出去了」——
+ *    而这条路径上没有任何报错，只有一条 skipped 日志，属于最难发现的那种丢消息。
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
@@ -257,24 +260,19 @@ exports.main = async () => {
     }
   }
 
-  // 4. 先把新条目写回 feed_cache：否则下次运行会把同一批条目再当成「新增」，重复推送
-  let updated = 0
-  for (const [personKey, r] of results) {
-    if (!r.fresh) continue
-    try {
-      await db
-        .collection('feed_cache')
-        .doc(personKey)
-        .set({ data: { items: r.items, fetched_at: new Date().toISOString() } })
-      updated++
-    } catch (err) {
-      results.set(personKey, Object.assign({}, r, { writeError: String(err && err.message) }))
-    }
-  }
-
-  // 5. 逐用户判定并推送
+  /*
+   * 4. 逐用户判定并推送。
+   *
+   * P2-28：推送**排在写回 feed_cache 之前**。以前的顺序是「先写回、再推送」，于是某个用户
+   * 推送遇到瞬时错误（不是 43101 那种「授权已消耗」的确定性失败）时，这批条目已经进了
+   * `prevUrls` —— 下一轮 diff 出来是空集，**这个人永远收不到这条更新**，而日志里只有一行
+   * skipped，看起来一切正常。取舍：出现过瞬时失败的人物，其缓存本轮**不写回**，下一轮重试；
+   * 代价是同一人物下已经收到的那部分用户可能重复收到一次 —— 重复一次远好于永久漏推。
+   */
   let pushed = 0
   const skipped = []
+  /** 本轮推送出现过「可重试失败」的人物：其 feed_cache 不写回（写回就等于放弃这条更新） */
+  const retryPersons = new Set()
   for (const u of users) {
     const mine = byUser.get(u._openid) || []
     let totalNew = 0
@@ -302,8 +300,14 @@ exports.main = async () => {
         }
       })
       pushed++
-      /* 一次性订阅：这条用掉了授权，立刻复位；否则下次发送必得 43101 */
-      await db.collection('users').doc(u._id).update({ data: { subscribe_ok: false } })
+      /* 一次性订阅：这条用掉了授权，立刻复位；否则下次发送必得 43101。
+         复位写失败不影响「已经推出去」这个事实，故自己吃掉异常 —— 别把成功算成失败
+         （算成失败会让人物的缓存不写回，害得其它用户下一轮重复收到）。 */
+      await db
+        .collection('users')
+        .doc(u._id)
+        .update({ data: { subscribe_ok: false } })
+        .catch(() => undefined)
     } catch (err) {
       /* 43101 = 用户已取消或授权已消耗；这类失败属正常状态，只记录不告警 */
       const msg = String((err && err.errMsg) || (err && err.message) || err)
@@ -314,7 +318,33 @@ exports.main = async () => {
           .doc(u._id)
           .update({ data: { subscribe_ok: false } })
           .catch(() => undefined)
+      } else {
+        /* 瞬时失败：重试有意义 ⇒ 标记这些人物的缓存本轮不写回（下一轮还会 diff 出这批条目） */
+        for (const f of mine) retryPersons.add(f.person_key)
       }
+    }
+  }
+
+  /*
+   * 5. 推送跑完才写回 feed_cache（P2-28）。
+   *   这一步是「这批条目已经推过了」的唯一凭据，所以必须晚于推送；写早了就是把没送出去的消息
+   *   当成送出去了。本轮推送有瞬时失败的人物跳过不写，留给下一轮重试。
+   */
+  let updated = 0
+  for (const [personKey, r] of results) {
+    if (!r.fresh) continue
+    if (retryPersons.has(personKey)) {
+      skipped.push({ openid: '(feed_cache)', reason: `${personKey}: 本轮推送存在瞬时失败，缓存不写回，下一轮重试` })
+      continue
+    }
+    try {
+      await db
+        .collection('feed_cache')
+        .doc(personKey)
+        .set({ data: { items: r.items, fetched_at: new Date().toISOString() } })
+      updated++
+    } catch (err) {
+      results.set(personKey, Object.assign({}, r, { writeError: String(err && err.message) }))
     }
   }
 

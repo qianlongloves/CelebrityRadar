@@ -21,7 +21,7 @@
 const fs = require('fs')
 const path = require('path')
 const env = require('../harness/env')
-const { describe, it, ok, notOk, eq } = require('../harness/t')
+const { describe, it, ok, notOk, eq, deepEq } = require('../harness/t')
 
 const SRC = path.resolve(__dirname, '..', '..', 'src')
 const BUILD = path.resolve(__dirname, '..', '.build')
@@ -147,6 +147,48 @@ describe('关注流刷新：只走主线（批 3）', () => {
       JSON.stringify(rows[0]).includes(me),
       `要记在本次操作的人头上，实际：${JSON.stringify(rows[0])}`
     )
+  })
+
+  /*
+   * P2-30：刷新额度的**判定**改由云端拍板。此前端上把云端计数取回来、自己再比一遍
+   * `count <= DAILY_REFRESH_LIMIT`（`DAILY_REFRESH_LIMIT` 与云端 `REFRESH_DAILY_LIMIT`
+   * 是同一规则的第三份副本），改包可以把端上那份改掉，越界的尝试在云端也不留痕。
+   */
+  it('P2-30：云端说不行就不行 —— 端上不再自比 count 放行', async () => {
+    const { load } = fresh()
+    login()
+    spySearch()
+    env.registerCloudFn('quotaGuard', () => ({ ok: true, count: 11, allowed: false, limit: 10 }))
+    const { consumeRefreshQuota } = load('utils/cache')
+
+    const res = await consumeRefreshQuota('me')
+
+    eq(res.allowed, false, '云端已判越界，端上不得自己再算一遍放行')
+    eq(res.remaining, 0)
+    eq(env.db.__dump('refresh_quota').length, 0, '云端计数时端上不落本地行')
+  })
+
+  it('P2-30：采用云端 limit（两份常量哪天漂开也不会各说各话）', async () => {
+    const { load } = fresh()
+    login()
+    env.registerCloudFn('quotaGuard', () => ({ ok: true, count: 2, allowed: true, limit: 10 }))
+    const { consumeRefreshQuota } = load('utils/cache')
+
+    deepEq(await consumeRefreshQuota('me'), { allowed: true, remaining: 8 })
+  })
+
+  it('P2-30：旧版云函数不返回 allowed/limit 时回落同源常量（行为与从前一致）', async () => {
+    const { load } = fresh()
+    login()
+    let count = 2
+    env.registerCloudFn('quotaGuard', () => ({ ok: true, count }))
+    const { consumeRefreshQuota } = load('utils/cache')
+
+    eq((await consumeRefreshQuota('me')).allowed, true, 'count=2 在下限内')
+    count = 11
+    const over = await consumeRefreshQuota('me')
+    eq(over.allowed, false, 'count=11 已越界')
+    eq(over.remaining, 0, 'remaining 夹到 0，不出现负数')
   })
 })
 

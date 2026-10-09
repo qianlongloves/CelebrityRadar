@@ -7,7 +7,7 @@ import { listFollows, FollowRow } from '@/utils/follows'
 import { getFeedDetail, refreshAllFeeds } from '@/utils/cache'
 import { NewsItem } from '@/utils/search'
 import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
-import { fromNow } from '@/utils/time'
+import { fromNow, sameDay8 } from '@/utils/time'
 import './index.scss'
 
 /** 流条目：新闻 + 归属人 */
@@ -23,18 +23,16 @@ function sortByDate(a: FeedEntry, b: FeedEntry): number {
   return tb - ta
 }
 
-/** 今天发布的动态给一枚徽标，让「有没有新东西」一眼可见 */
+/**
+ * 今天发布的动态给一枚徽标，让「有没有新东西」一眼可见。
+ *
+ * P2-36：一律按 UTC+8 判「今天」。以前用 `getMonth()/getDate()`（设备本地）比，
+ * 于是同一条动态在不同用户手机上可能一个是「今天」、一个是昨天 —— 徽标本身就是在回答
+ * 「这算不算新的」，答案随设备漂移就没有意义了。
+ */
 function isToday(date?: string): boolean {
   if (!date) return false
-  const t = Date.parse(date)
-  if (Number.isNaN(t)) return false
-  const d = new Date(t)
-  const now = new Date()
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  )
+  return sameDay8(date, Date.now())
 }
 
 /**

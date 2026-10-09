@@ -24,6 +24,46 @@ function login(id = 'u-openid-1') {
 
 const tick = () => new Promise((r) => setTimeout(r, 0))
 
+/**
+ * P2-29：造一个「并发写入」的 timing —— 让**第一次**向 keyword_watches 的写入顺带再插一行。
+ *
+ * 复刻的是「先查数、再插入」之间那个时间窗（端上没有原子计数可用，故改为插完再复核）。
+ * 返回一个 `wx.cloud.database()` 的替身：非 keyword_watches 的集合、以及后续所有调用都原样透传，
+ * 只有这**一次** add 会额外落一行（模拟另一个入口刚刚也点了一下）。
+ */
+function dbWithConcurrentWatchOnce(extraRow) {
+  const real = env.db.database()
+  let armed = true
+  const bind = (obj) =>
+    new Proxy(obj, {
+      get(t, p) {
+        const v = t[p]
+        return typeof v === 'function' ? v.bind(t) : v
+      }
+    })
+  const collection = (name) => {
+    const c = real.collection(name)
+    if (name !== 'keyword_watches') return c
+    return new Proxy(c, {
+      get(t, p) {
+        if (p === 'add') {
+          return async (arg) => {
+            const res = await t.add(arg)
+            if (armed) {
+              armed = false
+              await t.add({ data: extraRow })
+            }
+            return res
+          }
+        }
+        const v = t[p]
+        return typeof v === 'function' ? v.bind(t) : v
+      }
+    })
+  }
+  return bind({ collection, command: real.command, serverDate: real.serverDate })
+}
+
 /* ------------------------------------------------------------------ db.ts */
 
 describe('数据访问适配层 utils/db', () => {
@@ -707,6 +747,45 @@ describe('关键词订阅与名人监控共用表 utils/keyword-alert', () => {
     ok(kw.seen_at > '2026-10-01T00:00:00.000Z', '关键词行的 seen_at 应被更新')
     eq(person.seen_at, '2026-10-01T00:00:00.000Z', '监控行不该被盖章')
   })
+
+  it('P2-29：并发点击导致超限时，撤回刚插的那条（否则云端把第 6 行整行忽略 = 幽灵订阅）', async () => {
+    const { db, load } = fresh()
+    const me = login()
+    /* 已有 4 个关键词订阅，离上限 5 只差一个 */
+    db.__seed(
+      'keyword_watches',
+      [0, 1, 2, 3].map((i) => ({
+        _id: `${me}#w${i}`,
+        openid: me,
+        keyword: `w${i}`,
+        type: 'keyword',
+        created_at: `2026-10-01T00:00:0${i}.000Z`,
+        seen_at: `2026-10-01T00:00:0${i}.000Z`
+      }))
+    )
+    const ghost = {
+      _id: `${me}#ghost`,
+      openid: me,
+      keyword: 'ghost',
+      type: 'keyword',
+      created_at: '2026-10-09T00:00:00.000Z',
+      seen_at: '2026-10-09T00:00:00.000Z'
+    }
+    const restore = env.wxMock.cloud.database
+    try {
+      env.wxMock.cloud.database = () => dbWithConcurrentWatchOnce(ghost)
+      const { addWatch } = load('utils/keyword-alert')
+      const res = await addWatch('雷军')
+
+      notOk(res.ok, '真超限必须如实失败，端上不能显示「已开始监测」')
+      ok(res.message.includes('最多同时监测 5'), `实际：${res.message}`)
+      const ids = db.__dump('keyword_watches').map((r) => r._id)
+      notOk(ids.includes(`${me}#雷军`), '刚插的那条要撤回 —— 否则它永不扫描，用户以为在监控')
+      eq(ids.length, 5, '4 个原有 + 1 行并发 = 5，不应留下第 6 行')
+    } finally {
+      env.wxMock.cloud.database = restore
+    }
+  })
 })
 
 /* --------------------------------------- 名人监控写库 utils/risk-watch */
@@ -803,6 +882,46 @@ describe('名人监控写库 utils/risk-watch', () => {
     /* 认不出来的错误返回 null，调用方保留「请重试」—— 网络类失败重试确实是对的 */
     eq(explainDbFailure('keyword_watches', normalizeDbError(new Error('timeout')), '监控'), null)
     eq(explainDbFailure('keyword_watches', normalizeDbError({ errMsg: 'network timeout' }), '监控'), null)
+  })
+
+  it('P2-29：监控并发超限同样撤回刚插的那条（与关键词订阅同一处理）', async () => {
+    const { db, load } = fresh()
+    const me = login()
+    db.__seed(
+      'keyword_watches',
+      [0, 1, 2, 3].map((i) => ({
+        _id: `${me}#person#P${i}#tech`,
+        openid: me,
+        keyword: `P${i}`,
+        type: 'person',
+        person_key: `P${i}#tech`,
+        created_at: `2026-10-01T00:00:0${i}.000Z`,
+        seen_at: `2026-10-01T00:00:0${i}.000Z`
+      }))
+    )
+    const ghost = {
+      _id: `${me}#person#ghost#tech`,
+      openid: me,
+      keyword: 'ghost',
+      type: 'person',
+      person_key: 'ghost#tech',
+      created_at: '2026-10-09T00:00:00.000Z',
+      seen_at: '2026-10-09T00:00:00.000Z'
+    }
+    const restore = env.wxMock.cloud.database
+    try {
+      env.wxMock.cloud.database = () => dbWithConcurrentWatchOnce(ghost)
+      const { monitorPerson } = load('utils/risk-watch')
+      const res = await monitorPerson('雷军#tech', '雷军')
+
+      notOk(res.ok)
+      ok(res.message.includes('最多同时监控 5'), `实际：${res.message}`)
+      const ids = db.__dump('keyword_watches').map((r) => r._id)
+      notOk(ids.includes(`${me}#person#雷军#tech`), '超限的监控行要撤回，否则永不扫描')
+      eq(ids.length, 5)
+    } finally {
+      env.wxMock.cloud.database = restore
+    }
   })
 })
 

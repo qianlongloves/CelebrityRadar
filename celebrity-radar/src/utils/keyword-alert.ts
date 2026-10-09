@@ -205,6 +205,23 @@ export async function addWatch(raw: string): Promise<{ ok: boolean; message: str
     if (failure) return { ok: false, message: failure.message, fatal: failure.fatal }
     return { ok: false, message: '订阅失败，请重试' }
   }
+
+  /*
+   * P2-29：上面的 `watches.length >= MAX_WATCHES` 是「先查数、再插入」，两次点击并发时
+   * 都读到 4、各插一条 ⇒ 落到 6 条（端上没有任何原子计数可用）。而云端 keywordAlert 的
+   * 每人上限判定会把**第 6 行整行忽略** —— 超出的那条永不扫描，端上却显示「已开始监测」，
+   * 用户以为在监控、实际什么都没发生，三层都不报错。
+   * 端上做不了原子计数，于是插完再核一次：真超了就把刚插的这条撤回，如实报错。
+   */
+  const after = splitWatches(await listWatches()).keywords
+  if (after.length > MAX_WATCHES) {
+    const { error: rollbackErr } = await table('keyword_watches')
+      .delete()
+      .eq('id', `${userId}#${check.keyword}`)
+    if (rollbackErr) diagLog('warn', 'db', `回滚超限订阅失败：${rollbackErr.message ?? rollbackErr}`)
+    return { ok: false, message: `最多同时监测 ${MAX_WATCHES} 个词，先取消一个再加` }
+  }
+
   return { ok: true, message: `已开始监测「${check.keyword}」` }
 }
 

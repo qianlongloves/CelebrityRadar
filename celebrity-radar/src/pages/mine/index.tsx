@@ -25,17 +25,21 @@ import { clearMessageState } from '@/utils/messages'
 import { clearQaUsage, qaUsageToday, refreshQaUsage } from '@/utils/qa'
 import type { QaUsage } from '@/utils/qa'
 import { useTabBarSync } from '@/utils/tabbar'
+import { dayKey8 } from '@/utils/time'
 import './index.scss'
 
 /** 昵称长度上限（与 utils/auth.ts 的 NICKNAME_MAX 对齐） */
 const NICKNAME_MAX = 20
 
-/** 会员到期日展示：ISO → yyyy-mm-dd（按本地时区取日期，避免 toISOString 跨时区差一天） */
+/**
+ * 会员到期日展示：ISO → yyyy-mm-dd。
+ *
+ * P2-36：按 **UTC+8** 取日期（`dayKey8`），不再按设备时区。到期时刻由云端按 UTC+8 落库，
+ * 用设备时区去格式化它，UTC-5 的用户会在到期日当天看到「昨天已过期」；这正是上面那句
+ * 「避免 toISOString 差一天」想解决的问题，只是当时选了设备时区、而不是产品口径。
+ */
 function formatDay(iso: string): string {
-  const d = new Date(iso)
-  if (!Number.isFinite(d.getTime())) return iso
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  return dayKey8(iso) || iso
 }
 
 export default function Mine() {

@@ -163,9 +163,39 @@ function hasMemberBlocks(report) {
   return Array.isArray(report.conflicts) && report.conflicts.length > 0
 }
 
-/** target 只用于 doc(id) 取值：禁掉路径分隔符，限定长度 */
+/**
+ * personKey 的长度上限。**必须与写口 aiProxy/report-store.js 的 MAX_KEY_LEN 同源**：
+ * 之前这里是 64、写口是 120，于是 64 < 长度 ≤ 120 的长名字（personKey = `名字#领域码`）
+ * 能正常写出缓存、却在免计费复核这步被判成「target 非法」——
+ * 症状很隐蔽：会员升级那一次白白多算一次生成额度，日志里什么都没有。
+ */
+const MAX_KEY_LEN = 120
+
+/**
+ * 刷新的每日上限（P2-30）。**必须与端上 `src/utils/cache.ts#DAILY_REFRESH_LIMIT` 同源**。
+ *
+ * 以前这个数字只在端上判：`tallyRefreshQuota` 把云端计数取回来自己比一遍。同一份业务规则
+ * 存两个副本就有两个真相 —— 端上那份可被改包改掉，而云端连「越界的尝试」都不会留痕。
+ * 现在判定由本函数给出（回报 `limit` / `allowed`），端上直接采用、不再本地算数。
+ *
+ * ⚠ 本函数仍然**只记账、只判定，不阻断调用**：真正的硬顶是 aiProxy 强判的 `generate` 池
+ *   （3/日）—— 刷新一次报告要过一次生成配额，改包也绕不过去。本判定的作用是「让限制只有
+ *   一个真相，并让越界尝试在云端日志里留痕」。
+ */
+const REFRESH_DAILY_LIMIT = 10
+
+/**
+ * 只有 `refresh` 有服务端判定；`generate` / `ask` 的限额在 aiProxy 入口（见文件头）。
+ * 返回 `{}` 表示「本类配额没有服务端上限」，调用方用 Object.assign 挂上去即可。
+ */
+function judgeLimit(kind, count) {
+  if (kind !== 'refresh') return {}
+  return { limit: REFRESH_DAILY_LIMIT, allowed: count <= REFRESH_DAILY_LIMIT }
+}
+
+/** target 只用于 doc(id) 取值：禁掉路径分隔符，限定长度（与写口同源） */
 function validTargetKey(target) {
-  return typeof target === 'string' && target !== '' && target.length <= 64 && !target.includes('/')
+  return typeof target === 'string' && target !== '' && target.length <= MAX_KEY_LEN && !target.includes('/')
 }
 
 async function memberUpgradeWaived(openid, target) {
@@ -208,7 +238,8 @@ exports.main = async (event) => {
 
   try {
     if (action === 'peek') {
-      return { ok: true, kind, date, count: await readCount(table, id) }
+      const peeked = await readCount(table, id)
+      return Object.assign({ ok: true, kind, date, count: peeked }, judgeLimit(kind, peeked))
     }
     if (action !== 'consume') {
       return { ok: false, error: `未知 action：${action}（支持 consume / peek）` }
@@ -229,7 +260,10 @@ exports.main = async (event) => {
     }
 
     const r = await incr(table, id, openid)
-    return { ok: true, kind, date, count: r.count, created: r.created, waived: false }
+    return Object.assign(
+      { ok: true, kind, date, count: r.count, created: r.created, waived: false },
+      judgeLimit(kind, r.count)
+    )
   } catch (err) {
     return { ok: false, error: `配额写入失败：${err instanceof Error ? err.message : String(err)}` }
   }

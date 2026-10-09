@@ -338,10 +338,24 @@ function toApiIndex(item) {
   }
 }
 
-/** 判「索引已存在」：接口不返回结构化冲突码，只能按 errmsg 识别（**启发式**，拿不准就如实上报） */
-function looksLikeExists(res) {
+/**
+ * 判一次「建索引」的结果（P2-33）。
+ *
+ * 这个接口不返回结构化冲突码，只能按 errmsg 认。但**认不出来时绝不能猜成「已在位」**：
+ * 把一条真失败记成 `exists`，运维看着巡检报告会以为索引齐了，而缺掉的索引会让相关查询
+ * 静默退化成全表扫（正是本函数最该防的那类问题）。故口径收窄成三档：
+ *   · 命中明确的「已存在 / 重复」措辞 ⇒ 'exists'（真的在位）
+ *   · 其它一律 ⇒ 'unknown'（拿不准，附原始 errcode/errmsg 让人定夺）
+ *
+ * 刻意**不再**匹配「冲突」「重复」这类宽泛词：errmsg 里出现它们的其它错误（参数校验、
+ * 字段类型不符等）会被误判成「已在位」，那才是真正危险的方向。
+ */
+function indexAttemptAction(res) {
   const msg = String((res && (res.errmsg || res.message)) || '')
-  return /exist|exist_|已存在|duplicate|重复|冲突/i.test(msg)
+  if (/already\s*exists|index\s+exist|索引.{0,6}已存在|already\s*exist|duplicate\s*key|DuplicateKey/i.test(msg)) {
+    return 'exists'
+  }
+  return 'unknown'
 }
 
 async function callUpdateIndex(env, name, createIndexes, dropIndexes, token) {
@@ -403,14 +417,20 @@ async function syncIndexes(defs, event, apply, token, env) {
           items.push(
             one.errcode === 0
               ? { name: idx.name, action: 'created' }
-              : { name: idx.name, action: looksLikeExists(one) ? 'exists' : 'error', errcode: one.errcode, errmsg: one.errmsg }
+              : { name: idx.name, action: indexAttemptAction(one), errcode: one.errcode, errmsg: one.errmsg }
           )
         } catch (err) {
           items.push({ name: idx.name, action: 'error', error: err instanceof Error ? err.message : String(err) })
         }
       }
     }
-    results.push({ collection: def.name, indexes: items })
+    /* 有「拿不准」的条目就顶到这一层的顶层，否则它会埋在几十条 indexes 里没人看（P2-33） */
+    const unsure = items.filter((i) => i.action === 'unknown')
+    results.push(
+      unsure.length
+        ? { collection: def.name, indexes: items, needs_review: unsure.map((i) => i.name) }
+        : { collection: def.name, indexes: items }
+    )
   }
   return results
 }
@@ -427,7 +447,29 @@ function gateWrites(action, event) {
   return null
 }
 
+/**
+ * 入口：**必须有最外层 try/catch**（P2-34）。
+ *
+ * `currentEnv()` 取不到环境 ID 时会主动抛错，它的注释写着「由 main 的 try/catch 转成返回体」——
+ * 而此前 main 根本没有这一层，于是本该是「一句可读的返回体」的东西变成了函数抛异常：在控制台
+ * 只看到调用失败，看不到到底缺哪个环境变量。工具类函数尤其不该这样：它的输出就是它的产品。
+ */
 exports.main = async (event = {}) => {
+  try {
+    return await runDbInit(event)
+  } catch (err) {
+    const msg = (err && err.errMsg) || (err && err.message) || String(err)
+    console.warn(`[dbInit] 巡检中断：${msg}`)
+    return {
+      ok: false,
+      error: msg,
+      hint: '若提示缺环境 ID：显式传 {"action":"report","env":"<环境ID>"}，或给云函数配 TCB_ENV'
+    }
+  }
+}
+
+/** 巡检主体：正常逻辑都写在这里，异常由上面的入口统一转成返回体 */
+async function runDbInit(event) {
   const action = String(event.action || 'report')
   if (!['report', 'init', 'fields', 'indexes', 'sync'].includes(action)) {
     return { ok: false, error: `未知 action：${action}`, allowed: ['report', 'init', 'fields', 'indexes', 'sync'] }

@@ -91,6 +91,15 @@ function createDb(opts = {}) {
   /** 故障注入：集合名 -> true 时该集合所有读写抛错（模拟权限未开 / 表没建） */
   const failing = new Set()
   /**
+   * 故障注入（P1-10）：集合名 -> true 时**只让读抛错**，写照常成功。
+   *
+   * 用来复刻「读库瞬时失败」这一种情形 —— 它必须与「行不存在」区分开：旧写法用
+   * `doc().get()` + `catch → null` 把两者都吞成「没有行」，于是发货路径会拿镜像重算有效期、
+   * 并把 `refunded_orders` 名单当作空来覆盖，等于把幂等凭据清掉。`__setFailing` 读写一起断，
+   * 测不出这个差别（读失败时后面的写也失败，两种写法都返回非 0）。
+   */
+  const readFailing = new Set()
+  /**
    * V-1（2026-10-09）：doc(id).update() 打到**不存在的行**，真实 wx-server-sdk 是返回
    * stats.updated===0 还是直接抛错，尚无真机结论。本 mock 默认复刻前者（返回 0），
    * 打开这个开关则复刻后者（抛错）—— 好让「抛错」这一支的代码路径也能被跑到。
@@ -102,6 +111,16 @@ function createDb(opts = {}) {
   const guard = (name) => {
     if (failing.has(name)) {
       throw Object.assign(new Error(`mock: 集合 ${name} 不可用（权限未开或集合不存在）`), {
+        errCode: -502001
+      })
+    }
+  }
+
+  /** 只拦读（见 readFailing 说明）：写仍走 guard，故该集合可读失败而写成功 */
+  const guardRead = (name) => {
+    guard(name)
+    if (readFailing.has(name)) {
+      throw Object.assign(new Error(`mock: 集合 ${name} 读取失败（故障注入，写不受影响）`), {
         errCode: -502001
       })
     }
@@ -137,7 +156,7 @@ function createDb(opts = {}) {
     field() { return this }
 
     async get() {
-      guard(this.name)
+      guardRead(this.name)
       stats.getCalls++
       let rows = [...coll(this.name).values()].filter((d) => matchDoc(d, this._where))
       for (const [f, dir] of this._orders.slice().reverse()) {
@@ -154,7 +173,7 @@ function createDb(opts = {}) {
     }
 
     async count() {
-      guard(this.name)
+      guardRead(this.name)
       const n = [...coll(this.name).values()].filter((d) => matchDoc(d, this._where)).length
       return { total: n, errMsg: 'collection.count:ok' }
     }
@@ -208,7 +227,7 @@ function createDb(opts = {}) {
     }
 
     async get() {
-      guard(this.name)
+      guardRead(this.name)
       const d = coll(this.name).get(this.id)
       if (!d) {
         throw Object.assign(new Error(`mock: document.get:fail not exists (${this.id})`), { errCode: -1 })
@@ -256,9 +275,11 @@ function createDb(opts = {}) {
     __seed(name, docs) { for (const d of docs) coll(name).set(String(d._id), clone(d)) },
     /** 故障注入：该集合的读写全部抛错 */
     __setFailing(name, on) { if (on) failing.add(name); else failing.delete(name) },
+    /** 故障注入（P1-10）：只让该集合的**读**抛错，写照常成功 —— 区分「读失败」与「行不存在」 */
+    __setReadFailing(name, on) { if (on) readFailing.add(name); else readFailing.delete(name) },
     /** V-1：让 doc(id).update() 打到不存在的行时抛错（复刻另一种真机可能行为） */
     __setMissingDocUpdateThrows(on) { missingDocUpdateThrows = !!on },
-    __reset() { tables.clear(); seq = 0; failing.clear(); missingDocUpdateThrows = false },
+    __reset() { tables.clear(); seq = 0; failing.clear(); readFailing.clear(); missingDocUpdateThrows = false },
     database() {
       return {
         collection: (name) => new Query(name, null),

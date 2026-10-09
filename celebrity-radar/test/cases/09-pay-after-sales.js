@@ -461,6 +461,116 @@ describe('payCallback 定时对账（payReconcile）', () => {
     eq(res.revoked, 1, '同一轮里的退款单不受影响 —— 一条坏不该拖垮整轮')
     eq(order('G1').status, 'granting', 'G1 原样留在 granting，等下一轮')
   })
+
+  /* ───── 复审批次（P2-23 / P2-24，2026-10-09）：对账的「覆盖面」与「队列公平」 ───── */
+
+  it('P2-23：镜像对账按「最久未校验」轮转，不会只固守前 100 行', async () => {
+    const fn = loadFn()
+    const truth = ahead(10 * DAY_MS)
+    const N = 25 /* 故意大于内存 DB 单次 get 的 20 行上限：一轮读不全，只能靠轮转补上 */
+
+    const members = []
+    const users = []
+    for (let i = 0; i < N; i++) {
+      const id = `m${i}`
+      members.push({ _id: id, _openid: id, plan: 'month', expires_at: truth, last_order_id: `T${i}` })
+      /* 端上把自己那一行改成免费（镜像漂移）：只有被轮转到才会拉齐 */
+      users.push({
+        _id: `row-${id}`,
+        _openid: id,
+        membership: { plan: 'free', expires_at: null, last_order_id: null }
+      })
+    }
+    env.db.__seed('memberships', members)
+    env.db.__seed('users', users)
+
+    const first = await fn.main(timerEvent())
+    const second = await fn.main(timerEvent())
+
+    eq(
+      first.mirrors + second.mirrors,
+      N,
+      `两轮必须覆盖全部 ${N} 个会员 —— 裸 limit 时第二轮还在扫同一批，后面的人永远修不到`
+    )
+    const fixed = env.db.__dump('users').filter((u) => u.membership && u.membership.plan === 'month')
+    eq(fixed.length, N, '被改坏的镜像全部被拉回权威值')
+  })
+
+  it('P2-24：已结清的历史退款单不再占满队列，新的退款单扫得到', async () => {
+    const fn = loadFn()
+    const future = ahead(100 * DAY_MS)
+    const done = []
+    for (let i = 0; i < 21; i++) {
+      done.push(
+        makeOrder({
+          _id: `OLD${i}`,
+          status: 'refunded',
+          granted_at: '2026-09-01T00:00:02.000Z',
+          refunded_at: '2026-09-02T00:00:00.000Z',
+          refund_revoked_at: '2026-09-02T00:00:01.000Z' /* 早就撤完并标记过 */
+        })
+      )
+    }
+    env.db.__seed('orders', [
+      ...done,
+      makeOrder({
+        _id: 'NEW1',
+        status: 'refunded',
+        granted_at: '2026-10-01T00:00:02.000Z',
+        refunded_at: '2026-10-05T00:00:00.000Z',
+        refund_revoked_at: null
+      })
+    ])
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: future, last_order_id: 'NEW1' }
+    ])
+    env.db.__seed('users', [
+      makeUser({ membership: { plan: 'month', expires_at: future, last_order_id: 'NEW1' } })
+    ])
+
+    const res = await fn.main(timerEvent())
+
+    eq(res.refunded, 1, '候选里必须只有「还没撤销」的那一条（21 条历史单不许把名额占满）')
+    eq(res.revoked, 1, '新退款单必须被扣减 —— 原先它排在 21 条已结清单之后，永远轮不到')
+    ok(order('NEW1').refund_revoked_at, '结清后打标记')
+  })
+
+  it('P2-24：自动补救达到上限的单不再重试（转人工），避免坏单堵住队列', async () => {
+    const fn = loadFn()
+    env.db.__seed('orders', [
+      makeOrder({
+        _id: 'BAD1',
+        status: 'granting',
+        paid_at: ago(3 * 60 * 60 * 1000),
+        reconcile_attempts: 5 /* 已到 MAX_RECONCILE_ATTEMPTS */
+      })
+    ])
+    env.db.__seed('users', [makeUser()])
+
+    const res = await fn.main(timerEvent())
+
+    eq(res.granted, 0, '试满上限就不再自动重试')
+    eq(res.stuck, 1, '要把它单独计数出来（skipped 里混着「窗口内」这种正常跳过）')
+    ok(res.skipped.some((s) => s.indexOf('BAD1') === 0 && /人工/.test(s)))
+    eq(order('BAD1').status, 'granting', '订单状态交给人工，不自动改')
+  })
+
+  it('P2-24：补发货失败会累加 reconcile_attempts（下次排到队尾去）', async () => {
+    const fn = loadFn()
+    env.db.__seed('orders', [
+      makeOrder({
+        _id: 'G2',
+        status: 'granting',
+        paid_at: ago(2 * 60 * 60 * 1000),
+        _openid: 'u-missing' /* users 行不存在 ⇒ 一定失败 */
+      })
+    ])
+
+    await fn.main(timerEvent())
+
+    eq(order('G2').reconcile_attempts, 1, '失败一次记一次 —— 没有这个计数，坏单会把前 20 个名额吃光')
+    eq(order('G2').status, 'granting', '仍然留在 granting 等下一轮（有界重试）')
+  })
 })
 
 /* ─────────────────── 定时任务的调用方闸门（P0-21 的另一半） ─────────────────── */
@@ -495,6 +605,176 @@ function loadTimerFn(name, openid) {
   try {
     delete require.cache[require.resolve(file)]
     return require(file)
+  } finally {
+    Module.prototype.require = orig
+  }
+}
+
+/* ───────────── 批次 9（2026-10-09）：P2-28 / P2-31 / P2-32 / P2-35 ───────────── */
+
+/** 假上游：按顺序吐出预置响应，并记下每次请求体（与 07 同形） */
+function fakeHttps(responses) {
+  const calls = []
+  const module = {
+    request(options, cb) {
+      const chunks = []
+      const req = {
+        on() {
+          return req
+        },
+        write(c) {
+          chunks.push(c)
+        },
+        end() {
+          const raw = chunks.join('')
+          let body = raw
+          try {
+            body = JSON.parse(raw)
+          } catch (e) {
+            /* 保持原样：这里只关心业务请求体 */
+          }
+          calls.push({ path: options.path, body })
+          const r = responses.length ? responses.shift() : { status: 200, data: {} }
+          const res = {
+            statusCode: r.status,
+            setEncoding() {},
+            on(ev, fn) {
+              if (ev === 'data') fn(typeof r.data === 'string' ? r.data : JSON.stringify(r.data))
+              if (ev === 'end') fn()
+              return res
+            }
+          }
+          cb(res)
+        },
+        destroy() {}
+      }
+      return req
+    }
+  }
+  return { module, calls }
+}
+
+const searchOk = (n = 2) => ({
+  status: 200,
+  data: {
+    code: 200,
+    data: {
+      webPages: {
+        value: Array.from({ length: n }, (_, i) => ({
+          name: `t${i}`,
+          url: `https://news.example.com/${i}`,
+          snippet: '正文'
+        }))
+      }
+    }
+  }
+})
+
+const chatOk = (content) => ({ status: 200, data: { choices: [{ message: { content }, finish_reason: 'stop' }] } })
+
+/**
+ * 加载一个定时任务云函数，并注入假 https 与可编程的推送结果。
+ * `opts.env` 合并进 process.env；`opts.push(args)` 决定 `cloud.openapi.subscribeMessage.send` 的行为。
+ * 返回 `{ fn, calls }`（calls 是上游请求记录，用来断言「打了几次上游」）。
+ */
+function loadTimerFnWithHttps(name, responses, opts) {
+  env.resetAll()
+  callerOpenid = ''
+  delete process.env.BOCHA_API_KEY
+  delete process.env.ALERT_TEMPLATE_ID
+  delete process.env.SUBSCRIBE_TEMPLATE_ID
+  delete process.env.RISK_TEMPLATE_ID
+  if (opts && opts.env) Object.assign(process.env, opts.env)
+
+  const db = env.db.database()
+  const fake = {
+    DYNAMIC_CURRENT_ENV: 'test-env',
+    init() {},
+    database: () => db,
+    getWXContext: () => ({}),
+    openapi: {
+      subscribeMessage: {
+        send: (args) => ((opts && opts.push) || (() => Promise.resolve({ errCode: 0 })))(args)
+      }
+    }
+  }
+  const http = fakeHttps(responses)
+  const file = path.resolve(__dirname, '..', '..', 'cloudfunctions', name, 'index.js')
+  const orig = Module.prototype.require
+  Module.prototype.require = function (id) {
+    if (id === 'wx-server-sdk') return fake
+    if (id === 'https') return http.module
+    return orig.apply(this, arguments)
+  }
+  try {
+    delete require.cache[require.resolve(file)]
+    return { fn: require(file), calls: http.calls }
+  } finally {
+    Module.prototype.require = orig
+  }
+}
+
+/**
+ * P2-35：加载 payCallback，但把 memberships 的**批量读**（带 orderBy 的那条，就是对账的批量快照）
+ * 第一次返回「过期快照」，而按 `_id` 重读（readMembership）返回真值。
+ * 复刻「批量读到逐行写之间有真实时间差」这一种情形。
+ */
+function loadFnWithStaleMirrorSnapshot(staleRow) {
+  env.resetAll()
+  let batchServed = false
+  const real = env.db.database()
+
+  const wrapQuery = (q, isBatch) =>
+    new Proxy(q, {
+      get(t, p) {
+        if (p === 'orderBy' || p === 'limit' || p === 'skip' || p === 'where' || p === 'field') {
+          return (...a) => wrapQuery(t[p](...a), p === 'orderBy' ? true : isBatch)
+        }
+        if (p === 'get') {
+          return async (...a) => {
+            if (isBatch && !batchServed) {
+              batchServed = true
+              return { data: [Object.assign({}, staleRow)], errMsg: 'mock: batch(stale)' }
+            }
+            return t.get(...a)
+          }
+        }
+        const v = t[p]
+        return typeof v === 'function' ? v.bind(t) : v
+      }
+    })
+
+  const memberships = new Proxy(real.collection('memberships'), {
+    get(t, p) {
+      if (p === 'orderBy') return (...a) => wrapQuery(t.orderBy(...a), true)
+      if (p === 'where') return (...a) => wrapQuery(t.where(...a), false)
+      const v = t[p]
+      return typeof v === 'function' ? v.bind(t) : v
+    }
+  })
+
+  const db = new Proxy(real, {
+    get(t, p) {
+      if (p === 'collection') return (name) => (name === 'memberships' ? memberships : t.collection(name))
+      const v = t[p]
+      return typeof v === 'function' ? v.bind(t) : v
+    }
+  })
+
+  const fake = {
+    DYNAMIC_CURRENT_ENV: 'test-env',
+    init() {},
+    database: () => db,
+    getWXContext: () => ({})
+  }
+  const orig = Module.prototype.require
+  Module.prototype.require = function (id) {
+    if (id === 'wx-server-sdk') return fake
+    return orig.apply(this, arguments)
+  }
+  try {
+    delete require.cache[require.resolve(FN)]
+    return require(FN)
   } finally {
     Module.prototype.require = orig
   }
@@ -588,5 +868,177 @@ describe('定时推送翻页取全表（P2-11）', () => {
     )
     ok(schema.includes('idx_alert_ok'), 'keywordAlert 按 alert_ok 取人')
     ok(schema.includes('idx_risk_ok'), 'riskWatch 按 risk_ok 取人')
+  })
+})
+
+/*
+ * P2-35：对账的批量快照过期时不得用旧值覆盖镜像（写前按 _id 重读权威）。
+ * 场景：批量读到的权威还是 5 天，而真正写之前权威已被改成 10 天（有人刚补货 / 刚退款）。
+ */
+describe('P2-35 对账批量快照过期', () => {
+  it('批量读到逐行写之间有真实时间差：以重读到的权威为准，不写快照里的旧值', async () => {
+    const staleExp = ahead(5 * DAY_MS)
+    const truth = ahead(10 * DAY_MS)
+    const fn = loadFnWithStaleMirrorSnapshot({
+      _id: 'u1',
+      _openid: 'u1',
+      plan: 'month',
+      expires_at: staleExp,
+      last_order_id: 'T1'
+    })
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: truth, last_order_id: 'T1' }
+    ])
+    env.db.__seed('users', [makeUser({ membership: { plan: 'free', expires_at: null, last_order_id: null } })])
+
+    const res = await fn.main(timerEvent())
+
+    eq(res.mirrors, 1)
+    eq(membership().plan, 'month')
+    eq(
+      membership().expires_at,
+      truth,
+      '必须写重读到的真值 —— 写快照里的旧值，端上就会显示一个权威已经否掉的有效期'
+    )
+  })
+})
+
+/*
+ * P2-28：推送必须排在写回 feed_cache 之前。
+ * 否则「写回成功 + 推送失败」会被记成「这批已经推过了」，那个用户**永远**收不到这条。
+ */
+describe('P2-28 推送先于写回 feed_cache', () => {
+  it('某个用户推送瞬时失败：人物缓存本轮不写回，下一轮仍能补推（不再永久漏推）', async () => {
+    const responses = [searchOk(2), searchOk(2)]
+    let u2Fails = 1
+    const push = (args) => {
+      if (args.touser === 'openid-u2' && u2Fails > 0) {
+        u2Fails--
+        return Promise.reject(Object.assign(new Error('send fail'), { errMsg: 'system error' }))
+      }
+      return Promise.resolve({ errCode: 0 })
+    }
+    const { fn } = loadTimerFnWithHttps('notifyFollowUpdates', responses, {
+      env: { BOCHA_API_KEY: 'bocha-test', SUBSCRIBE_TEMPLATE_ID: 'tmpl-test' },
+      push
+    })
+    const oldFetched = ago(25 * 60 * 60 * 1000)
+    env.db.__seed('users', [
+      { _id: 'row-u1', _openid: 'openid-u1', subscribe_ok: true },
+      { _id: 'row-u2', _openid: 'openid-u2', subscribe_ok: true }
+    ])
+    env.db.__seed('follows', [
+      { _id: 'openid-u1#张三#tech', openid: 'openid-u1', person_key: '张三#tech', name: '张三' },
+      { _id: 'openid-u2#张三#tech', openid: 'openid-u2', person_key: '张三#tech', name: '张三' }
+    ])
+    env.db.__seed('feed_cache', [
+      {
+        _id: '张三#tech',
+        items: [{ title: 'old', url: 'https://news.example.com/0', content: 'c', source: 's' }],
+        fetched_at: oldFetched
+      }
+    ])
+
+    const first = await fn.main()
+
+    eq(first.ok, true)
+    eq(first.pushed, 1, 'u1 收到、u2 瞬时失败')
+    const feed1 = env.db.__dump('feed_cache')[0]
+    eq(feed1.items.length, 1, '有人没送达就不能写回 —— 写回等于宣布「这批推过了」')
+    eq(feed1.fetched_at, oldFetched, '缓存时间戳也不动，下一轮还会重新 diff 出这条')
+
+    const second = await fn.main()
+
+    eq(second.pushed, 1, '第二轮 u2 终于收到 —— 证明那份「没送达」被保住了')
+    eq(env.db.__dump('feed_cache')[0].items.length, 2, '全部送达后才写回')
+  })
+})
+
+/*
+ * P2-31：超长关键词整行忽略（否则上游检索被这种句子吃掉预算，每个人都被拖慢）。
+ */
+describe('P2-31 超长关键词整行忽略', () => {
+  it('超过 12 字的词不打上游，并把 invalid 计数报回来', async () => {
+    const { fn, calls } = loadTimerFnWithHttps('keywordAlert', [searchOk(1)], {
+      env: { BOCHA_API_KEY: 'bocha-test' }
+    })
+    const longWord = '这是一个非常非常长的关键词超过十二个字了'
+    env.db.__seed('keyword_watches', [
+      { _id: `u1#${longWord}`, openid: 'u1', keyword: longWord, type: 'keyword' },
+      { _id: 'u1#雷军', openid: 'u1', keyword: '雷军', type: 'keyword' }
+    ])
+
+    const res = await fn.main()
+
+    eq(res.invalid, 1, '超长词要单独计数（恒为 0 才「正常」就说明没人看这个数）')
+    ok(res.skipped.some((s) => String(s).includes('超过 12 字')), `实际：${JSON.stringify(res.skipped)}`)
+    eq(calls.length, 1, '只该为「雷军」打一次上游')
+    eq(calls[0].body.query, '雷军')
+  })
+
+  it('全是超长词时直接收工：keywords=0 且一次上游都不打', async () => {
+    const { fn, calls } = loadTimerFnWithHttps('keywordAlert', [searchOk(1)], {
+      env: { BOCHA_API_KEY: 'bocha-test' }
+    })
+    const longWord = 'x'.repeat(20)
+    env.db.__seed('keyword_watches', [
+      { _id: `u1#${longWord}`, openid: 'u1', keyword: longWord, type: 'keyword' }
+    ])
+
+    const res = await fn.main()
+
+    eq(res.keywords, 0)
+    eq(res.invalid, 1)
+    eq(calls.length, 0)
+  })
+})
+
+/*
+ * P2-32：热榜构建锁 —— 定时器与手动刷新可能同时进来，两边都做完整轮检索 + 生成就是纯浪费，
+ * 且后写的会覆盖先写的。持锁者让出，死锁（超过 TTL）自动被清掉重抢。
+ */
+describe('P2-32 热榜构建锁', () => {
+  const hotItems = () => {
+    const codes = ['tech', 'internet', 'business', 'finance', 'auto', 'ent']
+    return Array.from({ length: 24 }, (_, i) => ({
+      name: `人物${i}`,
+      domain: codes[i % codes.length],
+      tag: '动态',
+      trend: '近期在做什么'
+    }))
+  }
+
+  it('锁被持有（新鲜的 building 行）：本轮直接让出，一次上游都不打', async () => {
+    const { fn, calls } = loadTimerFnWithHttps('hotBoardRefresh', [], {
+      env: { BOCHA_API_KEY: 'bocha-test', DEEPSEEK_API_KEY: 'llm-test' }
+    })
+    env.db.__seed('hot_board', [{ _id: 'building', at: new Date().toISOString() }])
+
+    const res = await fn.main({ action: 'run' })
+
+    eq(res.ok, true)
+    eq(res.skipped, 'building', '同时进来的第二个实例应当让出，而不是再烧一遍检索与生成')
+    eq(calls.length, 0)
+  })
+
+  it('死锁（超过 TTL 的 building 行）被清掉重抢，构建成功后放锁', async () => {
+    const responses = [
+      searchOk(3), searchOk(3), searchOk(3), searchOk(3), searchOk(3), searchOk(3),
+      searchOk(3), searchOk(3), searchOk(3), searchOk(3), searchOk(3), searchOk(3),
+      chatOk(JSON.stringify({ items: hotItems() }))
+    ]
+    const { fn } = loadTimerFnWithHttps('hotBoardRefresh', responses, {
+      env: { BOCHA_API_KEY: 'bocha-test', DEEPSEEK_API_KEY: 'llm-test' }
+    })
+    env.db.__seed('hot_board', [{ _id: 'building', at: ago(10 * 60 * 1000) }])
+
+    const res = await fn.main({ action: 'run' })
+
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.count, 24)
+    const rows = env.db.__dump('hot_board')
+    const board = rows.find((r) => r._id === 'latest')
+    ok(board && board.items.length === 24, '榜单要落库')
+    notOk(rows.some((r) => r._id === 'building'), '成功后放锁 —— 否则下一轮会一直撞在这把锁上')
   })
 })

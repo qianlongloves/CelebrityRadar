@@ -29,8 +29,14 @@ type StoreReply =
   | { kind: 'rejected' }
   | { kind: 'unavailable' }
 
-/** 写口明确拒绝的 kind 名单：这些是「请求本身有问题」，不适用回退 */
-const REJECTED_KINDS = ['auth', 'badrequest', 'lock', 'abuse']
+/**
+ * 写口明确拒绝的 kind 名单：这些是「请求本身有问题」，不适用回退。
+ *
+ * `lock` 是「没抢到/已被接管的锁」，`abuse` 是写口限速，`auth` / `badrequest` 是入参或身份，
+ * `stale`（P1-9）是「既有版本含会员段、不接受把它覆盖成不含会员段」——
+ * 它必须在这里：落到 `unavailable` 就会**回退端上直写**，正好把云端刚拦下的那次覆盖写进去。
+ */
+const REJECTED_KINDS = ['auth', 'badrequest', 'lock', 'abuse', 'stale']
 
 async function callStore(payload: Record<string, unknown>): Promise<StoreReply> {
   let res: unknown

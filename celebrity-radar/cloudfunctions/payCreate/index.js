@@ -17,6 +17,8 @@
  *   { action: 'plans' }        只读下发套餐清单（**不需要**商户号，端上渲染价格用）
  *   { plan: '<id>' }           下单：{ ok:true, outTradeNo, amountFen, days, payment }
  *                              payment 直接透传给 `wx.requestPayment`
+ *                              窗口内重复点击会**复用同一张未付单**（返回 `reused:true`，
+ *                              payment 与上次同一份），见 PENDING_REUSE_MS 的说明。
  * 失败统一返回 { ok:false, kind?, error }。
  */
 const cloud = require('wx-server-sdk')
@@ -103,6 +105,50 @@ async function markFailed(outTradeNo) {
   }
 }
 
+/**
+ * 未付订单的复用窗口（P2-27）。
+ *
+ * 以前每次点击都无条件建一张新单：「我的」页连点两下、或端上失败重试，就会造出两张
+ * `pending` 单，两张都能各拿到一份支付参数 ⇒ 用户可能被扣两次（两次都发货 ⇒ 天数翻倍）。
+ * 微信侧一个 `outTradeNo` 只能下一次单，所以要防的不是「同一张单重复回调」（那条由
+ * `last_order_id` 去重兜着），而是**别造出第二张单**。
+ *
+ * 做法：把 unifiedOrder 拿到的 `payment` 参数落回订单行，窗口内再次下单时**原样再下发一次**
+ * 同一份参数（JSAPI 的 prepay_id 有效 2 小时，可以重复展示收银台），于是连点只会看到同一个
+ * 收银台。取 10 分钟：够覆盖「连点 + 手滑返回再点」，又远短于 prepay 有效期。
+ */
+const PENDING_REUSE_MS = 10 * 60 * 1000
+
+/** 近期未付单：同人同档、已拿到支付参数、且还在复用窗口内；无匹配返回 null */
+async function findReusablePending(openid, planId) {
+  try {
+    const res = await db
+      .collection('orders')
+      .where({ _openid: openid, plan: planId, status: 'pending' })
+      .orderBy('created_at', 'desc')
+      .limit(5)
+      .get()
+    const now = Date.now()
+    for (const o of res.data || []) {
+      if (!o || !o.payment) continue
+      const t = Date.parse(o.created_at || '')
+      if (Number.isFinite(t) && now - t < PENDING_REUSE_MS) return o
+    }
+  } catch (err) {
+    /* 复用只是「省一张单」：读不到就照常新建，绝不能因此下不了单 */
+  }
+  return null
+}
+
+/** 把支付参数落回订单行（best-effort）：让下一次点击能复用同一张单 */
+async function savePaymentParams(outTradeNo, payment) {
+  try {
+    await db.collection('orders').doc(outTradeNo).update({ data: { payment } })
+  } catch (err) {
+    /* 少了一次复用机会而已，不阻断下单 */
+  }
+}
+
 exports.main = async (event) => {
   const ctx = cloud.getWXContext() || {}
   const openid = ctx.OPENID
@@ -156,6 +202,20 @@ exports.main = async (event) => {
     }
   }
 
+  /* P2-27：连点/重试先看有没有可复用的未付单 —— 有就原样再下发一次，不建第二张单 */
+  const reusable = await findReusablePending(openid, planId)
+  if (reusable) {
+    return {
+      ok: true,
+      outTradeNo: reusable._id,
+      plan: planId,
+      amountFen: plan.priceFen,
+      days: plan.days,
+      payment: reusable.payment,
+      reused: true
+    }
+  }
+
   const outTradeNo = buildTradeNo()
   try {
     await db.collection('orders').add({
@@ -199,6 +259,9 @@ exports.main = async (event) => {
       const detail = (res && (res.returnMsg || res.errCodeDes || res.resultCode)) || '云支付未返回支付参数'
       return { ok: false, kind: 'upstream', error: `微信支付下单失败：${detail}` }
     }
+
+    /* 落回支付参数，供下次点击复用（P2-27） */
+    await savePaymentParams(outTradeNo, res.payment)
 
     return {
       ok: true,

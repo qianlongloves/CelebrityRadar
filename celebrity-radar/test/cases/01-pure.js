@@ -114,6 +114,33 @@ describe('时间工具 utils/time', () => {
     eq(time.formatDay('2026-10-07T10:00:00.000Z'), dayjs('2026-10-07T10:00:00.000Z').format('YYYY-MM-DD'))
     eq(time.formatDate('2026-10-07T10:00:00.000Z'), dayjs('2026-10-07T10:00:00.000Z').format('YYYY-MM-DD HH:mm'))
   })
+
+  /*
+   * P2-36（2026-10-09）：展示层的日期必须与数据同口径 —— 上游 `publishedDate` / 云端的
+   * `first_seen_at` / `generated_at` 全按 UTC+8 产出，而页面原先用 `getMonth()/getDate()`
+   * （设备本地）算「今天」徽标与短日期标签。同一份数据在不同用户的手机上因此得出不同结论，
+   * 且只在跨日那几小时显形 —— 用户只会以为数据错了。下面把边界钉在 UTC+8 的 00:00。
+   */
+  it('dayKey8 / shortDay8：按 UTC+8 取日历日（16:00Z 即换日）', () => {
+    eq(time.dayKey8('2026-10-09T15:59:00Z'), '2026-10-09', 'UTC+8 23:59 仍是当天')
+    eq(time.dayKey8('2026-10-09T16:00:00Z'), '2026-10-10', 'UTC+8 00:00 已换日（设备时区不该参与）')
+    eq(time.shortDay8('2026-10-09T17:00:00Z'), '10-10')
+    eq(time.dayKey8('不是日期'), '', '不可解析返回空串，调用方好判空')
+    eq(time.shortDay8(''), '')
+  })
+
+  it('sameDay8：跨 UTC+8 零点不算同一天，坏输入一律 false', () => {
+    ok(time.sameDay8('2026-10-09T15:59:00Z', '2026-10-09T16:00:00Z') === false)
+    ok(time.sameDay8('2026-10-09T16:00:00Z', '2026-10-09T17:00:00Z') === true)
+    notOk(time.sameDay8('2026-10-09T16:00:00Z', '坏时间'))
+  })
+
+  it('formatMoment8 / todayLabel8：MM-DD HH:mm 与「M月D日·周X」都按 UTC+8', () => {
+    eq(time.formatMoment8('2026-10-09T17:05:00Z'), '10-10 01:05')
+    eq(time.formatMoment8('坏时间'), '')
+    /* 2026-10-09 是周五 ⇒ UTC+8 次日 10-10 是周六 */
+    eq(time.todayLabel8(new Date('2026-10-09T17:00:00Z')), '10月10日 · 周六')
+  })
 })
 
 describe('敏感词一级拦截 utils/sensitive', () => {

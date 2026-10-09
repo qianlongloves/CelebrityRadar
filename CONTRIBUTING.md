@@ -37,7 +37,7 @@ npm install                                          # .npmrc 已开启 legacy-p
 
 npm run dev:weapp      # 开发模式（watch，产物 dist/）
 npm run build:weapp    # 生产构建
-npm test               # 本地单测（522 条，不连云、不需要 Key）
+npm test               # 本地单测（572 条，不连云、不需要 Key）
 ```
 
 用微信开发者工具导入 `celebrity-radar/` 目录。**只想改端上逻辑时，不需要任何云端配置** ——
@@ -60,7 +60,7 @@ npm test               # 本地单测（522 条，不连云、不需要 Key）
 
 ## 四、提交前请确认（5 条）
 
-1. `npm test` 全绿（当前 **522 / 522**）
+1. `npm test` 全绿（当前 **572 / 572**）
 2. `npx tsc --noEmit` 无新增告警
 3. 主包体积仍在硬上限 2MB 内（当前约 1.3MB）—— 新增依赖前先看构建产物
 4. `src/config/local.ts` 与 `debug` 开关**不要**提交
@@ -137,7 +137,7 @@ Contributions are welcome. The essentials:
    on-device verification of the generation flow.
 3. **Branches & commits** — branch off **`master`** (`feat/`, `fix/`, `docs/`, `chore/`), follow
    [Conventional Commits](https://www.conventionalcommits.org/), one concern per commit.
-4. **Before submitting** — `npm test` green (522/522), no new `tsc --noEmit` warnings, main package still
+4. **Before submitting** — `npm test` green (572/572), no new `tsc --noEmit` warnings, main package still
    under 2MB, `src/config/local.ts` and the `debug` flags not committed, `dbInit/schema.js` updated with schema changes.
 5. **Review focus** — motivation, verification evidence, failure/degradation behavior, and comments that explain
    *why* (that is this repo's main reading material). Note the two hand-synced pairs: the provider/tier tables

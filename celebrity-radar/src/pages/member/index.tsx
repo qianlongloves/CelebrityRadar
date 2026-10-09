@@ -15,7 +15,7 @@ import {
 import type { MemberState } from '@/utils/member'
 import { loadMemberSample } from '@/utils/member-sample'
 import type { MemberSample } from '@/utils/member-sample'
-import { fromNow } from '@/utils/time'
+import { dayKey8, fromNow } from '@/utils/time'
 import {
   FALLBACK_MEMBERSHIP_PLANS,
   buyMembership,
@@ -144,12 +144,12 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
   }
 ]
 
-/** 会员到期日展示：ISO → yyyy-mm-dd（按本地时区取日期，避免 toISOString 跨时区差一天） */
+/**
+ * 会员到期日展示：ISO → yyyy-mm-dd。
+ * P2-36：按 **UTC+8** 取日期（`dayKey8`），与「我的」页、与云端到期口径一致。
+ */
 function formatDay(iso: string): string {
-  const d = new Date(iso)
-  if (!Number.isFinite(d.getTime())) return iso
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  return dayKey8(iso) || iso
 }
 
 /**

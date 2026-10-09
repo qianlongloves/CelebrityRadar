@@ -52,6 +52,7 @@ const {
   AUX_PURPOSE,
   ABUSE_TABLE,
   ABUSE_LIMITS,
+  quotaGuardDisabled,
   todayKey
 } = require('./quota.config')
 
@@ -229,14 +230,21 @@ async function bumpAbuseCount(key, openid) {
  * 拒绝体的 kind：'quota'（产品额度用完，文案与端上 utils/member.ts#quotaExhaustedMessage
  * 同构 —— 同一种「额度用完」在不同路径上应当说同一句话）与 'abuse'（触发限速）。
  * 两者都不在端上 llm.ts 的 RETRYABLE_KINDS 里 ⇒ 不重试、不点冷却，文案原样透传。
+ *
+ * 本地联调（2026-10-09 补）：`AI_PROXY_QUOTA_GUARD=off` 时两道闸都只放开**判定**、
+ * 计数照旧自增（见 quota.config.js#quotaGuardDisabled）。端上的 debug.disableGenerateQuota
+ * 只关端上那道闸，云端不认端上标记，所以联调时要两边同时放开 —— 否则会撞上
+ * 「debug 开了、生成第 4 次仍报额度用完」这种看起来像开关失效的现象。
  */
 async function quotaGate(openid, purpose, isMember) {
   const member = await isMember()
   const kind = purpose || DEFAULT_PURPOSE
   const today = todayKey()
+  /* 调试放行只跳过「判上限」，下面两道计数照常写（排查时能看到真实用量） */
+  const guardOff = quotaGuardDisabled()
 
   /* ① 产品额度：辅助调用不占额度（理由见 quota.config.js 的 AUX_PURPOSE） */
-  if (kind !== AUX_PURPOSE) {
+  if (kind !== AUX_PURPOSE && !guardOff) {
     const pool = QUOTA_POOLS[kind] || QUOTA_POOLS[DEFAULT_PURPOSE]
     const limit = member ? pool.member : pool.free
     const count = await readQuotaCount(pool.table, `${openid}#${today}`)
@@ -258,11 +266,12 @@ async function quotaGate(openid, purpose, isMember) {
    *    自增是原子的，超限的请求自己也把计数吃掉，上限才真的是硬的。
    *    计数读不到（返回 null，库抖动）时放行 —— 它限的是速，不该把写库抖动放大成
    *    「所有人都不能用」（与 readQuotaCount 按 0 放行同一哲学）。
+   *    调试放行（guardOff）时同样只跳过判定，这一步的计数照常自增。
    */
   const abuseLimit = member ? ABUSE_LIMITS.member : ABUSE_LIMITS.free
   const abuseKey = `${openid}#${today}`
   const abuseCount = await bumpAbuseCount(abuseKey, openid)
-  if (abuseCount !== null && abuseCount > abuseLimit) {
+  if (!guardOff && abuseCount !== null && abuseCount > abuseLimit) {
     return {
       ok: false,
       kind: 'abuse',
@@ -702,6 +711,8 @@ const handleReportStore = createReportStore({
   cloud,
   isActiveMember,
   bumpAbuseCount,
+  /* 与 quotaGate 共用同一枚调试开关（AI_PROXY_QUOTA_GUARD），理由见 report-store.js#storeGate */
+  quotaGuardDisabled,
   todayKey,
   failDetail
 })

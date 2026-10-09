@@ -38,6 +38,51 @@ export function todayKey(): string {
 }
 
 /**
+ * 任意时刻在 **UTC+8** 下的日历日（yyyy-mm-dd）；不可解析返回空串。
+ *
+ * P2-36：展示层同样不该跟随设备时区。以前「今天」徽标与短日期标签用
+ * `getMonth()/getDate()`（设备本地）算，于是同一份数据在不同用户的手机上得出不同结论 ——
+ * 这比「慢一天」更难解释，用户会以为是数据错了。而页面上的时间**全是**云端与上游按 UTC+8
+ * 产出的（`first_seen_at`、`publishedDate`、`generated_at`），用设备时区去衡量它本就错位。
+ *
+ * 与 `todayKey()` 同一个公式、同一个日期段，区别只在用途：那个是**配额主键**，
+ * 这些是**给人看的日期**。合在一起写，省得两处口径哪天又漂开。
+ */
+export function dayKey8(input: string | number | Date = Date.now()): string {
+  const t = input instanceof Date ? input.getTime() : typeof input === 'number' ? input : Date.parse(input)
+  if (!Number.isFinite(t)) return ''
+  return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
+/** MM-DD（UTC+8），列表项的短日期；不可解析返回空串 */
+export function shortDay8(input: string | number | Date): string {
+  const k = dayKey8(input)
+  return k ? k.slice(5) : ''
+}
+
+/** 两个时刻是否落在同一个 UTC+8 日历日；任一不可解析按「不是同一天」处理 */
+export function sameDay8(a: string | number | Date, b: string | number | Date): boolean {
+  const ka = dayKey8(a)
+  return !!ka && ka === dayKey8(b)
+}
+
+/** MM-DD HH:mm（UTC+8）：动态/告警条目的时间标签；不可解析返回空串 */
+export function formatMoment8(input: string | number | Date): string {
+  const t = input instanceof Date ? input.getTime() : typeof input === 'number' ? input : Date.parse(input)
+  if (!Number.isFinite(t)) return ''
+  const d = new Date(t + 8 * 3600 * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`
+}
+
+/** 「M月D日 · 周X」（UTC+8）：发现页顶部的今日标签 */
+export function todayLabel8(now: Date = new Date()): string {
+  const d = new Date(now.getTime() + 8 * 3600 * 1000)
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六']
+  return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日 · 周${weekdays[d.getUTCDay()]}`
+}
+
+/**
  * ISO 周标识（yyyy-Www，如 2026-W41）。
  * 周报以「自然周」为单位缓存：同一周内重复进入读本机缓存，跨周自动作废重新生成。
  */

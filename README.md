@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-522%20passing-success.svg)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-572%20passing-success.svg)](#开发与测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 人物档案 / 动态 / 语录 / 点评 / 争议与回应 / 时间线 / 名词解释…），再在端上聚合出词云、情绪走势与热度趋势。
@@ -582,7 +582,7 @@ celebrity-radar/
 │   ├── riskWatch/              # 名人风险监控（定时 09:40，拒绝端上调用）
 │   ├── hotBoardRefresh/        # 热门名人榜每日生产（定时 06:30；端上仅 ensure，force 限运维）
 │   └── dbInit/                 # 运维工具（schema.js 是库结构单一事实源）
-├── test/                       # 本地单测（9 个用例文件 / 522 条用例）
+├── test/                       # 本地单测（11 个用例文件 / 572 条用例）
 ├── config/                     # Taro 构建配置（dev / index / prod）
 ├── cloudbaserc.json            # CloudBase 部署描述（函数 + 环境变量 + 定时器）
 ├── .env.example                # 云函数部署密钥模板
@@ -641,7 +641,7 @@ celebrity-radar/
 ## 开发与测试
 
 ```bash
-npm test          # tsc 编译测试产物 + 跑全部用例（522 条，纯本地、不连云）
+npm test          # tsc 编译测试产物 + 跑全部用例（572 条，纯本地、不连云）
 npm run test:only # 跳过 tsc，直接跑
 ```
 
@@ -650,7 +650,7 @@ npm run test:only # 跳过 tsc，直接跑
 
 提交前请确认（5 条）：
 
-1. `npm test` 全绿（当前 522 / 522）
+1. `npm test` 全绿（当前 572 / 572）
 2. `npx tsc --noEmit` 无新增告警
 3. 检查小程序**主包体积**（硬上限 2MB，当前构建产物约 1.3MB）；新增依赖前先核对构建产物
 4. `src/config/local.ts` 与 `debug` 开关**不要**提交（已在 `.gitignore` 内）

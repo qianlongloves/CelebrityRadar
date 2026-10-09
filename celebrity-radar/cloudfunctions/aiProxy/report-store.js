@@ -20,12 +20,12 @@
  *   → 待旧版本覆盖率达标 → 才在控制台把两张表改成客户端不可写。
  *
  * 依赖由 index.js 注入（不自行 require wx-server-sdk）：`db` / `cloud` / `isActiveMember` /
- * `bumpAbuseCount` / `todayKey` / `failDetail` —— 全部复用 index.js 里已有的那一份，
- * 免得同一个函数里出现两套会员判定或两套计数口径。
+ * `bumpAbuseCount` / `quotaGuardDisabled` / `todayKey` / `failDetail` —— 全部复用 index.js
+ * 里已有的那一份，免得同一个函数里出现两套会员判定或两套计数口径。
  */
 
 module.exports = function createReportStore(deps) {
-  const { db, cloud, isActiveMember, bumpAbuseCount, todayKey, failDetail } = deps
+  const { db, cloud, isActiveMember, bumpAbuseCount, quotaGuardDisabled, todayKey, failDetail } = deps
   const _ = db.command
 
   /** 失联判定，**须与端上 src/utils/cache.ts#BUILDING_TIMEOUT_MS 同值** */
@@ -60,20 +60,31 @@ module.exports = function createReportStore(deps) {
 
   /**
    * 产物是否带会员专属段落。**口径须与端上 utils/member.ts#presentSections 一致**：
-   * 空串与空数组都按「不存在」处理。端上落库前已判过一次，这里是权威侧的兜底 ——
-   * 它挡的是「绕过端上直接调写口」。
+   * 两者都取「真值」（空串 / undefined / 空数组算不存在）。
+   *
+   * ⚠ 这里曾经写成 `str(mn.compare)`（trim 后判空），与端上的真值判定**不等价**：
+   * 一份 `compare: '   '`（纯空白）端上认为「有会员段」、云端认为「没有」，于是
+   * 免费档产物被当成不含会员段而放行、会员免计费复核又多算一次。措辞统一为真值判定后，
+   * 三个口径（端上 presentSections / 本函数 / quotaGuard#hasMemberBlocks）完全一致。
    */
   function hasMemberPayload(report) {
     const mn = report && report.memberNotes
-    if (mn && typeof mn === 'object' && (str(mn.compare) || str(mn.risk))) return true
+    if (mn && typeof mn === 'object' && (mn.compare || mn.risk)) return true
     const cf = report && report.conflicts
     return Array.isArray(cf) && cf.length > 0
   }
 
-  /** 写口限速：独立计数键，不与 chat / search 的额度互相挤占 */
+  /**
+   * 写口限速：独立计数键，不与 chat / search 的额度互相挤占。
+   *
+   * 与 quotaGate 同一枚调试开关（`AI_PROXY_QUOTA_GUARD=off`）：它虽比产品额度宽得多，
+   * 但反复 force 调试时同样会撞上（每次生成 3 次写口 ≈ 50 次生成就到底），
+   * 而写口被拦的表现是「缓存写不进 / 抢不到锁」，比额度用完更难归因，故一并放行判定。
+   * 计数照旧自增（`... #store` 那条键），排查时能看到真实调用量。
+   */
   async function storeGate(openid) {
     const count = await bumpAbuseCount(`${openid}#${todayKey()}#store`, openid)
-    if (count !== null && count > STORE_ABUSE_LIMIT) {
+    if (!quotaGuardDisabled() && count !== null && count > STORE_ABUSE_LIMIT) {
       return { ok: false, kind: 'abuse', error: `今日缓存写入调用次数已达上限（${STORE_ABUSE_LIMIT} 次），明日 0 点恢复` }
     }
     return null
@@ -161,10 +172,11 @@ module.exports = function createReportStore(deps) {
   }
 
   /**
-   * 落库并置 ready。三道校验缺一不可：
+   * 落库并置 ready。四道校验缺一不可：
    *   · **持锁**：只有该行的 builder 能写 —— 这是「改不了别人那一行」的唯一依据；
    *   · **形状与体积**：report 必须是对象、personKey 与目标行一致、不带系统字段、≤ 100KB；
-   *   · **会员一致性**：产物含会员段而调用者不是有效会员 ⇒ 拒绝（本写口最实的增量）。
+   *   · **会员一致性**：产物含会员段而调用者不是有效会员 ⇒ 拒绝（本写口最实的增量）；
+   *   · **只升不降**：既有版本带会员段而新产物不带 ⇒ 拒绝（端上的守卫可被改包绕过，见下方 P1-9）。
    */
   async function storeSave(event, openid) {
     const personKey = str(event.personKey)
@@ -186,6 +198,18 @@ module.exports = function createReportStore(deps) {
     if (bytes > REPORT_MAX_BYTES) return bad(`报告体积超限（${bytes} > ${REPORT_MAX_BYTES} 字节）`)
     if (hasMemberPayload(report) && !(await isActiveMember(openid))) {
       return { ok: false, kind: 'auth', error: '产物含会员专属段落，但当前账号不是有效会员，拒绝写入' }
+    }
+    /*
+     * 「只升不降」（P1-9）：抢锁**不动**上一版 report（见 storeAcquire），但落库是整篇替换 ——
+     * 于是只要一行被非会员抢到锁，就能把全站共享的会员版覆盖成免费版：这条行是所有读者共用的，
+     * 一个人改包 Force 一次，所有人（含已付费会员）看到的那份会员段落就没了。
+     *
+     * 端上 cache.ts#saveReady 的 shouldKeepMemberVersion 已判过一次，但端上判定可被改包绕过，
+     * 写口才是权威。判据与端上一致：既有版本带会员段、而新产物不带 ⇒ 拒绝（kind='stale'）。
+     * 「会员版 → 免费版」这种合法降级在端上本来就被守卫拦住，不会走到这里；改包者走到这里即被拒。
+     */
+    if (hasMemberPayload(row.report) && !hasMemberPayload(report)) {
+      return { ok: false, kind: 'stale', error: '既有版本含会员专属段落，拒绝用不含会员段的版本覆盖' }
     }
 
     const newsCount = typeof event.newsCount === 'number' && event.newsCount >= 0 ? event.newsCount : 0

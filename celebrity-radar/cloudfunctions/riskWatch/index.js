@@ -47,6 +47,12 @@ const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
 const TIMEOUT_MS = 15000
 /** 单轮最多扫多少位名人：博查按次计费，云函数默认 60s 超时也撑不住更多 */
 const MAX_PERSONS = 20
+/**
+ * 每人监控上限。云侧**兜底判定**（见 main 里的 perUser / overLimit）：端上
+ * utils/risk-watch.ts#MAX_PERSON_WATCHES 也拦一道，但那道判定可被改包绕过 ——
+ * 只靠端上，等于把「每人 5 个」交给客户端自证（改包者能把单轮 20 人的预算全吃光）。
+ */
+const MAX_PERSON_WATCHES_PER_USER = 5
 /** 同一个人的最短重扫间隔：定时任务与人工补跑不重复打上游 */
 const RISK_GAP_MS = 20 * 60 * 60 * 1000
 /** 每人保留的 url 快照上限（只用于判断「哪些条目是新的」） */
@@ -324,15 +330,38 @@ exports.main = async () => {
 
   // 1. 监控关系：一次读全表按 person_key 分组（跨用户去重，同一人只查一次上游）
   const byPerson = new Map()
+  /*
+   * 每人监控上限的**云侧兜底**（P2-22）：端上 utils/risk-watch.ts#monitorPerson 拦一道
+   * （MAX_PERSON_WATCHES），但那道判定可被改包绕过。云端原先只按 person_key 去重、
+   * 不做每人计数 —— 改包者能监控上千个人，把每天 MAX_PERSONS 次的上游检索预算吃光
+   * （其余用户的监控对象永远排不进队列）。按 listAll 的 `_id` 升序取前 N 个，顺序确定可复现。
+   */
+  const perUser = new Map()
+  const overLimit = []
   for (const w of await listAll(WATCH_TABLE)) {
     if (!w || w.type !== 'person' || !w.openid || !w.person_key) continue
+    const kept = (perUser.get(w.openid) || 0) + 1
+    perUser.set(w.openid, kept)
+    if (kept > MAX_PERSON_WATCHES_PER_USER) {
+      overLimit.push(`${w.openid}#person#${w.person_key}: 超出每人 ${MAX_PERSON_WATCHES_PER_USER} 个监控上限，本轮忽略`)
+      continue
+    }
     if (!byPerson.has(w.person_key)) {
       byPerson.set(w.person_key, { personKey: w.person_key, name: String(w.keyword || '').trim(), watchers: [] })
     }
     byPerson.get(w.person_key).watchers.push(w.openid)
   }
   if (!byPerson.size) {
-    return { ok: true, persons: 0, queries: 0, signals: 0, users: 0, pushed: 0, skipped: [] }
+    return {
+      ok: true,
+      persons: 0,
+      queries: 0,
+      signals: 0,
+      users: 0,
+      pushed: 0,
+      over_limit: overLimit.length,
+      skipped: overLimit
+    }
   }
 
   // 2. 上次扫描状态：既决定「谁排前面」，也决定「哪些 url 已经见过」
@@ -357,7 +386,17 @@ exports.main = async () => {
 
   const nowIso = new Date().toISOString()
   const perPerson = new Map() // personKey -> { name, signals: [], error }
-  const summary = { ok: true, persons: queue.length, queries: 0, signals: 0, users: 0, pushed: 0, skipped: [] }
+  const summary = {
+    ok: true,
+    persons: queue.length,
+    queries: 0,
+    signals: 0,
+    users: 0,
+    pushed: 0,
+    /* 被每人上限挡下的监控数（P2-22）：正常用户恒为 0，非 0 就是有人在绕过端上写监控 */
+    over_limit: overLimit.length,
+    skipped: overLimit.slice()
+  }
 
   // 3. 逐个名人：检索 → 词典命中 → 落 signal → 更新快照
   for (const personKey of queue) {

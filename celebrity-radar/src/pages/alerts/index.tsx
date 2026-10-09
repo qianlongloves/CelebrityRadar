@@ -27,6 +27,7 @@ import {
 } from '@/utils/risk-watch'
 import { alertNotifyConfigured, requestAlertNotify, requestRiskNotify, riskNotifyConfigured } from '@/utils/notify'
 import { openSourceLink } from '@/utils/source-link'
+import { formatMoment8 } from '@/utils/time'
 import EmptyState from '@/components/empty-state'
 import './index.scss'
 
@@ -188,14 +189,9 @@ export default function Alerts() {
     })
   }
 
-  /** 条目的时间展示：优先媒体发布时间，缺失时退回我们首次看到它的时间 */
-  const itemDate = (item: AlertGroup['items'][number]) => {
-    const raw = item.published_date ?? item.first_seen_at
-    const d = new Date(raw)
-    if (Number.isNaN(d.getTime())) return ''
-    const pad = (n: number) => String(n).padStart(2, '0')
-    return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-  }
+  /** 条目的时间展示：优先媒体发布时间，缺失时退回我们首次看到它的时间（P2-36：一律 UTC+8） */
+  const itemDate = (item: AlertGroup['items'][number]) =>
+    formatMoment8(item.published_date ?? item.first_seen_at ?? '')
 
   const newTotal = groups.reduce((n, g) => n + g.newCount, 0)
   const notifyReady = alertNotifyConfigured()

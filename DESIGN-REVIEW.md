@@ -264,9 +264,38 @@
 | 用例有效性自检 | 把两处 `catch` 从「归一成未落实」退回归「重新抛出」，**恰好这 2 条「抛错分支」用例报红**（另 2 条走常规路径的仍绿）—— 确认用例钉住的正是 V-1，而非顺带绿 |
 | 行为不变性 | 「行存在 → 常规自增」与「行不存在 → 返回 0 再 add」两条既有路径逐字未改，批次 1~5 相关用例全绿 |
 
+### 批次 7（2026-10-09）—— 联调开关 `QUOTA_GUARD_ENV=off`
+
+对应编号：**P2-21**。
+
+| 编号 | 改了什么 | 涉及文件 |
+| --- | --- | --- |
+| P2-21 | 端上 `debug.disable*` 只放开端上那道闸，`aiProxy` 入口还会各判一次 ⇒「开关全开、生成第 4 次仍报额度用完」，像开关失效。新增云端开关：取值 `off` 时**只放开判定、计数照旧自增**（fail-closed，只认字面 `'off'`），并同时放开共享缓存写口限速；`test/harness/env.js#clearLlmEnv` 追加清理，避免串味 | `cloudfunctions/quotaGuard/index.js`、`cloudfunctions/aiProxy/index.js`、`test/harness/env.js` |
+
+⚠ 生产环境不要配置该变量（缺省即生产口径）。
+
+### 批次 8（2026-10-09）—— 全文复审的 6 处静默缺陷
+
+对应编号：**P1-9、P2-22 ~ P2-26**。共同点：**不抛错、测试仍全绿**，只在真实数据规模下显形。
+
+| 编号 | 改了什么 | 涉及文件 |
+| --- | --- | --- |
+| P1-9 | 写口加第四道校验：`hasMemberPayload(row.report) && !hasMemberPayload(report)` ⇒ `kind:'stale'` 拒落库；端上 `REJECTED_KINDS` 同步加 `'stale'`（**必须归 rejected**，落 unavailable 会回退端上直写、把刚拦下的旧内容塞进库） | `cloudfunctions/aiProxy/report-store.js`、`src/utils/report-store.ts` |
+| P2-22 | `keywordAlert` / `riskWatch` 补**真·每人上限 5**：按 `_id` 升序分组取前 N，超限整行忽略并记 `summary.over_limit` / `skipped`（端上那道可被改包绕过） | `cloudfunctions/keywordAlert/index.js`、`cloudfunctions/riskWatch/index.js` |
+| P2-23 | 镜像对账改按 `mirror_checked_at` 升序轮转 + 批量写回（成败都写，防饿死），缺字段的行排最前（优先校验新发货的行） | `cloudfunctions/payCallback/after-sales.js` |
+| P2-24 | 退款 / 补发货队列 `where` 显式排除已结清（`_.or(_.exists(false), null)`），两类残留共用 `reconcile_attempts` + `_id` 升序，超 `MAX_RECONCILE_ATTEMPTS=5` 转 `summary.stuck` 等人工 | `cloudfunctions/payCallback/after-sales.js` |
+| P2-25 | `quotaGuard` 的 `MAX_KEY_LEN` 64 → 120，与写口同源（消掉「写得进、复核却被拒」） | `cloudfunctions/quotaGuard/index.js` |
+| P2-26 | 「有无会员段」统一真值判定、去掉 `trim`，`presentSections` / `hasMemberPayload` / `hasMemberBlocks` 三口径一致 | `src/utils/member.ts`、`cloudfunctions/aiProxy/report-store.js` |
+
+### 批次 9（2026-10-09）—— 第二轮复审（P1-10、P2-27 ~ P2-36）
+
+第二轮复审的问题、证据与修复进度单开一份 **`AUDIT-ROUND2.md`**（编号在此台账后顺延）。
+结论：11 项已全部收敛，`npm test` **572 / 572（11 个用例文件）**。
+
 ### 后续批次
 
-P0 / P1 / P2 已全部收敛（P0-1、P0-2、P0-21、P1-3~P1-8、P2-9~P2-20 均已修）；V-1 已在批次 6 用代码免疫。
+第一轮（P0-1、P0-2、P0-21、P1-3~P1-9、P2-9~P2-26）与第二轮（P1-10、P2-27~P2-36）已**全部收敛**；
+V-1 已在批次 6 用代码免疫。
 
 **仅剩一项非编码事项**：
 

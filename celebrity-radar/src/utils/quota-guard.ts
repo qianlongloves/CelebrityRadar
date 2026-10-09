@@ -37,13 +37,19 @@ interface QuotaGuardResult {
   created?: boolean
   /** 云端复核后判定本次免计费（会员「补齐」共享缓存），见 cloudfunctions/quotaGuard */
   waived?: boolean
+  /** P2-30：该类的服务端上限与本次是否放行（目前只有 `refresh` 返回） */
+  limit?: number
+  allowed?: boolean
   error?: string
 }
 
-/** 云端自增的结果：新计数 + 本次是否被免计费 */
+/** 云端自增的结果：新计数 + 本次是否被免计费（+ refresh 类的服务端判定） */
 export interface QuotaIncrResult {
   count: number
   waived: boolean
+  /** 旧版云函数不返回，保持 undefined ⇒ 端上按同源常量兜底 */
+  allowed?: boolean
+  limit?: number
 }
 
 /**
@@ -81,7 +87,15 @@ export async function incrQuotaViaCloud(
     })) as QuotaGuardResult | null
 
     if (res && res.ok && typeof res.count === 'number') {
-      return { count: res.count, waived: res.waived === true }
+      return {
+        count: res.count,
+        waived: res.waived === true,
+        /* P2-30：refresh 类带上服务端权威判定（`limit` / `allowed`）。
+           以前端上拿回计数自己比一遍，同一份规则两个副本 ⇒ 端上那份可被改包改掉。
+           旧版云函数不返回这两个字段，此时保持 undefined，由端上按同源常量兜底。 */
+        allowed: typeof res.allowed === 'boolean' ? res.allowed : undefined,
+        limit: typeof res.limit === 'number' ? res.limit : undefined
+      }
     }
 
     diagLog('warn', 'db', `quotaGuard(${kind}) 未生效：${res?.error ?? '无返回值'}，回退端上计数`)

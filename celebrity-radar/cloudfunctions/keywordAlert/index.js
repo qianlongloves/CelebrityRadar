@@ -43,8 +43,19 @@ const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
 const TIMEOUT_MS = 15000
 /** 单轮最多检索多少个关键词：博查按次计费，云函数默认 60s 超时也撑不住更多 */
 const MAX_KEYWORDS = 20
-/** 每人订阅上限（云侧兜底；端上 utils/keyword-alert.ts 也拦一道，但端上判定可被改包绕过） */
+/**
+ * 每人订阅上限。云侧**兜底判定**（见 main 里的 perUser / overLimit）：端上 utils/keyword-alert.ts
+ * 也拦一道，但那道判定可被改包绕过 —— 只写常量不判定，等于把「每人 5 个」交给客户端自证。
+ */
 const MAX_WATCHES_PER_USER = 5
+/**
+ * 订阅词的字符数上限（P2-31）。**与端上 src/utils/keyword-alert.ts#KEYWORD_MAX_CHARS 同源**。
+ *
+ * 端上也拦一道，但改包可以绕过 —— 而一个几百字的「词」照样要占掉一次上游检索
+ * （每轮总共只有 MAX_KEYWORDS 次预算），把检索花在一个句子上的效果约等于零。
+ * 超长整行忽略：这是数据问题，不是环境问题，重试也不会变好。
+ */
+const MAX_KEYWORD_CHARS = 12
 /** 同一个关键词的最短重检间隔：与端上「今天已查过」的体感对齐，也避免定时任务与人工补跑重复打上游 */
 const REFRESH_GAP_MS = 20 * 60 * 60 * 1000
 /** 每个关键词保留的条目上限：预警只看最近这批，无限追加会让文档长到无法读写 */
@@ -229,17 +240,48 @@ exports.main = async () => {
   // 1. 订阅关系：一次读全表在内存分组（跨用户去重，避免按人查上游）
   const byKeyword = new Map()
   const watchRows = []
+  /*
+   * 每人订阅上限的**云侧兜底**（P2-22）：端上 utils/keyword-alert.ts 拦一道，但改包可以绕过 ——
+   * 这段以前只把 MAX_WATCHES_PER_USER 导出当文档，函数里根本没判，于是改包者能订上千个词，
+   * 把每天 MAX_KEYWORDS 次的上游检索预算全吃在自己身上（其余用户永远轮不到自己那个词）。
+   * 按 listAll 的 `_id` 升序取前 N 个：顺序确定、可复现，也不会因为翻页顺序抖动而每次换一批。
+   */
+  const perUser = new Map()
+  const overLimit = []
+  const invalid = []
   for (const w of await listAll(WATCH_TABLE)) {
     /* 同一张表还存着「监控某人」的行（type='person'，第 1 期 riskWatch 用）：它们的 keyword
        存的是人名，不是要检索的关键词 —— 不过滤就会把名人名当关键词再查一遍（白花钱）。
        老行没有 type 字段（2026-10-08 那批关键词订阅），故只有显式 person 才跳过。 */
     if (w && w.type === 'person') continue
     if (!w || !w.openid || !w.keyword) continue
+    /* 超长词整行忽略（P2-31）：一次上游检索换一个「句子」，钱花得没有意义。
+       id 截断后再进日志，否则一条日志就能顶满整屏。 */
+    if (w.keyword.length > MAX_KEYWORD_CHARS) {
+      invalid.push(`${watchId(w.openid, w.keyword).slice(0, 40)}: 关键词超过 ${MAX_KEYWORD_CHARS} 字，本轮忽略`)
+      continue
+    }
+    const kept = (perUser.get(w.openid) || 0) + 1
+    perUser.set(w.openid, kept)
+    if (kept > MAX_WATCHES_PER_USER) {
+      overLimit.push(`${watchId(w.openid, w.keyword)}: 超出每人 ${MAX_WATCHES_PER_USER} 个订阅上限，本轮忽略`)
+      continue
+    }
     watchRows.push(w)
     if (!byKeyword.has(w.keyword)) byKeyword.set(w.keyword, [])
     byKeyword.get(w.keyword).push(w.openid)
   }
-  if (!byKeyword.size) return { ok: true, keywords: 0, users: 0, pushed: 0 }
+  if (!byKeyword.size) {
+    return {
+      ok: true,
+      keywords: 0,
+      users: 0,
+      pushed: 0,
+      over_limit: overLimit.length,
+      invalid: invalid.length,
+      skipped: overLimit.concat(invalid)
+    }
+  }
 
   // 2. 已缓存的关键词：先批量读出来，才能按「上次扫描时间」排队
   const keywordList = [...byKeyword.keys()]
@@ -323,7 +365,11 @@ exports.main = async () => {
     updated,
     users: userNews.size,
     pushed: 0,
-    skipped: []
+    /* 被每人上限挡下的订阅数（P2-22）：正常用户恒为 0，非 0 就是有人在绕过端上写订阅 */
+    over_limit: overLimit.length,
+    /* 因超长被忽略的订阅数（P2-31）：同上，恒为 0 才是正常 */
+    invalid: invalid.length,
+    skipped: overLimit.concat(invalid)
   }
   if (!userNews.size) return summary
 

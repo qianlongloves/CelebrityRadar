@@ -108,17 +108,33 @@ function tsOf(v) {
  * 两处内容必须一致 —— 由 test/cases/06-pay-callback.js 的用例钉住。
  */
 
-/** 读权威行：行不存在时 doc().get() 直接抛错，一律视为「没发过货」 */
+/**
+ * 读权威行。**刻意用 `where` 而不是 `doc().get()`**（P1-10）：
+ *
+ * `doc().get()` 在「行不存在」时**抛错**，于是唯一的写法就是 try/catch 吃下去 ——
+ * 而那一口会连着「真读失败」（集合权限没开、网络抖动、集合缺失）一起吞掉，上层只看见
+ * `null`，与「这个人从没发过货」**无从分辨**。分辨不了就要命：发货分支会以为没有权威行，
+ * 从而①用镜像的有效期当基数重算、②把 `refunded_orders` 名单丢掉 —— 后者是「这几单已经
+ * 扣过天数」的唯一凭据，丢了下一轮对账就会**再扣一次**用户已付的天数。
+ *
+ * `where` 查询在无匹配时返回空数组、**不抛错**，「没有行」与「读失败」于是干净分开：
+ * 前者 `null`，后者原样抛出 ⇒ 发货失败 ⇒ 微信重试。本函数的每个调用点都已在
+ * 逐条 try/catch 里（发货主流程 / 对账三类 / 运营写口），抛出去是安全的。
+ */
 async function readMembership(openid) {
-  try {
-    const res = await db.collection('memberships').doc(openid).get()
-    return (res && res.data) || null
-  } catch (err) {
-    return null
-  }
+  const res = await db.collection('memberships').where({ _id: openid }).limit(1).get()
+  return (res && res.data && res.data[0]) || null
 }
 
-/** 写权威行：set = upsert（同一 openid 恒只有一行），重复进入写同一个值 */
+/**
+ * 写权威行：set = upsert（同一 openid 恒只有一行），重复进入写同一个值。
+ *
+ * ⚠ `refunded_orders`（已撤销退款的订单号）**必须原样带回来**：本函数是 set 全量覆盖，
+ * 漏掉它就等于把「这几单已经扣过天数」的唯一凭据清空 —— 而清空的后果是**再扣一次**。
+ * 因此这里不再「信调用方记得带」：调用方没给数组时，**先读回现有名单再写**
+ * （P1-10 的另一半；分支② 正是那个漏带的调用点）。读失败会在这里抛出 ⇒ 本趟不写、
+ * 微信重试 —— 宁可晚一点发货，也不拿「记不清了」当「没扣过」。
+ */
 async function writeMembership(openid, m) {
   const data = {
     /* 显式写 _openid：云函数是管理员身份，不会像端上写入那样自动注入 */
@@ -128,10 +144,14 @@ async function writeMembership(openid, m) {
     last_order_id: m.last_order_id,
     updated_at: new Date().toISOString()
   }
-  /* ⚠ `refunded_orders`（已撤销退款的订单号）必须原样带回来：本函数是 set 全量覆盖，
-     漏掉它就等于把「这几单已经扣过天数」的唯一凭据清空 —— 而清空的后果是**再扣一次**。
-     调用方传 undefined 时不写这一列（新行本来也没有名单可丢）。 */
-  if (Array.isArray(m.refunded_orders)) data.refunded_orders = m.refunded_orders
+  if (Array.isArray(m.refunded_orders)) {
+    data.refunded_orders = m.refunded_orders
+  } else {
+    const cur = await readMembership(openid)
+    const ledger = cur && cur.refunded_orders
+    /* 只有确实有名单时才写这一列：新行本来就没有名单可丢，不必凭空多出一个空数组 */
+    if (Array.isArray(ledger)) data.refunded_orders = ledger
+  }
   await db.collection('memberships').doc(openid).set({ data })
 }
 
@@ -209,7 +229,14 @@ async function grantMembership(order, outTradeNo) {
     return
   }
 
-  /* ② 镜像行已记录这一单、权威行没有：补齐权威，不重算天数 */
+  /*
+   * ② 镜像行已记录这一单、权威行没有：补齐权威，不重算天数。
+   *
+   * P1-10：这里**刻意不传 `refunded_orders`** —— 权威行可能已经存在（记录的是另一单）且带着
+   * 退款名单，而 `writeMembership` 是 set 全量覆盖。由 `writeMembership` 自己「没给名单就
+   * 先读回再写」来兜住这一列，比要求每个调用点都记得带更可靠（漏一个点就是资损）。
+   * 这正是本轮修的那处：以前这里漏带，等于把「哪几单已扣过天数」清空。
+   */
   if (mirror && mirror.last_order_id === outTradeNo) {
     await writeMembership(openid, {
       plan: mirror.plan || plan,

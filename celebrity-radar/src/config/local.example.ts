@@ -57,6 +57,12 @@ export interface LocalDebugFlags {
    * rawIoLog 只影响控制台噪音（上游原始报文），不改变任何行为。
    *
    * **仓库默认五项全 false** —— 这是「别人 clone 下来直接跑」时唯一安全的取值。
+   *
+   * ⚠ 这四个只放开**端上**的闸门，不顶替云端：生成 / 提问 / 缓存写口在 aiProxy 入口
+   *   还会各判一次（计数由端上照旧 consume，debug 下照样涨到上限）。所以它们全开，
+   *   生成报告时仍可能被云函数回「今日额度已用完」。本地联调请**两边同时放开**：
+   *   云函数环境变量 `AI_PROXY_QUOTA_GUARD=off`，具体语义见
+   *   `cloudfunctions/aiProxy/quota.config.js#quotaGuardDisabled`（默认 on、只认 off）。
    */
   disableGenerateQuota: boolean
   disableAskQuota: boolean

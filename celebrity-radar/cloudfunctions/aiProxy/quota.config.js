@@ -61,6 +61,34 @@ const ABUSE_TABLE = 'ai_calls'
 const ABUSE_LIMITS = { free: 40, member: 200 }
 
 /**
+ * 云端闸门开关（**本地联调专用**，2026-10-09 补）。
+ *
+ * 为什么需要它：端上 `src/config/local.ts` 的 `debug.disableGenerateQuota` 只放开
+ * **端上那道**闸门（utils/quota.ts#peekGenerateQuota），而两次生成之间端上照样
+ * 调 quotaGuard consume（"放开闸门、记数照旧"），计数一路涨到上限后，本文件
+ * 这两道闸（产品额度 / 防滥用限速）照样在 aiProxy 入口把人拦下 —— 现象就是
+ * 「debug 明明开了，生成第 4 次仍报『今日报告生成额度已用完』」。
+ * 端上开关**不能**顶替这里：云端不信端上传来的任何标记（改包即可伪造）。
+ * 故两端各有一枚开关，联调时都要放开。
+ *
+ * 取值（环境变量 AI_PROXY_QUOTA_GUARD）：
+ *   'on'（缺省 / 不认识的取值）→ 两道闸都按上限判定 = 生产口径
+ *   'off'                      → 只放开**判定**，计数照旧自增（与端上 debug 的取舍一致，
+ *                                排查时在 ai_calls 里仍能看到真实调用量）
+ *
+ * ⚠ 与上面四个端上 disable* 同一性质：`off` 会把上游成本敞给所有走这个云环境的调用者，
+ *   只能在自己那套开发环境上临时配置，**上线前必须删掉这个环境变量**。
+ *   它是环境变量而非常量，正是为了让它进不了代码库、也不随端上发布一起生效。
+ */
+const QUOTA_GUARD_ENV = 'AI_PROXY_QUOTA_GUARD'
+
+/** 云端闸门是否整体放行（判定层面）。未配置 / 非 'off' 一律按不放行（fail-closed） */
+function quotaGuardDisabled() {
+  const v = process.env[QUOTA_GUARD_ENV]
+  return typeof v === 'string' && v.trim().toLowerCase() === 'off'
+}
+
+/**
  * 服务端「今天」：云函数时区为 UTC，必须显式 +8 —— 否则北京时间 08:00 之前的调用
  * 会落到前一天，与端上 todayKey()、quotaGuard 的日期口径三方错位。
  */
@@ -74,5 +102,7 @@ module.exports = {
   AUX_PURPOSE,
   ABUSE_TABLE,
   ABUSE_LIMITS,
+  QUOTA_GUARD_ENV,
+  quotaGuardDisabled,
   todayKey
 }

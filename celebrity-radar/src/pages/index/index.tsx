@@ -26,6 +26,7 @@ import { listFollows, toggleFollow } from '@/utils/follows'
 import { loadMessages } from '@/utils/messages'
 import { personShareTitle, reportSharePath } from '@/utils/share'
 import { useTabBarSync } from '@/utils/tabbar'
+import { todayLabel8 } from '@/utils/time'
 import './index.scss'
 
 /** 热搜词位数：取热门位前 4 位，点击即「填词 + 直接搜索」，省去手输 */
@@ -33,8 +34,6 @@ const HOT_WORD_COUNT = 4
 
 /** 「最近搜索」最多展示条数（history 存上限 50 条，这里只取最近几位名人做快捷入口，同一人只出现一次） */
 const RECENT_LIMIT = 6
-
-const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 
 type SearchState =
   | { phase: 'idle' }
@@ -110,8 +109,9 @@ export default function Index() {
     /* 本页不再读会员态：热门榜自 2026-10-08 起全员可见全部位数（见 utils/member.ts） */
   })
 
-  const now = new Date()
-  const dateLabel = `${now.getMonth() + 1}月${now.getDate()}日 · 周${WEEKDAYS[now.getDay()]}`
+  /* P2-36：今日标签按 UTC+8 取（`todayLabel8`），不再用设备本地时区 ——
+     否则跨时区用户凌晨打开会看到昨天的日期，与「今天的新鲜事」这个标签自相矛盾。 */
+  const dateLabel = todayLabel8()
 
   /** 头像 → 「我的」tab（未登录时同样落在该页，由页内引导登录） */
   const goMine = () => {
