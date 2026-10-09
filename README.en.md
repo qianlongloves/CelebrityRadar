@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-296%20passing-success.svg)](#development--testing)
+[![Tests](https://img.shields.io/badge/tests-300%20passing-success.svg)](#development--testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), with a keyword cloud, sentiment trend and heat curve aggregated on the client.
@@ -58,96 +58,120 @@ It is built around two principles:
 
 ## Features
 
-| Area | Module | Capability |
-|---|---|---|
-| **Content** | Discovery & disambiguation | Search box + popular-domain cards; candidate list for homonyms (with domain filters) plus a "none of them" fallback, producing a stable `personKey` (e.g. `雷军#tech`) |
-| | Report generation | Bocha web search → LLM produces structured JSON → zod validation of every field + source-URL allowlist sanitization; **rendered card by card** (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies & responses / timeline / what to watch / glossary + a one-line source summary), skeleton loading with progressive reveal, and a "generated N ago / refresh" pair of entry points; every factual section must cite a real piece of material — anything unsourced is dropped entirely, and a section that is genuinely empty still renders a card explaining why |
-| | Client-side aggregates | Profile snapshot, stance & sentiment, keyword cloud, quote themes, and a heat-trend curve — **computed entirely on the client**, so existing cached reports benefit immediately with zero extra model calls or quota usage |
-| | Quote sourcing | Verifies only *verifiable* facts (is this quote's source link part of the retrieved material; does that article contain the same wording) — it does **not** render AI verdicts on authenticity |
-| **Reading & saving** | Following | Follow list + change overview (who has news) + merged feed (`feed_cache` merged with pull-to-refresh, capped at 10 refreshes per account per day) |
-| | Weekly digest | One tap summarizes the last 7 days across followed figures → per-person highlights + weekly overview + topic words; material comes from cache and **people and items follow the material**, cached locally per ISO week |
-| | Favorites / History | Four favorite types (quotes / reports / activity / timeline, deduplicated by an `openid#type#hash` key) + browsing history (last 50 entries); quotes in Favorites can be rendered as a shareable card |
-| | Message center | A single timeline: follow updates / weekly reminders / announcements / keyword alerts; read state is tracked **per item** and stored on-device only (no new collection, cloud function or model call) |
-| | Sharing | Quote cards (rendered on-device with Canvas 2D, never uploaded to cloud storage) + native forwarding; every landing page is a specific person's report |
-| **Exploration** | Hot board | Produced daily by AI (`hot_board`) with a three-level fallback (AI board → cached reports → static list); **every rank is visible to everyone**, never gated |
-| | Keyword alerts | Subscribe to keywords → a scheduled cloud function searches them daily → the app lists items *added since you last looked* and pushes a subscription message |
-| | Person risk monitoring | Tap "+ Monitor risk" on a report to watch a person → a scheduled cloud function searches them daily → matches on legal / tax / partnership / rights / statement terms are collected in the alerts page and pushed (**states only the match and its source; no rating, no prediction**) |
-| | Topic knowledge base | Pivots the person-centric report cache into a topic-centric view: for one topic, who is talking about it, what was said, which articles exist and when it was discussed |
-| | Compare | Side-by-side comparison of two figures (reusing both cached reports, zero model calls), with one-tap follow / share |
-| | AI Q&A | Answers grounded in the figure's **cached report**, flattened into numbered passages (ordered by reliability, selected by Chinese bigram overlap); each question triggers one extra web search that shares the same budget, and falls back silently to "report-only" answers when search is unavailable |
-| **Membership (freemium)** | Quota | Free tier: 3 on-demand generations per day, 30 for members (cache hits never count); AI Q&A: 5 questions free, 30 for members; quota is displayed transparently on the profile page |
-| | Quality perks | **User-selectable model provider** (DeepSeek / Qwen / Zhipu GLM / Moonshot — keys all live in the cloud function, so users configure nothing) + model tier (free tier is locked to the fast model; members unlock standard / deep reasoning; switching provider swaps the whole tier list while the tier you picked stays the same) plus a **deep report mode** (thicker retrieval plus three member-only sections: comparison angles, risk notes, source disagreements) |
-| | Pricing | ¥9.9 monthly / ¥25 quarterly / ¥68 yearly; the price has **a single source of truth** (the `PLANS` map in the `payCreate` cloud function, fetched by the client, so changing prices needs no release) |
-| **Platform** | Compliance | A local sensitive-name list blocks requests up front (rejected without **any** network call), source URLs are allowlisted, and every report notes "AI-generated, for reference only" |
-| | Zero client-side secrets | All upstream calls are proxied by cloud functions; quota counting is server-side (atomic increments with server dates); membership gating is enforced in the cloud and cannot be bypassed by a repackaged client |
+### Content
+
+- **Discovery & disambiguation** — Search box + popular-domain cards; candidate list for homonyms (with domain filters) plus a "none of them" fallback, producing a stable `personKey` (e.g. `雷军#tech`)
+- **Report generation** — Bocha web search → LLM produces structured JSON → zod validation of every field + source-URL allowlist sanitization; **rendered card by card** (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies & responses / timeline / what to watch / glossary + a one-line source summary), skeleton loading with progressive reveal, and a "generated N ago / refresh" pair of entry points; every factual section must cite a real piece of material — anything unsourced is dropped entirely, and a section that is genuinely empty still renders a card explaining why
+- **Client-side aggregates** — Profile snapshot, stance & sentiment, keyword cloud, quote themes, and a heat-trend curve — **computed entirely on the client**, so existing cached reports benefit immediately with zero extra model calls or quota usage
+- **Quote sourcing** — Verifies only *verifiable* facts (is this quote's source link part of the retrieved material; does that article contain the same wording) — it does **not** render AI verdicts on authenticity
+
+### Reading & saving
+
+- **Following** — Follow list + change overview (who has news) + merged feed (`feed_cache` merged with pull-to-refresh, capped at 10 refreshes per account per day)
+- **Weekly digest** — One tap summarizes the last 7 days across followed figures → per-person highlights + weekly overview + topic words; material comes from cache and **people and items follow the material**, cached locally per ISO week
+- **Favorites / History** — Four favorite types (quotes / reports / activity / timeline, deduplicated by an `openid#type#hash` key) + browsing history (last 50 entries); quotes in Favorites can be rendered as a shareable card
+- **Message center** — A single timeline: follow updates / weekly reminders / announcements / keyword alerts; read state is tracked **per item** and stored on-device only (no new collection, cloud function or model call)
+- **Sharing** — Quote cards (rendered on-device with Canvas 2D, never uploaded to cloud storage) + native forwarding; every landing page is a specific person's report
+
+### Exploration
+
+- **Hot board** — Produced daily by AI (`hot_board`) with a three-level fallback (AI board → cached reports → static list); **every rank is visible to everyone**, never gated
+- **Keyword alerts** — Subscribe to keywords → a scheduled cloud function searches them daily → the app lists items *added since you last looked* and pushes a subscription message
+- **Person risk monitoring** — Tap "+ Monitor risk" on a report to watch a person → a scheduled cloud function searches them daily → matches on legal / tax / partnership / rights / statement terms are collected in the alerts page and pushed (**states only the match and its source; no rating, no prediction**)
+- **Topic knowledge base** — Pivots the person-centric report cache into a topic-centric view: for one topic, who is talking about it, what was said, which articles exist and when it was discussed
+- **Compare** — Side-by-side comparison of two figures (reusing both cached reports, zero model calls), with one-tap follow / share
+- **AI Q&A** — Answers grounded in the figure's **cached report**, flattened into numbered passages (ordered by reliability, selected by Chinese bigram overlap); each question triggers one extra web search that shares the same budget, and falls back silently to "report-only" answers when search is unavailable
+
+### Membership (freemium)
+
+- **Quota** — Free tier: 3 on-demand generations per day, 30 for members (cache hits never count); AI Q&A: 5 questions free, 30 for members; quota is displayed transparently on the profile page
+- **Quality perks** — **User-selectable model provider** (DeepSeek / Qwen / Zhipu GLM / Moonshot — keys all live in the cloud function, so users configure nothing) + model tier (free tier is locked to the fast model; members unlock standard / deep reasoning; switching provider swaps the whole tier list while the tier you picked stays the same) plus a **deep report mode** (thicker retrieval plus three member-only sections: comparison angles, risk notes, source disagreements)
+- **Pricing** — ¥9.9 monthly / ¥25 quarterly / ¥68 yearly; the price has **a single source of truth** (the `PLANS` map in the `payCreate` cloud function, fetched by the client, so changing prices needs no release)
+
+### Platform
+
+- **Compliance** — A local sensitive-name list blocks requests up front (rejected without **any** network call), source URLs are allowlisted, and every report notes "AI-generated, for reference only"
+- **Zero client-side secrets** — All upstream calls are proxied by cloud functions; quota counting is server-side (atomic increments with server dates); membership gating is enforced in the cloud and cannot be bypassed by a repackaged client
 
 ---
 
 ## Screenshots
 
-**Discovery & search**
+#### Discovery & search
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/01-home.png" width="200" alt="Home"><br><sub><b>Home</b> · search entry / featured domains / today's hot</sub></td>
-    <td align="center"><img src="./assets/screenshots/02-search.png" width="200" alt="Search and disambiguation"><br><sub><b>Search &amp; disambiguation</b> · same-name candidates + domain filters</sub></td>
-    <td align="center"><img src="./assets/screenshots/03-hot-board.png" width="200" alt="Hot board"><br><sub><b>Hot board</b> · AI-generated daily, every rank visible to everyone</sub></td>
+    <td align="center"><img src="./assets/screenshots/01-home.png" width="165" alt="Home"><br><sub><b>Home</b> · search entry / featured domains / today's hot</sub></td>
+    <td align="center"><img src="./assets/screenshots/02-search.png" width="165" alt="Search and disambiguation"><br><sub><b>Search &amp; disambiguation</b> · same-name candidates + domain filters</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/03-hot-board.png" width="165" alt="Hot board"><br><sub><b>Hot board</b> · AI-generated daily, every rank visible to everyone</sub></td>
   </tr>
 </table>
 
-**Following & messages**
+#### Following & messages
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/04-feed.png" width="200" alt="Following feed"><br><sub><b>Following feed</b> · merged stream + pull to refresh</sub></td>
-    <td align="center"><img src="./assets/screenshots/05-following.png" width="200" alt="Follow list"><br><sub><b>Follow list</b> · change overview: who has news</sub></td>
-    <td align="center"><img src="./assets/screenshots/07-message-center.png" width="200" alt="Message center"><br><sub><b>Message center</b> · updates / weekly digest / alerts in one timeline</sub></td>
+    <td align="center"><img src="./assets/screenshots/04-feed.png" width="165" alt="Following feed"><br><sub><b>Following feed</b> · merged stream + pull to refresh</sub></td>
+    <td align="center"><img src="./assets/screenshots/05-following.png" width="165" alt="Follow list"><br><sub><b>Follow list</b> · change overview: who has news</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/07-message-center.png" width="165" alt="Message center"><br><sub><b>Message center</b> · updates / weekly digest / alerts in one timeline</sub></td>
   </tr>
 </table>
 
-**Explore & Q&amp;A**
+#### Explore & Q&amp;A
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/06-keyword-alert.png" width="200" alt="Keyword alerts"><br><sub><b>Keyword alerts</b> · only entries added since your last visit</sub></td>
-    <td align="center"><img src="./assets/screenshots/08-qa.png" width="200" alt="AI Q&amp;A"><br><sub><b>AI Q&amp;A</b> · answers from your cached reports, with numbered sources</sub></td>
+    <td align="center"><img src="./assets/screenshots/06-keyword-alert.png" width="165" alt="Keyword alerts"><br><sub><b>Keyword alerts</b> · only entries added since your last visit</sub></td>
+    <td align="center"><img src="./assets/screenshots/08-qa.png" width="165" alt="AI Q&amp;A"><br><sub><b>AI Q&amp;A</b> · answers from your cached reports, with numbered sources</sub></td>
   </tr>
 </table>
 
-**Deep report** · rendered card by card (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies &amp; responses / timeline / what to watch / glossary); every factual section must cite a real piece of material
+#### Deep report
+
+Rendered card by card (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies &amp; responses / timeline / what to watch / glossary); every factual section must cite a real piece of material
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/bg1.PNG" width="200" alt="Report page screenshot 1"><br><sub><b>Report page 1 / 7</b></sub></td>
-    <td align="center"><img src="./assets/screenshots/bg2.PNG" width="200" alt="Report page screenshot 2"><br><sub><b>Report page 2 / 7</b></sub></td>
-    <td align="center"><img src="./assets/screenshots/bg3.PNG" width="200" alt="Report page screenshot 3"><br><sub><b>Report page 3 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg1.PNG" width="165" alt="Report page screenshot 1"><br><sub><b>Report page 1 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg2.PNG" width="165" alt="Report page screenshot 2"><br><sub><b>Report page 2 / 7</b></sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="./assets/screenshots/bg4.PNG" width="200" alt="Report page screenshot 4"><br><sub><b>Report page 4 / 7</b></sub></td>
-    <td align="center"><img src="./assets/screenshots/bg5.PNG" width="200" alt="Report page screenshot 5"><br><sub><b>Report page 5 / 7</b></sub></td>
-    <td align="center"><img src="./assets/screenshots/bg6.PNG" width="200" alt="Report page screenshot 6"><br><sub><b>Report page 6 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg3.PNG" width="165" alt="Report page screenshot 3"><br><sub><b>Report page 3 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg4.PNG" width="165" alt="Report page screenshot 4"><br><sub><b>Report page 4 / 7</b></sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="./assets/screenshots/bg7.PNG" width="200" alt="Report page screenshot 7"><br><sub><b>Report page 7 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg5.PNG" width="165" alt="Report page screenshot 5"><br><sub><b>Report page 5 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg6.PNG" width="165" alt="Report page screenshot 6"><br><sub><b>Report page 6 / 7</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/bg7.PNG" width="165" alt="Report page screenshot 7"><br><sub><b>Report page 7 / 7</b></sub></td>
   </tr>
 </table>
 
-**Compare** · reuses both cached reports, zero model calls, one-tap follow / share
+#### Compare
+
+Reuses both cached reports, zero model calls, one-tap follow / share.
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/db1.PNG" width="200" alt="Compare page screenshot 1"><br><sub><b>Compare page 1 / 3</b></sub></td>
-    <td align="center"><img src="./assets/screenshots/db2.PNG" width="200" alt="Compare page screenshot 2"><br><sub><b>Compare page 2 / 3</b></sub></td>
-    <td align="center"><img src="./assets/screenshots/db3.PNG" width="200" alt="Compare page screenshot 3"><br><sub><b>Compare page 3 / 3</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/db1.PNG" width="165" alt="Compare page screenshot 1"><br><sub><b>Compare page 1 / 3</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/db2.PNG" width="165" alt="Compare page screenshot 2"><br><sub><b>Compare page 2 / 3</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/db3.PNG" width="165" alt="Compare page screenshot 3"><br><sub><b>Compare page 3 / 3</b></sub></td>
   </tr>
 </table>
 
-**Membership &amp; configuration**
+#### Membership &amp; configuration
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/screenshots/09-mine.png" width="200" alt="Profile"><br><sub><b>Profile</b> · quota shown transparently / membership perks</sub></td>
-    <td align="center"><img src="./assets/screenshots/10-providers.png" width="200" alt="Model providers"><br><sub><b>Model provider of your choice</b> · DeepSeek / Qwen / Zhipu GLM / Moonshot</sub></td>
+    <td align="center"><img src="./assets/screenshots/09-mine.png" width="165" alt="Profile"><br><sub><b>Profile</b> · quota shown transparently / membership perks</sub></td>
+    <td align="center"><img src="./assets/screenshots/10-providers.png" width="165" alt="Model providers"><br><sub><b>Model provider of your choice</b> · DeepSeek / Qwen / Zhipu GLM / Moonshot</sub></td>
   </tr>
 </table>
 
@@ -155,16 +179,14 @@ It is built around two principles:
 
 ## Tech Stack
 
-| Layer | Choice | Notes |
-|---|---|---|
-| Framework | Taro 3.6 (React 18) + TypeScript | Compiled with webpack5 |
-| UI | Taro UI 3.x + SCSS (750px design width) | Theme variables in `src/styles/` |
-| State | zustand | e.g. `src/stores/auth.ts` |
-| Validation | zod | Full-field validation of the report schema |
-| Dates | dayjs | Relative time, ISO weeks, quota date keys |
-| Backend | Tencent CloudBase (WeChat Cloud Development) | Database + cloud functions; environment ID comes from local config |
-| Search | Bocha `api.bochaai.com` | Proxied by the `aiProxy` cloud function |
-| LLM | OpenAI-compatible endpoint | Defaults to `https://api.deepseek.com/v1`; selectable providers and their three tiers are in `src/config/public.ts`, while endpoints / key variable names / member tiers are in `cloudfunctions/aiProxy/llm.config.js` |
+- **Framework** — Taro 3.6 (React 18) + TypeScript: compiled with webpack5
+- **UI** — Taro UI 3.x + SCSS (750px design width): theme variables in `src/styles/`
+- **State** — zustand: e.g. `src/stores/auth.ts`
+- **Validation** — zod: full-field validation of the report schema
+- **Dates** — dayjs: relative time, ISO weeks, quota date keys
+- **Backend** — Tencent CloudBase (WeChat Cloud Development): database + cloud functions; environment ID comes from local config
+- **Search** — Bocha `api.bochaai.com`: proxied by the `aiProxy` cloud function
+- **LLM** — **any of four OpenAI-compatible providers**: DeepSeek / Qwen (DashScope compatible mode) / Zhipu GLM / Moonshot Kimi; defaults to `https://api.deepseek.com/v1`; selectable providers and their three tiers are in `src/config/public.ts`, while endpoints / key variable names / member tiers are in `cloudfunctions/aiProxy/llm.config.js`
 
 Dependencies are installed with `legacy-peer-deps=true` from `.npmrc`; `@tarojs/plugin-platform-*` is pinned to `^3.6.25` (do not upgrade) and webpack to `~5.91.0`.
 
@@ -179,7 +201,7 @@ User enters a name
   → report_cache hit? ──yes→ render directly (no generation triggered)
        │no
        └→ Bocha web search (api.bochaai.com) → source material
-          → OpenAI-compatible LLM produces structured JSON → zod validation + URL allowlist
+          → LLM produces structured JSON (any of the four providers, proxied by aiProxy) → zod validation + URL allowlist
           → write to report_cache → render report
 ```
 
@@ -195,7 +217,7 @@ utils/cloud.ts            CloudBase initialization & diagnostics
      ↓
 cloudfunctions/**         10 cloud functions (secrets, quota, moderation, scheduled jobs, payments)
      ↓
-Upstream: Bocha search / LLM / WeChat Pay / security.msgSecCheck
+Upstream: Bocha search / LLM (any of four providers) / WeChat Pay / security.msgSecCheck
 ```
 
 Two mechanisms worth knowing:
@@ -211,13 +233,11 @@ Two mechanisms worth knowing:
 
 Environment: Node 16 / 18 (LTS recommended), WeChat DevTools, and a mini program appid with Cloud Development enabled.
 
-| What you need | Purpose | Without it |
-|---|---|---|
-| Mini program appid + entity qualifications | Required by WeChat | No on-device preview, cannot publish |
-| CloudBase environment (Tencent Cloud) | Hosts the database and all 10 cloud functions | Login and **all** database calls are never issued; the profile page shows "cloud service not configured" |
-| An LLM API key (at least `DEEPSEEK_API_KEY`) | Generates reports (via the `aiProxy` cloud function). Users may switch provider under "Profile", so **every provider you list needs its key** (`QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`); without it, switching to that provider fails with "no quota configured" | Generation fails; browsing and favoriting cached reports still works |
-| Bocha API key | Retrieves source material online | Empty retrieval, so reports lack material and the timeline is incomplete |
-| ICP filing / service category | Launch review | Affects publishing only, not local debugging |
+- **Mini program appid + entity qualifications** — required by WeChat; without it, no on-device preview and no publishing
+- **CloudBase environment (Tencent Cloud)** — hosts the database and all 10 cloud functions; without it, login and **all** database calls are never issued and the profile page shows "cloud service not configured"
+- **An LLM API key (at least `DEEPSEEK_API_KEY`)** — generates reports (via the `aiProxy` cloud function). Users may switch provider under "Profile", so **every provider you list needs its key** (`QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`); without it, switching to that provider fails with "no quota configured". Without any key, generation fails; browsing and favoriting cached reports still works
+- **Bocha API key** — retrieves source material online; without it retrieval is empty, so reports lack material and the timeline is incomplete
+- **ICP filing / service category** — launch review; affects publishing only, not local debugging
 
 ### Install & Run
 
@@ -242,11 +262,9 @@ During development you can enable "do not verify valid domains" to iterate befor
 
 None of the three is committed (all are in `.gitignore`), so your edits never pollute the working tree or a PR.
 
-| File | Contents | Without it |
-|---|---|---|
-| `src/config/local.ts` | Your own real values: CloudBase environment ID, subscription template IDs, the webview domain allowlist, the local debug switch | **Required** — `src/config/public.ts` imports it directly and the build fails with `Cannot find module './local'` |
-| `project.private.config.json` | Your private WeChat DevTools project settings (your appid and tool preferences) | You re-enter the appid and settings in DevTools every time |
-| `.env` | Deploy-time secrets for cloud functions (`DEEPSEEK_API_KEY` / `BOCHA_API_KEY` …), referenced from `cloudbaserc.json` as `${env.XXX}` | Deployed functions have no upstream keys, so retrieval and generation fail |
+- **`src/config/local.ts`** — your own real values: CloudBase environment ID, subscription template IDs, the webview domain allowlist, the local debug switch. **Required**: `src/config/public.ts` imports it directly and the build fails with `Cannot find module './local'`
+- **`project.private.config.json`** — your private WeChat DevTools project settings (your appid and tool preferences). Without it you re-enter the appid and settings in DevTools every time
+- **`.env`** — deploy-time secrets for cloud functions (`DEEPSEEK_API_KEY` / `BOCHA_API_KEY` …), referenced from `cloudbaserc.json` as `${env.XXX}`. Without it, deployed functions have no upstream keys, so retrieval and generation fail
 
 ---
 
@@ -254,30 +272,24 @@ None of the three is committed (all are in `.gitignore`), so your edits never po
 
 ### 1. Client config: `public.ts` (shipped) + `local.ts` (local only)
 
-| File | Committed | Contents |
-|---|---|---|
-| `src/config/public.ts` | ✅ | Deployment-independent settings: the selectable **provider** list with each provider's three tiers, plus `memberOnly` flags. **Never put any key here** (keys live in cloud function environment variables; switching provider only changes request parameters) |
-| `src/config/local.example.ts` | ✅ | Template for local config, all values are placeholders |
-| `src/config/local.ts` | ❌ (in `.gitignore`) | Your own real values: environment ID, subscription template IDs, webview domain allowlist, local debug switch |
+- **`src/config/public.ts`** (committed) — deployment-independent settings: the selectable **provider** list with each provider's three tiers, plus `memberOnly` flags. **Never put any key here** (keys live in cloud function environment variables; switching provider only changes request parameters)
+- **`src/config/local.example.ts`** (committed) — template for local config, all values are placeholders
+- **`src/config/local.ts`** (not committed, in `.gitignore`) — your own real values: environment ID, subscription template IDs, webview domain allowlist, local debug switch
 
 `local.ts` (created by copying `local.example.ts` after cloning):
 
-| Field | Description |
-|---|---|
-| `cloudbaseEnvId` | CloudBase environment ID. While it stays at the placeholder, the cloud service counts as unconfigured and no login or DB call is issued |
-| `subscribeTemplateId` | Template ID for follow-update subscription messages; must match the `SUBSCRIBE_TEMPLATE_ID` environment variable of the cloud functions |
-| `alertTemplateId` | Template ID for keyword alerts; **it must differ from the one above**: WeChat one-time subscription grants are consumed **per template**, so sharing one template between two scheduled jobs means the first job consumes the grant and the second always fails with 43101 |
-| `riskTemplateId` | Template ID for person risk monitoring; **also must differ from both above** (grants are consumed per template). Leave it empty and the feature still works — it just sends no push, while risk signals remain visible in the alerts page |
-| `webviewDomains` | Allowlist of domains the "original article preview" page may embed; leave empty to always fall back to a preview card plus a copy-link action |
-| `debug` | Local debug switch (opens quota gates and upstream cooldowns). **All five flags default to false**, enable only for local integration work |
+- **`cloudbaseEnvId`** — CloudBase environment ID. While it stays at the placeholder, the cloud service counts as unconfigured and no login or DB call is issued
+- **`subscribeTemplateId`** — Template ID for follow-update subscription messages; must match the `SUBSCRIBE_TEMPLATE_ID` environment variable of the cloud functions
+- **`alertTemplateId`** — Template ID for keyword alerts; **it must differ from the one above**: WeChat one-time subscription grants are consumed **per template**, so sharing one template between two scheduled jobs means the first job consumes the grant and the second always fails with 43101
+- **`riskTemplateId`** — Template ID for person risk monitoring; **also must differ from both above** (grants are consumed per template). Leave it empty and the feature still works — it just sends no push, while risk signals remain visible in the alerts page
+- **`webviewDomains`** — Allowlist of domains the "original article preview" page may embed; leave empty to always fall back to a preview card plus a copy-link action
+- **`debug`** — Local debug switch (opens quota gates and upstream cooldowns). **All five flags default to false**, enable only for local integration work
 
 `public.ts`:
 
-| Field | Description |
-|---|---|
-| `llm.providers` | Selectable **providers**: each has an `id` (must match a `PROVIDERS` key in the cloud function's `llm.config.js`), a display name, and `models` (the same three tiers everywhere: `fast` / `standard` / `reason` = Turbo / Standard / Deep Reasoning). **List only the providers whose keys you configured in the cloud** — whichever one a user picks, the cloud function pays with that provider's key and the client holds no credentials |
-| `llm.provider` / `llm.model` / `llm.models` | Default provider, its default model, and its tier list (the latter two equal `providers[0]`'s fast tier and `providers[0].models`). Tier labels are identical across providers, so membership copy can be derived from them — adding a provider changes no wording |
-| `models[].memberOnly` | `true` = members only: free users fall back to that provider's Turbo tier even if they picked it locally. **Changing this flag requires updating `memberOnlyModels` for the matching provider in the `aiProxy` cloud function's `llm.config.js`** — that copy is the real billing gate (the client copy can be bypassed by repackaging) |
+- **`llm.providers`** — Selectable **providers** (currently four: DeepSeek / Qwen / Zhipu GLM / Moonshot Kimi): each has an `id` (must match a `PROVIDERS` key in the cloud function's `llm.config.js`), a display name, and `models` (the same three tiers everywhere: `fast` / `standard` / `reason` = Turbo / Standard / Deep Reasoning). **List only the providers whose keys you configured in the cloud** — whichever one a user picks, the cloud function pays with that provider's key and the client holds no credentials
+- **`llm.provider` / `llm.model` / `llm.models`** — Default provider, its default model, and its tier list (the latter two equal `providers[0]`'s fast tier and `providers[0].models`). Tier labels are identical across providers, so membership copy can be derived from them — adding a provider changes no wording
+- **`models[].memberOnly`** — `true` = members only: free users fall back to that provider's Turbo tier even if they picked it locally. **Changing this flag requires updating `memberOnlyModels` for the matching provider in the `aiProxy` cloud function's `llm.config.js`** — that copy is the real billing gate (the client copy can be bypassed by repackaging)
 
 > A user's provider / tier choice lives in local storage only (`settings:llm_provider` + `settings:llm_tier`).
 > What is stored is the **tier id**, not the model name, so switching provider keeps "the tier I picked"
@@ -289,18 +301,43 @@ None of the three is committed (all are in `.gitignore`), so your edits never po
 
 ### 2. Secret ownership: server-side only, zero client secrets
 
-| Secret / setting | Location | Ships in the mini program bundle? |
-|---|---|---|
-| `BOCHA_API_KEY` + each provider's key (`DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`) | Environment variables of the `aiProxy` / `hotBoardRefresh` cloud functions (read from `.env` at deploy time). **Every provider listed in the client config must have one** | ❌ no |
-| `SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID` | Environment variables of the three scheduled functions (**three different templates**, or they consume each other's one-time grants) | ❌ no |
-| `WX_APPSECRET` | `dbInit` only (to exchange an access_token for index updates) | ❌ no |
-| `DB_ADMIN_TOKEN` | `dbInit` only (custom token, the gate for write actions) | ❌ no |
-| `WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID` | `payCreate` | ❌ no |
-| Deploy-time secret source (the `.env` file itself) | `celebrity-radar/.env` (copied from `.env.example`, **not committed**), referenced from `cloudbaserc.json` as `${env.XXX}` | ❌ no |
-| Environment ID / subscription template IDs | `src/config/local.ts` | ✅ yes (**they are not secrets**) |
+- **`BOCHA_API_KEY` + each provider's key (`DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`)** — environment variables of the `aiProxy` / `hotBoardRefresh` cloud functions (read from `.env` at deploy time). **Every provider listed in the client config must have one**. ❌ not in the bundle
+- **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** — environment variables of the three scheduled functions (**three different templates**, or they consume each other's one-time grants). ❌ not in the bundle
+- **`WX_APPSECRET`** — `dbInit` only (to exchange an access_token for index updates). ❌ not in the bundle
+- **`DB_ADMIN_TOKEN`** — `dbInit` only (custom token, the gate for write actions). ❌ not in the bundle
+- **`WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID`** — `payCreate`. ❌ not in the bundle
+- **Deploy-time secret source (the `.env` file itself)** — `celebrity-radar/.env` (copied from `.env.example`, **not committed**), referenced from `cloudbaserc.json` as `${env.XXX}`. ❌ not in the bundle
+- **Environment ID / subscription template IDs** — `src/config/local.ts`. ✅ in the bundle (**they are not secrets**)
 
 Every request is proxied through a cloud function; the client holds no keys and users need no setup. An older build-your-own-key (BYOK) direct mode was **removed entirely**.
+
 `src/config/local.ts` *is* bundled, so only put "not a secret, but machine-specific" values there.
+
+### 3. Model providers and API keys (four, pick any)
+
+The "Profile → Model provider" screen lets users pick which provider to use, **with the platform paying for the keys inside the cloud function** — users configure nothing. Four providers are exposed to the client (in the order shown in the app):
+
+- **DeepSeek** (id `deepseek`) — key variable `DEEPSEEK_API_KEY`; endpoint `https://api.deepseek.com/v1`; tiers `deepseek-v4-flash` (free) / `deepseek-v4`, `deepseek-reasoner` (members)
+- **Qwen** (id `qwen`) — key variable `QWEN_API_KEY`; endpoint `https://dashscope.aliyuncs.com/compatible-mode/v1` (DashScope compatible mode); tiers `qwen-turbo` / `qwen-plus` / `qwen-max`
+- **Zhipu GLM** (id `zhipu`) — key variable `ZHIPU_API_KEY`; endpoint `https://open.bigmodel.cn/api/paas/v4`; tiers `glm-4-flash` / `glm-4-air` / `glm-4-plus`
+- **Moonshot Kimi** (id `moonshot`) — key variable `MOONSHOT_API_KEY`; endpoint `https://api.moonshot.cn/v1`; tiers `moonshot-v1-8k` / `moonshot-v1-32k` / `moonshot-v1-128k`
+
+Setup:
+
+1. Put all four keys into `celebrity-radar/.env` (copied from `.env.example`) — **the variable names must match the list above**.
+2. Make sure `aiProxy` and `hotBoardRefresh` in `cloudbaserc.json` carry those four variables under `envVariables` (the repository already does; if you upload via the DevTools context menu instead of `tcb fn deploy`, add them by hand in the CloudBase console).
+3. Deploy both functions (`tcb fn deploy aiProxy && tcb fn deploy hotBoardRefresh`).
+4. Verify on a real device: switch to each provider under "Profile → Model provider" and generate once — a report means that key works.
+
+Rules worth knowing:
+
+- **Every provider left in the client list needs its own key.** Listing four and filling in one gives users three options that are bound to fail (they see "the platform has no quota configured for this model (cloud function env `QWEN_API_KEY`)").
+- **To stop offering a provider**, remove it from `llm.providers` in `src/config/public.ts` (the membership copy follows automatically) — do **not** leave the entry and skip its key.
+- **`LLM_PROVIDER` is only a cloud-side fallback**, not the "which provider" switch. It applies when the client sends no provider, or an id that is not in the registry (old build / repackaged client). The `hotBoardRefresh` cron has no client preference and therefore uses it — DeepSeek by default.
+- **Changing member tiers means editing two places**: `memberOnly` in the client `public.ts` (UI and request value) and `memberOnlyModels` in the cloud `llm.config.js` (**the billing gate**). Client-only edits can be bypassed by repackaging.
+- **`OPENAI_API_KEY` is unused by default**: `llm.config.js` has an OpenAI entry, but cloud functions in mainland China cannot reach the official endpoint, and the client list deliberately omits it.
+- **Self-hosted gateway / relay**: add `LLM_BASE_URL` + `LLM_MODEL` + `LLM_API_KEY` to `aiProxy` to override the whole registry (no need to touch `LLM_PROVIDER`). ⚠ `LLM_MODEL` is a **global override** that pins every user to one model (the client still shows the tier they picked), so treat it as a debugging / relay switch, not a permanent setting.
+- **Adding a provider for good**: ① add an entry to `llm.providers` in the client `public.ts`; ② add a matching block to **both** copies of `llm.config.js` (`aiProxy` and `hotBoardRefresh` — they must stay word-for-word identical, because each WeChat cloud function is packaged separately and a cross-directory `require` breaks after deploy); ③ add that provider's key variable to `.env` and `cloudbaserc.json`; ④ keep the member-tier gates aligned in both places.
 
 ---
 
@@ -323,12 +360,17 @@ If your CloudBase CLI version does not resolve that variable, write the environm
 
 ### 2. Deploy cloud functions (10)
 
-At minimum, fill these two in `.env`, otherwise the main flow cannot work (which providers are selectable is decided by `llm.providers` in `src/config/public.ts`):
+Fill in the **Bocha key plus all four LLM keys** in `.env`: skip one and users who switch to that provider see "no quota configured":
 
 ```
-DEEPSEEK_API_KEY=...
 BOCHA_API_KEY=...
+DEEPSEEK_API_KEY=...
+QWEN_API_KEY=...
+ZHIPU_API_KEY=...
+MOONSHOT_API_KEY=...
 ```
+
+**Which providers users can see is decided by `llm.providers` in `src/config/public.ts`** (four today). To offer only some of them, delete entries from that client list instead of skipping keys — see [Configuration](#configuration) §3.
 
 ```bash
 npm i -g @cloudbase/cli     # once
@@ -339,18 +381,16 @@ tcb fn deploy aiProxy       -e <your-env-id>
 
 `cloudbaserc.json` already declares the functions, environment variables and timers, so deploy each one with `tcb fn deploy <name>`.
 
-| Function | Role | Trigger | Environment variables |
-|---|---|---|---|
-| `aiProxy` | Platform-paid upstream keys (`test` / `search` / `chat`) + member model gate (thicker retrieval is gated by `count`) + a chat output cap applied to **every** request (see `chatMaxTokens`); **the provider comes from the client request** (user-selectable), the cloud only falls back | Client call | `BOCHA_API_KEY` + each provider's key (`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`) |
-| `quotaGuard` | Authoritative quota counting (atomic increments with server dates): `refresh` / `generate` / `ask` | Client call | — |
-| `contentCheck` | Content moderation via `security.msgSecCheck`, applied to AI questions | Client call | — |
-| `hotBoardRefresh` | Builds the daily hot board (writes `hot_board`) | Cron 06:30 | `BOCHA_API_KEY` + the provider it uses (a cron job has no client preference, so it takes `LLM_PROVIDER`, DeepSeek by default) |
-| `notifyFollowUpdates` | Pushes follow-update subscription messages | Cron 09:00 | `BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID` |
-| `keywordAlert` | Keyword alerting (searches subscribed keywords, writes `keywords`) | Cron 09:20 | `BOCHA_API_KEY` `ALERT_TEMPLATE_ID` |
-| `riskWatch` | Person risk monitoring (searches per monitored person, writes `risk_signals` and pushes) | Cron 09:40 | `BOCHA_API_KEY` `RISK_TEMPLATE_ID` |
-| `payCreate` | Membership order creation (server-side pricing + cloud pay unified order) | Client call | `WX_PAY_SUB_MCH_ID` `PAY_CALLBACK_ENV_ID` |
-| `payCallback` | Payment notification (amount verification + idempotent renewal) | WeChat Pay callback | — |
-| `dbInit` | Ops tool: create collections, compare fields, create/update indexes (never called by the client) | Manual | `DB_ADMIN_TOKEN` `WX_APPID` `WX_APPSECRET` |
+- **`aiProxy`** — platform-paid upstream keys (`test` / `search` / `chat`) + member model gate (thicker retrieval is gated by `count`) + a chat output cap applied to **every** request (see `chatMaxTokens`); **the provider comes from the client request** (user-selectable), the cloud only falls back. Trigger: client call; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`) + `OPENAI_API_KEY` (unused by default)
+- **`quotaGuard`** — authoritative quota counting (atomic increments with server dates): `refresh` / `generate` / `ask`. Trigger: client call; environment variables: —
+- **`contentCheck`** — content moderation via `security.msgSecCheck`, applied to AI questions. Trigger: client call; environment variables: —
+- **`hotBoardRefresh`** — builds the daily hot board (writes `hot_board`). Trigger: cron 06:30; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (a cron job has no client preference, so it takes `LLM_PROVIDER`, DeepSeek by default — **that provider must therefore have a key**)
+- **`notifyFollowUpdates`** — pushes follow-update subscription messages. Trigger: cron 09:00; environment variables: `BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID`
+- **`keywordAlert`** — keyword alerting (searches subscribed keywords, writes `keywords`). Trigger: cron 09:20; environment variables: `BOCHA_API_KEY` `ALERT_TEMPLATE_ID`
+- **`riskWatch`** — person risk monitoring (searches per monitored person, writes `risk_signals` and pushes). Trigger: cron 09:40; environment variables: `BOCHA_API_KEY` `RISK_TEMPLATE_ID`
+- **`payCreate`** — membership order creation (server-side pricing + cloud pay unified order). Trigger: client call; environment variables: `WX_PAY_SUB_MCH_ID` `PAY_CALLBACK_ENV_ID`
+- **`payCallback`** — payment notification (amount verification + idempotent renewal). Trigger: WeChat Pay callback; environment variables: —
+- **`dbInit`** — ops tool: create collections, compare fields, create/update indexes (never called by the client). Trigger: manual; environment variables: `DB_ADMIN_TOKEN` `WX_APPID` `WX_APPSECRET`
 
 Common pitfalls:
 
@@ -396,6 +436,15 @@ Current state of schema and permissions (important for forks):
 - **Indexes can be automated**: `dbInit` creates and updates them through the WeChat HTTP "update index" API (requires `WX_APPID` / `WX_APPSECRET`), or you can create them manually in the console.
 - To see what is still missing, run `dbInit` with `{"action":"report"}` — the `permissions_manual` block in the result is the very list you must click through.
 
+The console has **no** "everyone reads, signed-in users write" preset, so pick "custom security rules" and fill in one of the four levels below (values map one-to-one to `ACL` in `cloudfunctions/dbInit/schema.js`):
+
+| Level | Security rule (JSON) | Collections |
+|---|---|---|
+| Creator only | Console preset, just pick it | `users` / `follows` / `favorites` / `history` / `events` / `keyword_watches` |
+| Read: everyone; write: signed-in | `{"read": true, "write": "auth.openid != null"}` | `report_cache` / `feed_cache` |
+| Owner reads; client cannot write | `{"read": "doc._openid == auth.openid", "write": false}` | `refresh_quota` / `generate_quota` / `ask_quota` / `orders` |
+| Read: everyone; client cannot write | `{"read": true, "write": false}` | `hot_board` / `keywords` / `risk_scans` / `risk_signals` |
+
 ```bash
 tcb fn deploy dbInit -e <your-env-id>
 tcb fn invoke dbInit -e <your-env-id> --params '{"action":"report"}'                  # read-only audit: see what is missing
@@ -418,7 +467,8 @@ When that variable is unset, write actions are **rejected outright** (the read-o
 
 Before previewing on a real device and before launch, configure in "Official Platform → Development Management" and the mini program console:
 
-- **Request domains**: `https://api.bochaai.com`, `https://api.deepseek.com` (the cloud database / functions go through `wx.cloud` and need **no** domain)
+- **Request domains**: **not needed** — the client never calls an upstream domain directly. Bocha search and all four LLM providers are proxied by cloud functions, and cloud-function egress is not subject to the mini program domain allowlist (the cloud database / functions go through `wx.cloud` and need no domain either)
+- **Business domains** (optional): only needed if you want the "original article preview" page to embed external sites; put them in `src/config/local.ts` → `webviewDomains` (domain only, no scheme or path). Leave it empty and every link falls back to the material preview card + copy link
 - **Privacy policy**: collected items are "anonymous openid, local storage", and must match what the code actually collects
 - **Customer service**: enable it and bind staff (reporting and feedback rely on `open-type="contact"`)
 
@@ -501,7 +551,7 @@ celebrity-radar/
 │   ├── riskWatch/              # Person risk monitoring (cron 09:40)
 │   ├── hotBoardRefresh/        # Daily hot board (cron 06:30)
 │   └── dbInit/                 # Ops tool (schema.js is the schema source of truth)
-├── test/                       # Local unit tests (3 case files / 296 cases)
+├── test/                       # Local unit tests (3 case files / 300 cases)
 ├── config/                     # Taro build config (dev / index / prod)
 ├── cloudbaserc.json            # CloudBase deployment descriptor (functions + env vars + timers)
 ├── .env.example                # Deployment secret template
@@ -515,29 +565,28 @@ celebrity-radar/
 
 `src/utils/` is the only exit point for all business logic and cloud access — pages call into it and never touch the database or upstream APIs directly.
 
-| Module | Responsibility |
-|---|---|
-| `cloud.ts` / `db.ts` | CloudBase initialization and diagnostics; a hand-rolled data-access adapter (`table('x').select/eq/or/upsert/maybeSingle`) with `id ↔ _id` mapping, pagination continuation and write fallbacks |
-| `auth.ts` | WeChat login + first-time `users` initialization; concurrent login deduplication, session persistence, stale-cache rejection |
-| `search.ts` | Bocha adapter (degrades without a key) normalizing material into `NewsItem`; `searchForAsk` used by Q&A |
-| `disambiguate.ts` | LLM homonym disambiguation with a domain-code enum and fallback |
-| `report.ts` | Report generation, zod validation, URL allowlist sanitization, plain-text degradation |
-| `cache.ts` | `report_cache` read/write with the `building` mutex, plus `feed_cache` and `refresh_quota` |
-| `quota.ts` / `quota-guard.ts` | Freemium generation quota and its server-side channel (falls back to local counting when not deployed) |
-| `llm.ts` | LLM calls, always proxied by `aiProxy`; the model name is resolved from local preference + `public.ts`, and non-members requesting a member tier fall back to the default model |
-| `member.ts` / `member-sample.ts` | The membership benefit table (single source of truth), member checks and the report page's member value copy; the "real sample" in the membership center (excerpted verbatim, and omitted when nothing qualifies) |
-| `pay.ts` | Membership payments: fetch server plans (24h local cache + offline fallback) + create order + open checkout + poll for confirmation (price and duration come from the **server only**) |
-| `qa.ts` | AI Q&A: passage selection from the report, an extra web search per question, a daily quota gate counted only on success, and a 3-second tap interval |
-| `weekly.ts` | Weekly digest: material read from `feed_cache` only, the LLM writes text only (people and items follow the material), cached locally per ISO week |
-| `hot-board.ts` / `explore.ts` | Hot board with three-level fallback; "figure of the day" and random exploration (stable seeds, xorshift32 to remove modulo bias) |
-| `keyword-alert.ts` / `keywords.ts` | Keyword subscriptions and alert items; keyword cloud and frequent viewpoints (pure client-side aggregation, effective immediately for cached reports) |
-| `risk-watch.ts` / `risk.ts` | Person risk monitoring subscriptions and signal grouping; the fact-level risk radar list on the report page (both share one dictionary, held in sync by a test) |
-| `topic-digest.ts` / `compare.ts` / `stats.ts` / `trend.ts` | Topic catalog / two-person comparison / profile stats tab / heat-trend curve — all aggregated on the client, adding no schema fields or cloud functions |
-| `quote-check.ts` / `source-link.ts` | Quote sourcing (verifies only verifiable facts); the single outbound link path for the article preview page |
-| `messages.ts` / `notify.ts` | Message-center timeline and its read semantics; WeChat subscription authorization and push placement |
-| `share-card.ts` / `share.ts` | Canvas 2D quote cards (no remote images, nothing uploaded) and the project's only share-copy exit |
-| `sensitive.ts` / `sec-check.ts` | Local sensitive-name blocking (maintained by hand before each release); content moderation (fails open) |
-| Infrastructure | `time.ts` (relative time and the single report-staleness threshold), `cooldown.ts` (10-minute cooldown on 429), `debug.ts` (the single debug-switch exit), `cloud-diagnostics.ts` (structured diagnostic logs), `settings.ts`, `events.ts`, `tabbar.ts`, `data-deletion.ts` |
+- **`cloud.ts` / `db.ts`** — CloudBase initialization and diagnostics; a hand-rolled data-access adapter (`table('x').select/eq/or/upsert/maybeSingle`) with `id ↔ _id` mapping, pagination continuation and write fallbacks
+- **`auth.ts`** — WeChat login + first-time `users` initialization; concurrent login deduplication, session persistence, stale-cache rejection
+- **`search.ts`** — Bocha adapter (degrades without a key) normalizing material into `NewsItem`; `searchForAsk` used by Q&A
+- **`disambiguate.ts`** — LLM homonym disambiguation with a domain-code enum and fallback
+- **`report.ts`** — report generation, zod validation, URL allowlist sanitization, plain-text degradation
+- **`cache.ts`** — `report_cache` read/write with the `building` mutex, plus `feed_cache` and `refresh_quota`
+- **`quota.ts` / `quota-guard.ts`** — freemium generation quota and its server-side channel (falls back to local counting when not deployed)
+- **`llm.ts`** — LLM calls, always proxied by `aiProxy`; **provider + tier** are resolved from the local preference plus `public.ts` (switching provider keeps the tier), and non-members requesting a member tier always fall back to that provider's fast model
+- **`member.ts` / `member-sample.ts`** — the membership benefit table (single source of truth), member checks and the report page's member value copy; the "real sample" in the membership center (excerpted verbatim, and omitted when nothing qualifies)
+- **`pay.ts`** — membership payments: fetch server plans (24h local cache + offline fallback) + create order + open checkout + poll for confirmation (price and duration come from the **server only**)
+- **`qa.ts`** — AI Q&A: passage selection from the report, an extra web search per question, a daily quota gate counted only on success, and a 3-second tap interval
+- **`weekly.ts`** — weekly digest: material read from `feed_cache` only, the LLM writes text only (people and items follow the material), cached locally per ISO week
+- **`hot-board.ts` / `explore.ts`** — hot board with three-level fallback; "figure of the day" and random exploration (stable seeds, xorshift32 to remove modulo bias)
+- **`keyword-alert.ts` / `keywords.ts`** — keyword subscriptions and alert items; keyword cloud and frequent viewpoints (pure client-side aggregation, effective immediately for cached reports)
+- **`risk-watch.ts` / `risk.ts`** — person risk monitoring subscriptions and signal grouping; the fact-level risk radar list on the report page (both share one dictionary, held in sync by a test)
+- **`topic-digest.ts` / `compare.ts` / `stats.ts` / `trend.ts`** — topic catalog / two-person comparison / profile stats tab / heat-trend curve — all aggregated on the client, adding no schema fields or cloud functions
+- **`quote-check.ts` / `source-link.ts`** — quote sourcing (verifies only verifiable facts); the single outbound link path for the article preview page
+- **`messages.ts` / `notify.ts`** — message-center timeline and its read semantics; WeChat subscription authorization and push placement
+- **`share-card.ts` / `share.ts`** — Canvas 2D quote cards (no remote images, nothing uploaded) and the project's only share-copy exit
+- **`sensitive.ts` / `sec-check.ts`** — local sensitive-name blocking (maintained by hand before each release); content moderation (fails open)
+- **`follows.ts` / `favorites.ts` / `history.ts` / `watch.ts`** — follow list (`openid#personKey` key), four favorite types (`openid#type#hash`, deduplicated by construction), query history (last 50 per account), and the "what changed" overview for followed figures (material read from `report_cache` and `feed_cache` only)
+- **Infrastructure** — `time.ts` (relative time and the single report-staleness threshold), `date.ts` (the single report-date normalizer shared by the trend curve and the stats bar), `cooldown.ts` (10-minute cooldown on 429), `debug.ts` (the single debug-switch exit), `cloud-diagnostics.ts` (structured diagnostic logs), `settings.ts`, `events.ts`, `tabbar.ts`, `data-deletion.ts`
 
 ---
 
@@ -557,18 +606,18 @@ celebrity-radar/
 ## Development & Testing
 
 ```bash
-npm test          # compile tests with tsc, then run everything (296 cases, fully local, no cloud)
+npm test          # compile tests with tsc, then run everything (300 cases, fully local, no cloud)
 npm run test:only # skip tsc and run directly
 ```
 
 The suite adds **no dependencies** (a hand-written in-memory CloudBase plus Taro / `wx` stubs and a minimal assertion library) and asserts against the **compiled product code itself**.
 It needs no cloud environment, no DevTools and no network. It does not cover page rendering, on-device interaction, cloud-function execution, or payments and push.
 
-Before submitting a change, confirm:
+Before submitting a change, confirm these five:
 
-1. `npm test` is green (currently 296 / 296)
+1. `npm test` is green (currently 300 / 300)
 2. `npx tsc --noEmit` reports no new warnings
-3. The mini program **main package size** is within the hard 2MB limit (currently about 1.2MB); check the build output before adding dependencies
+3. The mini program **main package size** is within the hard 2MB limit (the current build output is about 1.3MB); check the build output before adding dependencies
 4. `src/config/local.ts` and the `debug` flags are **not** committed (already in `.gitignore`)
 5. Schema changes come with matching updates to `cloudfunctions/dbInit/schema.js` (the single source of truth)
 
@@ -578,15 +627,16 @@ Before submitting a change, confirm:
 
 | Question | Answer |
 |---|---|
-| Can I just run it? | It compiles. To exercise generation you need your own CloudBase environment plus DeepSeek and Bocha keys |
+| Can I just run it? | It compiles. To exercise generation you need a **CloudBase environment + a Bocha key + LLM keys** (four providers are selectable; configuring `DEEPSEEK_API_KEY` alone is enough to get started, but **every provider left in the client list needs its own key**, see [Configuration](#configuration) §3) |
 | Will it cost money? | Yes. Search and LLM calls are metered — the quota, cache and cooldown mechanisms exist precisely to contain that |
 | Can I use it commercially? | The license allows it, but **launching requires your own entity qualifications, category filing and AI-content compliance measures** |
 | Does the membership payment work? | The code is complete (`payCreate`, `payCallback`, the `PLANS` price map) but needs your own WeChat Pay merchant account; without it the client says so explicitly and free features keep working |
 | Can I keep the brand? | "Celebrity Radar" belongs to the original author; please rename before publishing a fork to avoid confusion |
 | Why is commercial code included? | It is a complete reference implementation: a single price source, a read-only client, and cloud-side enforcement — the reasoning is documented in the comments |
+| Which LLMs are supported and can users choose? | The client offers **four** selectable providers: DeepSeek / Qwen / Zhipu GLM / Moonshot Kimi, picked by the user under "Profile → Model provider", with the platform paying for the keys in the cloud function (`llm.config.js` also lists OpenAI, but it is deliberately not exposed). Variable names, setup steps and the cost of a missing key are in [Configuration](#configuration) §3 |
 | How hard is it to swap upstreams? | The providers users may pick live in `llm.providers` in `src/config/public.ts`; the cloud registry (endpoints / key variable names / member tiers) is `cloudfunctions/aiProxy/llm.config.js` (with a byte-identical copy in `hotBoardRefresh` — change both). Adding one = one entry on each side + one environment variable |
 
-**Upstream risk**: the search provider (Bocha) and the LLM (DeepSeek, an OpenAI-compatible endpoint) are third-party paid services;
+**Upstream risk**: the search provider (Bocha) and the LLMs (DeepSeek / Qwen / Zhipu GLM / Moonshot Kimi, all OpenAI-compatible endpoints) are third-party paid services;
 their APIs, pricing and availability are outside this project's control.
 
 ---
@@ -609,7 +659,7 @@ Issues and pull requests are welcome. **The full process, review criteria and Is
 
 1. The default branch is `master` — branch off it (`feat/xxx`, `fix/xxx`, `docs/xxx`, `chore/xxx`)
 2. Follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:` / `fix:` / `docs:` / `chore:` …), one concern per commit
-3. Complete the five "before submitting a change" checks above and explain the motivation and verification in the PR description
+3. Complete the five checks in "Before submitting a change" above and explain the motivation and verification in the PR description
 4. Attach on-device screenshots for UI or interaction changes
 5. When touching either "hand-synced pair" (the provider/tier tables, the member-tier gate), change both copies
 6. Keep both READMEs (`README.md` / `README.en.md`) in sync, and update [`CHANGELOG.md`](./CHANGELOG.md)
@@ -643,8 +693,8 @@ faster replies, or unlocked membership.
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/%E5%BE%AE%E4%BF%A1.JPG" width="220" alt="WeChat Pay QR code"><br><sub><b>WeChat Pay</b></sub></td>
-    <td align="center"><img src="./assets/%E6%94%AF%E4%BB%98%E5%AE%9D.JPG" width="220" alt="Alipay QR code"><br><sub><b>Alipay</b></sub></td>
+    <td align="center"><img src="./assets/%E5%BE%AE%E4%BF%A1.JPG" width="165" alt="WeChat Pay QR code"><br><sub><b>WeChat Pay</b></sub></td>
+    <td align="center"><img src="./assets/%E6%94%AF%E4%BB%98%E5%AE%9D.JPG" width="165" alt="Alipay QR code"><br><sub><b>Alipay</b></sub></td>
   </tr>
 </table>
 
@@ -665,7 +715,7 @@ perform (database schema, cloud-function contract, config renames — flagged as
 
 Released under the [Apache License 2.0](./LICENSE); copyright and third-party notices are in [`NOTICE`](./NOTICE).
 
-- Upstream services: Tencent CloudBase (WeChat Cloud Development), Bocha search, DeepSeek (or any OpenAI-compatible endpoint), WeChat Pay
+- Upstream services: Tencent CloudBase (WeChat Cloud Development), Bocha search, four selectable LLM providers (DeepSeek / Qwen / Zhipu GLM / Moonshot Kimi), WeChat Pay
 - Open-source dependencies: Taro, Taro UI, React, zustand, zod, dayjs and others, each owned by its respective authors
 
 **Disclaimer**: this project is intended for technical learning and exchange. You are responsible for any consequences of using it,

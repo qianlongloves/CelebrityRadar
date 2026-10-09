@@ -37,7 +37,7 @@ npm install                                          # .npmrc 已开启 legacy-p
 
 npm run dev:weapp      # 开发模式（watch，产物 dist/）
 npm run build:weapp    # 生产构建
-npm test               # 本地单测（219 条，不连云、不需要 Key）
+npm test               # 本地单测（300 条，不连云、不需要 Key）
 ```
 
 用微信开发者工具导入 `celebrity-radar/` 目录。**只想改端上逻辑时，不需要任何云端配置** ——
@@ -60,9 +60,9 @@ npm test               # 本地单测（219 条，不连云、不需要 Key）
 
 ## 四、提交前请确认（5 条）
 
-1. `npm test` 全绿（当前 **219 / 219**）
+1. `npm test` 全绿（当前 **300 / 300**）
 2. `npx tsc --noEmit` 无新增告警
-3. 主包体积仍在硬上限 2MB 内（当前约 1.2MB）—— 新增依赖前先看构建产物
+3. 主包体积仍在硬上限 2MB 内（当前约 1.3MB）—— 新增依赖前先看构建产物
 4. `src/config/local.ts` 与 `debug` 开关**不要**提交
 5. 改动涉及数据模型时，同步更新 `cloudfunctions/dbInit/schema.js`（库结构的单一事实源）
 
@@ -84,7 +84,7 @@ npm test               # 本地单测（219 条，不连云、不需要 Key）
   | 供应商 / 档位表 | `src/config/public.ts` 的 `llm.providers` | `cloudfunctions/aiProxy/llm.config.js` 与 `cloudfunctions/hotBoardRefresh/llm.config.js`（两份逐字相同） |
   | 会员专属档位（计费闸门） | 端上各家的 `memberOnly` | `llm.config.js` 的 `memberOnlyModels` |
 
-  改了库结构只改 `schema.js` 是不够的：集合权限与索引要在**控制台手工**配置（见 README「[部署](./README.md#部署)」第 2 步），
+  改了库结构只改 `schema.js` 是不够的：集合权限与索引要在**控制台手工**配置（见 README「[部署](./README.md#部署)」第 3 步），
   而这部分不在版本库里 —— PR 描述里请写清「部署者需要去控制台做什么」。
 
 - **文档同步**：行为或配置变更请同时更新 `README.md` 与 `README.en.md`，并补一条 [`CHANGELOG.md`](./CHANGELOG.md)。
@@ -137,7 +137,7 @@ Contributions are welcome. The essentials:
    on-device verification of the generation flow.
 3. **Branches & commits** — branch off **`master`** (`feat/`, `fix/`, `docs/`, `chore/`), follow
    [Conventional Commits](https://www.conventionalcommits.org/), one concern per commit.
-4. **Before submitting** — `npm test` green (219/219), no new `tsc --noEmit` warnings, main package still
+4. **Before submitting** — `npm test` green (300/300), no new `tsc --noEmit` warnings, main package still
    under 2MB, `src/config/local.ts` and the `debug` flags not committed, `dbInit/schema.js` updated with schema changes.
 5. **Review focus** — motivation, verification evidence, failure/degradation behavior, and comments that explain
    *why* (that is this repo's main reading material). Note the two hand-synced pairs: the provider/tier tables
