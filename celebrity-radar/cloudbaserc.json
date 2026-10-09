@@ -115,9 +115,19 @@
     },
     {
       "name": "payCallback",
-      "timeout": 20,
+      "timeout": 60,
       "runtime": "Nodejs16.13",
-      "installDependency": true
+      "installDependency": true,
+      "envVariables": {
+        "PAY_ADMIN_TOKEN": "${env.PAY_ADMIN_TOKEN}"
+      },
+      "triggers": [
+        {
+          "name": "payReconcile",
+          "type": "timer",
+          "config": "0 15 * * * * *"
+        }
+      ]
     },
     {
       "name": "dbInit",

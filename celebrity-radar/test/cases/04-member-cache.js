@@ -126,13 +126,34 @@ describe('只升不降 utils/cache#shouldKeepMemberVersion', () => {
     notOk(shouldKeepMemberVersion(mkReport(), mkRow(mkReport())))
   })
 
-  it('没有可用的既有行（null / 非 ready）⇒ 照常写', () => {
+  it('没有可用的既有行（null / 无内容）⇒ 照常写', () => {
     const { load } = fresh()
     const { shouldKeepMemberVersion } = load('utils/cache')
 
     notOk(shouldKeepMemberVersion(mkReport(), null))
     notOk(shouldKeepMemberVersion(mkReport(), undefined))
-    notOk(shouldKeepMemberVersion(mkReport(), mkRow(mkReport({ memberNotes: MEMBER_NOTES }), 'building')))
+    notOk(shouldKeepMemberVersion(mkReport(), mkRow(mkReport())))
+  })
+
+  it('那一行是 building 却仍带着旧内容 ⇒ 照样保护（P0 修复，2026-10-09）', () => {
+    const { load } = fresh()
+    const { shouldKeepMemberVersion } = load('utils/cache')
+
+    /*
+     * 判定**不看 state**：acquire 不再清空 report，于是刷新期间那一行是 state='building'
+     * 却仍带着上一版 —— 那正是本次要覆盖掉的东西。
+     * 旧实现要求 state==='ready'，而抢占本就把行改成了 building，守卫于是恒不命中：
+     * 免费档点一次「刷新最新」就能把全站的会员段落永久抹掉（报告 ready 后长期复用、不自愈）。
+     * 这条用例就是钉住那个错。
+     */
+    ok(
+      shouldKeepMemberVersion(mkReport(), mkRow(mkReport({ memberNotes: MEMBER_NOTES }), 'building')),
+      'building 行上的会员版同样不许被免费档产物覆盖'
+    )
+    notOk(
+      shouldKeepMemberVersion(mkReport(), mkRow(mkReport(), 'building')),
+      'building 行上本来就没会员段 ⇒ 照常写'
+    )
   })
 })
 
@@ -145,14 +166,28 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
     ok(save.includes("return 'kept'"), '守卫命中要回报 kept（不能静默当作写成功）')
   })
 
-  it('kept 分支交回既有版本，且不消耗配额（没拿到新东西就不该扣次数）', () => {
-    const keptAt = src.indexOf("if (saved === 'kept')")
-    ok(keptAt > 0, '主流程必须处理 kept')
-    ok(src.includes('keptMember: true'), '页面要靠这个标记解释「刷新了却没变化」')
+  it('「只升不降」在**落库之前**判并提前 return，且不消耗配额（没拿到新东西就不该扣次数）', () => {
+    const saveAt = src.indexOf('const saved = await saveReady')
+    const earlyAt = src.indexOf('if (!hasMemberBlocks(report) && shouldKeepMemberVersion(')
+    const plainQuotaAt = src.indexOf('if (!memberUpgrade) void consumeGenerateQuota(userId)')
+    const keptBranchAt = src.indexOf("if (saved === 'kept')")
 
-    const quotaAt = src.indexOf("void consumeGenerateQuota(")
-    ok(quotaAt > 0)
-    ok(keptAt < quotaAt, 'kept 必须在消耗配额之前 return —— 否则等于扣了次数还降级')
+    ok(earlyAt > 0 && saveAt > 0, '必须同时存在「落库前判定」与落库调用')
+    ok(earlyAt < saveAt, '只升不降必须在落库之前判 —— 覆盖之后就再也读不到那一版了')
+    ok(plainQuotaAt > saveAt, '普通计数在落库之后（落库失败就不计数）')
+    ok(keptBranchAt > saveAt && keptBranchAt < plainQuotaAt, '兜底 kept 分支同样在计数之前 return')
+    ok(src.includes('keptMember: true'), '页面要靠这个标记解释「刷新了却没变化」')
+  })
+
+  it('免计费申请在**落库之前**发出（云端复核读的就是那一行，晚一步条件就恒不成立）', () => {
+    const waiveAt = src.indexOf('void consumeGenerateQuota(userId, { waiveIf:')
+    const saveAt = src.indexOf('const saved = await saveReady')
+
+    ok(waiveAt > 0 && saveAt > 0)
+    ok(
+      waiveAt < saveAt,
+      '否则 quotaGuard 读到的是刚写入的含会员段新版，member_upgrade 复核永远不过（P1 修复）'
+    )
   })
 
   it('只有 generate 会申请免计费，且 target 就是缓存主键', () => {
@@ -386,7 +421,11 @@ describe('档位隔离已接进读取路径（源码钉住，防「写了剥离�
 
   it('每个交回口都带上了 memberLocked（漏一处 = 一处静默的越权，或一处静默的文案退化）', () => {
     const n = (src.match(/memberLocked: shown\.locked/g) || []).length
-    eq(n, 5, '缓存命中 / 等待他人 ×2 / kept / 生成成功 —— 五处交回口一个都不能少')
+    eq(
+      n,
+      6,
+      '缓存命中 / 等待他人 ×2 / kept / 生成成功 / 刷新失败交回旧版（cachedFallback）—— 六处交回口一个都不能少'
+    )
   })
 
   it('批量只读一次身份，而不是逐份读（tabBar 页每次切回来都会重跑）', () => {
@@ -544,5 +583,190 @@ describe('免费档「刷新最新」冷却（批 2）', () => {
 
     ok(time > 0 && who > 0)
     ok(time < who, '先算时间（零成本），只有真的落进窗口才读一次身份')
+  })
+})
+
+/* --------------------------- 只升不降 · 端到端时序（P0 回归，2026-10-09） */
+
+/**
+ * 上半部分钉的是**纯函数**，而 P0 那个坑恰恰不在函数里 —— 它在调用时序上：
+ * acquire 与 saveReady 之间，那一行上还剩什么。所以这组用例把整条链路跑一遍。
+ *
+ * 修复前的实测行为：守卫要求 state==='ready'，而抢锁（acquire）本就把行改成了 building，
+ * 于是守卫恒不命中 —— 免费档刷一次就能把全站的会员段落永久抹掉（报告 ready 后长期复用、
+ * 不自愈）。这类「函数对、时序错」的缺陷只有端到端能拦住，源码字符串钉不住。
+ */
+describe('只升不降 · 端到端（非会员 force 刷新不得吃掉会员版）', () => {
+  const HOUR = 60 * 60 * 1000
+
+  /** 48 小时前生成的会员版报告（旧到可以 force，含 memberNotes） */
+  const memberRow = () => ({
+    _id: '测试人物#tech',
+    state: 'ready',
+    report: mkReport({
+      heat: 5,
+      memberNotes: MEMBER_NOTES,
+      generatedAt: new Date(Date.now() - 48 * HOUR).toISOString()
+    })
+  })
+
+  const asMember = () =>
+    env.db.__seed('users', [
+      {
+        _id: 'u1',
+        _openid: 'me',
+        membership: { plan: 'month', expires_at: new Date(Date.now() + 864e5).toISOString() }
+      }
+    ])
+
+  /**
+   * 检索可用 + 模型按提示词要求决定是否吐会员段（与「会员段落的提示词只往会员的 system
+   * 末尾追加」用例同一套口径）：免费档的提示词里没有那条要求，于是产物不含会员段 ——
+   * 正是 P0 要拦下的那份输入。
+   */
+  const online = () => {
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action === 'search') {
+        return { ok: true, pages: [{ name: '标题', url: 'https://news.example.com/a', snippet: '正文' }] }
+      }
+      const asked = data.messages[0].content.includes('会员补充要求')
+      return {
+        ok: true,
+        content: JSON.stringify(asked ? { intro: '新简介', memberNotes: MEMBER_NOTES } : { intro: '新简介' })
+      }
+    })
+  }
+
+  it('免费档 force 刷新：交回会员版、不落库、锁要放掉（state 不得残留 building）', async () => {
+    const { load } = fresh()
+    const { getOrBuildReport, hasMemberBlocks } = load('utils/cache')
+    online()
+    env.db.__seed('report_cache', [memberRow()])
+
+    const out = await getOrBuildReport('测试人物#tech', { force: true })
+
+    eq(out.kind, 'report')
+    eq(out.keptMember, true, '页面要靠这个标记解释「为什么点了刷新却没变化」')
+
+    const row = env.db.__dump('report_cache')[0]
+    eq(row.state, 'ready', '不落库也要放掉锁 —— 否则该行以 building 残留，读者只能排队到超时')
+    ok(hasMemberBlocks(row.report), '会员段落必须还在 —— 这正是修复 P0 之前会丢掉的东西')
+    eq(row.report.intro, undefined, '免费档那份简版内容一个字都不许写进去')
+  })
+
+  it('会员 force 刷新：照常写入，这一次真的把会员段更新了（闸门只拦降级）', async () => {
+    const { load } = fresh()
+    const { getOrBuildReport, hasMemberBlocks } = load('utils/cache')
+    asMember()
+    online()
+    env.db.__seed('report_cache', [memberRow()])
+
+    const out = await getOrBuildReport('测试人物#tech', { force: true })
+
+    eq(out.keptMember, undefined, '会员自己的刷新不该被「只升不降」拦下')
+
+    const row = env.db.__dump('report_cache')[0]
+    eq(row.state, 'ready')
+    ok(hasMemberBlocks(row.report), '会员产物本来就含会员段')
+    eq(row.report.intro, '新简介', '会员这一次是真的重新生成了')
+  })
+})
+
+/* --------------------------- 刷新失败交回旧版（P1-8，2026-10-09） */
+
+/**
+ * 「刷新最新」是在**已经读着的内容上**再点一次。修复前失败分支直接返回 `{kind:'error'}`，
+ * 页面就把它渲染成「生成失败」空态 —— 上游抖一下，用户从「有一份能读的报告」变成
+ * 「什么都没有」，而报告一旦 ready 就长期复用、刷新失败本不该把它从读者眼前拿走。
+ *
+ * 这里用端到端钉住整条链路：一次 getOrBuildReport 走完「检索成功 + 模型整条失败」，
+ * 返回的必须是缓存里原来的那一版 + refreshFailed 标记 + 已放锁的 ready 行。
+ */
+describe('force 刷新失败不得清空正在读的报告（P1-8）', () => {
+  const HOUR = 60 * 60 * 1000
+
+  const oldRow = () => ({
+    _id: '测试人物#tech',
+    state: 'ready',
+    report: mkReport({
+      heat: 5,
+      intro: '旧版简介',
+      generatedAt: new Date(Date.now() - 48 * HOUR).toISOString()
+    })
+  })
+
+  /** 检索可用，但模型整条链路（结构化 + 降级纯文本）都失败；返回调用计数 */
+  const flaky = () => {
+    let n = 0
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action === 'search') {
+        return { ok: true, pages: [{ name: '标题', url: 'https://news.example.com/a', snippet: '正文' }] }
+      }
+      n += 1
+      return { ok: false, kind: 'upstream', error: '大模型服务暂时不可用（502）' }
+    })
+    return () => n
+  }
+
+  it('force 失败：交回缓存旧版 + refreshFailed，缓存与锁都不被弄坏', async () => {
+    const { load } = fresh()
+    const cache = load('utils/cache')
+    const calls = flaky()
+    env.db.__seed('report_cache', [oldRow()])
+
+    const out = await cache.getOrBuildReport('测试人物#tech', { force: true })
+
+    eq(out.kind, 'report', '刷新失败绝不能把用户从报告页打回错误页')
+    eq(out.fromCache, true)
+    eq(out.refreshFailed, true)
+    eq(out.report.intro, '旧版简介', '交回的必须是原来那一版，一个字都不能少')
+    ok(typeof out.refreshError === 'string' && out.refreshError.length > 0, '要带上一句可展示的原因')
+    ok(calls() >= 1, '确实尝试过刷新')
+
+    const row = env.db.__dump('report_cache')[0]
+    eq(row.state, 'ready', '失败也要放锁，否则全站排队到超时')
+    eq(row.report.intro, '旧版简介', '失败不得写坏既有缓存')
+  })
+
+  it('缓存里没有可交回的旧版（首次生成就失败）：照旧 error，不伪造 refreshFailed', async () => {
+    const { load } = fresh()
+    const cache = load('utils/cache')
+    flaky()
+
+    const out = await cache.getOrBuildReport('测试人物#tech', { force: true })
+
+    eq(out.kind, 'error')
+    notOk(out.refreshFailed)
+  })
+
+  it('refreshFailureNote：成功不出提示，「正在生成」也不出（那是等待态），其余失败给人话', () => {
+    const { load } = fresh()
+    const { refreshFailureNote } = load('utils/cache')
+
+    eq(refreshFailureNote({ kind: 'report', report: mkReport() }), null, '拿到新内容就别多嘴')
+    eq(
+      refreshFailureNote({
+        kind: 'report',
+        report: mkReport(),
+        refreshFailed: true,
+        refreshError: '上游不可用（502）'
+      }),
+      '上游不可用（502）',
+      '刷新失败时原样给出原因'
+    )
+    eq(
+      refreshFailureNote({ kind: 'report', report: mkReport(), refreshFailed: true }),
+      '刷新失败，继续显示当前版本',
+      '没带原因也要给一句兜底，不能让提示条空着'
+    )
+    eq(
+      refreshFailureNote({ kind: 'error', message: '该人物正在生成中，请稍候' }),
+      null,
+      '「正在生成」是别人在生成，页面会切等待态，不该再叠一句失败提示'
+    )
+    ok(typeof refreshFailureNote({ kind: 'coldstart' }) === 'string')
+    ok(typeof refreshFailureNote({ kind: 'nonews' }) === 'string')
+    ok(typeof refreshFailureNote({ kind: 'refused' }) === 'string')
+    ok(typeof refreshFailureNote({ kind: 'error', message: '上游不可用' }) === 'string')
   })
 })

@@ -90,6 +90,13 @@ function createDb(opts = {}) {
   const stats = { getCalls: 0, addCalls: 0, updateCalls: 0, removeCalls: 0, docSetCalls: 0 }
   /** 故障注入：集合名 -> true 时该集合所有读写抛错（模拟权限未开 / 表没建） */
   const failing = new Set()
+  /**
+   * V-1（2026-10-09）：doc(id).update() 打到**不存在的行**，真实 wx-server-sdk 是返回
+   * stats.updated===0 还是直接抛错，尚无真机结论。本 mock 默认复刻前者（返回 0），
+   * 打开这个开关则复刻后者（抛错）—— 好让「抛错」这一支的代码路径也能被跑到。
+   * 云端应把两种行为都当成「自增没落实」，故两条路径上的闸门结论必须一致。
+   */
+  let missingDocUpdateThrows = false
   let seq = 0
 
   const guard = (name) => {
@@ -223,7 +230,13 @@ function createDb(opts = {}) {
     async update({ data }) {
       guard(this.name)
       const d = coll(this.name).get(this.id)
-      if (!d) return { stats: { updated: 0 }, errMsg: 'document.update:ok' }
+      if (!d) {
+        /* 见文件顶部 V-1 说明：真实的「行不存在」行为未定，两种都复刻得出来 */
+        if (missingDocUpdateThrows) {
+          throw Object.assign(new Error(`mock: document.update:fail not exists (${this.id})`), { errCode: -1 })
+        }
+        return { stats: { updated: 0 }, errMsg: 'document.update:ok' }
+      }
       applyUpdate(d, data)
       return { stats: { updated: 1 }, errMsg: 'document.update:ok' }
     }
@@ -243,7 +256,9 @@ function createDb(opts = {}) {
     __seed(name, docs) { for (const d of docs) coll(name).set(String(d._id), clone(d)) },
     /** 故障注入：该集合的读写全部抛错 */
     __setFailing(name, on) { if (on) failing.add(name); else failing.delete(name) },
-    __reset() { tables.clear(); seq = 0; failing.clear() },
+    /** V-1：让 doc(id).update() 打到不存在的行时抛错（复刻另一种真机可能行为） */
+    __setMissingDocUpdateThrows(on) { missingDocUpdateThrows = !!on },
+    __reset() { tables.clear(); seq = 0; failing.clear(); missingDocUpdateThrows = false },
     database() {
       return {
         collection: (name) => new Query(name, null),

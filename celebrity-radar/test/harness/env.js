@@ -35,11 +35,22 @@ const storageApi = {
 
 const taroCalls = []
 
+/**
+ * 用例可临时改写某个 Taro API 的返回值（如把 getSystemInfoSync 指成 iOS 环境）。
+ *
+ * 默认替身对任何非 storage 的 API 都返回同一个「记录调用并返回 undefined」的函数 ——
+ * 这对绝大多数用例够用，但「跟着运行环境分叉」的逻辑（如 P2-20 的 iOS 虚拟支付门禁）
+ * 就必须能让它返回指定值，否则真机分支永远测不到。覆盖是**临时**的：resetData 会清空，
+ * 用例之间不会互相污染。
+ */
+const taroOverrides = new Map()
+
 const taroMock = new Proxy({}, {
   get(_target, prop) {
     if (prop === '__esModule') return true
     if (prop === 'default') return taroMock
     if (prop === Symbol.toStringTag) return 'TaroMock'
+    if (typeof prop === 'string' && taroOverrides.has(prop)) return taroOverrides.get(prop)
     if (typeof prop === 'string' && Object.prototype.hasOwnProperty.call(storageApi, prop)) {
       return storageApi[prop]
     }
@@ -129,8 +140,15 @@ function resetData() {
   db.__reset()
   storage.clear()
   taroCalls.length = 0
+  /* Taro 返回值覆盖是「本用例的环境设定」，同样不该泄漏到下一用例 */
+  taroOverrides.clear()
   /* 已注册的云函数是测试脚手架，不属于被测状态：不清会让上一用例注入的替身泄漏到下一用例 */
   cloudFns.clear()
+}
+
+/** 覆盖某个 Taro API 的返回值（**必须在 load 业务模块之后、调用它之前设置**，见 taroOverrides） */
+function setTaroOverride(name, value) {
+  taroOverrides.set(name, value)
 }
 
 function resetAll() {
@@ -191,6 +209,7 @@ module.exports = {
   resetModules,
   resetData,
   resetAll,
+  setTaroOverride,
   findTaroCall,
   taroCallsOf,
   notDeployed,

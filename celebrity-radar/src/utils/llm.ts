@@ -339,6 +339,8 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
      * kind 一并回传：调用方要据此认出「云端配额闸门拦下」（kind='quota'）——
      * report.ts 收到它必须**跳过纯文本降级**，否则降级那次调用会被同一道闸门再拦一次，
      * 白多等一轮往返，还把一个「额度用完」写成「生成失败」。
+     * `upstream_quota`（上游自己欠费 / 403，P2-9）是**另一件事**：处置同为「不降级」，
+     * 但文案必须保持上游原文，不能与用户的额度混为一谈。
      */
     return { ok: false, error: msg, retryable: RETRYABLE_KINDS.has(kind), kind }
   }
@@ -414,6 +416,10 @@ export function extractJSONText(raw: string): string | null {
 /**
  * 纯文本生成（无 JSON 约束）：报告降级路径用（§5.4 用例 9）。
  * 失败即失败（调用方已重试过 JSON 路径，不再叠加重试）。
+ *
+ * 失败分支同样带 `retryable`（与 ChatJSONResult 同口径）：问答链路（qa.ts）据此决定要不要
+ * 进 10 分钟冷却 —— 与 report.ts / weekly.ts 完全一致，免得同一趟上游故障在问答侧被无限重打
+ * （每次都是真实付费的「检索 + 大模型」）。见 P2-14。
  */
 export async function chatText(
   system: string,
@@ -423,7 +429,7 @@ export async function chatText(
    * 默认 `'generate'`：报告降级路径与报告同属生成池；AI 提问必须显式传 `'ask'`（见 qa.ts）。
    */
   purpose: QuotaPurpose = 'generate'
-): Promise<{ ok: true; text: string } | { ok: false; error: string; kind?: string }> {
+): Promise<{ ok: true; text: string } | { ok: false; error: string; retryable?: boolean; kind?: string }> {
   if (!hasLlmChannel()) {
     return { ok: false, error: '大模型通道不可用：云环境未配置（见 public.ts 的 cloudbaseEnvId）' }
   }
@@ -434,7 +440,7 @@ export async function chatText(
     ],
     purpose
   )
-  if (!attempt.ok) return { ok: false, error: attempt.error, kind: attempt.kind }
+  if (!attempt.ok) return { ok: false, error: attempt.error, retryable: attempt.retryable, kind: attempt.kind }
   const text = attempt.content.trim()
   if (!text) return { ok: false, error: 'LLM 返回为空', kind: 'empty' }
   return { ok: true, text }

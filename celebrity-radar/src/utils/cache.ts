@@ -10,6 +10,12 @@ import { cooldownMinutesLeft } from './cooldown'
 import { peekGenerateQuota, consumeGenerateQuota } from './quota'
 import { quotaExhaustedMessage, presentSections, readMemberState, stripMemberSections } from './member'
 import { incrQuotaViaCloud } from './quota-guard'
+import {
+  acquireLockViaCloud,
+  releaseLockViaCloud,
+  saveReportViaCloud,
+  saveFeedViaCloud
+} from './report-store'
 import { REFRESH_QUOTA_DISABLED } from './debug'
 import { diagLog } from './cloud-diagnostics'
 import type { ReportCacheRow, FeedCacheRow, RefreshQuotaRow } from '@/types/db'
@@ -59,6 +65,17 @@ export type ReportOutcome =
        * 会以为按钮坏了（与 keptMember 同一个「点了没变」的问题，故提示挂在同一处）。
        */
       refreshCooled?: boolean
+      /**
+       * 本次 force 刷新**失败**，交回的是缓存里原有的那一版（P1-8，2026-10-09）。
+       *
+       * 报告页的「刷新最新」是在**已经读着的内容上**再点一次，失败时若交回 `error`，
+       * 页面就会把它渲染成「生成失败」空态 —— 上游抖一下，用户就从「有一份能读的报告」
+       * 变成「什么都没有」。报告 ready 后长期复用，刷新失败不该把它从读者眼前拿走，
+       * 故这里照常交回既有版本，只用这个标记说明「这次没刷成」（文案见 refreshFailureNote）。
+       */
+      refreshFailed?: boolean
+      /** 失败原因（配合 refreshFailed，页面直接展示） */
+      refreshError?: string
     }
   | { kind: 'coldstart' } // 无联网素材 + 缓存为空（或强刷）：引导态
   | { kind: 'nonews' } // 抓取为空：暂未检索到
@@ -123,15 +140,21 @@ export function hasMemberBlocks(report: Report | null | undefined): boolean {
  * 不按时间过期（见本文件顶部），这个降级不会自愈 —— 任何人点一次「刷新最新」，
  * 就能把付费换来的内容永久抹掉，被抹掉的人还没有任何补救手段。
  *
- * 纯函数（不含 I/O）以便单测直接钉住判定；那一次读库放在 saveReady 里，且它发生在
- * 持有 building 锁之后（acquire 互斥），所以读到的就是「即将被覆盖的那一版」。
+ * 纯函数（不含 I/O）以便单测直接钉住判定；那一次读库放在生成主流程里、落库之前，
+ * 且发生在持有 building 锁之后（acquire 互斥），所以读到的就是「即将被覆盖的那一版」。
+ *
+ * 判定只看 `report` 字段，**不看 `state`**（P0 修复，2026-10-09）：
+ * 抢锁（acquire）不再清空 `report`，于是刷新期间那一行是 `state='building'` 却仍带着
+ * 上一版内容 —— 那正是本次要覆盖掉的东西。原先要求 `state === 'ready'`，
+ * 而抢占已经把行改成 building，守卫于是恒不命中，「只升不降」形同虚设
+ * （免费档刷新一次就能把全站的会员段落永久抹掉）。
  */
 export function shouldKeepMemberVersion(
   next: Report | null | undefined,
   existing: ReportCacheRow | null | undefined
 ): boolean {
   if (hasMemberBlocks(next)) return false
-  return !!existing && existing.state === 'ready' && hasMemberBlocks(existing.report)
+  return !!existing && hasMemberBlocks(existing.report)
 }
 
 /**
@@ -195,9 +218,27 @@ async function isFreeRefreshCooling(report: Report): Promise<boolean> {
  *
  * 迁移注意：原实现靠 PostgREST 的 23505 唯一冲突码判断"行已存在"，CloudBase 不产生该错误码，
  * 照搬会导致缓存一旦有行就恒抛异常（抢占与等待逻辑全部失效）。改为先探测存在性，
- * 插入失败时再读一次以区分"并发中他人抢先"（lost）与"网络/权限真实失败"（抛给上层避免死等）。
+ * 插入失败时再读一次以区分"并发中他人抢先"（lost）与"网络/权限真实失败"。
+ *
+ * 三态（P0-2，2026-10-09）。`degraded` 是新增的兜底态，与 `lost` **语义完全不同**：
+ *   · `lost`      —— 别人正持有锁 ⇒ 调用方去等待 / 读缓存；
+ *   · `degraded`  —— 写库这条路整个不通（写口拒绝 + 直写失败）⇒ **照常生成并返回报告**，
+ *                    只是这一轮不进共享缓存。原本失败会抛错，等于把「缓存写不进去」
+ *                    升级成「用户看不到报告」；而缓存只是加速手段，不该有这种否决权。
+ *                    代价仅是无锁并发时可能重复生成，远好过整页报错。
  */
-async function acquire(personKey: string, userId: string): Promise<'acquired' | 'lost'> {
+async function acquire(
+  personKey: string,
+  userId: string
+): Promise<'acquired' | 'lost' | 'degraded'> {
+  /*
+   * 云端优先（P0-2）：写口是权限收紧后**唯一**的写入通道，先交给它。它没通
+   * （函数未部署 / 环境未配置 / 网络）才回退下面的端上直写 —— 这条双路正是
+   * 「权限收紧」能与「端上尚未全量更新」并存的原因：两边跑的是同一份代码。
+   */
+  const viaCloud = await acquireLockViaCloud(personKey)
+  if (viaCloud !== 'unavailable') return viaCloud
+
   const now = new Date().toISOString()
   const existing = await getRow(personKey)
 
@@ -216,24 +257,76 @@ async function acquire(personKey: string, userId: string): Promise<'acquired' | 
     if (!error) return 'acquired'
     const again = await getRow(personKey)
     if (again) return 'lost'
-    throw new Error(error.message)
+    /* 直写失败（权限已被收紧 / 网络异常）：**降级，不抛错** —— 详见函数头注释 */
+    diagLog('warn', 'db', `抢锁直写失败，本轮不写缓存：${personKey} · ${error.message ?? error}`)
+    return 'degraded'
   }
 
   const expireIso = new Date(Date.now() - BUILDING_TIMEOUT_MS).toISOString()
-  /* 抢占同时刷新版本：这一轮的产物是**当前端上**生成的，building 行也带上版本，
-     免得排障时看到「state=building 却没有 schemaVersion」而要再想一遍是哪种情况。 */
+  /*
+   * 抢占时**刻意不动 `report`**（P0 修复，2026-10-09）：这一行上留着的是「即将被覆盖的
+   * 那一版」，两个下游都指着它 ——
+   *   · 「只升不降」守卫要靠它判断本次较简略的产物该不该写（见 shouldKeepMemberVersion）；
+   *   · release 失败回退时要把它交还给后续读者。
+   * 原先在这里写 `report: null`，等于抢锁的同一刻就把上一版（常常是会员版）抹掉了：
+   * 守卫恒判「无既有版本」而放行覆盖，构建失败则整行被删 —— 报告 ready 后长期复用、
+   * 不自愈，这个降级一旦发生就没有补救手段。
+   *
+   * `generated_at` 仍要刷新：building 行上它承担的是「本次构建的起点」，
+   * 失联超时抢占（下方 or 条件）靠它判断，不能沿用上一版的生成时间。
+   * 抢占同时刷新 schemaVersion：这一轮的产物是**当前端上**生成的，
+   * 免得排障时看到「state=building 却没有 schemaVersion」而要再想一遍是哪种情况。
+   */
   const { data: upd, error: updErr } = await table('report_cache')
-    .update({ state: 'building', builder: userId, generated_at: now, report: null, schemaVersion: REPORT_SCHEMA_VERSION })
+    .update({ state: 'building', builder: userId, generated_at: now, schemaVersion: REPORT_SCHEMA_VERSION })
     .eq('id', personKey)
     .or(`state.eq.ready,generated_at.lt.${expireIso}`)
     .select()
-  if (updErr) throw new Error(updErr.message ?? String(updErr))
+  /* 同上：抢占直写失败也降级，不把「写库不通」变成「用户看不到报告」 */
+  if (updErr) {
+    diagLog('warn', 'db', `抢锁直写失败，本轮不写缓存：${personKey} · ${updErr.message ?? updErr}`)
+    return 'degraded'
+  }
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   return ((upd as any[])?.length ?? 0) > 0 ? 'acquired' : 'lost'
 }
 
-/** 释放锁：只删本人的 building 行（他人持锁不动） */
+/**
+ * 释放锁：只动本人的 building 行（他人持锁不动）。
+ *
+ * P0 修复（2026-10-09）：抢占时不再清空 `report`，于是这一行上通常还躺着上一版内容。
+ * 此时**不能整行删掉** —— 那等于把上一版（常常是会员版）一起抹掉，而报告 ready 后
+ * 长期复用、不自愈，一次中断就替全站把缓存击穿。改为「有旧内容就退回 ready 把锁让出去」，
+ * 只有确实没内容（首次生成）才删行。
+ *
+ * 恢复时把 generated_at 交还给旧报告自己的生成时间：那才是这一版的真实产出时刻，
+ * 页面上的「生成于 X 前」与免费档刷新冷却（isFreeRefreshCooling）都读它。
+ */
 async function release(personKey: string, userId: string): Promise<void> {
+  /*
+   * 云端优先（P0-2）：写口能放就交给它（它有权威的 builder 判定）。
+   * 明确拒绝（限速 / 参数）时**不回退**直写 —— 放锁不是要紧事：残留的 building 行
+   * 会在 BUILDING_TIMEOUT_MS 后被他人抢占，不值得为它绕过写口。
+   */
+  const viaCloud = await releaseLockViaCloud(personKey)
+  if (viaCloud === 'done') return
+
+  const row = await getRow(personKey)
+  /* 已被他人接管 / 已落库 ready：不是我的锁，一律不动 */
+  if (!row || row.state !== 'building' || row.builder !== userId) return
+
+  if (row.report) {
+    const { error } = await table('report_cache')
+      .update({ state: 'ready', builder: null, generated_at: row.report.generatedAt ?? row.generated_at })
+      .eq('id', personKey)
+      .eq('builder', userId)
+      .eq('state', 'building')
+    if (!error) {
+      diagLog('info', 'db', `构建中断，回退为 ready（保留既有版本）：${personKey}`)
+      return
+    }
+  }
+
   await table('report_cache').delete().eq('id', personKey).eq('builder', userId).eq('state', 'building')
   diagLog('info', 'db', `释放 building 锁：${personKey}`)
 }
@@ -261,13 +354,33 @@ async function saveReady(
   newsCount: number,
   userId: string
 ): Promise<'saved' | 'kept' | 'failed'> {
-  /* 只升不降（P0）：先读一眼既有行再决定写不写，理由见 shouldKeepMemberVersion 的注释 */
+  /* 只升不降（P0）：这里再判一次既有的那一版。主流程已在落库前判过一遍（那一次是为了
+     「拦下就不计数」与「免计费申请」），此处是兜底 —— 两处口径必须一致，都走同一个纯函数。 */
   if (!hasMemberBlocks(report)) {
     const existing = await getRow(personKey)
     if (shouldKeepMemberVersion(report, existing)) {
       diagLog('info', 'db', `拒绝降级覆盖：${personKey} 已有含会员段落的版本，保留原样`)
+      /* 不写库，但锁必须放掉：守卫修好后这条路径才第一次真正可达（P0，2026-10-09）。
+         release 会把行退回 ready 并交还旧内容 —— 调用方紧接着要 getRow 取「被保留的那一版」，
+         若这里让行以 building 残留，那边 isUsable 会判否、兜底静默失效。 */
+      await release(personKey, userId).catch(() => undefined)
       return 'kept'
     }
+  }
+
+  /*
+   * 云端优先（P0-2，2026-10-09）：写口是权限收紧后**唯一**的写入通道。它的两种「不通」必须
+   * 分开处理，混为一谈就会把写口的校验架空 ——
+   *   · `rejected`（非会员写会员段 / 体积超限 / 锁被接管）⇒ **不回退直写**：写口拒的正是
+   *     这类内容，回退等于把刚被拦下的东西直接塞进库（ACL 收紧前完全做得到）；
+   *   · `unavailable`（函数未部署 / 环境未配置 / 网络）⇒ 回退下面的端上直写，与收紧前一致。
+   */
+  const viaCloud = await saveReportViaCloud(personKey, report, newsCount)
+  if (viaCloud === 'saved') return 'saved'
+  if (viaCloud === 'rejected') {
+    diagLog('error', 'db', `写口拒绝本次落库：${personKey}`)
+    await release(personKey, userId).catch(() => undefined)
+    return 'failed'
   }
 
   const { error } = await table('report_cache').upsert({
@@ -282,8 +395,10 @@ async function saveReady(
   })
   if (!error) return 'saved'
   diagLog('error', 'db', `报告落库失败：${error.message ?? error}`)
-  // 落库失败时必须清掉自己的 building 脏行：否则该行会以 state=building 残留，
+  // 落库失败时必须放掉自己的 building 锁：否则该行会以 state=building 残留，
   // 在 BUILDING_TIMEOUT_MS 内让**所有**查询该人物的请求都只能排队等待，且全程零报错。
+  // release 的语义是「有上一版就退回 ready 交还出去，确实没有才删行」（P0，2026-10-09），
+  // 所以这里不会把缓存里原有的内容一起抹掉。
   // 报告本身仍返回给本次用户，只是这一次不进缓存（下次重新生成，但不会再排队）。
   await release(personKey, userId).catch(() => undefined)
   return 'failed'
@@ -344,17 +459,6 @@ export async function getOrBuildReport(
     }
   }
 
-  // 1. 冷却检查（§5.4 用例 9）：仅拦截需要真实发起搜索/生成的路径。
-  //    注意 setCooldown 现在只由「限流 / 网络 / 上游 5xx」触发（见 report.ts、search.ts），
-  //    密钥/额度类错误不再进入冷却，修好配置即可立刻重试。
-  for (const label of ['search', 'llm'] as const) {
-    const left = cooldownMinutesLeft(label)
-    if (left > 0) {
-      const what = label === 'search' ? '搜索源' : '生成服务'
-      return { kind: 'error', message: `${what}限流冷却中（约 ${left} 分钟），已生成的报告不受影响；可先浏览其他名人` }
-    }
-  }
-
   /**
    * 本次生成是否走「深度模式」（O-11）：会员的素材加厚 + 报告多两段专属文字。
    * 会员态**顺带**取自上方的配额检查（peekGenerateQuota 已带回 member），不额外读一次库；
@@ -362,15 +466,52 @@ export async function getOrBuildReport(
    */
   let memberDeep = false
 
+  /**
+   * force 刷新失败时的兜底（P1-8，2026-10-09）：交回缓存里原有的那一版，并说明这次没刷成。
+   *
+   * 见 ReportOutcome.refreshFailed 的理由。返回 `null` 表示这一行恰好不可用（首次生成失败 /
+   * 脏行），由调用方照常返回 `error`。
+   *
+   * ⚠ 只用于**失败**分支：`coldstart` / `nonews` / `refused` 是「这次没有新素材 / 不在覆盖
+   * 范围」这类内容性结论，照旧原样返回（有单测钉着，见 04-member-cache.js）。
+   *
+   * `knownMember` 已知时传入可省一次身份读；未知（如冷却闸在最前面）就传 undefined 让
+   * exposeReport 自己读 —— 失败路径很罕见，这里以「别给会员剥错段落」优先。
+   */
+  const cachedFallback = async (message: string, knownMember?: boolean): Promise<ReportOutcome | null> => {
+    const current = await getRow(personKey)
+    if (!isUsable(current)) return null
+    const shown = await exposeReport(current.report, knownMember)
+    diagLog('info', 'db', `刷新失败，交回缓存中的既有版本：${personKey}`)
+    return {
+      kind: 'report',
+      report: shown.report,
+      fromCache: true,
+      refreshFailed: true,
+      refreshError: message,
+      memberLocked: shown.locked
+    }
+  }
+
+  // 1. 冷却检查（§5.4 用例 9）：仅拦截需要真实发起搜索/生成的路径。
+  //    注意 setCooldown 现在只由「限流 / 网络 / 上游 5xx」触发（见 report.ts、search.ts），
+  //    密钥/额度类错误不再进入冷却，修好配置即可立刻重试。
+  for (const label of ['search', 'llm'] as const) {
+    const left = cooldownMinutesLeft(label)
+    if (left > 0) {
+      const what = label === 'search' ? '搜索源' : '生成服务'
+      const message = `${what}限流冷却中（约 ${left} 分钟），已生成的报告不受影响；可先浏览其他名人`
+      return (await cachedFallback(message)) ?? { kind: 'error', message }
+    }
+  }
+
   // 1.5 生成配额检查（freemium 免费层）：只拦「真实发起生成」的路径。
   //     缓存命中已在上方返回（不计数、不受限）；配额用完仍可浏览所有已生成报告。
   try {
     const quota = await peekGenerateQuota(userId)
     if (!quota.allowed) {
-      return {
-        kind: 'error',
-        message: quotaExhaustedMessage(quota.member, quota.limit, '已生成的报告仍可正常浏览')
-      }
+      const message = quotaExhaustedMessage(quota.member, quota.limit, '已生成的报告仍可正常浏览')
+      return (await cachedFallback(message, quota.member)) ?? { kind: 'error', message }
     }
     memberDeep = quota.member
   } catch (err) {
@@ -402,16 +543,22 @@ export async function getOrBuildReport(
    */
   const memberUpgrade = memberDeep && !hasMemberBlocks(row?.report)
 
-  // 2. 抢锁
-  let acquired: boolean
+  // 2. 抢锁（三态：acquired / lost / degraded）
+  let lock: 'acquired' | 'lost' | 'degraded'
   try {
-    acquired = (await acquire(personKey, userId)) === 'acquired'
+    lock = await acquire(personKey, userId)
   } catch (err) {
-    return { kind: 'error', message: `缓存服务异常：${err instanceof Error ? err.message : String(err)}` }
+    const message = `缓存服务异常：${err instanceof Error ? err.message : String(err)}`
+    return (await cachedFallback(message, memberDeep)) ?? { kind: 'error', message }
   }
 
-  // 3. 抢锁失败：等待他人构建（缓存击穿防护，§2.4）
-  if (!acquired) {
+  /*
+   * 3. **只有 `lost` 才等**（缓存击穿防护，§2.4）。
+   * `degraded`（P0-2）刻意落进第 4 步去照常生成：它表示「写库这条路不通」，而不是
+   * 「别人正在构建」。若把它一起当成等锁，用户会白等 75 秒再拿到一句「正在生成中」——
+   * 明明没有任何人在生成，这份代价纯粹由一次写库失败换来。
+   */
+  if (lock === 'lost') {
     const report = await waitForReady(personKey)
     if (report) {
       track('report_hit_cache', { personKey })
@@ -458,38 +605,80 @@ export async function getOrBuildReport(
     const res = await buildReport(personKey, name, news, focus, { member: memberDeep })
     if (!res.ok) {
       await release(personKey, userId)
-      return { kind: 'error', message: res.error }
+      return (await cachedFallback(res.error, memberDeep)) ?? { kind: 'error', message: res.error }
     }
     if (isRefusedResult(res.data)) {
       await release(personKey, userId)
       return { kind: 'refused' }
     }
     const report = res.data
+
+    /*
+     * 落库前的两道判定共用同一份行快照（P0 / P1 修复，2026-10-09）：
+     *
+     * ① 「只升不降」必须在**覆盖之前**判 —— 这一行此刻还躺着上一版（acquire 不再清空
+     *    report），落库之后就再也读不到了。
+     * ② 「会员补齐」免计费申请也必须在**覆盖之前**发 —— 云函数 quotaGuard 复核的第三个
+     *    条件是「那一行不含会员段落」（见 quotaGuard#memberUpgradeWaived）。原先端上先
+     *    saveReady 再申请，复核读到的已是含会员段的新版，条件恒不成立，于是会员每次
+     *    替全站升级缓存都被白扣一次每日次数。
+     */
+    const beforeWrite = await getRow(personKey)
+
+    /*
+     * 「只升不降」命中时交回既有那一版：上面那次提前判定与下方 saveReady 的兜底共用这一处，
+     * 免得两个分支各写一遍身份剥离 —— 漏一处就是一处静默的越权（memberLocked 是促销条
+     * 唯一的依据）。返回 null 表示那一行刚好不可用（极端：字段缺失的脏行），退路由调用方决定。
+     *
+     * 顺便把锁放掉：这一轮不写库，但锁是我们抢的。守卫修好之后这条路径**才第一次真正可达**
+     * （此前恒不命中），所以「kept 之后 building 残留到超时」这个坑也是从这一刻起才存在的 ——
+     * release 会把行退回 ready 并交还旧内容（P0，2026-10-09）。
+     */
+    const keptReport = async (rowLike: ReportCacheRow | null): Promise<ReportOutcome | null> => {
+      if (!isUsable(rowLike)) return null
+      await release(personKey, userId).catch(() => undefined)
+      track('report_kept_member', { personKey })
+      /*
+       * 交回的是缓存里含会员段的那一版（正是本次被拦下的原因）：免费读者同样要剥 ——
+       * 内容归会员，存在性留给促销条（memberLocked 非空，页面会说「已含对比视角…」）。
+       */
+      const shown = await exposeReport(rowLike.report, memberDeep)
+      return {
+        kind: 'report',
+        report: shown.report,
+        fromCache: true,
+        keptMember: true,
+        memberLocked: shown.locked
+      }
+    }
+
+    if (!hasMemberBlocks(report) && shouldKeepMemberVersion(report, beforeWrite)) {
+      /*
+       * 被「只升不降」拦下（P0）：本次产物不含会员段落，而缓存里已有含会员段落的一版。
+       * 交回既有那一版即可 —— 用户拿到的是它，本次生成没有生效，故**不计数**
+       * （与缓存命中同一个口径：没拿到新东西就不该扣次数）。
+       */
+      diagLog('info', 'db', `拒绝降级覆盖：${personKey} 已有含会员段落的版本，保留原样`)
+      const kept = await keptReport(beforeWrite)
+      if (kept) return kept
+      /* 快照刚好不可用（极端：字段缺失的脏行）：退化成普通生成照常计数，不能让用户白等一场还没报告 */
+    }
+
+    /* 免计费申请：必须在 upsert 之前，理由见上方 ② */
+    if (memberUpgrade) {
+      void consumeGenerateQuota(userId, { waiveIf: 'member_upgrade', target: personKey })
+    }
+
     const saved = await saveReady(personKey, report, news.length, userId)
 
     /*
-     * 被「只升不降」拦下（P0）：本次产物不含会员段落，而缓存里已有含会员段落的一版。
-     * 交回既有那一版即可 —— 用户拿到的是它，本次生成没有生效，故**不计数**
-     * （与缓存命中同一个口径：没拿到新东西就不该扣次数）。
-     * 极端情况读不到（刚好被删）：退化成普通生成照常计数，不能让用户白等一场还没报告。
+     * saveReady 内部仍独立判一次同一份守卫（兜底）：正常路径下走不到这里 —— 上面已提前
+     * 交回既有版本；真落到这里说明「快照」与「落库」之间那一行被换过（构建超时被他人抢占）。
+     * 那种情况同样以「保住会员版」为准，交回缓存里的那一版。
      */
     if (saved === 'kept') {
-      const kept = await getRow(personKey)
-      if (isUsable(kept)) {
-        track('report_kept_member', { personKey })
-        /*
-         * 交回的是缓存里含会员段的那一版（正是本次被拦下的原因）：免费读者同样要剥 ——
-         * 内容归会员，存在性留给促销条（memberLocked 非空，页面会说「已含对比视角…」）。
-         */
-        const shown = await exposeReport(kept.report, memberDeep)
-        return {
-          kind: 'report',
-          report: shown.report,
-          fromCache: true,
-          keptMember: true,
-          memberLocked: shown.locked
-        }
-      }
+      const kept = await keptReport(await getRow(personKey))
+      if (kept) return kept
     }
 
     track('report_generate', { personKey, mode: 'realtime' })
@@ -497,14 +686,11 @@ export async function getOrBuildReport(
      * 配额只在「用户真的拿到报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
      *   上方的 refused / error / coldstart / nonews 分支均已提前 return，不计数；
      *   缓存命中（第 0 步 / 抢锁失败等待他人构建）与上面的 kept 分支同样不计数。
-     *   ⚠ 本行位于 saveReady 之后：落库失败会抛到下面的 catch，此时用户拿不到报告 → 不计数。
+     *   ⚠ 落库失败会抛到下面的 catch，此时用户拿不到报告 → 不计数（release 会把上一版交还）。
      *   best-effort：计数写失败不影响本次返回，少量丢失可接受（宁可少算不多算）。
-     *   memberUpgrade：会员「补齐」共享缓存的那一次由云函数复核后免计费（见上方注释）。
+     *   memberUpgrade 的那一次已在落库前申请（见上方 ②），此处不再重复申请。
      */
-    void consumeGenerateQuota(
-      userId,
-      memberUpgrade ? { waiveIf: 'member_upgrade', target: personKey } : undefined
-    )
+    if (!memberUpgrade) void consumeGenerateQuota(userId)
     /* 本次产物按**本次身份**过滤（批 1）：非会员生成的报告本就不含会员段 → 快路径直出、零额外读 */
     const shown = await exposeReport(report, memberDeep)
     return {
@@ -516,11 +702,52 @@ export async function getOrBuildReport(
     }
   } catch (err) {
     await release(personKey, userId).catch(() => undefined)
-    return { kind: 'error', message: err instanceof Error ? err.message : String(err) }
+    const message = err instanceof Error ? err.message : String(err)
+    return (await cachedFallback(message, memberDeep)) ?? { kind: 'error', message }
+  }
+}
+
+/**
+ * force 刷新没拿到新版本时，该向用户解释什么（P1-8，2026-10-09）。
+ *
+ * 返回 `null` 表示这次拿到了新内容（或本来就没有旧内容可保留），页面不必提示。
+ * 抽成纯函数是为了能直接钉住文案与「成功时不提示」这条不变量 —— 页面只负责把它渲染出来。
+ */
+export function refreshFailureNote(outcome: ReportOutcome): string | null {
+  switch (outcome.kind) {
+    case 'report':
+      return outcome.refreshFailed ? outcome.refreshError || '刷新失败，继续显示当前版本' : null
+    case 'coldstart':
+      return '联网能力不可用，未能刷新，继续显示当前版本'
+    case 'nonews':
+      return '暂未检索到近期公开信息，未能刷新，继续显示当前版本'
+    case 'refused':
+      return '本次生成未通过内容校验，未能刷新，继续显示当前版本'
+    case 'error':
+      /* 「正在生成中」不是失败，是别人在生成：页面会切到等待态，不该再叠一句提示 */
+      return outcome.message.includes('正在生成') ? null : outcome.message
   }
 }
 
 /* ===== 动态缓存 + 刷新配额（§3.7） ===== */
+
+/**
+ * 写 feed_cache（P0-2，2026-10-09：客户端已无写权限，只能走写口）。
+ * 云端优先 + 回退直写；`rejected`（体积 / 形状被拒）**不回退** —— 与报告那条同一套判断，
+ * 理由见 report-store.ts 文件头。返回是否真的写成功，供调用方决定要不要计入 refreshed。
+ * 它比报告那条简单：feed 无锁、无会员差异，失败只影响「这次刷没刷成」，不影响已取到的 items。
+ */
+async function writeFeedCache(personKey: string, items: NewsItem[]): Promise<boolean> {
+  const viaCloud = await saveFeedViaCloud(personKey, items)
+  if (viaCloud === 'saved') return true
+  if (viaCloud === 'rejected') return false
+
+  const { error } = await table('feed_cache').upsert(
+    { id: personKey, items, fetched_at: new Date().toISOString() },
+    { onConflict: 'id' }
+  )
+  return !error
+}
 
 /** 只读缓存（不触发生成、不抢锁）：名人主页 / 关注流用 */
 export async function getCachedReport(personKey: string): Promise<Report | null> {
@@ -734,12 +961,9 @@ export async function refreshAllFeeds(
     )
     for (const hit of settled) {
       if (!hit?.news || hit.news.length === 0) continue
-      const { error } = await table('feed_cache').upsert(
-        { id: hit.f.person_key, items: hit.news, fetched_at: new Date().toISOString() },
-        { onConflict: 'id' }
-      )
-      if (error) diagLog('warn', 'db', `feed_cache 写入失败（${hit.f.name}）：${error.message ?? error}`)
-      else refreshed++
+      /* 写口优先（P0-2）：失败只影响「这次刷成没刷成」，已取到的 items 不受影响 */
+      if (await writeFeedCache(hit.f.person_key, hit.news)) refreshed++
+      else diagLog('warn', 'db', `feed_cache 写入失败（${hit.f.name}）`)
     }
   }
 
@@ -785,10 +1009,7 @@ export async function refreshFeed(
   if (!news) return { ok: false, message: '联网素材不可用' }
   if (news.length === 0) return { ok: true, items: [], message: `暂无新动态（剩余 ${quota.remaining} 次刷新）` }
 
-  await table('feed_cache').upsert(
-    { id: personKey, items: news, fetched_at: new Date().toISOString() },
-    { onConflict: 'id' }
-  )
+  await writeFeedCache(personKey, news)
   /* count: 1 —— 批量刷新报的是人数，这里保持同一字段可比（否则同一事件两种口径） */
   track('refresh_feed', { personKey, count: 1 })
   return { ok: true, items: news, message: `已更新（剩余 ${quota.remaining} 次刷新）` }

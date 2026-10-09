@@ -168,16 +168,68 @@ const cacheId = (keyword) => keyword
 /** 关键词 → 订阅文档主键（与 follows 的 openid#personKey 同构） */
 const watchId = (openid, keyword) => `${openid}#${keyword}`
 
+/* ─────────────────── 分页取全表（P2-11，2026-10-09） ─────────────────── */
+
+const PAGE_SIZE = 100
+/* 明面上的上限：到了就打告警，而不是像以前那样「静默只服务前 100 人」 */
+const MAX_ROWS = 5000
+
+/**
+ * 翻页取全表。**不要**再用裸 `limit(100)` 读「全部要通知的人」。
+ *
+ * `limit(n)` 在云开发里是「取一批 n 行」，未指定 `orderBy` 时顺序由默认索引决定 ——
+ * 既不保证稳定，也不代表优先级。于是订阅用户一旦超过 100，多出来的那些人**永远**收不到通知：
+ * 日志里一切正常、没有报错，只有用户来问「为什么别人收到了我没有」。
+ *
+ * 按 `_id` 升序翻页（`_id` 是主键索引；单字段 where + `_id` 排序不需要额外复合索引）。
+ * `skip` 是线性扫描，在这个量级（几千行、每天一轮）完全够用；真到几十万行，该做的是分片。
+ */
+async function listAll(collection, where) {
+  const out = []
+  for (;;) {
+    let query = db.collection(collection)
+    if (where) query = query.where(where)
+    const res = await query.orderBy('_id', 'asc').skip(out.length).limit(PAGE_SIZE).get()
+    const batch = (res && res.data) || []
+    /*
+     * 以「空页」收尾，而不是「不满一页就收工」：一次 get 能取回多少行由平台决定
+     * （小程序端 20 / 服务端默认 100，上限各不相同、还可能变）。拿 PAGE_SIZE 当
+     * 「后面还有没有」的判据，一旦平台给不满就会提前收工 —— P2-11 的老毛病换个样子回来。
+     * 代价是多打一次空查询，换「一定取全」，值。
+     */
+    if (!batch.length) return out
+    out.push(...batch)
+    if (out.length >= MAX_ROWS) {
+      console.warn(`[${collection}] 取数达到上限 ${MAX_ROWS}，本轮只处理这一部分 —— 该评估分片了`)
+      return out
+    }
+  }
+}
+
+/**
+ * 调用方闸门（P0-21，2026-10-09）：本函数只该由**定时器**触发，端上一次都不该调它
+ * （端上订阅/退订关键词走的是自己的库写入，从不触发云端检索）。
+ *
+ * 判据：端上 `wx.cloud.callFunction` 调用时 `getWXContext().OPENID` 必有值，
+ * 而定时器触发、控制台「云端测试」都没有 openid。
+ *
+ * 挡的是「改包后循环调用」：本函数一轮按关键词打 BOCHA 检索并按订阅者群发订阅消息，
+ * 端上能反复触发就等于把上游额度与推送配额交给任何人点火。
+ */
 exports.main = async () => {
+  if ((cloud.getWXContext() || {}).OPENID) {
+    console.warn('[keywordAlert] 拒绝端上调用：本函数只由定时器触发')
+    return { ok: false, skipped: '本函数只由定时器触发，不接受端上调用' }
+  }
+
   const bochaKey = readEnv('BOCHA_API_KEY')
   if (!bochaKey) return { ok: false, skipped: '缺少环境变量：BOCHA_API_KEY' }
   const tmplId = readEnv('ALERT_TEMPLATE_ID')
 
   // 1. 订阅关系：一次读全表在内存分组（跨用户去重，避免按人查上游）
-  const watchesRes = await db.collection(WATCH_TABLE).limit(1000).get()
   const byKeyword = new Map()
   const watchRows = []
-  for (const w of watchesRes.data || []) {
+  for (const w of await listAll(WATCH_TABLE)) {
     /* 同一张表还存着「监控某人」的行（type='person'，第 1 期 riskWatch 用）：它们的 keyword
        存的是人名，不是要检索的关键词 —— 不过滤就会把名人名当关键词再查一遍（白花钱）。
        老行没有 type 字段（2026-10-08 那批关键词订阅），故只有显式 person 才跳过。 */
@@ -283,8 +335,7 @@ exports.main = async () => {
   }
 
   // 5. 只推给「已授权预警推送」的用户，每人一条（取本轮新增最多的那个词）
-  const usersRes = await db.collection('users').where({ alert_ok: true }).limit(100).get()
-  const alerters = new Map((usersRes.data || []).map((u) => [u._openid, u]))
+  const alerters = new Map((await listAll('users', { alert_ok: true })).map((u) => [u._openid, u]))
 
   for (const [openid, hits] of userNews) {
     const u = alerters.get(openid)

@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-399%20passing-success.svg)](#development--testing)
+[![Tests](https://img.shields.io/badge/tests-522%20passing-success.svg)](#development--testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), with a keyword cloud, sentiment trend and heat curve aggregated on the client.
@@ -309,6 +309,8 @@ None of the three is committed (all are in `.gitignore`), so your edits never po
 - **`DB_ADMIN_TOKEN`** — `dbInit` only (custom token, the gate for write actions). ❌ not in the bundle
 - **`AI_PROXY_TEST_TOKEN`** — `aiProxy` only (token for the paid `test` probe; **unset means that action is always rejected**, which is the intended default). It is an ops token rather than a deployment item, so normally you add it in the console only while troubleshooting. ❌ not in the bundle
 - **`WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID`** — `payCreate`. ❌ not in the bundle
+- **`PAY_ADMIN_TOKEN`** — `payCallback` only (token for the refund / manual-reconcile ops write port; **unset means the write port is always rejected**). ❌ not in the bundle
+- **`PAY_CALLBACK_GUARD`** — optional `payCallback` variable, the rollout switch: `log` (default, client calls are only logged) / `strict` (client calls rejected) / `off` (no check). Switch to `strict` once real-device logs confirm the callback shape. ❌ not in the bundle
 - **Deploy-time secret source (the `.env` file itself)** — `celebrity-radar/.env` (copied from `.env.example`, **not committed**), referenced from `cloudbaserc.json` as `${env.XXX}`. ❌ not in the bundle
 - **Environment ID / subscription template IDs** — `src/config/local.ts`. ✅ in the bundle (**they are not secrets**)
 
@@ -388,11 +390,11 @@ tcb fn deploy aiProxy       -e <your-env-id>
 - **`quotaGuard`** — authoritative quota counting (atomic increments with server dates): `refresh` / `generate` / `ask`. Trigger: client call; environment variables: —
 - **`contentCheck`** — content moderation via `security.msgSecCheck`, applied to AI questions. Trigger: client call; environment variables: —
 - **`hotBoardRefresh`** — builds the daily hot board (writes `hot_board`). Trigger: cron 06:30; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (a cron job has no client preference, so it takes `LLM_PROVIDER`, DeepSeek by default — **that provider must therefore have a key**)
-- **`notifyFollowUpdates`** — pushes follow-update subscription messages. Trigger: cron 09:00; environment variables: `BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID`
-- **`keywordAlert`** — keyword alerting (searches subscribed keywords, writes `keywords`). Trigger: cron 09:20; environment variables: `BOCHA_API_KEY` `ALERT_TEMPLATE_ID`
-- **`riskWatch`** — person risk monitoring (searches per monitored person, writes `risk_signals` and pushes). Trigger: cron 09:40; environment variables: `BOCHA_API_KEY` `RISK_TEMPLATE_ID`
+- **`notifyFollowUpdates`** — pushes follow-update subscription messages. Trigger: cron 09:00 (**client calls rejected**); environment variables: `BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID`
+- **`keywordAlert`** — keyword alerting (searches subscribed keywords, writes `keywords`). Trigger: cron 09:20 (**client calls rejected**); environment variables: `BOCHA_API_KEY` `ALERT_TEMPLATE_ID`
+- **`riskWatch`** — person risk monitoring (searches per monitored person, writes `risk_signals` and pushes). Trigger: cron 09:40 (**client calls rejected**); environment variables: `BOCHA_API_KEY` `RISK_TEMPLATE_ID`
 - **`payCreate`** — membership order creation (server-side pricing + cloud pay unified order). Trigger: client call; environment variables: `WX_PAY_SUB_MCH_ID` `PAY_CALLBACK_ENV_ID`
-- **`payCallback`** — payment notification (amount verification + idempotent renewal). Trigger: WeChat Pay callback; environment variables: —
+- **`payCallback`** — the payment pipeline's **only backend**: payment notification (amount verification + idempotent renewal) + **after-sales** (refund ops write port `adminOp:'refund'` / manual reconcile `adminOp:'reconcile'`). Trigger: WeChat Pay callback (**client calls gated**, see below) + the `payReconcile` cron (minute 15 of every hour); environment variables: `PAY_ADMIN_TOKEN` (write-port token; unset means the port is always rejected) + `PAY_CALLBACK_GUARD` (optional rollout switch)
 - **`dbInit`** — ops tool: create collections, compare fields, create/update indexes (never called by the client). Trigger: manual; environment variables: `DB_ADMIN_TOKEN` `WX_APPID` `WX_APPSECRET`
 
 Common pitfalls:
@@ -401,6 +403,7 @@ Common pitfalls:
 - `aiProxy`, `hotBoardRefresh` and `notifyFollowUpdates` must have a **60-second timeout** (`aiProxy` additionally requires the smaller `LLM_CHAT_TIMEOUT_MS = 50000`), otherwise long reports, the hot board's "6 searches + 1 generation" round, and up to 20 searches per push round are cut off early by the platform (`-504003` on the client).
 - `dbInit` is an **ops tool, not a runtime dependency**: start with `{ "action": "report" }` for a read-only audit; write actions require `DB_ADMIN_TOKEN` (otherwise they are rejected); delete the function when you are done (see step 3).
 - `contentCheck` needs no environment variables (it uses cloud calls with platform-managed credentials); the only requirement is that `permissions.openapi` in `cloudfunctions/contentCheck/config.json` **takes effect on upload**. Without that declaration the client **fails open**. ⚠ It cannot be verified with the console's "cloud test" (which requires a real `openid`) — test it in the Q&A page on a real device.
+- **The client cannot trigger scheduled jobs or payment callbacks (caller gate)**: once deployed, any cloud function can be reached from the client via `wx.cloud.callFunction`, yet the four scheduled push functions (`notifyFollowUpdates` / `keywordAlert` / `riskWatch`) and `payCallback` should never be called from the client. The test is `getWXContext().OPENID` (present for client calls, absent for timers / WeChat callbacks / the console's "cloud test"). The first three **reject client calls outright**; `hotBoardRefresh` keeps the client's `action:'ensure'` cold-start path and **only blocks client `force`**; `payCallback` uses `PAY_CALLBACK_GUARD` as a **rollout switch** — the default `log` only records, so switch to `strict` after real-device logs confirm callbacks carry no `openid` (even if that judgement is wrong, reconcile back-fills stuck `granting` orders, so no order is lost forever).
 
 **There is no mandatory install list — deploy what you need** (skipping a function does not affect the others):
 
@@ -416,16 +419,16 @@ A CloudBase document database. The client writes the `id` field; `utils/db.ts` m
 | Collection | Purpose | Permission |
 |---|---|---|
 | `users` | Account and settings (created on first login; `membership` is a **mirror** of the authoritative record, for the client UI only) | Creator only |
-| `memberships` | **Authoritative membership** (`_id` = openid): written only by `payCallback` when an order ships; the cloud reads it for model tier and for the quota waiver | **Client cannot read or write** (cloud functions only) |
+| `memberships` | **Authoritative membership** (`_id` = openid): written only by `payCallback` when an order ships **or a refund is revoked**; the cloud reads it for model tier and for the quota waiver | **Client cannot read or write** (cloud functions only) |
 | `ai_calls` | Anti-abuse rate-limit counter (`_id` = openid#yyyy-MM-dd): incremented in place by `aiProxy` right before paying an upstream call — the hard cost boundary | **Client cannot read or write** (cloud functions only) |
-| `report_cache` | Report cache + `building` generation mutex (globally shared, long-lived) | Read: everyone; write: signed-in users |
-| `feed_cache` | Structured mapping of retrieval results (no LLM output stored) | Read: everyone; write: signed-in users |
+| `report_cache` | Report cache + `building` generation mutex (globally shared, long-lived) | Read: everyone; **client cannot write** (writes go through `aiProxy`'s `action:'report'`) |
+| `feed_cache` | Structured mapping of retrieval results (no LLM output stored) | Read: everyone; **client cannot write** (same, `op:'saveFeed'`) |
 | `hot_board` | Hot board (written daily by AI, always at `_id = latest`) | Read: everyone; client cannot write |
 | `keywords` | Keyword retrieval cache (globally shared) | Read: everyone; client cannot write |
 | `refresh_quota` | Feed refreshes, ≤ 10 per day (`openid#yyyy-MM-dd`) | Owner reads; writes via cloud functions only |
 | `generate_quota` | Daily report generation quota (3 free / 30 member) | Owner reads; writes via cloud functions only |
 | `ask_quota` | Daily AI question quota (5 free / 30 member, counted only on success) | Owner reads; writes via cloud functions only |
-| `orders` | Membership order state machine (`pending → granting → paid` / `failed`) | Owner reads; writes by payment functions only |
+| `orders` | Membership order state machine (`pending → granting → paid` / `failed` / `refunded`; `refunded` is set by the ops write port and reverts the membership during reconcile) | Owner reads; writes by payment functions only |
 | `follows` | Follow list (`openid#personKey`) | Creator only |
 | `favorites` | Favorites, four types (deduplicated by `openid#type#hash`) | Creator only |
 | `history` | Browsing history (last 50) | Creator only |
@@ -441,14 +444,13 @@ Current state of schema and permissions (important for forks):
 - **Indexes can be automated**: `dbInit` creates and updates them through the WeChat HTTP "update index" API (requires `WX_APPID` / `WX_APPSECRET`), or you can create them manually in the console.
 - To see what is still missing, run `dbInit` with `{"action":"report"}` — the `permissions_manual` block in the result is the very list you must click through.
 
-The console has **no** "everyone reads, signed-in users write" preset, so pick "custom security rules" and fill in one of the five levels below (values map one-to-one to `ACL` in `cloudfunctions/dbInit/schema.js`):
+The console has **no** "everyone reads, signed-in users write" preset, so pick "custom security rules" and fill in one of the four levels below (values map one-to-one to `ACL` in `cloudfunctions/dbInit/schema.js`):
 
 | Level | Security rule (JSON) | Collections |
 |---|---|---|
 | Creator only | Console preset, just pick it | `users` / `follows` / `favorites` / `history` / `events` / `keyword_watches` |
-| Read: everyone; write: signed-in | `{"read": true, "write": "auth.openid != null"}` | `report_cache` / `feed_cache` |
+| Read: everyone; client cannot write | `{"read": true, "write": false}` | `hot_board` / `keywords` / `risk_scans` / `risk_signals` / `report_cache` / `feed_cache` |
 | Owner reads; client cannot write | `{"read": "doc._openid == auth.openid", "write": false}` | `refresh_quota` / `generate_quota` / `ask_quota` / `orders` |
-| Read: everyone; client cannot write | `{"read": true, "write": false}` | `hot_board` / `keywords` / `risk_scans` / `risk_signals` |
 | Client cannot read or write | `{"read": false, "write": false}` | `memberships` / `ai_calls` |
 
 ```bash
@@ -466,7 +468,7 @@ When that variable is unset, write actions are **rejected outright** (the read-o
 - The three quota collections (`generate_quota` / `refresh_quota` / `ask_quota`) must be "owner reads, **cannot write**", otherwise users can edit their own quota and the free tier is gone.
   ⚠ Deploy `quotaGuard` *before* tightening them, or the client's fallback writes are rejected and the counters stay at zero.
 - `memberships` / `ai_calls` must be "**client cannot read or write**": they hold server-side authority (membership status, anti-abuse counter). If the client can touch them, it can grant itself membership and clear its own counter. What the client UI shows comes from the `users.membership` mirror.
-- `report_cache` / `feed_cache` are shared caches: "read: everyone, write: signed-in users".
+- `report_cache` / `feed_cache` are shared caches: "read: everyone, **cannot write**" — the client cannot write them directly; writes go through `aiProxy`'s `action:'report'` (see `report-store.js`).
 
 ### 4. Domains & console setup
 
@@ -485,10 +487,21 @@ The code is complete (`payCreate` / `payCallback` plus `utils/pay.ts` and the pr
 
 1. Enable WeChat Pay in the CloudBase console and bind a merchant account;
 2. Set `WX_PAY_SUB_MCH_ID` and `PAY_CALLBACK_ENV_ID` on `payCreate`;
-3. Deploy `payCallback`.
+3. Deploy `payCallback` (the `PAY_ADMIN_TOKEN` variable and the `payReconcile` timer already live in `cloudbaserc.json`);
+4. Set `PAY_ADMIN_TOKEN` on `payCallback` (the ops write-port token).
 
 The callback function name is hard-coded as `functionName: 'payCallback'` inside `payCreate`; **renaming it will break notifications**.
 When unconfigured, the client clearly reports "WeChat Pay not configured / payment service not deployed" and free features still work (3 generations per day).
+
+**Caller gate (rollout)**: once deployed, `payCallback` can be called directly from the client, so anyone could "place an order and forge the callback" to grant themselves membership. The gate keys off `getWXContext().OPENID` and is controlled by `PAY_CALLBACK_GUARD` (default `log`, which only records). **Run with the default for a while**, confirm in the logs that real payment callbacks carry **no** `openid`, then switch to `strict`.
+
+**Refunds and reconciliation (after-sales)**: refunds happen on the WeChat merchant platform, so the business side never hears about them; an ops write port therefore marks the order `refunded` — call it from the console's "cloud test":
+
+```json
+{ "adminOp": "refund", "token": "<PAY_ADMIN_TOKEN>", "outTradeNo": "MR...", "reason": "customer request" }
+```
+
+Marking **only changes the order status, never the membership**; revoking membership is left to the `payReconcile` cron (minute 15 of every hour, or run manually with `{ "adminOp": "reconcile", "token": "..." }`). Revocation subtracts `max(now, current expiry − that order's days)` and only for orders that actually shipped, deduplicated through the authoritative `memberships.refunded_orders` list so days are **never subtracted twice**. Reconcile also back-fills two other gaps: stale `granting` orders, and authority/mirror mismatches (**authority overwrites the mirror**, so a client-forged membership is wiped).
 
 ### Common pitfalls
 
@@ -503,6 +516,8 @@ When unconfigured, the client clearly reports "WeChat Pay not configured / payme
 | Tapping "become a member" does nothing | No merchant account / `payCallback` not deployed | See step 5; free features are unaffected |
 | After repackaging, the quota effectively does not exist | `ai_calls` / the three quota collections were not tightened | See step 3: `ai_calls` and `memberships` must be "client cannot read or write" |
 | UI shows a member but the cloud uses the free tier | No row in `memberships` (the grant only wrote the mirror) | Have the user reopen the order page so the payment callback retries; or check the `payCallback` logs |
+| A client can grant itself membership | `payCallback`'s `PAY_CALLBACK_GUARD` is still the default `log` (records but does not block) | Confirm real callbacks carry no `openid` in the logs, then switch to `strict` (step 5) |
+| A refunded user is still a member | The order was not marked `refunded`, or reconcile has not run yet | Mark it with `adminOp:'refund'`; reconcile runs hourly, or run `adminOp:'reconcile'` manually (step 5) |
 
 ### Pre-launch checklist
 
@@ -513,6 +528,8 @@ When unconfigured, the client clearly reports "WeChat Pay not configured / payme
 - [ ] The five `debug` flags in `src/config/local.ts` are `false` and `memberOverride` is `'off'` (those are the repository defaults; otherwise free-tier limits and the 429 cooldown protection are disabled, and you would masquerade as a member while self-testing)
 - [ ] `memberships` / `ai_calls` are set to "**client cannot read or write**" in the console (they hold both the membership and the cost authority; skip it and a repackaged client can grant itself membership and clear its own counter)
 - [ ] `aiProxy` has **no** `AI_PROXY_TEST_TOKEN` configured (or it is configured and kept private): the `test` probe pays for two real upstream calls every time, and is rejected outright while unset
+- [ ] If membership payments are deployed, `payCallback`'s `PAY_CALLBACK_GUARD` has been confirmed against real callbacks and switched to `strict` (the default `log` only observes, so the client can still forge callbacks)
+- [ ] If membership payments are deployed, `payCallback` has `PAY_ADMIN_TOKEN` set and kept private (the refund / reconcile write-port token; unset means the port is always rejected)
 - [ ] The main acceptance paths have been exercised on a real device (search → disambiguation → generation → favorite / share / Q&A)
 
 ---
@@ -556,13 +573,13 @@ celebrity-radar/
 │   ├── quotaGuard/             # Authoritative quota counting (atomic increments + server dates)
 │   ├── contentCheck/           # Content moderation (cloud call)
 │   ├── payCreate/              # Order creation (server-side pricing + cloud pay order)
-│   ├── payCallback/            # Payment notification (amount check + idempotent renewal)
-│   ├── notifyFollowUpdates/    # Follow-update subscription messages (cron 09:00)
-│   ├── keywordAlert/           # Keyword alerting (cron 09:20)
-│   ├── riskWatch/              # Person risk monitoring (cron 09:40)
-│   ├── hotBoardRefresh/        # Daily hot board (cron 06:30)
+│   ├── payCallback/            # Payment notification + after-sales (refund port / reconcile, cron :15; after-sales.js)
+│   ├── notifyFollowUpdates/    # Follow-update subscription messages (cron 09:00, client calls rejected)
+│   ├── keywordAlert/           # Keyword alerting (cron 09:20, client calls rejected)
+│   ├── riskWatch/              # Person risk monitoring (cron 09:40, client calls rejected)
+│   ├── hotBoardRefresh/        # Daily hot board (cron 06:30; client may `ensure`, `force` is ops-only)
 │   └── dbInit/                 # Ops tool (schema.js is the schema source of truth)
-├── test/                       # Local unit tests (7 case files / 399 cases)
+├── test/                       # Local unit tests (9 case files / 522 cases)
 ├── config/                     # Taro build config (dev / index / prod)
 ├── cloudbaserc.json            # CloudBase deployment descriptor (functions + env vars + timers)
 ├── .env.example                # Deployment secret template
@@ -612,6 +629,8 @@ celebrity-radar/
 - **Free-tier refresh cooldown**: within 12 hours of a report being generated, "refresh latest" on a free account returns the existing version with an on-page explanation instead of regenerating (the content would not have changed); members are exempt. **Do not confuse this with the upstream-failure cooldown** — different criteria, duration and purpose
 - **Feed refresh uses the main search line only**: one pull-to-refresh queries each followed person once (the social line is dropped: 20 → 10 search calls per refresh), rotates by "least recently refreshed" so people beyond the 10-per-refresh cap get a turn, and runs 4 requests at a time
 - **Cooldowns only block failures worth waiting for**: only upstream 429s, network errors and 5xx responses trigger the 10-minute cooldown; invalid keys and exhausted quota fail immediately without cooldown, and a cache hit always outranks both
+- **Cloud-function caller gate**: client calls always carry `getWXContext().OPENID`, while timers, WeChat callbacks and the console's "cloud test" never do — the four scheduled jobs and the payment callback **reject client calls** on that basis (`payCallback` uses the `PAY_CALLBACK_GUARD` rollout switch, defaulting to observe-then-`strict`). It blocks "patch the client, then loop the push jobs / forge a payment callback to grant yourself membership"
+- **After-sales loop**: refunds are marked by an ops write port, and reconcile revokes membership **by the order's days** (only the days that order bought, deduplicated through the authoritative list); reconcile also back-fills shipments and overwrites any client-rewritten mirror membership with the authority
 - **Vulnerability reports**: please **do not** open a public Issue — use the private channel described in [`SECURITY.md`](./SECURITY.md).
   For calibration: patching the client so it *displays* a member tier is **not** a vulnerability (the gate lives in the cloud); bypassing the cloud gate is
 
@@ -620,7 +639,7 @@ celebrity-radar/
 ## Development & Testing
 
 ```bash
-npm test          # compile tests with tsc, then run everything (399 cases, fully local, no cloud)
+npm test          # compile tests with tsc, then run everything (522 cases, fully local, no cloud)
 npm run test:only # skip tsc and run directly
 ```
 
@@ -629,7 +648,7 @@ It needs no cloud environment, no DevTools and no network. It does not cover pag
 
 Before submitting a change, confirm these five:
 
-1. `npm test` is green (currently 399 / 399)
+1. `npm test` is green (currently 522 / 522)
 2. `npx tsc --noEmit` reports no new warnings
 3. The mini program **main package size** is within the hard 2MB limit (the current build output is about 1.3MB); check the build output before adding dependencies
 4. `src/config/local.ts` and the `debug` flags are **not** committed (already in `.gitignore`)

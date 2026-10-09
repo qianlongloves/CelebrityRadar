@@ -256,7 +256,17 @@ export default function MemberPage() {
     /* 用户取消支付不算失败：静默返回，别弹一个「支付未完成」吓人 */
     if (res.cancelled) return
     if (!res.ok) {
-      await Taro.showModal({ title: '支付未完成', content: res.error ?? '请稍后重试', showCancel: false })
+      /*
+       * 标题按 blocked 分开（P2-20，2026-10-09）：平台限制（iOS 虚拟支付）与「通道还没配好」
+       * 都不是「你的支付出了差错」。用「支付未完成」当标题等于把责任推给用户，还暗示重试就能成。
+       */
+      const title =
+        res.blocked === 'ios'
+          ? 'iOS 暂不支持购买'
+          : res.blocked === 'unconfigured'
+            ? '购买暂未开放'
+            : '支付未完成'
+      await Taro.showModal({ title, content: res.error ?? '请稍后重试', showCancel: false })
       return
     }
 

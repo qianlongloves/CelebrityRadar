@@ -74,11 +74,18 @@ const collections = [
          （自授会员 = 白用最贵模型 + 生成不计费）。镜像存在的唯一理由是端上所有界面都读它，
          于是这次搬迁对端上零改动。两者由 payCallback 一次写入，一致性命中靠用例钉住。 */
     ],
-    indexes: [ix('idx_subscribe_ok', [['subscribe_ok', 'asc']], { optional: true, supports: '云函数筛「已授权提醒」的用户' })]
+    indexes: [
+      ix('idx_subscribe_ok', [['subscribe_ok', 'asc']], { optional: true, supports: '云函数筛「已授权提醒」的用户' }),
+      /* P2-11（2026-10-09）：另两个定时推送也按各自的授权位筛人。原先只有 subscribe_ok 一条，
+         `keywordAlert` / `riskWatch` 筛 `alert_ok` / `risk_ok` 时是全表扫 —— 与「只取一批 100 行」
+         叠加后更隐蔽：慢、而且拿到的还不是「前 100 个符合条件的人」。三个授权位各一条单字段索引。 */
+      ix('idx_alert_ok', [['alert_ok', 'asc']], { optional: true, supports: 'keywordAlert 筛「已授权预警推送」的用户' }),
+      ix('idx_risk_ok', [['risk_ok', 'asc']], { optional: true, supports: 'riskWatch 筛「已授权风险提醒」的用户' })
+    ]
   },
   {
     name: 'memberships',
-    purpose: '会员权益的**服务端权威**（_id = openid，_openid 冗余存一份便于人工排查）：只由云函数 payCallback 发货时写',
+    purpose: '会员权益的**服务端权威**（_id = openid，_openid 冗余存一份便于人工排查）：只由云函数 payCallback 发货与退款撤销时写',
     acl: ACL.cloudOnly,
     fields: [
       f('_id', 'string', { system: true, required: true }),
@@ -88,6 +95,11 @@ const collections = [
       f('expires_at', 'string', { required: true }),
       /* 幂等标记：同一订单只发一次货（跨权威行与 users 镜像行判，见 payCallback/grantMembership） */
       f('last_order_id', 'string?', { required: true }),
+      /* 幂等标记：已按哪些订单撤销过会员天数（2026-10-09 新增，P1-6）。
+         名单与被扣后的 expires_at 写在**同一次 set**里，所以「扣了」与「记了」必然同时发生 ——
+         这正是它比订单行上的 refund_revoked_at 更可靠的地方：后者要多一次写，中途失败就会再扣一遍。
+         只保留最近若干条（见 payCallback/after-sales.js 的 REFUND_LOG_MAX）。 */
+      f('refunded_orders', 'array?', { def: [] }),
       f('updated_at', 'string?', { def: null })
     ],
     /* 无索引：只按 _id（= openid）单点取，doc().get() 走主键，不需要额外索引 */
@@ -107,8 +119,16 @@ const collections = [
   },
   {
     name: 'report_cache',
-    purpose: '报告缓存 + building 生成互斥锁（全局共享）',
-    acl: ACL.publicRead,
+    /* P0-2（2026-10-09）：客户端改为**只读**，抢锁 / 落库一律走云函数 `aiProxy`(`action:'report'`)。
+     * 原先「登录可写」等于把全站共享缓存的写权交给任意登录用户：可覆盖任意 `personKey` 的
+     * 报告正文（伪造结论 / 诽谤 / 删掉会员段）、可写 `state=building` 让全站对该人物的查询排队。
+     *
+     * ⚠ **收紧顺序不可颠倒**（同 quotaGuard 那条）：先部署带写口的 aiProxy 并发布端上
+     *   （端上写口不可用时回退直写；直写失败降级为「不写缓存但照常出报告」，不抛错），
+     *   待旧版本覆盖率达标后，才在控制台把本集合改成 `{"read": true, "write": false}`。
+     *   先收紧 = 未更新的端上一进报告页就写锁失败，直接报错、拿不到报告。 */
+    purpose: '报告缓存 + building 生成互斥锁（全局共享）：客户端只读，写入走云函数 aiProxy(action:report)',
+    acl: ACL.publicReadOnly,
     fields: [
       f('_id', 'string', { system: true, required: true }),
       f('report', 'object?', { required: true }),
@@ -138,8 +158,11 @@ const collections = [
   },
   {
     name: 'feed_cache',
-    purpose: '检索结果结构化映射（不存 LLM 产物），全局共享',
-    acl: ACL.publicRead,
+    /* 同 report_cache（P0-2）：客户端只读，写入走 aiProxy 的写口（`op:'saveFeed'`）。
+     * 它比 report_cache 简单（无锁、无会员差异），但同为「全局共享 + 端上可写」——
+     * 任意登录用户可覆盖任意人物的动态列表。收紧顺序同上，两张表一起切。 */
+    purpose: '检索结果结构化映射（不存 LLM 产物），全局共享：客户端只读，写入走云函数 aiProxy(action:report, op:saveFeed)',
+    acl: ACL.publicReadOnly,
     fields: [
       f('_id', 'string', { system: true, required: true }),
       f('items', 'array', { required: true }),
@@ -247,7 +270,7 @@ const collections = [
   },
   {
     name: 'orders',
-    purpose: '会员订单状态机（pending → granting → paid / failed）；paid = 已发货完成，回调据此发货；端上只读',
+    purpose: '会员订单状态机（pending → granting → paid / failed / refunded）；paid = 已发货完成，回调据此发货；refunded 由运营写口置入，对账任务据此撤销会员；端上只读',
     acl: ACL.selfRead,
     fields: [
       f('_id', 'string', { system: true, required: true }),
@@ -260,12 +283,27 @@ const collections = [
       /* 收到支付成功通知的时刻（抢到发货权时写） */
       f('paid_at', 'string?', { def: null }),
       /* 发货完成时刻（users.membership 已写入）。granting 残留 = paid_at 有值而 granted_at 为空，
-         即「付了钱还没拿到会员」：微信重试会继续发货补救，重试耗尽仍为空则客服据此排查 */
+         即「付了钱还没拿到会员」：微信重试会继续发货补救；重试耗尽（退避 24 小时）后由
+         payCallback 的定时对账 `payReconcile` 扫出来补发，仍补不上才是人工介入 */
       f('granted_at', 'string?', { def: null }),
       f('transaction_id', 'string?', { def: null }),
-      f('callback_fee', 'number?', { def: null })
+      f('callback_fee', 'number?', { def: null }),
+      /* ↓ 退款（2026-10-09 新增，P1-6）：退款发生在微信商户平台，业务侧唯一的信号是人工告知，
+         由 payCallback 的运营写口 `adminOp:'refund'` 落成这次状态迁移 —— 端上永远写不了 refunded */
+      f('refunded_at', 'string?', { def: null }),
+      f('refund_reason', 'string?', { def: null }),
+      /* 对账已按这一单撤销过会员的时刻。**幂等标记**：扣天数必须只扣一次，
+         而「撤销」与「标记」之间没有事务，所以标记只在撤销成功（或确认无需撤销）之后才写 */
+      f('refund_revoked_at', 'string?', { def: null }),
+      /* 撤销结果说明：扣了几天，或为什么没扣（未发过货 / 权威行缺失） */
+      f('refund_revoke_note', 'string?', { def: null })
     ],
-    indexes: [ix('idx_openid_created_at', [['openid', 'asc'], ['created_at', 'desc']], { optional: true, supports: '客服按用户查单' })]
+    indexes: [
+      ix('idx_openid_created_at', [['openid', 'asc'], ['created_at', 'desc']], { optional: true, supports: '客服按用户查单' }),
+      /* 对账任务每小时按 status 扫两类残留（granting / refunded）。数据量小的时候全表扫也跑得动，
+         这个索引是给它留的余地，不是必需的 */
+      ix('idx_status_paid_at', [['status', 'asc'], ['paid_at', 'asc']], { optional: true, supports: 'payCallback 对账：扫 granting 残留与待撤销的退款单' })
+    ]
   },
   /* ↓ 关键词舆情预警（2026-10-08）：两张表分工 = 「谁在听什么」与「听到了什么」 */
   {

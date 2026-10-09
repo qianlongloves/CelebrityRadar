@@ -40,10 +40,17 @@
 - **端上零密钥**：小程序包里没有任何上游凭据，所有请求经云函数 `aiProxy` 代发。
   端上代码一律可被解包阅读与改写，故**端上的任何判断都不构成防线**。
 - **会员身份以云端为准**（2026-10-09）：会员权益的权威数据在 `memberships` 集合
-  （`_id` = openid，权限为「客户端不可读写」），只由云函数 `payCallback` 发货时写；
+  （`_id` = openid，权限为「客户端不可读写」），只由云函数 `payCallback` **发货与退款撤销**时写；
   端上界面读的 `users.membership` 是**镜像**。云端判档位（`aiProxy`）与免计费复核
   （`quotaGuard`）都读 `memberships` —— `users` 是「仅创建者可读写」，端上能改自己那一行，
-  以它为准等于把会员身份交给客户端自证。
+  以它为准等于把会员身份交给客户端自证。会员撤销由 `payCallback` 的定时对账按订单天数扣减，
+  幂等靠权威行的 `refunded_orders` 名单；对账还会把被端上改写的镜像会员**以权威覆盖回去**。
+- **端上不能触发定时任务与支付回调**（2026-10-09）：云函数部署后 `wx.cloud.callFunction`
+  即可调用它，但 4 个定时推送函数与 `payCallback` 本就不该由端上触发 —— 判据是
+  `getWXContext().OPENID`（端上调用必带，定时器 / 微信回调 / 控制台「云端测试」都不带）。
+  端上伪造支付回调（自下单 + 伪造 `{returnCode:'SUCCESS', totalFee:<单金额>}`）本可**给自己发货**，
+  因为金额天然对得上；闸门据此拦截。`payCallback` 的开关是环境变量 `PAY_CALLBACK_GUARD`
+  （默认 `log` 只记日志，确认过真机回调形态后再切 `strict`）。
 - **真正花钱的一步由云端判定**（2026-10-09）：`aiProxy` 的 `chat` 是唯一会产生上游费用的入口，
   它在发起调用前自己判两道闸，上限见 `aiProxy/quota.config.js`：
   · **产品额度**（生成 / 提问），读数取自 `quotaGuard` 维护的当日计数；
@@ -74,7 +81,7 @@
 |---|---|
 | `cloudfunctions/aiProxy/` | 会员档位闸门（`memberOnlyModels`）、上游 key 是否会随错误信息回显、`context` 越权取数 |
 | `cloudfunctions/quotaGuard/` | 计数是否真为服务端原子自增、能否被端上传参伪造（日期 / 用户标识） |
-| `cloudfunctions/payCreate/`、`payCallback/` | 金额是否只认服务端 `PLANS`、回调是否验签、续期是否幂等 |
+| `cloudfunctions/payCreate/`、`payCallback/` | 金额是否只认服务端 `PLANS`、回调是否验签、续期是否幂等、**调用方闸门（`PAY_CALLBACK_GUARD`）能否被端上绕过**、退款写口口令 `PAY_ADMIN_TOKEN` 未配置时是否 fail-closed |
 | `cloudfunctions/dbInit/` | `DB_ADMIN_TOKEN` 未配置时写操作必须一律拒绝；此函数是运维工具，上线后建议删除 |
 | 云数据库权限 | 集合权限需**手工**在控制台配置（见 [`README.md`「部署」](./README.md#部署) 第 3 步与其中的安全规则表）；权限配错会导致越权读写，属高危 |
 | `src/config/local.ts`、`.env` | 是否被误提交进版本库 |

@@ -158,27 +158,56 @@ async function readQuotaCount(table, id) {
 /**
  * 防滥用计数：**由本函数自己原子自增**，端上无法阻止 —— 这是它区别于产品额度的关键。
  *
- * 先 update(inc) 再按需 add：正常路径只有一次写；首次调用（行不存在）时 update 不生效
- * （updated === 0），再 add 建行。并发时两个请求可能同时走到 add，撞 _id 的那个由 catch
- * 兜住 —— 那一刻行已经建好，这一趟少计 1 次，比抛错打断用户要好。
+ * 返回**自增之后**的计数；读不到 / 写失败时返回 null，由调用方放行。
+ * 「先自增、再按返回值判定」是这里的关键（P1 修复，2026-10-09）：原实现是
+ * 「先读计数 → 判超限 → 再自增」，两步之间留了一个 TOCTOU 窗口 —— 并发的一批请求会
+ * 同时读到同一个旧值而全部放行，这个「成本硬边界」被一次性放大 N 倍。
+ * 自增（db.command.inc）本身是原子的，所以「自增后判定」天然并发安全。
  *
- * 自增失败不拦调用（只记一行 warn）：闸门的作用是限速，不该把一次写库抖动放大成
- * 「所有人都不能用」。而攻击者也没有办法让这里的写失败 —— 表的权限在我们手上。
+ * 先 update(inc) 再按需 add：正常路径只有一次写；首次调用（行不存在）时 update 不生效
+ * （updated === 0），再 add 建行。并发时两个请求可能同时走到 add，撞 _id 的那个由内层
+ * catch 兜住 —— 那一刻行已经建好，改回自增路径补上这一次（不再「少计 1 次」）。
+ *
+ * 自增失败不拦调用（返回 null，只记一行 warn）：闸门的作用是限速，不该把一次写库抖动
+ * 放大成「所有人都不能用」。而攻击者也没有办法让这里的写失败 —— 表的权限在我们手上。
  */
+
+/**
+ * 「行已存在」时原子自增一次，返回**有没有落实**（updated > 0）。
+ *
+ * ⚠ V-1（2026-10-09 复审）：`doc(id).update()` 打到**不存在的行**时，wx-server-sdk 的真实行为
+ * 尚未在真机确认 —— 可能返回 `stats.updated === 0`，也可能**直接抛错**（两个版本上都出现过）。
+ * 本函数只依赖「自增有没有落实」，与具体是哪种无关，故把抛错**一律归一成 0**：
+ * 若按「抛错 = 故障」处理（即让异常浮到外层 catch），那么每个用户每天**首次**调用
+ * （那一行还不存在）都会直接进 catch 返回 null（放行）⇒ 计数行永远建不起来、这道成本硬边界
+ * 静默失效。这正是 V-1 指出的风险点，归一成 0 后两种真机行为下结论完全一致。
+ */
+async function incrAbuseRow(key) {
+  try {
+    const upd = await db.collection(ABUSE_TABLE).doc(key).update({ data: { count: db.command.inc(1) } })
+    return (upd && upd.stats && upd.stats.updated) || 0
+  } catch (err) {
+    return 0
+  }
+}
+
 async function bumpAbuseCount(key, openid) {
   try {
-    const upd = await db
-      .collection(ABUSE_TABLE)
-      .doc(key)
-      .update({ data: { count: db.command.inc(1) } })
-    const updated = upd && upd.stats ? upd.stats.updated : 0
-    if (!updated) {
-      await db
-        .collection(ABUSE_TABLE)
-        .add({ data: { _id: key, _openid: openid, count: 1, date: todayKey() } })
+    if (!(await incrAbuseRow(key))) {
+      try {
+        await db
+          .collection(ABUSE_TABLE)
+          .add({ data: { _id: key, _openid: openid, count: 1, date: todayKey() } })
+        return 1
+      } catch (err) {
+        /* 并发：另一端刚插好这一行，改回自增路径补上本次；仍失败则返回 null 由调用方放行 */
+        if (!(await incrAbuseRow(key))) return null
+      }
     }
+    return await readQuotaCount(ABUSE_TABLE, key)
   } catch (err) {
     console.warn('aiProxy 防滥用计数自增失败（本次放行）:', err instanceof Error ? err.message : err)
+    return null
   }
 }
 
@@ -222,18 +251,24 @@ async function quotaGate(openid, purpose, isMember) {
     }
   }
 
-  /* ② 防滥用限速：先判（这一次还没记）再记，然后才放行去花钱 */
+  /*
+   * ② 防滥用限速：**先自增、再按自增后的值判定**（P1 修复，2026-10-09）。
+   *    原实现「先读 → 判 → 再记」中间留了一个 TOCTOU 窗口：并发的一批请求会同时读到
+   *    同一个旧值而全部放行，于是这个「成本硬边界」可以被一次性放大 N 倍。
+   *    自增是原子的，超限的请求自己也把计数吃掉，上限才真的是硬的。
+   *    计数读不到（返回 null，库抖动）时放行 —— 它限的是速，不该把写库抖动放大成
+   *    「所有人都不能用」（与 readQuotaCount 按 0 放行同一哲学）。
+   */
   const abuseLimit = member ? ABUSE_LIMITS.member : ABUSE_LIMITS.free
   const abuseKey = `${openid}#${today}`
-  const abuseCount = await readQuotaCount(ABUSE_TABLE, abuseKey)
-  if (abuseCount >= abuseLimit) {
+  const abuseCount = await bumpAbuseCount(abuseKey, openid)
+  if (abuseCount !== null && abuseCount > abuseLimit) {
     return {
       ok: false,
       kind: 'abuse',
       error: `今日调用次数已达上限（${abuseLimit} 次），明日 0 点恢复；如确实需要更多请向我们反馈`
     }
   }
-  await bumpAbuseCount(abuseKey, openid)
   return null
 }
 
@@ -376,6 +411,10 @@ function probeOf(body) {
  * 返回值带上 kind：端上据此决定「要不要重试」。
  *   rate / auth / quota / unconfigured / badrequest → 重试无意义
  *   upstream / network                              → 可退避重试
+ *
+ * ⚠ `quota` **只**表示「用户自己的产品额度被闸门拦下」（见 quotaGate）。上游自己的欠费 / 未开通
+ * 资源包一律用 `upstream_quota`（P2-9，2026-10-09）：两者处置相同（都不重试），但**不能说同一句话**
+ * —— 把平台账户问题说成「你的额度用完了」，用户去查额度页会发现是满的，只能来问客服。
  */
 async function runSearch(key, params) {
   const res = await postJson(BOCHA_ENDPOINT, { Authorization: `Bearer ${key}` }, params, TIMEOUT_MS)
@@ -385,8 +424,12 @@ async function runSearch(key, params) {
   if (res.status === 401) {
     return { ok: false, kind: 'auth', error: '检索密钥无效（请检查云函数环境变量 BOCHA_API_KEY）' }
   }
+  /**
+   * 403 = 上游（博查）没开通资源包 / 自己欠费 —— 是**平台账户**的问题，不是用户的额度，
+   * 故用 `upstream_quota` 而不是 `quota`（P2-9；端上按 kind 分流文案，混用会把用户引去查自己的额度）。
+   */
   if (res.status === 403) {
-    return { ok: false, kind: 'quota', error: '检索额度不足或未开通权限（博查资源包）' }
+    return { ok: false, kind: 'upstream_quota', error: '检索额度不足或未开通权限（博查资源包）' }
   }
   if (res.status !== 200) {
     return {
@@ -435,17 +478,39 @@ async function handleSearch(event) {
   const query = typeof event.query === 'string' ? event.query.trim() : ''
   if (!query) return { ok: false, kind: 'badrequest', error: '缺少 query' }
 
+  /*
+   * 付费闸门（P1 修复，2026-10-09）：search 同样是一次**真实付费调用**（博查按次计费），
+   * 而原实现这条路径上什么闸门都没有 —— 不判额度、不写 ai_calls、连 openid 都不要，
+   * 于是 `{action:'search', count:20}` 循环调用就能无上限刷掉资源包。
+   *
+   * 走 aux 档：检索是生成 / 刷新内部的零件，产品额度在 generate 那一侧已经计过一次，
+   * 这里不重复扣额度，只受防滥用限速闸（ABUSE_LIMITS，由云端就地自增，端上无法阻止）。
+   * chat 走的是同一道闸门（见 handleChat）。
+   */
+  const openid = (cloud.getWXContext() || {}).OPENID
+  if (!openid) {
+    return { ok: false, kind: 'auth', error: '取不到调用者 openid：search 只允许从小程序端调用' }
+  }
+
+  /* 会员身份一次读库、两处共用（闸门判档位 + 下方 count 的 cap）：同一次请求不查两遍权威表 */
+  let memberKnown = null
+  const isMember = async () => {
+    if (memberKnown === null) memberKnown = await isActiveMember(openid)
+    return memberKnown
+  }
+
+  const gate = await quotaGate(openid, AUX_PURPOSE, isMember)
+  if (gate) return gate
+
   const count = Number(event.count)
   const include = normalizeInclude(event.include)
   const want = Number.isFinite(count) && count > 0 ? Math.floor(count) : 10
   /*
-   * 只有「要得比免费上限还多」时才查一次会员身份：
-   * 端上主线 / 支线默认都在 20 以内，故绝大多数请求不会为此多一次读库。
+   * 只有「要得比免费上限还多」时才用到会员身份：
+   * 端上主线 / 支线默认都在 20 以内，故绝大多数请求不会为此多一次读库
+   * （上面那道闸门已经读过一次，这里是同一个 memo）。
    */
-  const cap =
-    want > FREE_SEARCH_MAX && (await isActiveMember((cloud.getWXContext() || {}).OPENID))
-      ? MEMBER_SEARCH_MAX
-      : FREE_SEARCH_MAX
+  const cap = want > FREE_SEARCH_MAX && (await isMember()) ? MEMBER_SEARCH_MAX : FREE_SEARCH_MAX
   try {
     return await runSearch(key, {
       query,
@@ -590,7 +655,20 @@ async function handleChat(event) {
   }
   /* 402 = 上游账户余额不足（Payment Required），与 401 是两回事，分开报才定位得到 */
   if (res.status === 402) {
-    return { ok: false, kind: 'quota', error: '大模型额度不足（上游账户余额）' }
+    /* P2-9：用 upstream_quota 而非 quota —— 这是**平台账户**欠费，说成「你的额度用完了」会误导用户 */
+    return { ok: false, kind: 'upstream_quota', error: '大模型额度不足（上游账户余额）' }
+  }
+  /*
+   * 403 = 上游拒绝访问（未开通 / 被风控）。原先落进下面的 4xx 兜底 → kind='upstream' →
+   * retryable=true → 端上会带着退避**重试三次**，而 403 重试必然还是 403（白烧三次真实请求、
+   * 还把文案说成「上游服务异常，可稍后重试」）。归入 upstream_quota：不重试，且文案指向配置。
+   */
+  if (res.status === 403) {
+    return {
+      ok: false,
+      kind: 'upstream_quota',
+      error: `上游拒绝访问（HTTP 403）：多为资源包未开通或额度告急 —— ${snippet(res.data) || '无响应体'}`
+    }
   }
   if (res.status < 200 || res.status >= 300) {
     return {
@@ -613,6 +691,21 @@ async function handleChat(event) {
   return { ok: true, content, model, downgraded, finishReason }
 }
 
+/*
+ * 共享缓存写口（P0-2，2026-10-09）：实现在 report-store.js，依赖全部复用本文件里已有的
+ * 那一份（会员权威判定 / 防滥用计数 / 错误摘要 / db / cloud），不另起一套口径。
+ * 实例化放在这里：上面的函数声明都已就位。
+ */
+const createReportStore = require('./report-store')
+const handleReportStore = createReportStore({
+  db,
+  cloud,
+  isActiveMember,
+  bumpAbuseCount,
+  todayKey,
+  failDetail
+})
+
 exports.main = async (event) => {
   /*
    * 默认值刻意**不是** 'test'（A3，2026-10-09）：'test' 会向博查与大模型各发一次真实付费探测，
@@ -622,8 +715,10 @@ exports.main = async (event) => {
   const action = (event && event.action) || ''
   if (action === 'search') return handleSearch(event || {})
   if (action === 'chat') return handleChat(event || {})
+  /* 共享缓存写口（P0-2）：不需要口令，但要求登录身份，且 op 会过写口自己的限速 */
+  if (action === 'report') return handleReportStore(event || {})
   if (action !== 'test') {
-    return { ok: false, error: `未知 action：${action}（支持 test / search / chat）` }
+    return { ok: false, error: `未知 action：${action}（支持 test / search / chat / report）` }
   }
 
   /*

@@ -42,9 +42,21 @@ function dyn(over = {}) {
 describe('时间工具 utils/time', () => {
   const time = env.load('utils/time')
 
-  it('todayKey 是本地时区的 yyyy-MM-dd（配额主键口径）', () => {
-    eq(time.todayKey(), dayjs().format('YYYY-MM-DD'))
+  it('todayKey 是 UTC+8 的 yyyy-MM-dd（配额主键口径，与云端同日）', () => {
+    /*
+     * P2-10（2026-10-09）：配额主键是 `openid#yyyy-mm-dd`，云端（quotaGuard / aiProxy#quota.config）
+     * 一律按 UTC+8 取日期。端上若按设备本地时区算，非东八区或用户改过设备日期的场景就会出现
+     * 「界面显示还有额度、云端却按另一天拒绝」（或反之）。这里钉住同一公式。
+     */
+    eq(time.todayKey(), new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10))
     ok(/^\d{4}-\d{2}-\d{2}$/.test(time.todayKey()))
+  })
+
+  it('todayKey 不依赖设备时区（源码里不许再出现 dayjs 本地格式化）', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'utils', 'time.ts'), 'utf8')
+    const body = src.slice(src.indexOf('export function todayKey'))
+    ok(body.includes('8 * 3600 * 1000'), '必须显式 +8，不能靠运行环境时区')
+    notOk(/todayKey[\s\S]{0,200}dayjs\(\)/.test(body), 'todayKey 内不得再回落 dayjs 本地格式化')
   })
 
   it('currentWeekKey 是 ISO 周标识 yyyy-Www', () => {
@@ -143,10 +155,15 @@ describe('领域码与 personKey utils/domains', () => {
     }
   })
 
-  it('名字里含 # 时仍能正确解析（用 lastIndexOf）', () => {
+  it('P2-17：buildPersonKey 把名字里的 # 剥掉（否则同一个人的报告会存成两行）', () => {
+    eq(d.buildPersonKey('A#B', 'ent'), 'AB#ent')
+    eq(d.buildPersonKey('A＃B', 'ent'), 'AB#ent')
     const key = d.buildPersonKey('A#B', 'ent')
-    eq(key, 'A#B#ent')
-    deepEq(d.parsePersonKey(key), { name: 'A#B', domain: 'ent' })
+    deepEq(d.parsePersonKey(key), { name: 'AB', domain: 'ent' })
+  })
+
+  it('历史 key 里残留的 # 仍按最后一个 # 解析（老缓存不因收口而失效）', () => {
+    deepEq(d.parsePersonKey('A#B#ent'), { name: 'A#B', domain: 'ent' })
   })
 
   it('非法输入返回 null 而不是抛错', () => {
@@ -1251,9 +1268,16 @@ describe('报告目录 utils/report-toc', () => {
 
   it('老报告（缺第二批字段）不列这些节 —— 键不存在与键为空数组是两回事', () => {
     const toc = buildReportToc(mkReport(), { member: false, hasOverview: true })
-    for (const id of ['sec-profile', 'sec-relations', 'sec-controversies', 'sec-watchlist', 'sec-glossary']) {
+    for (const id of ['sec-profile', 'sec-relations', 'sec-watchlist', 'sec-glossary']) {
       notOk(toc.some((s) => s.id === id), `老报告不该出现 ${id}`)
     }
+  })
+
+  it('P2-13：缺 controversies 字段也要列「争议与回应」（页面缺这段时有说明卡，目录得点得到）', () => {
+    const toc = buildReportToc(mkReport(), { member: false, hasOverview: true })
+    ok(toc.some((s) => s.id === 'sec-controversies'))
+    /* 降级简版是唯一不收它的情形 */
+    notOk(buildReportToc(mkReport({ degraded: true }), { member: false, hasOverview: false }).some((s) => s.id === 'sec-controversies'))
   })
 
   it('没有报告时给空目录（页面据此不出目录条）', () => {
@@ -1265,6 +1289,51 @@ describe('报告目录 utils/report-toc', () => {
     const toc = buildReportToc(fullReport(), { member: true, hasOverview: true })
     eq(new Set(toc.map((s) => s.id)).size, toc.length)
     for (const s of toc) ok(s.id.startsWith('sec-') && !!s.label, `异常条目：${JSON.stringify(s)}`)
+  })
+})
+
+/* ----------------------- 报告页渲染条件与刷新入口（源码钉住，P2-12 / P2-13 / P2-18 / P2-19） */
+
+/*
+ * 报告页是 tsx，跑不进 Node（无 DOM），但它有两类口径与纯逻辑是**平行**的两份：
+ *   · 卡片渲染条件 ↔ utils/report-toc（目录点了却到别处）；
+ *   · 「刷新最新」的可用性 ↔ 状态行（同一件事给出两个相反答案）。
+ * 这类错只有线上才暴露，故这里读源码把口径钉住。改页面条件必须同步这几条断言。
+ */
+describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19）', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.tsx'), 'utf8')
+  /** 取 needle 前后的一段源码，用于断言「某元素/常量处在什么条件下」 */
+  const around = (needle, before = 60, after = 0) => {
+    const at = src.indexOf(needle)
+    return at < 0 ? '' : src.slice(Math.max(0, at - before), at + needle.length + after)
+  }
+
+  it('P2-12：保留提示的段名走 keptNames / MEMBER_SECTIONS 派生，不写死固定段名', () => {
+    ok(src.includes('presentSections(report) : memberLocked'), '会员与免费两条来源都从数据里取实际存在的段')
+    ok(src.includes("keptSections.length > 0 ? keptSections : MEMBER_SECTIONS"), '兜底用 MEMBER_SECTIONS')
+    ok(src.includes('${keptNames}'), '提示文案须插值 keptNames，而不是写死段名')
+    ok(src.includes("MEMBER_SECTIONS.join('、')"), '「补齐」说明同样从 MEMBER_SECTIONS 派生')
+    notOk(/['"]对比视角['"]/.test(src), '段名不得作为字符串常量写死在页面里')
+  })
+
+  it('P2-13：争议卡以 !report.degraded 为条件（缺键也出卡，不能静默隐藏合规相关段落）', () => {
+    const cond = around("id='sec-controversies'", 60)
+    ok(cond.includes('!report.degraded'), `争议卡的外层条件应为 !report.degraded，实际：${cond}`)
+    ok(src.includes('这一段缺数据与「确认没有争议」不是一回事'), '缺键要出说明卡，而不是整卡消失')
+  })
+
+  it('P2-18：底部「刷新最新」按 showFresh 禁用并改文案（与状态行同一判据）', () => {
+    const btn = around('disabled={showFresh}', 0, 300)
+    ok(btn.includes("'已是最新'"), `禁用时应说明原因，实际：${btn}`)
+    ok(src.includes("showFresh ? '已是最新' : '刷新最新'"))
+  })
+
+  it('P2-19：waiting 态有轮询（5s 一次、90s 封顶转 error），兑现「无需刷新自动展示」的承诺', () => {
+    ok(src.includes('WAIT_POLL_MS = 5_000'), '轮询间隔常量缺失')
+    ok(src.includes('WAIT_POLL_MAX_MS = 90_000'), '轮询上限须与云端锁 BUILDING_TIMEOUT_MS 对齐')
+    ok(src.includes("if (state.phase !== 'waiting') return"), '轮询只在 waiting 态启动')
+    ok(src.includes('setInterval'), '必须有轮询定时器（此前一行都没有，等待页永远转不完）')
+    ok(src.includes('clearInterval'), '离开该态要清定时器')
   })
 })
 
@@ -1514,5 +1583,150 @@ describe('名人风险监控 utils/risk-watch（纯逻辑）', () => {
     eq(seenLabel('2026-10-08T08:00:00.000Z', now), '昨天')
     eq(seenLabel('2026-09-28T08:00:00.000Z', now), '09-28')
     eq(seenLabel('', now), '')
+  })
+})
+
+/* ------------------------------------------- 消歧候选净化 utils/disambiguate（P2-17，2026-10-09） */
+
+/*
+ * 模型回传的 candidate.name 会直接进 personKey（`名字#领域码`）并落库，此前没有任何约束。
+ * 这组用例钉住三道净化：把 `#` 挡在名字外、把整句描述截短、把明显不是同一人的候选过滤掉 ——
+ * 但**不一律丢弃**（昵称 / 艺名场景下一个字都不共享是正常的，全丢会让用户查不到人）。
+ */
+describe('消歧候选净化 utils/disambiguate（P2-17）', () => {
+  const { nameRelated, sanitizeCandidates } = env.load('utils/disambiguate')
+  const { buildPersonKey } = env.load('config/domains')
+
+  const cand = (name, domain = 'ent', brief = '') => ({ name, domain, brief })
+
+  it('nameRelated：中文只认共享汉字（宽松到只拦明显不是同一人）', () => {
+    ok(nameRelated('张三', '张三'))
+    ok(nameRelated('小李', '李某某'), '「小李」↔「李某某」靠共享的「李」')
+    notOk(nameRelated('张三', '李四'), '一个汉字都不共享则判为无关')
+  })
+
+  it('nameRelated：拉丁 / 混合串看包含关系或共享 ≥3 字符', () => {
+    ok(nameRelated('Jay', 'Jay Chou'), '拉丁串互相包含即算相关')
+    ok(nameRelated('abcde', 'abcfg'), '共享 a/b/c 三个字符')
+    notOk(nameRelated('ab', 'xy'), '既不含也不足 3 个共享字符')
+  })
+
+  it('nameRelated：空输入一律判为无关（不炸、不误放行）', () => {
+    notOk(nameRelated('', '张三'))
+    notOk(nameRelated('张三', ''))
+    notOk(nameRelated('   ', '张三'))
+  })
+
+  it('净化：名字里的 # / ＃ 必须去掉（否则 personKey 会被切错位、同人分裂成两行缓存）', () => {
+    const a = sanitizeCandidates('张三', [cand('张#三')])
+    eq(a[0].name, '张三')
+    eq(buildPersonKey(a[0].name, a[0].domain).split('#').length, 2, '主键只能有一个分隔符')
+
+    const b = sanitizeCandidates('李四', [cand('李＃四')])
+    eq(b[0].name, '李四')
+    eq(buildPersonKey(b[0].name, b[0].domain).split('#').length, 2)
+  })
+
+  it('净化：换行 / 连续空白折成单空格，首尾去空白', () => {
+    const out = sanitizeCandidates('A', [cand('  张\n\t三  '), cand('李   四')])
+    eq(out[0].name, '张 三')
+    eq(out[1].name, '李 四')
+  })
+
+  it('净化：名字截到 30 字（模型把一整句描述当名字时收口）、brief 截到 60 字', () => {
+    const out = sanitizeCandidates('演员', [cand('演'.repeat(40), 'ent', '简'.repeat(80))])
+    eq(out[0].name.length, 30)
+    eq(out[0].brief.length, 60)
+  })
+
+  it('净化：清完为空的候选被丢弃', () => {
+    deepEq(sanitizeCandidates('A', [cand('#'), cand('   '), cand('张三')]).map((c) => c.name), ['张三'])
+  })
+
+  it('净化：同一位（同名同领域）只留第一条，同名不同领域各自保留', () => {
+    const out = sanitizeCandidates('张三', [cand('张三', 'ent', '第一个'), cand('张三', 'ent', '重复'), cand('张三', 'tech')])
+    eq(out.length, 2)
+    eq(out[0].brief, '第一个')
+    deepEq(out.map((c) => c.domain), ['ent', 'tech'])
+  })
+
+  it('相关性过滤：有相关的就只留相关的', () => {
+    const out = sanitizeCandidates('张三', [cand('张三', 'ent'), cand('李四', 'tech')])
+    deepEq(out.map((c) => c.name), ['张三'], '输入「张三」不该混进「李四」的报告')
+  })
+
+  it('相关性过滤：一个都不相关时原样交回（昵称 / 艺名不能全丢，否则用户一屏空）', () => {
+    const out = sanitizeCandidates('小甜甜', [cand('布兰妮', 'ent')])
+    deepEq(out.map((c) => c.name), ['布兰妮'], '过滤后为空则交回净化后的候选')
+  })
+})
+
+/* ------------------------------------------------ iOS 虚拟支付门禁 utils/pay（P2-20，2026-10-09） */
+
+/*
+ * 会员是虚拟商品，微信不允许在 iOS 小程序内支付（请求被平台拒、提审也会被驳回）。
+ * 门禁必须在**拉起收银台之前**、且收口在唯一下单函数里（会员入口有多处，藏一处漏一处）。
+ * 环境分叉靠 Taro.getSystemInfoSync().platform 判定 —— 用 env.setTaroOverride 逼出真机分支。
+ */
+describe('iOS 虚拟支付门禁 utils/pay（P2-20）', () => {
+  const { isIapBlocked, buyMembership } = env.load('utils/pay')
+
+  it('默认环境（devtools / 安卓）不拦，开发者照常联调', () => {
+    env.resetData()
+    notOk(isIapBlocked())
+  })
+
+  it('platform=ios（含大小写）判定为拦下', () => {
+    env.resetData()
+    env.setTaroOverride('getSystemInfoSync', () => ({ platform: 'ios' }))
+    ok(isIapBlocked())
+    env.setTaroOverride('getSystemInfoSync', () => ({ platform: 'iOS' }))
+    ok(isIapBlocked(), '大小写不敏感')
+  })
+
+  it('读不到环境信息时不拦（宁可让平台拒一次，也不凭猜测挡掉能买的用户）', () => {
+    env.resetData()
+    env.setTaroOverride('getSystemInfoSync', () => {
+      throw new Error('boom')
+    })
+    notOk(isIapBlocked())
+  })
+
+  it('iOS 上 buyMembership 在拉起收银台 / 打云函数之前就返回 blocked=ios', async () => {
+    env.resetData()
+    env.setTaroOverride('getSystemInfoSync', () => ({ platform: 'ios' }))
+    let called = false
+    env.registerCloudFn('payCreate', () => {
+      called = true
+      return { ok: true }
+    })
+
+    const res = await buyMembership('monthly')
+    eq(res.ok, false)
+    eq(res.blocked, 'ios')
+    eq(res.paid, false)
+    notOk(called, '门禁必须早于云函数与收银台，否则只是把失败推迟一步')
+    ok(/iOS/.test(res.error), '给的是「换个地方买」的出路，不是技术报错')
+  })
+
+  it('云端未配置支付通道时返回 blocked=unconfigured，并把运维文案换成用户能懂的说明', async () => {
+    env.resetData()
+    env.registerCloudFn('payCreate', () => ({
+      ok: false,
+      kind: 'unconfigured',
+      error: '请在环境变量里设置 WX_PAY_MCHID'
+    }))
+
+    const res = await buyMembership('monthly')
+    eq(res.ok, false)
+    eq(res.blocked, 'unconfigured')
+    notOk(/WX_PAY_MCHID/.test(res.error), '不该把运维文案直接弹给用户')
+  })
+
+  it('未选套餐时直接拒绝，且不带 blocked（这不是环境问题）', async () => {
+    env.resetData()
+    const res = await buyMembership('')
+    eq(res.ok, false)
+    eq(res.blocked, undefined)
   })
 })

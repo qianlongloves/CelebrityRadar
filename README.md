@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-399%20passing-success.svg)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-522%20passing-success.svg)](#开发与测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 人物档案 / 动态 / 语录 / 点评 / 争议与回应 / 时间线 / 名词解释…），再在端上聚合出词云、情绪走势与热度趋势。
@@ -308,6 +308,8 @@ npm run build:h5       # H5 端构建（调试用）
 - **`DB_ADMIN_TOKEN`** —— 仅 `dbInit` 的环境变量（自定义口令，写操作的闸门）。❌ 不进包
 - **`AI_PROXY_TEST_TOKEN`** —— 仅 `aiProxy` 的环境变量（`test` 付费探针的口令；**不配则该动作一律拒绝**，这是期望的默认状态）。为运维口令而非部署项，通常只在控制台排障时临时加。❌ 不进包
 - **`WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID`** —— `payCreate` 的环境变量。❌ 不进包
+- **`PAY_ADMIN_TOKEN`** —— 仅 `payCallback` 的环境变量（退款 / 手动对账运营写口的口令；**不配则写口一律拒绝**）。❌ 不进包
+- **`PAY_CALLBACK_GUARD`** —— 仅 `payCallback` 的**可选**环境变量，灰度开关：`log`（默认，端上调用只记日志）/ `strict`（拒绝端上调用）/ `off`（不判）。真机日志确认过回调形态后再切 `strict`。❌ 不进包
 - **部署期的密钥来源（`.env` 本身）** —— `celebrity-radar/.env`（由 `.env.example` 复制，**不进版本库**），由 `cloudbaserc.json` 以 `${env.XXX}` 引用。❌ 不进包
 - **环境 ID / 订阅模板 ID** —— `src/config/local.ts`。✅ 进包（**它们不是密钥**）
 
@@ -384,15 +386,15 @@ tcb fn deploy aiProxy       -e <your-env-id>
 
 `cloudbaserc.json` 已声明函数、环境变量与定时器，逐个 `tcb fn deploy <函数名>` 即可。
 
-- **`aiProxy`** —— 平台代付上游密钥（`search` / `chat`）+ **云端闸门**（会员身份读 `memberships`、每日上限按 `quota.config.js`、防滥用就地自增 `ai_calls`、素材加厚按 `count` 分档）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）；**供应商由端上请求指定**（用户自选），云端只兜底。触发：端上调用；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`）+ `OPENAI_API_KEY`（默认用不上）+ `AI_PROXY_TEST_TOKEN`（可选：`test` 探针口令，**不配则该动作一律拒绝**）
+- **`aiProxy`** —— 平台代付上游密钥（`search` / `chat`）+ **云端闸门**（会员身份读 `memberships`、每日上限按 `quota.config.js`、防滥用就地自增 `ai_calls`、素材加厚按 `count` 分档）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）+ **共享缓存写口**（`action:'report'`：`acquire` / `release` / `save` / `saveFeed`）；**供应商由端上请求指定**（用户自选），云端只兜底。触发：端上调用；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`）+ `OPENAI_API_KEY`（默认用不上）+ `AI_PROXY_TEST_TOKEN`（可选：`test` 探针口令，**不配则该动作一律拒绝**）
 - **`quotaGuard`** —— 配额计数权威（原子自增 + 服务端日期），`refresh` / `generate` / `ask` 三类。触发：端上调用；环境变量：—
 - **`contentCheck`** —— 内容安全机审（云调用 `security.msgSecCheck`），送检源 = AI 提问。触发：端上调用；环境变量：—
 - **`hotBoardRefresh`** —— 热门名人榜每日生产（写 `hot_board`）。触发：定时 06:30；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（定时任务没有端上偏好，取 `LLM_PROVIDER`，默认 DeepSeek，因此**这家必须配 Key**）
-- **`notifyFollowUpdates`** —— 关注更新订阅消息推送。触发：定时 09:00；环境变量：`BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID`
-- **`keywordAlert`** —— 关键词舆情预警（按订阅词检索并写 `keywords`）。触发：定时 09:20；环境变量：`BOCHA_API_KEY` `ALERT_TEMPLATE_ID`
-- **`riskWatch`** —— 名人风险监控（按被监控的人检索、写 `risk_signals` 并推送）。触发：定时 09:40；环境变量：`BOCHA_API_KEY` `RISK_TEMPLATE_ID`
+- **`notifyFollowUpdates`** —— 关注更新订阅消息推送。触发：定时 09:00（**拒绝端上调用**）；环境变量：`BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID`
+- **`keywordAlert`** —— 关键词舆情预警（按订阅词检索并写 `keywords`）。触发：定时 09:20（**拒绝端上调用**）；环境变量：`BOCHA_API_KEY` `ALERT_TEMPLATE_ID`
+- **`riskWatch`** —— 名人风险监控（按被监控的人检索、写 `risk_signals` 并推送）。触发：定时 09:40（**拒绝端上调用**）；环境变量：`BOCHA_API_KEY` `RISK_TEMPLATE_ID`
 - **`payCreate`** —— 会员下单（服务端定价 + 云支付统一下单）。触发：端上调用；环境变量：`WX_PAY_SUB_MCH_ID` `PAY_CALLBACK_ENV_ID`
-- **`payCallback`** —— 支付结果通知（金额校验 + 幂等续期会员）。触发：微信支付回调；环境变量：—
+- **`payCallback`** —— 支付链路的**唯一后端**：支付结果通知（金额校验 + 幂等续期会员）+ **售后**（退款运营写口 `adminOp:'refund'` / 手动对账 `adminOp:'reconcile'`）。触发：微信支付回调（**端上调用受闸门约束**，见下）+ 定时对账 `payReconcile`（每小时第 15 分）；环境变量：`PAY_ADMIN_TOKEN`（运营写口口令，不配则写口一律拒绝）+ `PAY_CALLBACK_GUARD`（可选灰度开关）
 - **`dbInit`** —— 运维工具：建集合 / 比对字段 / 建·改索引（端上不调用）。触发：手动；环境变量：`DB_ADMIN_TOKEN` `WX_APPID` `WX_APPSECRET`
 
 几条容易踩的：
@@ -401,6 +403,7 @@ tcb fn deploy aiProxy       -e <your-env-id>
 - `aiProxy`、`hotBoardRefresh`、`notifyFollowUpdates` 的执行超时必须是 **60 秒**（`aiProxy` 内还要满足 `LLM_CHAT_TIMEOUT_MS = 50000` 更小），否则长报告、热门榜一轮「6 检索 + 1 生成」、推送一轮最多 20 次检索都会被平台提前掐断（端上 `-504003`）。
 - `dbInit` 是**运维工具、不是运行时依赖**：只在建集合 / 建索引时部署，用完 `tcb fn delete dbInit` 即可（用法见第 3 节）。
 - `contentCheck` 无环境变量（走云调用，凭证由平台托管），唯一前提是 `cloudfunctions/contentCheck/config.json` 里的 `permissions.openapi` **随上传生效**；缺这条声明时端上按 **fail-open** 静默放过。⚠ 它没法用控制台「云端测试」验（需要真实 `openid`），只能在真机问答页验。
+- **端上不能触发定时任务与支付回调（调用方闸门）**：云函数部署后端上 `wx.cloud.callFunction` 就能调到它，而 4 个定时推送函数（`notifyFollowUpdates` / `keywordAlert` / `riskWatch`）与 `payCallback` 本就不该由端上调用 —— 端点判据是 `getWXContext().OPENID`（端上调用必带，定时器 / 微信回调 / 控制台「云端测试」都不带）。前三个**一律拒绝**端上调用；`hotBoardRefresh` 保留端上 `action:'ensure'` 补跑链路，**只拦端上 `force`**；`payCallback` 用 `PAY_CALLBACK_GUARD` **灰度**：默认 `log` 只记日志，在真机日志里确认过支付回调不带 `openid` 后再切 `strict`（即便判错，定时对账也会把滞留的 `granting` 补上，不会永久丢单）。
 
 **没有必装清单，按需部署即可**（不用的功能不部署，也不影响其他部分）：
 
@@ -416,16 +419,16 @@ CloudBase 文档型数据库。端上写业务字段 `id`，由 `utils/db.ts` �
 | 集合 | 用途 | 权限 |
 |---|---|---|
 | `users` | 账号与设置（首登自动写入）；`membership` 是端上读口的**镜像**，权威在下方 `memberships` | 仅创建者可读写 |
-| `memberships` | **会员权益权威**（`_id` = openid）：只由 `payCallback` 发货时写；云端判档位与免计费都读它 | **客户端不可读写**（仅云函数） |
+| `memberships` | **会员权益权威**（`_id` = openid）：只由 `payCallback` 发货与**退款撤销**时写；云端判档位与免计费都读它 | **客户端不可读写**（仅云函数） |
 | `ai_calls` | 防滥用限速计数（`_id` = openid#yyyy-MM-dd）：`aiProxy` 放行上游前就地自增，是成本侧的硬边界 | **客户端不可读写**（仅云函数） |
-| `report_cache` | 报告缓存 + `building` 生成互斥锁（全局共享、长期复用） | 所有人可读、登录可写 |
-| `feed_cache` | 检索结果结构化映射（不存 LLM 产物） | 所有人可读、登录可写 |
+| `report_cache` | 报告缓存 + `building` 生成互斥锁（全局共享、长期复用） | 所有人可读、**客户端不可写**（写入只能走 `aiProxy` 的 `action:'report'`） |
+| `feed_cache` | 检索结果结构化映射（不存 LLM 产物） | 所有人可读、**客户端不可写**（同上，`op:'saveFeed'`） |
 | `hot_board` | 热门名人榜（AI 每日写，`_id` 固定 `latest` 覆盖写） | 所有人可读、客户端不可写 |
 | `keywords` | 关键词检索缓存（全局共享） | 所有人可读、客户端不可写 |
 | `refresh_quota` | 关注流每日刷新 ≤ 10 次（`openid#yyyy-MM-dd`） | 本人可读、不可写（写仅限云函数） |
 | `generate_quota` | 报告每日生成配额（免费 3 / 会员 30） | 本人可读、不可写（同上） |
 | `ask_quota` | AI 提问每日配额（免费 5 / 会员 30，成功才计数） | 本人可读、不可写（同上） |
-| `orders` | 会员订单状态机（`pending → granting → paid` / `failed`） | 本人可读、不可写（写仅限支付云函数） |
+| `orders` | 会员订单状态机（`pending → granting → paid` / `failed` / `refunded`；`refunded` 由运营写口置入、对账任务据此撤销会员） | 本人可读、不可写（写仅限支付云函数） |
 | `follows` | 关注列表（`openid#personKey`） | 仅创建者可读写 |
 | `favorites` | 收藏（四类，`openid#type#hash` 防重） | 仅创建者可读写 |
 | `history` | 浏览历史（保留 50 条） | 仅创建者可读写 |
@@ -446,9 +449,8 @@ CloudBase 文档型数据库。端上写业务字段 `id`，由 `utils/db.ts` �
 | 档位 | 安全规则（JSON） | 用在哪几张集合 |
 |---|---|---|
 | 仅创建者可读写 | 控制台预设，直接选 | `users` / `follows` / `favorites` / `history` / `events` / `keyword_watches` |
-| 所有人可读、登录可写 | `{"read": true, "write": "auth.openid != null"}` | `report_cache` / `feed_cache` |
 | 本人可读、不可写 | `{"read": "doc._openid == auth.openid", "write": false}` | `refresh_quota` / `generate_quota` / `ask_quota` / `orders` |
-| 所有人可读、客户端不可写 | `{"read": true, "write": false}` | `hot_board` / `keywords` / `risk_scans` / `risk_signals` |
+| 所有人可读、客户端不可写 | `{"read": true, "write": false}` | `hot_board` / `keywords` / `risk_scans` / `risk_signals` / `report_cache` / `feed_cache` |
 | 客户端不可读写 | `{"read": false, "write": false}` | `memberships` / `ai_calls` |
 
 ```bash
@@ -466,7 +468,9 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<口�
 - 三张配额表（`generate_quota` / `refresh_quota` / `ask_quota`）必须设成「本人可读、**不可写**」，否则用户能自己改额度 ⇒ 免费层失效。
   ⚠ 必须先部署 `quotaGuard` 再收紧权限，顺序颠倒会让端上回退写入被拒、计数恒为 0。
 - `memberships` / `ai_calls` 必须设成「**客户端不可读写**」：它们是服务端权威（会员身份、防滥用计数），端上碰得到就等于自己发会员、自己清计数。端上要显示的会员信息读的是 `users.membership` 那份镜像。
-- `report_cache` / `feed_cache` 是「所有人可读、登录可写」的共享缓存。
+- `report_cache` / `feed_cache` 是「所有人可读、**客户端不可写**」的共享缓存：**写入只能走 `aiProxy` 的 `action:'report'`**。
+  它们原先「登录可写」，而这等于把全站共享内容（含会员段）的写权交给任意登录用户 —— 可覆盖任意人物的报告正文、伪造或抹掉会员段、写 `state=building` 让全站对该人物的查询排队。收紧后由服务端把关：只能写自己持锁的那一行、非会员写不进会员段、体积与形状受检、调用留痕。
+  ⚠ **顺序同样不可颠倒**：先部署带写口的 `aiProxy` 并发布端上（端上写口不可用时回退直写；直写失败降级为「不写缓存但照常出报告」，不抛错），**待旧版本覆盖率达标后**，才把这两张表改成 `{"read": true, "write": false}`。先收紧 = 未更新的客户端一进报告页就写锁失败、直接拿不到报告。
 
 ### 4. 域名与后台配置
 
@@ -485,10 +489,21 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<口�
 
 1. 云开发控制台开通微信支付并绑定商户号；
 2. 给 `payCreate` 配环境变量 `WX_PAY_SUB_MCH_ID` 与 `PAY_CALLBACK_ENV_ID`；
-3. 部署 `payCallback`。
+3. 部署 `payCallback`（`cloudbaserc.json` 已带 `PAY_ADMIN_TOKEN` 与定时触发器 `payReconcile`）；
+4. 给 `payCallback` 配环境变量 `PAY_ADMIN_TOKEN`（运营写口口令）。
 
 支付回调函数名由 `payCreate` 内的 `functionName: 'payCallback'` 指定，**改名会收不到通知**。
 未配置时端上明确提示「微信支付未配置 / 支付服务未部署」，且不影响免费功能（仍按免费版 3 次/日）。
+
+**调用方闸门（灰度）**：`payCallback` 部署后端上可被直接调用，任何人都能用「自下单 + 伪造回调」给自己发货。闸门按 `getWXContext().OPENID` 判端上调用，由环境变量 `PAY_CALLBACK_GUARD` 控制（默认 `log` 只记日志）。**先用默认值跑一段时间**，在云函数日志里确认真机支付回调**不带** `openid` 后，再改成 `strict`（拒绝端上调用）。
+
+**退款与对账（售后闭环）**：退款发生在微信商户平台，业务侧感知不到，故由运营写口把订单置 `refunded` —— 在云开发控制台「云端测试」里调：
+
+```json
+{ "adminOp": "refund", "token": "<PAY_ADMIN_TOKEN>", "outTradeNo": "MR...", "reason": "用户申请退款" }
+```
+
+置位后**只改订单状态、不碰会员**；会员撤销交给定时对账 `payReconcile`（每小时第 15 分，也可用 `{ "adminOp": "reconcile", "token": "..." }` 手动触发）。撤销按「这一单确实发过货」扣减 `max(now, 原有效期 − 该单天数)` 天，并靠权威行 `memberships.refunded_orders` 名单保证**只扣一次**。对账还兼补两类残留：`granting` 超时补发货、权威与镜像不一致时**以权威覆盖镜像**（端上伪造的会员会被抹掉）。
 
 ### 常见卡点
 
@@ -503,6 +518,8 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<口�
 | 会员开通点击无反应 | 未配商户号 / 未部署 `payCallback` | 见第 5 节，不影响免费功能 |
 | 改包后额度形同不存在 | `ai_calls` / 三张配额表的权限没收紧 | 见第 3 节：`ai_calls` 与 `memberships` 必须是「客户端不可读写」 |
 | 端上显示会员、云端却按免费档 | `memberships` 里没有这一行（发货只写了镜像） | 让用户重进一次支付回调所在的订单页触发重试；或核对 `payCallback` 日志 |
+| 端上能给自己发货 | `payCallback` 的 `PAY_CALLBACK_GUARD` 仍是默认 `log`（只记不拦） | 在日志里确认真机回调不带 `openid` 后改成 `strict`（第 5 节） |
+| 已退款的用户还是会员 | 订单未置 `refunded`，或对账任务还没跑到 | 用 `adminOp:'refund'` 置位；对账每小时跑一次，可手动 `adminOp:'reconcile'`（第 5 节） |
 
 ### 上线前检查清单
 
@@ -513,6 +530,8 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<口�
 - [ ] `src/config/local.ts` 的 `debug` 五项全为 `false`、`memberOverride` 为 `'off'`（仓库默认即为安全值；否则免费层限流与 429 冷却保护失效，且会把自己伪装成会员去自测付费功能）
 - [ ] `memberships` / `ai_calls` 已在控制台设为「**客户端不可读写**」（会员与成本两道权威都在这里；没设 = 端上能自己发会员、自己清计数）
 - [ ] `aiProxy` **未**配置 `AI_PROXY_TEST_TOKEN`（或已配置但不外泄）：`test` 探针每次调用都真花钱，未配置时它会一律拒绝
+- [ ] 已部署会员支付时，`payCallback` 的 `PAY_CALLBACK_GUARD` 已确认真机回调形态并切为 `strict`（默认 `log` 只观察不拦，等于端上仍能伪造回调发货）
+- [ ] 已部署会员支付时，`payCallback` 已配 `PAY_ADMIN_TOKEN` 且不外泄（退款 / 对账运营写口的口令，不配则写口一律拒绝）
 - [ ] 已在真机跑过主要验收路径（搜索 → 消歧 → 生成 → 收藏 / 分享 / 问答）
 
 ---
@@ -553,17 +572,17 @@ celebrity-radar/
 │   ├── styles/                 # 主题变量、底栏图标
 │   └── custom-tab-bar/         # 自定义底部菜单
 ├── cloudfunctions/             # 10 个云函数
-│   ├── aiProxy/                # 平台代付密钥闸门 + 会员 / 配额 / 限速闸门（test / search / chat）
+│   ├── aiProxy/                # 平台代付密钥闸门 + 会员 / 配额 / 限速闸门（test / search / chat / report 写口）
 │   ├── quotaGuard/             # 配额计数权威（原子自增 + 服务端日期）
 │   ├── contentCheck/           # 内容安全机审（云调用）
 │   ├── payCreate/              # 会员下单（服务端定价 + 云支付统一下单）
-│   ├── payCallback/            # 支付结果通知（金额校验 + 幂等续期）
-│   ├── notifyFollowUpdates/    # 关注更新订阅消息（定时 09:00）
-│   ├── keywordAlert/           # 关键词舆情预警（定时 09:20）
-│   ├── riskWatch/              # 名人风险监控（定时 09:40）
-│   ├── hotBoardRefresh/        # 热门名人榜每日生产（定时 06:30）
+│   ├── payCallback/            # 支付通知 + 售后（退款写口 / 定时对账，定时 每小时:15；after-sales.js）
+│   ├── notifyFollowUpdates/    # 关注更新订阅消息（定时 09:00，拒绝端上调用）
+│   ├── keywordAlert/           # 关键词舆情预警（定时 09:20，拒绝端上调用）
+│   ├── riskWatch/              # 名人风险监控（定时 09:40，拒绝端上调用）
+│   ├── hotBoardRefresh/        # 热门名人榜每日生产（定时 06:30；端上仅 ensure，force 限运维）
 │   └── dbInit/                 # 运维工具（schema.js 是库结构单一事实源）
-├── test/                       # 本地单测（7 个用例文件 / 399 条用例）
+├── test/                       # 本地单测（9 个用例文件 / 522 条用例）
 ├── config/                     # Taro 构建配置（dev / index / prod）
 ├── cloudbaserc.json            # CloudBase 部署描述（函数 + 环境变量 + 定时器）
 ├── .env.example                # 云函数部署密钥模板
@@ -612,6 +631,8 @@ celebrity-radar/
 - **档位决定检索厚度**：免费档只发主线检索（10 条素材），会员档主线 24 + 社交支线 16（共 40 条）—— 检索调用与素材量都随档位走
 - **免费档刷新冷却**：同一人物的「刷新最新」在报告生成后 12 小时内不重复生成（内容本就不会变，直接交回现有的一版并说明），会员不受此限。**注意它与上一条「上游失败冷却」不是一回事**，两者判据、时长、目的都不同
 - **冷却只拦「值得等待」的失败**：仅上游限流 429 / 网络 / 5xx 进入 10 分钟冷却；密钥无效、额度不足即时报错且不冷却；缓存命中永远优先于冷却与配额
+- **云函数调用方闸门**：端上调用必带 `getWXContext().OPENID`，定时器 / 微信回调 / 控制台「云端测试」都不带 —— 4 个定时任务与支付回调据此**拒绝端上调用**（`payCallback` 走 `PAY_CALLBACK_GUARD` 灰度，默认先观察后切 `strict`）。挡的是「改包后循环触发推送 / 伪造支付回调给自己发货」
+- **售后闭环**：退款由运营写口置 `refunded`，对账任务据此**按订单天数**撤销会员（只扣这一单买的天数、靠权威行名单幂等）；对账同时补发货、并以权威覆盖被端上改写的镜像会员
 - **漏洞报告**：请**不要**开公开 Issue，按 [`SECURITY.md`](./SECURITY.md) 的渠道私下联系。
   判据提醒：改包让端上显示会员档**不算**漏洞（闸门在云端），云端闸门可被绕过才算
 
@@ -620,7 +641,7 @@ celebrity-radar/
 ## 开发与测试
 
 ```bash
-npm test          # tsc 编译测试产物 + 跑全部用例（399 条，纯本地、不连云）
+npm test          # tsc 编译测试产物 + 跑全部用例（522 条，纯本地、不连云）
 npm run test:only # 跳过 tsc，直接跑
 ```
 
@@ -629,7 +650,7 @@ npm run test:only # 跳过 tsc，直接跑
 
 提交前请确认（5 条）：
 
-1. `npm test` 全绿（当前 399 / 399）
+1. `npm test` 全绿（当前 522 / 522）
 2. `npx tsc --noEmit` 无新增告警
 3. 检查小程序**主包体积**（硬上限 2MB，当前构建产物约 1.3MB）；新增依赖前先核对构建产物
 4. `src/config/local.ts` 与 `debug` 开关**不要**提交（已在 `.gitignore` 内）

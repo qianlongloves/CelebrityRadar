@@ -738,10 +738,15 @@ export async function buildReport(
     /*
      * 云端闸门拦下（kind='quota' / 'abuse'）时**不降级**：降级本身也是一次真实调用，
      * 会被同一道闸门再拦一次 —— 白多等一轮往返，还把「额度用完」记成「生成失败」。
-     * 直接把云端文案交回上层：它与端上 quotaExhaustedMessage 同构，用户看不出是哪一端判的。
+     * 直接把云端文案交回上层，不做改写的理由见下方 upstream_quota。
+     *
+     * `upstream_quota`（上游自己欠费 / 未开通资源包，P2-9 2026-10-09）同样不降级，但**不是**一回事：
+     * 降级那次打的是同一个上游，账户欠费时必然再被拒一次，省下这一轮往返；
+     * 而文案保持上游原文（「…上游账户余额」），**不换成 quotaExhaustedMessage** ——
+     * 平台账户问题被说成「你的额度用完了」，用户去额度页一看是满的，只会来问客服。
      */
-    if (result.kind === 'quota' || result.kind === 'abuse') {
-      diagLog('warn', 'auth', `云端闸门拦下，不降级走纯文本：${result.error}`)
+    if (result.kind === 'quota' || result.kind === 'abuse' || result.kind === 'upstream_quota') {
+      diagLog('warn', 'auth', `云端 / 上游拦下（${result.kind}），不降级走纯文本：${result.error}`)
       return { ok: false, error: result.error, retryable: false, kind: result.kind }
     }
     /*

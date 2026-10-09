@@ -325,6 +325,19 @@
   }
 
   /*
+   * 刷新失败条里的「再试一次」（P1-8，2026-10-09）：与 __focus-link 同款可点文字。
+   * 刷新失败多是一次性网络 / 上游抖动，就地给一个重试出口，别让用户去翻底部按钮。
+   */
+  &__diff-retry {
+    align-self: flex-start;
+    margin-top: 4rpx;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand-dark;
+    text-decoration: underline;
+  }
+
+  /*
     AI 点评：原先独占一张紫色渐变强调卡，与其余白卡并列时像另一个体系的组件。
     现改为复用全局 .card 背景，标题用 .card-title（其紫色竖条与旧样式一致），此处只留正文排版。
   */

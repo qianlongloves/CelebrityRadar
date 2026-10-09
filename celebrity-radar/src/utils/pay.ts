@@ -160,6 +160,12 @@ export interface BuyResult {
   outTradeNo: string | null
   /** 用户主动取消 */
   cancelled: boolean
+  /**
+   * 「不是支付失败，而是这条路过不去」（P2-20，2026-10-09）。
+   * 页面据此换标题与口气：`ios` = 平台限制（要说清「换台安卓设备买」这条出路）；
+   * `unconfigured` = 我们这边还没配好（如实说「暂未开放」，别让用户以为自己付不了款）。
+   */
+  blocked?: 'ios' | 'unconfigured'
   error?: string
 }
 
@@ -196,6 +202,31 @@ async function waitMembershipActivated(before: number, timeoutMs = 12000): Promi
 }
 
 /**
+ * iOS 端禁止在小程序内购买虚拟商品（P2-20，2026-10-09）。
+ *
+ * 会员是虚拟商品：微信在 iOS 上不允许小程序内支付（请求会被平台直接拒），带虚拟支付的
+ * 小程序在 iOS 提审也会被驳回。此前端上照常拉起收银台 —— 真机上用户看到的是
+ * 「支付失败：requestPayment:fail …」，除了反复重试没有别的选择。
+ *
+ * 门禁必须在**拉起收银台之前**，而且不能只在按钮上做（会员入口有多处：会员页、报告页促销条，
+ * 藏一处漏一处，漏的那处就是线上一个「点了没反应」的按钮），故在唯一下单函数里收口。
+ * devtools 不拦（platform 为 'devtools'），开发者照常在工具里联调。
+ */
+export function isIapBlocked(): boolean {
+  try {
+    const info = Taro.getSystemInfoSync() as { platform?: string } | null
+    return String(info?.platform ?? '').toLowerCase() === 'ios'
+  } catch {
+    /* 读不到环境信息时不拦（宁可让平台拒一次，也不要凭猜测挡掉能买的用户） */
+    return false
+  }
+}
+
+/** iOS 上的出路：不是「不能买」，而是「换个地方买」—— 说清怎么买比说清为什么不能买有用 */
+const IOS_BLOCKED_MESSAGE =
+  'iOS 端不支持在小程序内购买会员（微信对虚拟商品的限制）。请在安卓设备的微信里完成购买，购买后在本机同样享受会员权益。'
+
+/**
  * 购买会员：下单 → 拉起收银台 → 确认生效。
  *
  * 只传套餐 id：价格与天数由服务端白名单决定（见文件头原则 1）。
@@ -203,6 +234,19 @@ async function waitMembershipActivated(before: number, timeoutMs = 12000): Promi
  * 调用方应提示「支付成功，会员开通中」而不是报错。
  */
 export async function buyMembership(planId: string): Promise<BuyResult> {
+  if (isIapBlocked()) {
+    diagLog('warn', 'db', 'iOS 端尝试购买虚拟会员，已在拉起收银台前拦下')
+    return {
+      ok: false,
+      paid: false,
+      activated: false,
+      outTradeNo: null,
+      cancelled: false,
+      blocked: 'ios',
+      error: IOS_BLOCKED_MESSAGE
+    }
+  }
+
   if (!planId) {
     return {
       ok: false,
@@ -236,6 +280,24 @@ export async function buyMembership(planId: string): Promise<BuyResult> {
   }
 
   if (!res?.ok || !res.payment) {
+    /*
+     * `unconfigured` 是云端「商户号还没配」的信号（见 cloudfunctions/payCreate）：它给的是一句
+     * 给运维看的文案（「请在环境变量里设置 WX_PAY_MCHID」），直接弹给用户只会让人一头雾水。
+     * 换成用户能理解的说明，并保留 blocked 让页面换个标题 —— 这不是「支付未完成」，
+     * 也不是用户的错，别让他对着一个付不了的收银台反复试（P2-20，2026-10-09）。
+     */
+    if (res?.kind === 'unconfigured') {
+      diagLog('warn', 'db', `下单被拒（支付通道未配置）：${res.error ?? ''}`)
+      return {
+        ok: false,
+        paid: false,
+        activated: false,
+        outTradeNo: null,
+        cancelled: false,
+        blocked: 'unconfigured',
+        error: '会员购买暂未开放（支付通道还在配置中）。已开通的会员不受影响，可稍后再试或联系我们。'
+      }
+    }
     return {
       ok: false,
       paid: false,
@@ -270,6 +332,23 @@ export async function buyMembership(planId: string): Promise<BuyResult> {
     const msg = err instanceof Error ? err.message : String(err)
     /* 取消不是错误：不记 error 级日志，也不弹报错 */
     if (/cancel/i.test(msg)) return CANCELLED
+    /*
+     * 兜底：真到了平台拒绝这一步（门禁漏过的旧版本客户端、或平台自己改了口径），
+     * 也不能把「requestPayment:fail …」这种技术文案丢给用户 —— 它没有给出任何出路。
+     * 认成 iOS 虚拟支付限制，给同一句可执行的说明。
+     */
+    if (/ios|虚拟支付/i.test(msg)) {
+      diagLog('warn', 'db', `iOS 虚拟支付被平台拒绝：${msg}`)
+      return {
+        ok: false,
+        paid: false,
+        activated: false,
+        outTradeNo: res.outTradeNo ?? null,
+        cancelled: false,
+        blocked: 'ios',
+        error: IOS_BLOCKED_MESSAGE
+      }
+    }
     diagLog('error', 'db', `微信支付失败：${msg}`)
     return {
       ok: false,

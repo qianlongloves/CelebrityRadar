@@ -75,9 +75,15 @@ export function isDomainCode(v: string): v is DomainCode {
   return (DOMAIN_CODES as string[]).includes(v)
 }
 
-/** 生成稳定 personKey：名字#领域码（§1.6） */
+/**
+ * 生成稳定 personKey：名字#领域码（§1.6）。
+ *
+ * 名字里的 `#` 会让**所有**按 `#` 切分的地方错位（这是缓存主键，也进 URL 参数），
+ * 故在此收口兜底：正常路径已在上游净化（utils/disambiguate.ts#sanitizeCandidates），
+ * 但不能让任何一个漏网的 `#` 造出一个会分裂的 key —— 那意味着同一个人的报告存成两行。
+ */
 export function buildPersonKey(name: string, domain: DomainCode): string {
-  return `${name}#${domain}`
+  return `${name.replace(/[#＃]/g, '').trim()}#${domain}`
 }
 
 /** 解析 personKey（容错：非法输入返回 null） */

@@ -46,6 +46,67 @@ const BASE_RULES = [
 const DOMAIN_RULE = (label: string) =>
   `6. 用户已限定行业为「${label}」：只返回属于该行业的候选；若该名字在该行业没有公众人物，返回 {"refused": false, "candidates": []}。`
 
+/** 惯用名长度上限：与 brief 的「30 字内」同档。再长必然是模型跑偏（把一句描述当成了名字） */
+const NAME_MAX = 30
+
+/** 汉字（CJK 基本区）：判断该走「共享汉字」还是「拉丁串」比对 */
+const HAN = /[\u4e00-\u9fa5]/
+
+/**
+ * 「这个名字与用户输入有关吗」—— 宽松到只拦明显不是同一人的候选（P2-17，2026-10-09）。
+ *
+ * 中文：共享至少一个汉字（「小李」↔「李某某」靠「李」；「张三」↔「李四」拦下）。
+ * 拉丁 / 混合：忽略空白与间隔符后互相包含，或共享 ≥3 个字符（「Jay」↔「Jay Chou」）。
+ */
+export function nameRelated(input: string, name: string): boolean {
+  const a = (input || '').trim().toLowerCase()
+  const b = (name || '').trim().toLowerCase()
+  if (!a || !b) return false
+  const hanA = Array.from(a).filter((ch) => HAN.test(ch))
+  const hanB = Array.from(b).filter((ch) => HAN.test(ch))
+  if (hanA.length > 0 && hanB.length > 0) return hanA.some((ch) => hanB.includes(ch))
+  const strip = (s: string): string => s.replace(/[\s.·・'’-]/g, '')
+  const x = strip(a)
+  const y = strip(b)
+  if (!x || !y) return false
+  if (x.includes(y) || y.includes(x)) return true
+  if (x.length >= 3 && y.length >= 3) {
+    const set = new Set(Array.from(y))
+    return Array.from(x).filter((ch) => set.has(ch)).length >= 3
+  }
+  return false
+}
+
+/**
+ * 候选的净化与相关性过滤（P2-17，2026-10-09）。
+ *
+ * 模型回传的 name 会直接进 personKey（`名字#领域码`）并落库，此前**没有任何约束**：
+ *   · name 带 `#` —— 主键被切错位，同一个人可能分裂成两行缓存；
+ *   · name 是一整句描述（「演员、导演张三」）—— 报告标题、目录、锚点全是这串字；
+ *   · name 与用户输入毫无关系（输入「张三」回「李四」）—— 用户点了候选，读到的是别人的报告。
+ * 前两条净化掉就完了。第三条**不能一律丢弃**：昵称 / 艺名场景下「一个字都不共享」是正常的
+ * （「小甜甜」↔「布兰妮」），全丢会让用户查不到人。故只在「过滤后还有候选」时才采用过滤结果，
+ * 一个不剩就原样交回（宁可让用户看到一个可疑候选，也不要给他一屏空）。
+ */
+export function sanitizeCandidates(input: string, candidates: PersonCandidate[]): PersonCandidate[] {
+  const cleaned: PersonCandidate[] = []
+  for (const c of candidates) {
+    const name = (c.name || '')
+      /* personKey 的分隔符，绝不能出现在名字里 */
+      .replace(/[#＃]/g, '')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      .slice(0, NAME_MAX)
+    if (!name) continue
+    /* 同一位（同名同领域）只留第一条：模型偶尔会把同一人列两遍 */
+    if (cleaned.some((x) => x.name === name && x.domain === c.domain)) continue
+    cleaned.push({ name, domain: c.domain, brief: (c.brief || '').trim().slice(0, 60) })
+  }
+  const related = cleaned.filter((c) => nameRelated(input, c.name))
+  return related.length > 0 ? related : cleaned
+}
+
 function buildSystemPrompt(domainHint: DomainCode | 'all'): string {
   const rules = [...BASE_RULES]
   if (domainHint !== 'all') rules.push(DOMAIN_RULE(DOMAIN_META[domainHint].label))
@@ -81,6 +142,15 @@ export async function disambiguate(
     diagLog('info', 'auth', `消歧 LLM 拒答：${name}`)
     return { ok: true, data: { refused: true, candidates: [] } }
   }
-  const candidates = (data as { candidates: z.infer<typeof CandidateSchema>[] }).candidates ?? []
+  const raw = (data as { candidates: z.infer<typeof CandidateSchema>[] }).candidates ?? []
+  /* 净化 + 相关性过滤（P2-17）：候选名要进 personKey 并落库，这里是不设防的最后一道 */
+  const candidates = sanitizeCandidates(name, raw)
+  if (candidates.length !== raw.length) {
+    diagLog(
+      'warn',
+      'auth',
+      `消歧候选被净化：${raw.length} → ${candidates.length}（输入「${name.trim()}」）`
+    )
+  }
   return { ok: true, data: { refused: false, candidates } }
 }

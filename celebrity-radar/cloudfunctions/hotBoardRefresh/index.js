@@ -301,6 +301,17 @@ async function writeBoard(doc) {
 exports.main = async (event) => {
   const action = (event && typeof event.action === 'string' && event.action) || 'run'
 
+  /* 调用方闸门（P0-21，2026-10-09）：本函数**必须**能被端上调用 —— 端上冷启动的
+     `action:'ensure'`（见 utils/hot-board.ts#ensureRefresh）就是「今天还没生成 ⇒ 补跑一次」，
+     这条链路不能断，所以这里不做「一律拒绝端上调用」。
+     但 `force` 是另一回事：它跳过下面那道 20 小时幂等闸门，一次调用等于 6 组领域检索 + 一次生成。
+     上面写着「force 只留给运维手动重建」，那就得真拦住：端上调用（getWXContext().OPENID
+     非空）一律不许 force，否则任何人都能循环重建把上游额度烧光。 */
+  if (event && event.force === true && (cloud.getWXContext() || {}).OPENID) {
+    console.warn('[hotBoardRefresh] 拒绝端上 force：强制重建只允许定时器 / 控制台调用')
+    return { ok: false, skipped: 'force 仅供运维使用（端上请用 action:ensure）' }
+  }
+
   if (action === 'report') {
     const cur = await readBoard()
     return { ok: true, board: cur }

@@ -7,6 +7,7 @@ import {
   QA_MAX_QUESTION,
   askReports,
   checkQaGate,
+  clearQaAttempt,
   hasQaCorpusMany,
   isWebSearchOn,
   noteQaAttempt,
@@ -212,6 +213,11 @@ export default function QaPanel({
         const res = await askReports(reports, question)
 
         setAsking(false)
+        /*
+         * 这次没问成，就把占用的在途名额还回去（P2-15）。归还方向是安全的：
+         * 漏还只会让用户被少放行一次，多还（addInflight 夹到 0 以上）不会。
+         */
+        if (!res.ok) clearQaAttempt()
         setUsage(qaUsageToday(member))
         seq.current += 1
         setBubbles((prev) => [

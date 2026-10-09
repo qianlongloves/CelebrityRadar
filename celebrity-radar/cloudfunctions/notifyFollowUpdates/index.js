@@ -146,7 +146,60 @@ function formatDate(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/* ─────────────────── 分页取全表（P2-11，2026-10-09） ─────────────────── */
+
+const PAGE_SIZE = 100
+/* 明面上的上限：到了就打告警，而不是像以前那样「静默只服务前 100 人」 */
+const MAX_ROWS = 5000
+
+/**
+ * 翻页取全表。**不要**再用裸 `limit(100)` 读「全部要通知的人」。
+ *
+ * `limit(n)` 在云开发里是「取一批 n 行」，未指定 `orderBy` 时顺序由默认索引决定 ——
+ * 既不保证稳定，也不代表优先级。于是订阅用户一旦超过 100，多出来的那些人**永远**收不到通知：
+ * 日志里一切正常、没有报错，只有用户来问「为什么别人收到了我没有」。
+ *
+ * 按 `_id` 升序翻页（`_id` 是主键索引；单字段 where + `_id` 排序不需要额外复合索引）。
+ * `skip` 是线性扫描，在这个量级（几千行、每天一轮）完全够用；真到几十万行，该做的是分片。
+ */
+async function listAll(collection, where) {
+  const out = []
+  for (;;) {
+    let query = db.collection(collection)
+    if (where) query = query.where(where)
+    const res = await query.orderBy('_id', 'asc').skip(out.length).limit(PAGE_SIZE).get()
+    const batch = (res && res.data) || []
+    /*
+     * 以「空页」收尾，而不是「不满一页就收工」：一次 get 能取回多少行由平台决定
+     * （小程序端 20 / 服务端默认 100，上限各不相同、还可能变）。拿 PAGE_SIZE 当
+     * 「后面还有没有」的判据，一旦平台给不满就会提前收工 —— P2-11 的老毛病换个样子回来。
+     * 代价是多打一次空查询，换「一定取全」，值。
+     */
+    if (!batch.length) return out
+    out.push(...batch)
+    if (out.length >= MAX_ROWS) {
+      console.warn(`[${collection}] 取数达到上限 ${MAX_ROWS}，本轮只处理这一部分 —— 该评估分片了`)
+      return out
+    }
+  }
+}
+
+/**
+ * 调用方闸门（P0-21，2026-10-09）：本函数只该由**定时器**触发，端上一次都不该调它
+ * （端上只调 contentCheck / aiProxy / quotaGuard / payCreate / hotBoardRefresh）。
+ *
+ * 判据：端上 `wx.cloud.callFunction` 调用时 `getWXContext().OPENID` 必有值，
+ * 而定时器触发、控制台「云端测试」都没有 openid。
+ *
+ * 挡的是「改包后循环调用」：本函数一轮要打 BOCHA 检索（还按用户数放大）并群发订阅消息，
+ * 端上能反复触发就等于把上游额度与推送配额交给任何人点火。
+ */
 exports.main = async () => {
+  if ((cloud.getWXContext() || {}).OPENID) {
+    console.warn('[notifyFollowUpdates] 拒绝端上调用：本函数只由定时器触发')
+    return { ok: false, skipped: '本函数只由定时器触发，不接受端上调用' }
+  }
+
   const bochaKey = readEnv('BOCHA_API_KEY')
   const tmplId = readEnv('SUBSCRIBE_TEMPLATE_ID')
   if (!bochaKey || !tmplId) {
@@ -157,15 +210,13 @@ exports.main = async () => {
     }
   }
 
-  // 1. 只服务「已授权提醒」的用户
-  const usersRes = await db.collection('users').where({ subscribe_ok: true }).limit(100).get()
-  const users = usersRes.data || []
+  // 1. 只服务「已授权提醒」的用户（分页取全 —— 裸 limit 会让第 101 个之后的用户永远收不到，见 listAll）
+  const users = await listAll('users', { subscribe_ok: true })
   if (!users.length) return { ok: true, users: 0, queries: 0, pushed: 0 }
 
   // 2. 关注关系（一次读全表后在内存分组，避免 N+1 查询）
-  const followsRes = await db.collection('follows').limit(1000).get()
   const byUser = new Map()
-  for (const f of followsRes.data || []) {
+  for (const f of await listAll('follows')) {
     if (!f || !f.openid || !f.person_key) continue
     if (!byUser.has(f.openid)) byUser.set(f.openid, [])
     byUser.get(f.openid).push(f)

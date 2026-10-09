@@ -23,9 +23,18 @@ export function formatDay(iso: string): string {
   return dayjs(iso).format('YYYY-MM-DD')
 }
 
-/** yyyy-mm-dd（配额主键用，本地时区） */
+/**
+ * yyyy-mm-dd 配额「今天」—— **一律按 UTC+8 算**，与云函数 `quotaGuard#todayKey()` 同一个日期段。
+ *
+ * 它算的不是「给用户看的日历日」，而是 `openid#日期` 这类**配额行主键的日期段**：云端权威计数
+ * 挂在 UTC+8 的日期上（云函数在全球多地执行，本地时区不可用），端上若跟随设备时区，一出时区就错行。
+ * 例：UTC-5 的用户在当地 11:00，UTC+8 其实已是次日 00:00 —— 端上仍读写昨天那一行，表现为
+ * 「明明刚生成过，额度却没扣」或「还有额度却提示用完」，且只在跨日那几小时出现，极难排查。
+ * 故这里刻意**不**跟随设备时区（P2-10，2026-10-09）。加 8 小时后取 UTC 日期 = UTC+8 的日历日，
+ * 不依赖 dayjs 的 utc 插件，也不依赖设备时区设置。
+ */
 export function todayKey(): string {
-  return dayjs().format('YYYY-MM-DD')
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
 }
 
 /**

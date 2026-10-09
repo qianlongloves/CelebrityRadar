@@ -147,9 +147,12 @@ describe('B8 云端闸门与端上同源', () => {
     eq(cfg.AUX_PURPOSE, 'aux', '辅助调用必须有一档不占产品额度的 purpose')
   })
 
-  it('report.ts 遇 quota / abuse 跳过纯文本降级（否则被同一道闸再拦一次）', () => {
+  it('report.ts 遇 quota / abuse / upstream_quota 跳过纯文本降级（否则被同一道闸再拦一次）', () => {
     const src = read(path.join(ROOT, 'src', 'utils', 'report.ts'))
-    ok(src.includes("result.kind === 'quota' || result.kind === 'abuse'"))
+    ok(
+      src.includes("result.kind === 'quota' || result.kind === 'abuse' || result.kind === 'upstream_quota'"),
+      'P2-9：上游欠费时降级那次打的是同一个上游，必然再被拒一次'
+    )
   })
 })
 
@@ -248,6 +251,29 @@ function loadProxy({ openid = 'u1', https } = {}) {
     delete require.cache[require.resolve(AI_PROXY)]
     delete require.cache[require.resolve(LLM_CONFIG)]
     return { fn: require(AI_PROXY), calls: https.calls }
+  } finally {
+    Module.prototype.require = orig
+  }
+}
+
+/** 加载 quotaGuard 源码：wx-server-sdk → harness 内存 DB */
+function loadGuard({ openid = 'u1' } = {}) {
+  env.resetAll()
+  const db = env.db.database()
+  const fakeSdk = {
+    DYNAMIC_CURRENT_ENV: 'test-env',
+    init() {},
+    database: () => db,
+    getWXContext: () => (openid ? { OPENID: openid } : {})
+  }
+  const orig = Module.prototype.require
+  Module.prototype.require = function (id) {
+    if (id === 'wx-server-sdk') return fakeSdk
+    return orig.apply(this, arguments)
+  }
+  try {
+    delete require.cache[require.resolve(QUOTA_GUARD)]
+    return require(QUOTA_GUARD)
   } finally {
     Module.prototype.require = orig
   }
@@ -470,6 +496,46 @@ describe('aiProxy 检索条数上限（云端裁判）', () => {
     eq(res.ok, true, '免费档主线 / 支线都在 20 以内，不应为此多一次读库')
     eq(calls[0].body.count, 10)
   })
+
+  /* 以下三条钉住 P1 修复（2026-10-09）：search 也是一次**真实付费调用**（博查按次计费），
+     原先这条路径上什么闸门都没有 —— 不判额度、不写 ai_calls、连 openid 都不要，
+     改包者用 {action:'search', count:20} 循环调用就能无上限刷掉资源包。 */
+
+  it('读不到 openid：search 直接拒绝，一次上游都不发', async () => {
+    const h = fakeHttps([])
+    const { fn, calls } = loadProxy({ openid: null, https: h })
+
+    const res = await fn.main({ action: 'search', query: '甲' })
+
+    eq(res.ok, false)
+    eq(res.kind, 'auth')
+    eq(calls.length, 0, '不能留一条「不要身份就能消耗资源包」的路')
+  })
+
+  it('search 也在限速闸之内：ai_calls 打满 ⇒ kind=abuse，且不触达上游', async () => {
+    const h = fakeHttps([])
+    const { fn, calls } = loadProxy({ https: h })
+    env.db.__seed('ai_calls', [{ _id: quotaKey(), _openid: 'u1', count: cfg.ABUSE_LIMITS.free }])
+
+    const res = await fn.main({ action: 'search', query: '甲' })
+
+    eq(res.ok, false)
+    eq(res.kind, 'abuse')
+    eq(calls.length, 0, '拦不住的话，刷掉的就是整个检索资源包')
+  })
+
+  it('search 是付费调用，照样在 ai_calls 留下计数（原先这条路径完全裸奔）', async () => {
+    const h = fakeHttps([searchOk()])
+    const { fn, calls } = loadProxy({ https: h })
+
+    const res = await fn.main({ action: 'search', query: '甲', count: 10 })
+
+    eq(res.ok, true)
+    eq(calls.length, 1)
+    const rows = env.db.__dump('ai_calls')
+    eq(rows.length, 1, '走 aux 档：不占产品额度，但必须记账')
+    eq(rows[0].count, 1, '云端就地自增，端上删不掉')
+  })
 })
 
 describe('aiProxy action 分发与探针口令', () => {
@@ -504,6 +570,116 @@ describe('aiProxy action 分发与探针口令', () => {
     eq(calls.length, 2, '口令正确才真探博查与大模型各一次')
     eq(right.bocha.ok, true)
     eq(right.llm.ok, true)
+  })
+})
+
+describe('上游账户问题不得冒充用户额度（P2-9，2026-10-09）', () => {
+  it('大模型 402：kind=upstream_quota（不是 quota），文案指向平台账户', async () => {
+    const h = fakeHttps([{ status: 402, data: { error: { message: 'Insufficient Balance' } } }])
+    const { fn } = loadProxy({ https: h })
+
+    const res = await chat(fn)
+
+    eq(res.ok, false)
+    eq(res.kind, 'upstream_quota', '归成 quota 会把用户引去查自己的额度页（那里是满的）')
+    ok(/上游|账户/.test(res.error), `文案应指向平台账户，实际：${res.error}`)
+    notOk(/你的|每日.*次/.test(res.error), '不许改写成「你的额度用完了」')
+  })
+
+  it('大模型 403：归 upstream_quota（原先落 4xx 兜底 → upstream → 白重试三次）', async () => {
+    const h = fakeHttps([{ status: 403, data: { message: 'forbidden' } }])
+    const { fn } = loadProxy({ https: h })
+
+    const res = await chat(fn)
+
+    eq(res.ok, false)
+    eq(res.kind, 'upstream_quota')
+    ok(/403/.test(res.error), `把状态码留在文案里，便于运维定位，实际：${res.error}`)
+  })
+
+  it('检索 403：同样是 upstream_quota（博查资源包问题，不是用户额度）', async () => {
+    const h = fakeHttps([{ status: 403, data: {} }])
+    const { fn } = loadProxy({ https: h })
+
+    const res = await fn.main({ action: 'search', query: '甲', count: 10 })
+
+    eq(res.ok, false)
+    eq(res.kind, 'upstream_quota')
+  })
+
+  it('分类边界：5xx 仍是可重试的 upstream（别把「上游抖了」也一律说成账户问题）', async () => {
+    const h = fakeHttps([{ status: 500, data: {} }])
+    const { fn } = loadProxy({ https: h })
+
+    const res = await chat(fn)
+
+    eq(res.kind, 'upstream')
+  })
+})
+
+/* ==================== ②b  端上侧：V-1 两种真机行为下的闸门（2026-10-09 复审） ==================== */
+
+/**
+ * V-1：`doc(id).update()` 打到**不存在的行**，wx-server-sdk 是返回 `stats.updated===0` 还是
+ * 直接抛错，真机未确认。内存 DB 默认只复刻前者，于是「抛错」那一支从未被跑过：
+ * 一旦真机是抛错，两道云端闸门的「首次调用」都会异常收场 ——
+ *   · aiProxy.bumpAbuseCount 首个 update 进外层 catch ⇒ 返回 null（放行）⇒ 计数行永远建不起来，
+ *     这道**成本硬边界**彻底失效；
+ *   · quotaGuard.incr 首个 update 抛错 ⇒ exports.main 兜成「配额写入失败」⇒ 端上静默回退本机计数。
+ * 修复把抛错归一成「自增未落实」，两种真机行为下结论一致。下面把假设**反转过来**钉住它。
+ */
+describe('V-1：不存在行 update 抛错时两道云端闸门仍成立', () => {
+  it('aiProxy 防滥用：抛错也会补建首行并计数（不是每日首次都放行）', async () => {
+    const h = fakeHttps([chatOk()])
+    const { fn } = loadProxy({ https: h })
+    /* 必须在 loadProxy 之后设：它内部的 resetAll() 会清掉故障注入开关 */
+    env.db.__setMissingDocUpdateThrows(true)
+
+    const res = await chat(fn)
+
+    eq(res.ok, true, '正常调用不该被闸门自己绊倒')
+    const rows = env.db.__dump('ai_calls')
+    eq(rows.length, 1, '首行必须建起来，否则计数恒为 0 = 闸门不存在')
+    eq(rows[0].count, 1, '云端就地自增，端上删不掉')
+  })
+
+  it('aiProxy 防滥用：行已存在时照常拦（打满即 kind=abuse，零上游请求）', async () => {
+    const h = fakeHttps([])
+    const { fn, calls } = loadProxy({ https: h })
+    env.db.__setMissingDocUpdateThrows(true)
+    env.db.__seed('ai_calls', [{ _id: quotaKey(), _openid: 'u1', count: cfg.ABUSE_LIMITS.free }])
+
+    const res = await chat(fn)
+
+    eq(res.ok, false)
+    eq(res.kind, 'abuse')
+    eq(calls.length, 0)
+  })
+
+  it('quotaGuard 首行计数：抛错也会建首行并返回 count=1', async () => {
+    const guard = loadGuard()
+    env.db.__setMissingDocUpdateThrows(true)
+
+    const res = await guard.main({ kind: 'generate', action: 'consume' })
+
+    eq(res.ok, true, `不应因 update 抛错而整条失败：${res.error || ''}`)
+    eq(res.count, 1)
+    eq(res.created, true)
+    const rows = env.db.__dump('generate_quota')
+    eq(rows.length, 1, '云端计数行建不起来 ⇒ 多设备口径兜底失效')
+    eq(rows[0].count, 1)
+  })
+
+  it('quotaGuard 常态自增：行已存在时抛错开关不影响（4 → 5）', async () => {
+    const guard = loadGuard()
+    env.db.__seed('generate_quota', [{ _id: quotaKey(), _openid: 'u1', count: 4 }])
+    env.db.__setMissingDocUpdateThrows(true)
+
+    const res = await guard.main({ kind: 'generate', action: 'consume' })
+
+    eq(res.ok, true)
+    eq(res.count, 5, '行存在时走的是常规自增路径，与 V-1 无关却必须一起回归')
+    eq(res.created, false)
   })
 })
 
@@ -550,6 +726,29 @@ describe('端上把 purpose 带上去、并按 kind 决定要不要重试', () =
     eq(res.kind, 'quota')
     eq(res.retryable, false, '配置类失败重试无意义')
     eq(calls, 1, '多试一次就是多一次付费往返；且会把「额度用完」记成「生成失败」')
+  })
+
+  it('上游账户问题（kind=upstream_quota）：不重试，且文案原样透传（P2-9）', async () => {
+    const load = freshClient()
+    let calls = 0
+    env.registerCloudFn('aiProxy', () => {
+      calls++
+      return { ok: false, kind: 'upstream_quota', error: '大模型额度不足（上游账户余额）' }
+    })
+    const z = require('zod')
+    const { chatJSON } = load('utils/llm')
+
+    const res = await chatJSON('S', 'U', z.object({ intro: z.string() }), { retries: 3 })
+
+    eq(res.ok, false)
+    eq(res.kind, 'upstream_quota')
+    eq(res.retryable, false, '账户欠费时重试必然再被拒一次')
+    eq(calls, 1, '一次都不许多烧')
+    eq(
+      res.error,
+      '大模型额度不足（上游账户余额）',
+      '平台账户问题要原样透传，不许改写成「你的额度用完了」'
+    )
   })
 
   it('可重试的 kind（upstream）照旧重试到次数上限', async () => {

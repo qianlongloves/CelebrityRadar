@@ -80,11 +80,29 @@ function updatedOf(res) {
   return (res && res.stats && res.stats.updated) || 0
 }
 
+/**
+ * 「行已存在」时原子自增一次，返回有没有落实（updated > 0 的布尔形态）。
+ *
+ * ⚠ V-1（2026-10-09 复审）：`doc(id).update()` 打到**不存在的行**时，wx-server-sdk 的真实行为
+ * 尚未在真机确认 —— 可能返回 `stats.updated === 0`，也可能**直接抛错**。本函数只关心
+ * 「自增有没有落实」，与具体是哪种无关，故把抛错**一律归一成 0（未落实）**：
+ * 否则每个用户每天**首次**调用（那一行还不存在）会直接抛错 → exports.main 兜成
+ * 「配额写入失败」→ 端上静默回退本机计数，云端计数永远停在 0 ⇒ 多设备口径兜底失效。
+ * 归一成 0 后照常走「插首行」分支，两种真机行为下结论完全一致。
+ */
+async function incrExistingRow(coll, id) {
+  try {
+    return updatedOf(await coll.doc(id).update({ data: { count: _.inc(1) } })) > 0
+  } catch (err) {
+    return false
+  }
+}
+
 async function incr(table, id, openid) {
   const coll = db.collection(table)
 
   /* 常规路径：行已存在，原子自增（并发安全，不会丢计数） */
-  if (updatedOf(await coll.doc(id).update({ data: { count: _.inc(1) } })) > 0) {
+  if (await incrExistingRow(coll, id)) {
     return { count: await readCount(table, id), created: false }
   }
 
@@ -99,7 +117,7 @@ async function incr(table, id, openid) {
     return { count: 1, created: true }
   } catch (err) {
     /* 并发：另一端刚插好，改回自增路径；仍失败才是真故障 */
-    if (updatedOf(await coll.doc(id).update({ data: { count: _.inc(1) } })) > 0) {
+    if (await incrExistingRow(coll, id)) {
       return { count: await readCount(table, id), created: false }
     }
     throw err

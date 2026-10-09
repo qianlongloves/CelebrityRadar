@@ -7,7 +7,7 @@ import { FOCUS_META, FocusCode, isFocusCode } from '@/config/filters'
 import EmptyState from '@/components/empty-state'
 import QuoteDetail from '@/components/quote-detail'
 import ReportLoading from '@/components/report-loading'
-import { getOrBuildReport, getCachedReports, ReportOutcome } from '@/utils/cache'
+import { getOrBuildReport, getCachedReports, refreshFailureNote, ReportOutcome } from '@/utils/cache'
 import { hasSearchChannel } from '@/utils/search'
 import { hasLlmChannel } from '@/utils/llm'
 import { Report } from '@/utils/report'
@@ -30,6 +30,8 @@ import { addHistory } from '@/utils/history'
 import {
   dismissPromo,
   isPromoDismissed,
+  MEMBER_SECTIONS,
+  presentSections,
   promoRoll,
   readMemberState,
   reportMemberPromo
@@ -49,6 +51,14 @@ type PageState =
   | { phase: 'refused' }
   | { phase: 'error'; message: string }
   | { phase: 'ready'; report: Report; fromCache: boolean }
+
+/**
+ * waiting 态（他人正在生成）的轮询参数（P2-19，2026-10-09）。
+ * 上限与云端锁的 BUILDING_TIMEOUT_MS（90s，见 cloudfunctions/aiProxy/report-store.js）对齐：
+ * 超过它还没好，说明那次生成大概率已经失败，再转下去只是耗用户的耐心。
+ */
+const WAIT_POLL_MS = 5_000
+const WAIT_POLL_MAX_MS = 90_000
 
 const SENTIMENT_META: Record<string, { label: string; cls: string }> = {
   positive: { label: '积极', cls: 'positive' },
@@ -237,6 +247,22 @@ export default function ReportPage() {
   const focusParam = router.params.focus || 'all'
   const focus: FocusCode = isFocusCode(focusParam) ? focusParam : 'all'
   const [state, setState] = useState<PageState>({ phase: 'loading' })
+  /**
+   * 「手上已经有一份能读的报告」——供 `load` 判断这次 force 能不能不清屏。
+   *
+   * 必须用 ref 而不是把 state 塞进 `load` 的依赖：`load` 被下面那个
+   * `useEffect(..., [load])` 挂着，依赖一变就会重新拉一次报告（无限循环）。
+   * ref 在每次渲染时同步，`load` 内部读到的永远是最新值，且不改变它的身份。
+   */
+  const hasReportRef = useRef(false)
+  /**
+   * 正在「非破坏式刷新」：手上已有报告，本次 force 在后台跑（P1-8，2026-10-09）。
+   * 与 `state.phase === 'loading'` 分开 —— 前者是「首次加载、屏上什么都没有」，
+   * 后者是「内容还在，只是在下一次」。
+   */
+  const [refreshing, setRefreshing] = useState(false)
+  /** 非破坏式刷新失败的说明；成功后立刻清空（见 refreshFailureNote） */
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const [reportFaved, setReportFaved] = useState(false)
   /** 已收藏的内容 id（名言 / 动态 / 履历节点三类共用；整份报告单独用 reportFaved） */
   const [favedIds, setFavedIds] = useState<Set<string>>(new Set())
@@ -297,32 +323,55 @@ export default function ReportPage() {
         setState({ phase: 'error', message: '缺少 personKey 参数' })
         return
       }
-      setState({ phase: 'loading' })
+      /**
+       * 非破坏式刷新（P1-8，2026-10-09）：手上已经有报告时，force **不清屏**。
+       * 原先一律 `setState({ phase: 'loading' })` —— 于是「刷新失败」的代价是连正在读的
+       * 那份报告一起消失（断网 / 上游抖动一次，就从「有一份能读的」变成「生成失败」空态）。
+       * 首次加载（没有旧内容可留）仍走全屏骨架。
+       */
+      const keepCurrent = force && hasReportRef.current
+      if (keepCurrent) {
+        setRefreshing(true)
+        setRefreshError(null)
+      } else {
+        setState({ phase: 'loading' })
+      }
       setPrevReport(null)
       setKeptMember(false)
       setRefreshCooled(false)
       setMemberLocked([])
       const outcome: ReportOutcome = await getOrBuildReport(personKey, { force, focus })
+      setRefreshing(false)
+      /* 纯函数（utils/cache.ts），文案与「成功时不提示」都被单测钉着 */
+      const failureNote = refreshFailureNote(outcome)
       switch (outcome.kind) {
         case 'report':
           setState({ phase: 'ready', report: outcome.report, fromCache: outcome.fromCache })
-          setPrevReport(outcome.prev ?? null)
+          /* 交回的是失败时的既有版本（refreshFailed）时不算「变化对比」，否则会拿同一份跟自己比 */
+          setPrevReport(outcome.refreshFailed ? null : (outcome.prev ?? null))
           setKeptMember(outcome.keptMember === true)
           setRefreshCooled(outcome.refreshCooled === true)
           setMemberLocked(outcome.memberLocked ?? [])
+          setRefreshError(failureNote)
           break
         case 'coldstart':
-          setState({ phase: 'coldstart' })
-          break
         case 'nonews':
-          setState({ phase: 'nonews' })
-          break
         case 'refused':
-          setState({ phase: 'refused' })
+          /*
+           * 有旧内容可留时，这三种也不再清屏 —— 它们说的是「这次没拿到新东西」，
+           * 不是「这份报告不能看了」。用户点的是「刷新最新」，不是「重新开始」。
+           */
+          if (keepCurrent && failureNote) {
+            setRefreshError(failureNote)
+          } else {
+            setState({ phase: outcome.kind })
+          }
           break
         case 'error':
           if (outcome.message.includes('正在生成')) {
             setState({ phase: 'waiting' })
+          } else if (keepCurrent && failureNote) {
+            setRefreshError(failureNote)
           } else {
             setState({ phase: 'error', message: outcome.message })
           }
@@ -336,6 +385,48 @@ export default function ReportPage() {
     void load(false)
     void addHistory(personKey, name)
   }, [load])
+
+  /** 供 `load` 判断「这次 force 能不能不清屏」（见 hasReportRef 的注释） */
+  useEffect(() => {
+    hasReportRef.current = state.phase === 'ready'
+  }, [state.phase])
+
+  /**
+   * 他人正在生成时的轮询（P2-19，2026-10-09）。
+   *
+   * waiting 态的文案承诺「无需刷新，生成完成后会自动展示」，而此前**一行轮询都没有**：
+   * 进到这一态页面就静止了，报告生成完也不会自己出现 —— 用户必须自己想到「返回再进来」，
+   * 否则这就是一个永远转不完的等待页，那句承诺成了空头。而这一态恰恰是最常见的并发场景：
+   * 热榜里点进一位名人，前面的人正在生成同一份报告。
+   *
+   * 每 5 秒重试一次**普通** load（force=false）：读缓存 / 抢锁等待即可，绝不能借机触发一次
+   * 真生成（那是白烧配额）。拿到 ready 会自动切过去，effect 依赖 state.phase 变化后自行清理。
+   *
+   * 上限 90s 与云端锁的 BUILDING_TIMEOUT_MS 对齐：超过它还没好，说明那次生成大概率已经失败
+   * （持锁者崩了 / 云函数超时），继续转只是耗尽用户的耐心。此时转 error 态并把决定权交回去 ——
+   * 不自动 force，免得把用户的配额烧在一次自动重试上。
+   */
+  useEffect(() => {
+    if (state.phase !== 'waiting') return
+    const started = Date.now()
+    let done = false
+    const timer = setInterval(() => {
+      if (done) return
+      if (Date.now() - started >= WAIT_POLL_MAX_MS) {
+        done = true
+        setState({
+          phase: 'error',
+          message: '这份报告还在生成中，等待时间已超过 90 秒。稍后再进来看看，或换一位名人。'
+        })
+        return
+      }
+      void load(false)
+    }, WAIT_POLL_MS)
+    return () => {
+      done = true
+      clearInterval(timer)
+    }
+  }, [state.phase, load])
 
   /**
    * 相关名人（O-16）：放在报告就绪之后而不是与 load 并发 —— 它要拿当前报告的关键词做交集，
@@ -768,6 +859,22 @@ export default function ReportPage() {
   const promo = reportMemberPromo(memberLocked)
 
   /**
+   * 「已保留更完整的版本」提示条该点名哪几段（P2-12，2026-10-09）。
+   *
+   * 为什么不能写死「对比视角 / 风险提示 / 信源分歧」：报告是全局共享缓存，同一人物只有一行，
+   * 而「算不算会员版」的判据是**有其一即算**（utils/cache.ts#hasMemberBlocks）—— 于是缓存里
+   * 完全可能只有其中一段。写死三段就成了一个当场兑现不了的承诺：免费用户为它开通了会员，
+   * 回来看到的仍是他刚才看到的那一份。
+   *
+   * 两边各自的「实际存在的段落」来源不同，不能共用一个：
+   *   · 会员：报告里真的写着哪些段（内容没被剥，memberLocked 对会员恒为空，见其注释）；
+   *   · 免费：数据层交回的「被藏起来的」那几段（memberLocked）—— 正是他看不到的部分。
+   * 兜底用 MEMBER_SECTIONS：这条提示只在「缓存里含会员段」时才出现，理论上取不到空数组。
+   */
+  const keptSections = member ? presentSections(report) : memberLocked
+  const keptNames = (keptSections.length > 0 ? keptSections : MEMBER_SECTIONS).join(' / ')
+
+  /**
    * 促销条这一趟要不要出现（O-26）。
    *
    * 为什么不用 `useMemo` / 直接在渲染里掷骰子：骰子必须在**一次访问里只掷一次** ——
@@ -906,7 +1013,9 @@ export default function ReportPage() {
 
           {/* 状态行（全幅）：刚生成 → 这一版引用了多少实时素材（报告自证）；已有更新版本 → 刷新入口。
               「查看最新」只在确实存在更新版本的可能时才是入口：刚生成完的那一版本身最新，
-              再留个热区只会让手滑白白烧掉一次生成配额（底部还有「刷新最新」按钮兜底）。
+              再留个热区只会让手滑白白烧掉一次生成配额。
+              P2-18（2026-10-09）：底部那个「刷新最新」也按同一判据禁用 —— 此前它永远可点，
+              等于给同一件事两个相反答案（会员不受 12h 冷却约束，刚生成完点一下就是再生成一次）。
               时间也归到这一行 —— 原先名字行里的「3 小时前」与这里的「33 天前生成」是同一件事，
               一行写完既省高度也不再自相矛盾（O-14 要的是「N 天前生成 · 建议刷新」这个完整因果）。 */}
           <View className='page-report__meta' onClick={showFresh ? undefined : () => void load(true)}>
@@ -988,14 +1097,16 @@ export default function ReportPage() {
         且不会自愈 —— 故缓存里已含会员段落时拒绝降级覆盖（utils/cache.ts）。
         这一条必须出现：用户点了「刷新最新」却什么都没变，没有解释就等于按钮坏了。
         文案按会员态分开 —— 免费用户看不到会员段落，对他来说重点是「为什么刷不动、差在哪」。
+        段名一律走 keptNames（P2-12，2026-10-09）：缓存那版可能只有其中一段，
+        「有其一即算会员版」，写死三段就是一句当场兑现不了的承诺。
       */}
       {keptMember && (
         <View className='page-report__diff'>
           <Text className='page-report__diff-head'>已保留更完整的版本</Text>
           <Text className='page-report__diff-body'>
             {member
-              ? '这位人物的报告已含会员专属段落（对比视角 / 风险提示 / 信源分歧），本次刷新生成的内容更基础，故未覆盖它。'
-              : '这位人物已有一份更完整的报告（含会员专属段落：对比视角 / 风险提示 / 信源分歧），本次刷新生成的内容更基础，故未覆盖它。开通会员后即可查看这三段。'}
+              ? `这位人物的报告已含会员专属段落（${keptNames}），本次刷新生成的内容更基础，故未覆盖它。`
+              : `这位人物已有一份更完整的报告（含会员专属段落：${keptNames}），本次刷新生成的内容更基础，故未覆盖它。开通会员后即可查看。`}
           </Text>
         </View>
       )}
@@ -1489,16 +1600,28 @@ export default function ReportPage() {
 
             response 允许为空（素材里当事方没公开回应过是常态），此时不出「回应」那一行，
             而不是补一句「暂无回应」——「暂无」是我们替素材下的结论，素材本身没这么说。
+
+            P2-13（2026-10-09）：本卡此前以 `report.controversies &&` 为渲染条件，于是**缺键**
+            （这一段上线前落库的存量报告恒缺它）时整卡不出现 —— 读者的结论是「此人没有争议」，
+            而这恰恰是我们最不该替他下的判断（合规相关段落被静默隐藏）。现在缺键也出卡、并说明
+            「这一段缺数据 ≠ 确认没有争议」；`length === 0`（真的查过、素材里没有）才是那句
+            「不把没看到争议写成没有争议」的说明。降级简版仍整卡不出（无结构化素材）。
           */}
-          {report.controversies && (
+          {!report.degraded && (
             <View id='sec-controversies' className='card'>
               <View className='card-title'>近期争议与回应</View>
-              {report.controversies.length === 0 && (
+              {!report.controversies && (
+                <Text className='page-report__empty'>
+                  这份报告里没有这一段：它生成于「争议与回应」上线之前（或那一版未包含它）。
+                  这一段缺数据与「确认没有争议」不是一回事 —— 点上方「刷新最新」可补齐。
+                </Text>
+              )}
+              {report.controversies?.length === 0 && (
                 <Text className='page-report__empty'>
                   本次生成时，素材里没有可确认的公开争议（只有素材真的写到才收录，不把「没看到争议」写成「没有争议」）。
                 </Text>
               )}
-              {report.controversies.map((c, i) => (
+              {(report.controversies ?? []).map((c, i) => (
                 <View key={`${i}-${c.topic}`} className='page-report__entry'>
                   <Text className='page-report__entry-name'>{c.topic}</Text>
                   <Text className='page-report__entry-text'>争议：{c.claim}</Text>
@@ -1631,11 +1754,14 @@ export default function ReportPage() {
                   「深度解析」整块不见，很容易理解成权益没生效。
                   2026-10-09 补：这一次「补齐」是替**全站**把这行共享缓存升级成会员版，
                   不该让他掏自己的每日次数，故明说（复核与免计费见 cloudfunctions/quotaGuard）。
-                  文案里的「三段」与下方三段一一对应：对比视角 / 风险提示 / 信源分歧。 */}
+                  P2-12（2026-10-09）：段名从 MEMBER_SECTIONS 派生。原先写死「这三段」，
+                  但**给几段由素材决定**（模型按素材给，给不出就不给），承诺三段会当场落空，
+                  故改为「这些段落」并一并说明「有几段展示几段」。 */}
               {!report.memberNotes && !report.conflicts && (
                 <Text className='page-report__empty'>
                   这份报告生成时没有包含会员段落（可能是免费生成、或较早的缓存）。点上方「查看最新」用会员档重新生成，
-                  即可得到对比视角、风险提示与信源分歧这三段 —— 这次补齐不消耗你的每日生成次数。
+                  即可得到 {MEMBER_SECTIONS.join('、')} 这些段落 —— 这次补齐不消耗你的每日生成次数。
+                  具体给到几段取决于素材：有几段就展示几段，不凑数。
                 </Text>
               )}
               {/* 两段各自判空：memberNotes 可能整个不存在（只带 conflicts 的缓存），
@@ -2058,8 +2184,22 @@ export default function ReportPage() {
             <AtButton type='secondary' circle onClick={() => void toggleReportFav()}>
               {reportFaved ? '已收藏' : '收藏报告'}
             </AtButton>
-            <AtButton type='primary' circle loading={state.phase === 'loading'} onClick={() => void load(true)}>
-              刷新最新
+            {/*
+              refreshing 也转圈：非破坏式刷新时 phase 仍是 ready，不这样按钮会看着没反应。
+
+              P2-18（2026-10-09）：与顶部状态行用**同一个判据**。此前顶部刻意在「刚刚生成」
+              时撤掉热区（手滑即白烧一次生成配额），底部这个却永远可点 —— 同一件事给出相反
+              答案，用户只能学会怀疑按钮；会员更明显（不受 12h 免费刷新冷却约束），刚生成完
+              点一下就是实打实的第二次生成。showFresh 时禁用并改文案，两处口径一致。
+            */}
+            <AtButton
+              type='primary'
+              circle
+              disabled={showFresh}
+              loading={state.phase === 'loading' || refreshing}
+              onClick={() => void load(true)}
+            >
+              {showFresh ? '已是最新' : '刷新最新'}
             </AtButton>
           </View>
 

@@ -1,11 +1,24 @@
 /**
- * payCallback —— 微信支付结果通知：校验金额 → 幂等落库 → 续期会员。
+ * payCallback —— 支付链路的**唯一后端**：支付结果通知（校验金额 → 幂等落库 → 续期会员）
+ * + 售后（退款写口 + 定时对账 + 调用方闸门）。
  *
- * 本函数由**微信服务器**回调（不是端上调用），因此在 `cloudbaserc.json` 里以
- * `functionName: 'payCallback'` 注册给 `payCreate` 的统一下单。CloudBase 已完成
- * 验签与解密，本函数只负责业务处理。
+ * 本函数由**微信服务器**回调，因此在 `cloudbaserc.json` 里以 `functionName: 'payCallback'`
+ * 注册给 `payCreate` 的统一下单。CloudBase 已完成验签与解密，本函数只负责业务处理。
  *
- * 五处幂等 / 安全设计（支付链路上最容易出错的地方）：
+ * 三种入口，在 `exports.main` 顶部按事件形状分派（顺序即优先级）：
+ *   ① `{ adminOp, token }`  运营写口（置退款 / 手动对账），需环境变量 `PAY_ADMIN_TOKEN`
+ *   ② `{ Type: 'Timer' }`   定时对账（cloudbaserc.json 的 `payReconcile`，每小时第 15 分）
+ *   ③ 支付结果通知（默认）   就是下面这六条设计里的第 1~5 条
+ * ①② 的实现都在 `./after-sales.js`（那里有为什么「售后也必须长在本函数上」的理由）。
+ *
+ * 六处幂等 / 安全设计（支付链路上最容易出错的地方）：
+ *   0. **调用方闸门**（2026-10-09 新增，灰度）：云函数只要部署了，端上 `wx.cloud.callFunction`
+ *      就能调到它 ——「进来的必然是微信回调」曾经只是约定，不是事实。于是任何人用开发者工具调
+ *      `{returnCode:'SUCCESS', resultCode:'SUCCESS', outTradeNo:<自己刚下的单>, totalFee:<单金额>}`
+ *      就能**给自己发货**（金额天然对得上，因为单是自己下的）。闸门按 `getWXContext().OPENID`
+ *      判：端上调用必带 openid，微信回调 / 定时器 / 控制台「云端测试」都没有。灰度开关
+ *      `PAY_CALLBACK_GUARD` 见 callerGuard —— 先用默认的 `log` 观察真机回调的上下文，
+ *      确认后再切 `strict`。（即便判错了，对账任务也会把滞留的 `granting` 补上，不会永久丢单。）
  *   1. **金额必须与订单一致**：不等则**不发货**并标记 failed，留人工核对。
  *      回调里的金额不可信（可能被伪造 / 串单），订单里的金额才是我们写的。
  *   2. **订单状态条件更新抢占发货权**：`status: 'pending' → 'granting'`，`updated === 0`
@@ -29,10 +42,12 @@
  * 而「订单不存在」「金额不符」这类确定性异常返回 0，重试也无意义。
  *
  * ⚠ 本函数是唯一允许写会员数据的地方：权威（memberships）与镜像（users.membership）
- *   都由它写，端上只读那份镜像（见 utils/pay.ts）。
+ *   都由它写，端上只读那份镜像（见 utils/pay.ts）。退款撤销会员也走它 —— 换个地方写，
+ *   这条不变量就只剩一半。
  * 诊断依赖 `console.log`（进云函数日志）—— 回调的返回体格式由微信约定，装不下诊断信息。
  */
 const cloud = require('wx-server-sdk')
+const createAfterSales = require('./after-sales')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
@@ -105,19 +120,19 @@ async function readMembership(openid) {
 
 /** 写权威行：set = upsert（同一 openid 恒只有一行），重复进入写同一个值 */
 async function writeMembership(openid, m) {
-  await db
-    .collection('memberships')
-    .doc(openid)
-    .set({
-      data: {
-        /* 显式写 _openid：云函数是管理员身份，不会像端上写入那样自动注入 */
-        _openid: openid,
-        plan: m.plan,
-        expires_at: m.expires_at,
-        last_order_id: m.last_order_id,
-        updated_at: new Date().toISOString()
-      }
-    })
+  const data = {
+    /* 显式写 _openid：云函数是管理员身份，不会像端上写入那样自动注入 */
+    _openid: openid,
+    plan: m.plan,
+    expires_at: m.expires_at,
+    last_order_id: m.last_order_id,
+    updated_at: new Date().toISOString()
+  }
+  /* ⚠ `refunded_orders`（已撤销退款的订单号）必须原样带回来：本函数是 set 全量覆盖，
+     漏掉它就等于把「这几单已经扣过天数」的唯一凭据清空 —— 而清空的后果是**再扣一次**。
+     调用方传 undefined 时不写这一列（新行本来也没有名单可丢）。 */
+  if (Array.isArray(m.refunded_orders)) data.refunded_orders = m.refunded_orders
+  await db.collection('memberships').doc(openid).set({ data })
 }
 
 /** 写端上镜像（users.membership）：只给界面读；写不进去必须抛错让微信重试 */
@@ -137,6 +152,15 @@ async function writeMirror(rowId, openid, m) {
       }
     })
   if (updatedOf(upd) === 0) throw new Error(`会员镜像写入未生效（openid=${openid}）`)
+}
+
+/**
+ * 按 openid 找 users 行。云函数是管理员身份，where 查得到任何人；找不到返回 null，
+ * 「找不到」在发货路径上是异常（抛错让微信重试），在对账路径上只是跳过这一条。
+ */
+async function findUserRow(openid) {
+  const res = await db.collection('users').where({ _openid: openid }).limit(1).get()
+  return (res && res.data && res.data[0]) || null
 }
 
 /**
@@ -163,8 +187,7 @@ async function grantMembership(order, outTradeNo) {
     throw new Error(`订单 ${outTradeNo} 缺少 _openid 或 days，无法发货`)
   }
 
-  const res = await db.collection('users').where({ _openid: openid }).limit(1).get()
-  const row = res && res.data && res.data[0]
+  const row = await findUserRow(openid)
   if (!row) throw new Error(`找不到用户行（openid=${openid}），订单 ${outTradeNo} 无法发货`)
 
   const plan = order.plan
@@ -205,7 +228,13 @@ async function grantMembership(order, outTradeNo) {
   )
   const expiresAt = new Date(base + days * DAY_MS).toISOString()
 
-  await writeMembership(openid, { plan, expires_at: expiresAt, last_order_id: outTradeNo })
+  await writeMembership(openid, {
+    plan,
+    expires_at: expiresAt,
+    last_order_id: outTradeNo,
+    /* 带上已撤销退款的名单：set 是全量覆盖，漏一次就等于把幂等凭据清空 */
+    refunded_orders: auth && auth.refunded_orders
+  })
   await writeMirror(row._id, openid, { plan, expires_at: expiresAt, last_order_id: outTradeNo })
 
   log(`发货成功：openid=${openid} plan=${plan} days=${days} expires_at=${expiresAt}`)
@@ -228,8 +257,74 @@ async function markGranted(outTradeNo) {
   }
 }
 
+/* ─────────────────────── 调用方闸门与入口分派 ─────────────────────── */
+
+/**
+ * 调用方闸门：本函数不该被端上调用（端上只调 payCreate 下单，从不自己下发支付回调）。
+ *
+ * 判据：`getWXContext().OPENID` 非空 ⇒ 这一趟来自端上 `wx.cloud.callFunction`。
+ * 微信支付回调、定时器触发、控制台的「云端测试」都没有 openid。
+ *
+ * 灰度开关 `PAY_CALLBACK_GUARD`（环境变量，可不配）：
+ *   - `log`（**默认**）：检测到端上调用只记日志、照常往下走。理由：「真机回调的上下文里到底
+ *     有没有 openid」只有付一笔才敢确认，而猜错的代价是**所有真实回调被拒** —— 那比漏洞更难收场。
+ *   - `strict`：端上调用一律拒绝。**在日志里确认过真机回调的形态之后**再切到这个值。
+ *   - `off`：完全不判（一键回滚用）。
+ *
+ * 拒绝时返回非 0 而不是 `ack`：对端上来说两者没差别，但万一判据错了、被拦下的是真回调，
+ * 非 0 会让微信继续重试 —— 重试耗尽后还有对账任务扫 `granting` 兜底。在这个函数里，
+ * 「宁可让它重试」永远是对的。
+ */
+function callerGuard() {
+  const wxContext = (cloud.getWXContext && cloud.getWXContext()) || {}
+  const openid = wxContext.OPENID
+  if (!openid) return null
+
+  const mode = String(process.env.PAY_CALLBACK_GUARD || 'log').toLowerCase()
+  if (mode === 'off') return null
+
+  const who = `${String(openid).slice(0, 8)}***`
+  if (mode === 'strict') {
+    log(`拒绝端上调用（OPENID=${who}）：支付回调不接受端上触发`)
+    return { errcode: -1, errmsg: '本函数不接受端上调用' }
+  }
+  log(
+    `⚠ 端上调用（OPENID=${who}）—— PAY_CALLBACK_GUARD=log 只记录不拦截。` +
+    `在日志里确认真机支付回调不带 openid 后，把该变量切成 strict`
+  )
+  return null
+}
+
+/* 售后（退款写口 + 定时对账）：实现全在 ./after-sales.js，这里只接线。
+   注入而不是互相 require，是为了让 test/cases/09 能用内存 DB 直接跑它对账 ——
+   云函数不能 require 端上 TS，但可以 require 同目录的纯模块。 */
+const afterSales = createAfterSales({
+  db,
+  log,
+  tsOf,
+  DAY_MS,
+  readOrder,
+  readMembership,
+  writeMembership,
+  writeMirror,
+  grantMembership,
+  markGranted,
+  findUserRow
+})
+
 exports.main = async (event) => {
+  const blocked = callerGuard()
+  if (blocked) return blocked
+
   const e = event || {}
+
+  /* ① 运营写口：先于形状判断，因为它的事件里也可能带 outTradeNo */
+  if (e.adminOp) return afterSales.handleAdminOp(e)
+
+  /* ② 定时对账：CloudBase 的 timer 事件形如 { Type: 'Timer', TriggerName, Time } */
+  if (e.Type === 'Timer' || e.TriggerName) return afterSales.reconcile()
+
+  /* ③ 支付结果通知 */
   const returnCode = pick(e, ['returnCode', 'return_code'])
   const resultCode = pick(e, ['resultCode', 'result_code'])
   const outTradeNo = pick(e, ['outTradeNo', 'out_trade_no'])

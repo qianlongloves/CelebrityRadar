@@ -55,7 +55,12 @@ export function buildReportToc(report: Report | null | undefined, opts: TocOptio
   }
   /* AI 点评有三个分支（降级简版 / 无正文空态 / 实体），至少命中一个 → 始终在 */
   add('sec-analysis', 'AI 点评')
-  if (report.controversies) add('sec-controversies', '争议与回应')
+  /*
+   * P2-13（2026-10-09）：条件从 `report.controversies` 改为 `!report.degraded` —— 卡片在
+   * **缺这一段**时也会出现（说明「这一段缺数据 ≠ 确认没有争议」），目录若还按字段判，
+   * 就会出现「页面有卡、目录里点不到」。与 sec-risk 同一口径，两条放在一起。
+   */
+  if (!report.degraded) add('sec-controversies', '争议与回应')
   if (!report.degraded) add('sec-risk', '风险雷达')
   if (opts.member && !report.degraded) add('sec-member', '会员专享')
   if (!report.degraded) {
