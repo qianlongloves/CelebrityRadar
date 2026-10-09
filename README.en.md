@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-243%20passing-success.svg)](#development--testing)
+[![Tests](https://img.shields.io/badge/tests-296%20passing-success.svg)](#development--testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), with a keyword cloud, sentiment trend and heat curve aggregated on the client.
@@ -14,7 +14,6 @@
 - Stack: Taro 3 (React) + Taro UI ｜ Backend: Tencent CloudBase (WeChat Cloud Development)
 - License: [Apache-2.0](./LICENSE) ｜ Changelog: [`CHANGELOG.md`](./CHANGELOG.md)
 - Repository: [gitee.com/qianlonglove_admin/celebrity-radar](https://gitee.com/qianlonglove_admin/celebrity-radar) ｜ 中文说明: [`README.md`](./README.md)
-- Deploy from scratch: see [Getting Started](#getting-started) and [Deployment](#deployment); before contributing, read [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 
 ---
 
@@ -43,7 +42,7 @@
 
 ## What This Project Is
 
-A complete, compilable WeChat mini program: 19 pages on the client, 9 cloud functions and 14 database collections on the server,
+A complete, compilable WeChat mini program: 19 pages on the client, 10 cloud functions and 16 database collections on the server,
 covering the full chain of *search → disambiguation → retrieval → generation → caching → follow / favorite / share / Q&A / compare*.
 
 It is built around two principles:
@@ -54,7 +53,6 @@ It is built around two principles:
 
 > ⚠️ **This is complete source code, not a turnkey product.**
 > The repository contains **no usable credentials**: the appid, the CloudBase environment ID and all upstream API keys are placeholders you must supply yourself.
-> The three things needed to exercise the real flow are listed in [Getting Started](#getting-started).
 
 ---
 
@@ -73,6 +71,7 @@ It is built around two principles:
 | | Sharing | Quote cards (rendered on-device with Canvas 2D, never uploaded to cloud storage) + native forwarding; every landing page is a specific person's report |
 | **Exploration** | Hot board | Produced daily by AI (`hot_board`) with a three-level fallback (AI board → cached reports → static list); **every rank is visible to everyone**, never gated |
 | | Keyword alerts | Subscribe to keywords → a scheduled cloud function searches them daily → the app lists items *added since you last looked* and pushes a subscription message |
+| | Person risk monitoring | Tap "+ Monitor risk" on a report to watch a person → a scheduled cloud function searches them daily → matches on legal / tax / partnership / rights / statement terms are collected in the alerts page and pushed (**states only the match and its source; no rating, no prediction**) |
 | | Topic knowledge base | Pivots the person-centric report cache into a topic-centric view: for one topic, who is talking about it, what was said, which articles exist and when it was discussed |
 | | Compare | Side-by-side comparison of two figures (reusing both cached reports, zero model calls), with one-tap follow / share |
 | | AI Q&A | Answers grounded in the figure's **cached report**, flattened into numbered passages (ordered by reliability, selected by Chinese bigram overlap); each question triggers one extra web search that shares the same budget, and falls back silently to "report-only" answers when search is unavailable |
@@ -85,9 +84,6 @@ It is built around two principles:
 ---
 
 ## Screenshots
-
-> All images below are **on-device screenshots** (iPhone), grouped by feature; the caption under each one states the point of that page.
-> Images live in `assets/screenshots/` — **replacing a file with the same name updates this section**, no change to the references below.
 
 **Discovery & search**
 
@@ -118,6 +114,34 @@ It is built around two principles:
   </tr>
 </table>
 
+**Deep report** · rendered card by card (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies &amp; responses / timeline / what to watch / glossary); every factual section must cite a real piece of material
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/bg1.PNG" width="200" alt="Report page screenshot 1"><br><sub><b>Report page 1 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg2.PNG" width="200" alt="Report page screenshot 2"><br><sub><b>Report page 2 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg3.PNG" width="200" alt="Report page screenshot 3"><br><sub><b>Report page 3 / 7</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/bg4.PNG" width="200" alt="Report page screenshot 4"><br><sub><b>Report page 4 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg5.PNG" width="200" alt="Report page screenshot 5"><br><sub><b>Report page 5 / 7</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/bg6.PNG" width="200" alt="Report page screenshot 6"><br><sub><b>Report page 6 / 7</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/bg7.PNG" width="200" alt="Report page screenshot 7"><br><sub><b>Report page 7 / 7</b></sub></td>
+  </tr>
+</table>
+
+**Compare** · reuses both cached reports, zero model calls, one-tap follow / share
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/screenshots/db1.PNG" width="200" alt="Compare page screenshot 1"><br><sub><b>Compare page 1 / 3</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/db2.PNG" width="200" alt="Compare page screenshot 2"><br><sub><b>Compare page 2 / 3</b></sub></td>
+    <td align="center"><img src="./assets/screenshots/db3.PNG" width="200" alt="Compare page screenshot 3"><br><sub><b>Compare page 3 / 3</b></sub></td>
+  </tr>
+</table>
+
 **Membership &amp; configuration**
 
 <table>
@@ -142,7 +166,7 @@ It is built around two principles:
 | Search | Bocha `api.bochaai.com` | Proxied by the `aiProxy` cloud function |
 | LLM | OpenAI-compatible endpoint | Defaults to `https://api.deepseek.com/v1`; selectable providers and their three tiers are in `src/config/public.ts`, while endpoints / key variable names / member tiers are in `cloudfunctions/aiProxy/llm.config.js` |
 
-> Dependencies are installed with `legacy-peer-deps=true` from `.npmrc`; `@tarojs/plugin-platform-*` is pinned to `^3.6.25` (do not upgrade) and webpack to `~5.91.0`.
+Dependencies are installed with `legacy-peer-deps=true` from `.npmrc`; `@tarojs/plugin-platform-*` is pinned to `^3.6.25` (do not upgrade) and webpack to `~5.91.0`.
 
 ---
 
@@ -169,7 +193,7 @@ src/utils/**              business logic & cloud access (the only entry point pa
 utils/db.ts               hand-rolled data-access adapter (id ↔ _id mapping, pagination, write fallbacks)
 utils/cloud.ts            CloudBase initialization & diagnostics
      ↓
-cloudfunctions/**         9 cloud functions (secrets, quota, moderation, scheduled jobs, payments)
+cloudfunctions/**         10 cloud functions (secrets, quota, moderation, scheduled jobs, payments)
      ↓
 Upstream: Bocha search / LLM / WeChat Pay / security.msgSecCheck
 ```
@@ -183,11 +207,17 @@ Two mechanisms worth knowing:
 
 ## Getting Started
 
-### Requirements
+### What you must supply
 
-- Node 16 / 18 (LTS recommended)
-- WeChat DevTools
-- A mini program appid with Cloud Development enabled
+Environment: Node 16 / 18 (LTS recommended), WeChat DevTools, and a mini program appid with Cloud Development enabled.
+
+| What you need | Purpose | Without it |
+|---|---|---|
+| Mini program appid + entity qualifications | Required by WeChat | No on-device preview, cannot publish |
+| CloudBase environment (Tencent Cloud) | Hosts the database and all 10 cloud functions | Login and **all** database calls are never issued; the profile page shows "cloud service not configured" |
+| An LLM API key (at least `DEEPSEEK_API_KEY`) | Generates reports (via the `aiProxy` cloud function). Users may switch provider under "Profile", so **every provider you list needs its key** (`QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`); without it, switching to that provider fails with "no quota configured" | Generation fails; browsing and favoriting cached reports still works |
+| Bocha API key | Retrieves source material online | Empty retrieval, so reports lack material and the timeline is incomplete |
+| ICP filing / service category | Launch review | Affects publishing only, not local debugging |
 
 ### Install & Run
 
@@ -195,27 +225,28 @@ Two mechanisms worth knowing:
 git clone https://gitee.com/qianlonglove_admin/celebrity-radar.git
 cd celebrity-radar/celebrity-radar
 
-cp src/config/local.example.ts src/config/local.ts   # required, otherwise the build fails with "Cannot find module './local'"
-npm install                                           # legacy-peer-deps is enabled in .npmrc
+cp src/config/local.example.ts          src/config/local.ts                  # 1. client-local config (required)
+cp project.private.config.example.json  project.private.config.json          # 2. DevTools private config
+cp .env.example                         .env                                 # 3. deploy-time secrets
+npm install                                                                  # legacy-peer-deps is enabled in .npmrc
 
 npm run dev:weapp      # development (watch, output in dist/)
 npm run build:weapp    # production build, output in dist/
 npm run build:h5       # H5 build (for debugging)
-npm test               # local unit tests, no cloud environment needed
 ```
 
 Open the `celebrity-radar/` directory in WeChat DevTools (`miniprogramRoot: dist/`, `cloudfunctionRoot: cloudfunctions/`).
 During development you can enable "do not verify valid domains" to iterate before the domains are approved.
 
-### Three things you must supply to exercise the real flow
+### The three local config files
 
-| What you need | Purpose | Without it |
+None of the three is committed (all are in `.gitignore`), so your edits never pollute the working tree or a PR.
+
+| File | Contents | Without it |
 |---|---|---|
-| CloudBase environment ID | Hosts the database and all 9 cloud functions | Login and **all** database calls are never issued; the profile page shows "cloud service not configured" |
-| `DEEPSEEK_API_KEY` | Generates reports (via the `aiProxy` cloud function). Users may switch to another provider under "Profile", so **every provider you list needs its key** (`QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`); without it, switching to that provider fails with "no quota configured" | Generation fails; browsing and favoriting cached reports still works |
-| `BOCHA_API_KEY` | Retrieves source material online | Empty retrieval, so reports lack material and the timeline is incomplete |
-
-The full checklist (permissions, indexes, scheduled jobs, launch compliance) is in the [Deployment](#deployment) section below.
+| `src/config/local.ts` | Your own real values: CloudBase environment ID, subscription template IDs, the webview domain allowlist, the local debug switch | **Required** — `src/config/public.ts` imports it directly and the build fails with `Cannot find module './local'` |
+| `project.private.config.json` | Your private WeChat DevTools project settings (your appid and tool preferences) | You re-enter the appid and settings in DevTools every time |
+| `.env` | Deploy-time secrets for cloud functions (`DEEPSEEK_API_KEY` / `BOCHA_API_KEY` …), referenced from `cloudbaserc.json` as `${env.XXX}` | Deployed functions have no upstream keys, so retrieval and generation fail |
 
 ---
 
@@ -236,6 +267,7 @@ The full checklist (permissions, indexes, scheduled jobs, launch compliance) is 
 | `cloudbaseEnvId` | CloudBase environment ID. While it stays at the placeholder, the cloud service counts as unconfigured and no login or DB call is issued |
 | `subscribeTemplateId` | Template ID for follow-update subscription messages; must match the `SUBSCRIBE_TEMPLATE_ID` environment variable of the cloud functions |
 | `alertTemplateId` | Template ID for keyword alerts; **it must differ from the one above**: WeChat one-time subscription grants are consumed **per template**, so sharing one template between two scheduled jobs means the first job consumes the grant and the second always fails with 43101 |
+| `riskTemplateId` | Template ID for person risk monitoring; **also must differ from both above** (grants are consumed per template). Leave it empty and the feature still works — it just sends no push, while risk signals remain visible in the alerts page |
 | `webviewDomains` | Allowlist of domains the "original article preview" page may embed; leave empty to always fall back to a preview card plus a copy-link action |
 | `debug` | Local debug switch (opens quota gates and upstream cooldowns). **All five flags default to false**, enable only for local integration work |
 
@@ -252,39 +284,60 @@ The full checklist (permissions, indexes, scheduled jobs, launch compliance) is 
 > (DeepSeek Standard → Qwen Standard) without asking the user to choose again; the tier list itself is
 > replaced wholesale by the new provider's three tiers — that is what "switching provider switches the tier parameters" means.
 
-> Both files are bundled into the mini program, so **never** put real keys in them.
 > They are split so that a real environment ID in the repository does not make forks connect to the original author's cloud environment,
 > and so that the author's local `debug: true` edits in `public.ts` cannot be committed by accident.
-> ⚠️ **All five `debug` flags must be false before release**, otherwise free-tier limits (3 generations / 5 questions per day) and the 429 cooldown protection are disabled.
 
 ### 2. Secret ownership: server-side only, zero client secrets
 
-| Item | Location |
-|---|---|
-| Search / LLM keys | Environment variables of the `aiProxy` cloud function: `BOCHA_API_KEY` plus each provider's key (`DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`). **Every provider listed in the client config must have one** |
-| Deploy-time secret source | `celebrity-radar/.env` (copied from `.env.example`, **not committed**), referenced from `cloudbaserc.json` as `${env.XXX}` |
+| Secret / setting | Location | Ships in the mini program bundle? |
+|---|---|---|
+| `BOCHA_API_KEY` + each provider's key (`DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`) | Environment variables of the `aiProxy` / `hotBoardRefresh` cloud functions (read from `.env` at deploy time). **Every provider listed in the client config must have one** | ❌ no |
+| `SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID` | Environment variables of the three scheduled functions (**three different templates**, or they consume each other's one-time grants) | ❌ no |
+| `WX_APPSECRET` | `dbInit` only (to exchange an access_token for index updates) | ❌ no |
+| `DB_ADMIN_TOKEN` | `dbInit` only (custom token, the gate for write actions) | ❌ no |
+| `WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID` | `payCreate` | ❌ no |
+| Deploy-time secret source (the `.env` file itself) | `celebrity-radar/.env` (copied from `.env.example`, **not committed**), referenced from `cloudbaserc.json` as `${env.XXX}` | ❌ no |
+| Environment ID / subscription template IDs | `src/config/local.ts` | ✅ yes (**they are not secrets**) |
 
 Every request is proxied through a cloud function; the client holds no keys and users need no setup. An older build-your-own-key (BYOK) direct mode was **removed entirely**.
-
-### 3. Domains & console setup
-
-- Request domains: `https://api.bochaai.com`, `https://api.deepseek.com` (the cloud database goes through `wx.cloud` and needs no domain)
-- Enable customer service in the console and bind staff (reports and feedback rely on `open-type="contact"`)
-- Configure the privacy policy (collected: anonymous openid, local storage)
+`src/config/local.ts` *is* bundled, so only put "not a secret, but machine-specific" values there.
 
 ---
 
 ## Deployment
 
-> Below you will find every item to prepare and the pitfalls to avoid, ordered as
-> **cloud functions → database → timers → mini program**. The order matters: without collections and permissions
-> in place first, reads and writes inside functions fail silently.
-> The repository's `doc/` directory holds the author's internal documents and is **not distributed with the repo**,
-> so it is not referenced here; everything you need is covered below.
+The order matters: without collections and permissions in place first, reads and writes inside functions fail silently. Membership payments, subscriptions and the three scheduled jobs are all **optional** — get the "type a name → generate a report" path working first, then come back for them.
 
-### 1. Cloud functions (9)
+### 1. Enable Cloud Development and set the environment ID
 
-`cloudbaserc.json` declares the functions, environment variables and timers; fill the keys into `.env` before deploying (template in `.env.example`).
+1. Import the `celebrity-radar/` directory in WeChat DevTools (`miniprogramRoot: dist/`, `cloudfunctionRoot: cloudfunctions/`); it will ask for an appid — use your own (or edit `project.config.json`).
+2. "Cloud Development" in the toolbar → create an environment, and note the **environment ID** (e.g. `celebrity-radar-1a2b3c4d`).
+3. Put the environment ID in two places:
+
+| Location | Field | Who reads it |
+|---|---|---|
+| `src/config/local.ts` | `cloudbaseEnvId` | The client's `wx.cloud.init` |
+| `.env` | `TCB_ENV_ID` | `cloudbaserc.json`'s `envId`, i.e. CloudBase CLI deployments |
+
+If your CloudBase CLI version does not resolve that variable, write the environment ID literally into `envId` at the top of `cloudbaserc.json`.
+
+### 2. Deploy cloud functions (10)
+
+At minimum, fill these two in `.env`, otherwise the main flow cannot work (which providers are selectable is decided by `llm.providers` in `src/config/public.ts`):
+
+```
+DEEPSEEK_API_KEY=...
+BOCHA_API_KEY=...
+```
+
+```bash
+npm i -g @cloudbase/cli     # once
+tcb login                   # once
+cd celebrity-radar/celebrity-radar
+tcb fn deploy aiProxy       -e <your-env-id>
+```
+
+`cloudbaserc.json` already declares the functions, environment variables and timers, so deploy each one with `tcb fn deploy <name>`.
 
 | Function | Role | Trigger | Environment variables |
 |---|---|---|---|
@@ -294,6 +347,7 @@ Every request is proxied through a cloud function; the client holds no keys and 
 | `hotBoardRefresh` | Builds the daily hot board (writes `hot_board`) | Cron 06:30 | `BOCHA_API_KEY` + the provider it uses (a cron job has no client preference, so it takes `LLM_PROVIDER`, DeepSeek by default) |
 | `notifyFollowUpdates` | Pushes follow-update subscription messages | Cron 09:00 | `BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID` |
 | `keywordAlert` | Keyword alerting (searches subscribed keywords, writes `keywords`) | Cron 09:20 | `BOCHA_API_KEY` `ALERT_TEMPLATE_ID` |
+| `riskWatch` | Person risk monitoring (searches per monitored person, writes `risk_signals` and pushes) | Cron 09:40 | `BOCHA_API_KEY` `RISK_TEMPLATE_ID` |
 | `payCreate` | Membership order creation (server-side pricing + cloud pay unified order) | Client call | `WX_PAY_SUB_MCH_ID` `PAY_CALLBACK_ENV_ID` |
 | `payCallback` | Payment notification (amount verification + idempotent renewal) | WeChat Pay callback | — |
 | `dbInit` | Ops tool: create collections, compare fields, create/update indexes (never called by the client) | Manual | `DB_ADMIN_TOKEN` `WX_APPID` `WX_APPSECRET` |
@@ -302,11 +356,17 @@ Common pitfalls:
 
 - **Whether config ships with a deployment depends on how you deploy**: `tcb fn deploy` (CloudBase CLI) reads the root `cloudbaserc.json` and applies environment variables, timeouts and triggers; uploading with "Upload and Deploy" in WeChat DevTools **uploads code only**, so you must set environment variables, timeouts and triggers in the console yourself.
 - `aiProxy`, `hotBoardRefresh` and `notifyFollowUpdates` must have a **60-second timeout** (`aiProxy` additionally requires the smaller `LLM_CHAT_TIMEOUT_MS = 50000`), otherwise long reports, the hot board's "6 searches + 1 generation" round, and up to 20 searches per push round are cut off early by the platform (`-504003` on the client).
-- `quotaGuard` has no environment variables but **must be (re)deployed before you tighten the quota collections' permissions**; reversing the order makes the client's fallback writes fail and the counters stay at zero, silently disabling the free tier.
-- `dbInit` is an **ops tool, not a runtime dependency**: start with `{ "action": "report" }` for a read-only audit; write actions require `DB_ADMIN_TOKEN` (otherwise they are rejected); delete the function when you are done.
+- `dbInit` is an **ops tool, not a runtime dependency**: start with `{ "action": "report" }` for a read-only audit; write actions require `DB_ADMIN_TOKEN` (otherwise they are rejected); delete the function when you are done (see step 3).
 - `contentCheck` needs no environment variables (it uses cloud calls with platform-managed credentials); the only requirement is that `permissions.openapi` in `cloudfunctions/contentCheck/config.json` **takes effect on upload**. Without that declaration the client **fails open**. ⚠ It cannot be verified with the console's "cloud test" (which requires a real `openid`) — test it in the Q&A page on a real device.
 
-### 2. Cloud database (14 collections)
+**There is no mandatory install list — deploy what you need** (skipping a function does not affect the others):
+
+- **Required**: `aiProxy` — report generation / retrieval / AI Q&A all go through it.
+- **Recommended**: `quotaGuard` — server-side quota counting; step 3 states the deployment order you must follow.
+- **Optional**: `contentCheck` (moderation; fails open, so skipping it only drops one compliance fallback), `hotBoardRefresh` (daily hot board, timer 06:30), `notifyFollowUpdates` / `keywordAlert` / `riskWatch` (three subscription pushes, each needs its own template + timer), `payCreate` / `payCallback` (membership payments, needs your own merchant account).
+- **Ops tool**: `dbInit`, delete it when you are done.
+
+### 3. Collections & permissions (16 collections)
 
 A CloudBase document database. The client writes the `id` field; `utils/db.ts` maps it to the system primary key `_id`.
 
@@ -325,16 +385,44 @@ A CloudBase document database. The client writes the `id` field; `utils/db.ts` m
 | `favorites` | Favorites, four types (deduplicated by `openid#type#hash`) | Creator only |
 | `history` | Browsing history (last 50) | Creator only |
 | `events` | Analytics events | Creator only |
-| `keyword_watches` | Keyword subscriptions (`openid#keyword hash`, same shape as `follows`) | Creator only |
+| `keyword_watches` | Keyword subscriptions (`openid#keyword hash`, same shape as `follows`); also holds person-monitoring rows (`type='person'`, `openid#person#personKey`) | Creator only |
+| `risk_scans` | Person risk scan snapshot (`_id = personKey`): remembers what was last seen, to tell which items are new | Read: everyone; client cannot write |
+| `risk_signals` | Person risk signal log (`_id = personKey#url hash`) | Read: everyone; client cannot write |
 
 Current state of schema and permissions (important for forks):
 
 - **Collections** can be created in one go by the `dbInit` ops function (`cloudfunctions/dbInit/schema.js` is the **single source of truth** for the schema).
 - **Permissions must be set by hand in the console** — no API can change collection permissions; configure them per collection using the table above.
-- **Indexes can be automated**: `dbInit` creates and updates them through the WeChat HTTP "update index" API, or you can create them manually in the console.
-- To see what is still missing, run `dbInit` with `{"action":"report"}`.
+- **Indexes can be automated**: `dbInit` creates and updates them through the WeChat HTTP "update index" API (requires `WX_APPID` / `WX_APPSECRET`), or you can create them manually in the console.
+- To see what is still missing, run `dbInit` with `{"action":"report"}` — the `permissions_manual` block in the result is the very list you must click through.
 
-### 3. Membership payments (optional)
+```bash
+tcb fn deploy dbInit -e <your-env-id>
+tcb fn invoke dbInit -e <your-env-id> --params '{"action":"report"}'                  # read-only audit: see what is missing
+tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<token>"}'  # create the missing collections
+```
+
+⚠ **Write actions require a token**: set the `DB_ADMIN_TOKEN` environment variable on `dbInit` (any random string) and pass `"token":"<the same string>"` in the call.
+When that variable is unset, write actions are **rejected outright** (the read-only audit is unaffected) — this is the gate that stops the function from being called arbitrarily by the client, so do not skip it.
+`action` also accepts `fields` (field comparison) / `indexes` (index plan) / `sync` (all of it), and only writes for real with `apply: true`.
+
+**The two permission settings that bite hardest**:
+
+- The three quota collections (`generate_quota` / `refresh_quota` / `ask_quota`) must be "owner reads, **cannot write**", otherwise users can edit their own quota and the free tier is gone.
+  ⚠ Deploy `quotaGuard` *before* tightening them, or the client's fallback writes are rejected and the counters stay at zero.
+- `report_cache` / `feed_cache` are shared caches: "read: everyone, write: signed-in users".
+
+### 4. Domains & console setup
+
+`npm run build:weapp` writes the client bundle to `dist/`; just refresh WeChat DevTools, or use `npm run build:h5` for browser debugging, where cloud features are unavailable.
+
+Before previewing on a real device and before launch, configure in "Official Platform → Development Management" and the mini program console:
+
+- **Request domains**: `https://api.bochaai.com`, `https://api.deepseek.com` (the cloud database / functions go through `wx.cloud` and need **no** domain)
+- **Privacy policy**: collected items are "anonymous openid, local storage", and must match what the code actually collects
+- **Customer service**: enable it and bind staff (reporting and feedback rely on `open-type="contact"`)
+
+### 5. Membership payments (optional)
 
 The code is complete (`payCreate` / `payCallback` plus `utils/pay.ts` and the profile entry point) but requires manual setup:
 
@@ -345,12 +433,33 @@ The code is complete (`payCreate` / `payCallback` plus `utils/pay.ts` and the pr
 The callback function name is hard-coded as `functionName: 'payCallback'` inside `payCreate`; **renaming it will break notifications**.
 When unconfigured, the client clearly reports "WeChat Pay not configured / payment service not deployed" and free features still work (3 generations per day).
 
+### Common pitfalls
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Build fails with `Cannot find module './local'` | `src/config/local.ts` was never created (step 1 of Install & Run) | See [Getting Started](#getting-started) |
+| Profile page shows "cloud service not configured" | `cloudbaseEnvId` in `local.ts` is still `REPLACE_ME` | Put your environment ID in (step 1) |
+| Generation fails, `-504003` on the client | Function timeout is still the 20-second default (uploaded with DevTools) | Raise it to 60 seconds in the console (step 2) |
+| Retrieval returns results but the report body is empty | The model timed out or its JSON failed validation | Check the `aiProxy` logs; the default model name must really exist upstream |
+| Free quota never decreases | Quota collections were not tightened, or `quotaGuard` was deployed after the fact | See step 3 |
+| Subscription pushes never arrive (43101) | The scheduled jobs share one template | `subscribeTemplateId` / `alertTemplateId` / `riskTemplateId` must be three different templates |
+| Tapping "become a member" does nothing | No merchant account / `payCallback` not deployed | See step 5; free features are unaffected |
+
+### Pre-launch checklist
+
+- [ ] The mini program's category and your entity qualifications meet the requirements for "news / AI-generated content"
+- [ ] The privacy policy is configured and matches what is actually collected (openid, local storage)
+- [ ] AI-generated content labelling is kept (built in: the "AI-generated, for reference only" badge and the report-page statement)
+- [ ] `SENSITIVE_NAMES` in `src/utils/sensitive.ts` is up to date (⚠ it is left **for operators to fill in by hand**; the repository ships an empty array)
+- [ ] All five `debug` flags in `src/config/local.ts` are `false` (they default to false in the repository; otherwise free-tier limits and the 429 cooldown protection are disabled)
+- [ ] The main acceptance paths have been exercised on a real device (search → disambiguation → generation → favorite / share / Q&A)
+
 ---
 
 ## Project Structure
 
-> Paths below are relative to the `celebrity-radar/` subdirectory; the repository root also holds `README.md` / `README.en.md` / `LICENSE` / `NOTICE` / `CHANGELOG.md` / `CONTRIBUTING.md` / `SECURITY.md` / `CODE_OF_CONDUCT.md` / `assets/screenshots/`.
-> (`doc/` — the author's internal design and deployment docs — is excluded by `.gitignore` and is **not distributed**.)
+Paths below are relative to the `celebrity-radar/` subdirectory; the repository root also holds `README.md` / `README.en.md` / `LICENSE` / `NOTICE` / `CHANGELOG.md` / `CONTRIBUTING.md` / `SECURITY.md` / `CODE_OF_CONDUCT.md` / `assets/screenshots/`.
+(`doc/` — the author's internal design and integration docs — is excluded by `.gitignore` and is **not distributed**.)
 
 ```
 celebrity-radar/
@@ -376,12 +485,12 @@ celebrity-radar/
 │   │   ├── member/             # Membership center
 │   │   └── agreement/          # Privacy & disclaimer
 │   ├── components/             # person-card / favorites-view / report-loading / share-poster / qa-panel ...
-│   ├── utils/                  # Business logic & cloud access (43 modules, see Core Modules)
+│   ├── utils/                  # Business logic & cloud access (48 modules, see Core Modules)
 │   ├── config/                 # public.ts (shared) / local.ts (local, untracked) / domains / hot / filters / notices
 │   ├── stores/                 # zustand stores
 │   ├── styles/                 # Theme variables, tab-bar icons
 │   └── custom-tab-bar/         # Custom bottom tab bar
-├── cloudfunctions/             # 9 cloud functions
+├── cloudfunctions/             # 10 cloud functions
 │   ├── aiProxy/                # Upstream key proxy + member model gate (test / search / chat)
 │   ├── quotaGuard/             # Authoritative quota counting (atomic increments + server dates)
 │   ├── contentCheck/           # Content moderation (cloud call)
@@ -389,9 +498,10 @@ celebrity-radar/
 │   ├── payCallback/            # Payment notification (amount check + idempotent renewal)
 │   ├── notifyFollowUpdates/    # Follow-update subscription messages (cron 09:00)
 │   ├── keywordAlert/           # Keyword alerting (cron 09:20)
+│   ├── riskWatch/              # Person risk monitoring (cron 09:40)
 │   ├── hotBoardRefresh/        # Daily hot board (cron 06:30)
 │   └── dbInit/                 # Ops tool (schema.js is the schema source of truth)
-├── test/                       # Local unit tests (3 case files / 219 cases)
+├── test/                       # Local unit tests (3 case files / 296 cases)
 ├── config/                     # Taro build config (dev / index / prod)
 ├── cloudbaserc.json            # CloudBase deployment descriptor (functions + env vars + timers)
 ├── .env.example                # Deployment secret template
@@ -421,6 +531,7 @@ celebrity-radar/
 | `weekly.ts` | Weekly digest: material read from `feed_cache` only, the LLM writes text only (people and items follow the material), cached locally per ISO week |
 | `hot-board.ts` / `explore.ts` | Hot board with three-level fallback; "figure of the day" and random exploration (stable seeds, xorshift32 to remove modulo bias) |
 | `keyword-alert.ts` / `keywords.ts` | Keyword subscriptions and alert items; keyword cloud and frequent viewpoints (pure client-side aggregation, effective immediately for cached reports) |
+| `risk-watch.ts` / `risk.ts` | Person risk monitoring subscriptions and signal grouping; the fact-level risk radar list on the report page (both share one dictionary, held in sync by a test) |
 | `topic-digest.ts` / `compare.ts` / `stats.ts` / `trend.ts` | Topic catalog / two-person comparison / profile stats tab / heat-trend curve — all aggregated on the client, adding no schema fields or cloud functions |
 | `quote-check.ts` / `source-link.ts` | Quote sourcing (verifies only verifiable facts); the single outbound link path for the article preview page |
 | `messages.ts` / `notify.ts` | Message-center timeline and its read semantics; WeChat subscription authorization and push placement |
@@ -446,7 +557,7 @@ celebrity-radar/
 ## Development & Testing
 
 ```bash
-npm test          # compile tests with tsc, then run everything (219 cases, fully local, no cloud)
+npm test          # compile tests with tsc, then run everything (296 cases, fully local, no cloud)
 npm run test:only # skip tsc and run directly
 ```
 
@@ -455,7 +566,7 @@ It needs no cloud environment, no DevTools and no network. It does not cover pag
 
 Before submitting a change, confirm:
 
-1. `npm test` is green (currently 219 / 219)
+1. `npm test` is green (currently 296 / 296)
 2. `npx tsc --noEmit` reports no new warnings
 3. The mini program **main package size** is within the hard 2MB limit (currently about 1.2MB); check the build output before adding dependencies
 4. `src/config/local.ts` and the `debug` flags are **not** committed (already in `.gitignore`)
@@ -521,11 +632,21 @@ fonts of unknown origin, or unrelated large-scale rewrites (framework swaps, rep
 | See what changed | [`CHANGELOG.md`](./CHANGELOG.md) |
 
 This project is maintained by one person; replies are best-effort (security reports usually get a first response
-within 7 business days). Before asking, make sure the issue is reproducible and that you have read the known
-limitations — many "it does not work" reports are covered there.
+within 7 business days).
 
-If this project helps you, a Star on Gitee is appreciated; adding the pitfalls you hit to the
-[FAQ](#faq) is worth more than generic encouragement.
+If this project helps you, a Star on Gitee is appreciated, or add the pitfalls you hit to the [FAQ](#faq).
+
+### Donations
+
+Entirely voluntary, and unrelated to feature decisions — a tip carries no promise of prioritised features,
+faster replies, or unlocked membership.
+
+<table>
+  <tr>
+    <td align="center"><img src="./assets/%E5%BE%AE%E4%BF%A1.JPG" width="220" alt="WeChat Pay QR code"><br><sub><b>WeChat Pay</b></sub></td>
+    <td align="center"><img src="./assets/%E6%94%AF%E4%BB%98%E5%AE%9D.JPG" width="220" alt="Alipay QR code"><br><sub><b>Alipay</b></sub></td>
+  </tr>
+</table>
 
 ---
 
