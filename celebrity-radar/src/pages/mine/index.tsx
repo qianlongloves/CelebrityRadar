@@ -18,7 +18,8 @@ import {
   FREE_FEATURES_NOTE,
   MEMBER_BENEFIT_POINTS,
   MEMBER_DAILY_ASK_LIMIT,
-  MEMBER_DAILY_GENERATE_LIMIT
+  MEMBER_DAILY_GENERATE_LIMIT,
+  clearPromoDismiss
 } from '@/utils/member'
 import { clearWeeklyCache } from '@/utils/weekly'
 import { clearMessageState } from '@/utils/messages'
@@ -99,7 +100,7 @@ export default function Mine() {
    * 免费用户无论切到哪家，能用的都只是那家的极速版。
    *
    * ⚠ 「换家不换档」是刻意的：本机存的是档位标识（fast / standard / reason）而不是模型名，
-   * 所以切过去还是「我选的那一档」（DeepSeek 标准版 → 通义千问标准版），不必重选一次。
+   * 所以切过去还是「我选的那一档」（通义千问标准版 → 智谱标准版），不必重选一次。
    * 档位清单整组跟着换，故上面显示的选项标签会变、模型名会变，选中仍是同一档。
    */
   const chooseProvider = (p: LlmProvider) => {
@@ -213,8 +214,10 @@ export default function Mine() {
     })
     if (!res.confirm) return
     const ok = await clearAllMyData()
-    /* 清理本机设置（历史遗留密钥 + 模型偏好）；周报含关注画像且不在云端删除范围，一并清掉 */
+    /* 清理本机设置（历史遗留密钥 + 模型偏好；云端那份偏好也一并复位）
+       ⚠ 促销条关闭记忆不在这条链里（它属 member.ts 的展示策略，在那边清会成环依赖），故单独清 */
     clearLocalSettings()
+    clearPromoDismiss()
     /* 供应商 / 档位偏好刚被清掉，界面同步回落到默认那家与免费档 */
     setSelection(resolveChatSelection(isMember))
     clearWeeklyCache()
@@ -501,7 +504,9 @@ export default function Mine() {
           <View className='page-mine__usage'>
             <View className='page-mine__usage-head'>
               <Text className='page-mine__usage-name'>报告生成</Text>
-              <Text className={`page-mine__usage-value${genQuota && genQuota.remaining === 0 ? ' page-mine__usage-value--out' : ''}`}>
+              {/* 用尽的红色标记只在**真的会被拦下**时给：调试开关放开额度时 remaining 仍会归 0
+                  （数字照实），但闸门是开的，标红会让人以为不能生成了（见 utils/quota.ts 的 unlimited） */}
+              <Text className={`page-mine__usage-value${genQuota && genQuota.remaining === 0 && !genQuota.unlimited ? ' page-mine__usage-value--out' : ''}`}>
                 {genQuota ? `已用 ${genUsed} / ${genLimit} 次` : '读取中…'}
               </Text>
             </View>

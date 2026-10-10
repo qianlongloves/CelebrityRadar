@@ -4,6 +4,7 @@ import { View, Text } from '@tarojs/components'
 import EmptyState from '@/components/empty-state'
 import Skeleton from '@/components/skeleton'
 import {
+  deleteMessage,
   loadMessages,
   markAllMessagesRead,
   markMessageRead,
@@ -18,7 +19,7 @@ import './index.scss'
  * 消息中心：首页右上角铃铛的落点。
  *
  * 数据来源与三条取舍见 utils/messages.ts（全部由端上已有数据算出来，没有新集合、没有新云函数）。
- * 本页三处交互口径：
+ * 本页四处交互口径：
  *
  * 1) **已读逐条记**。进页面不再自动全标已读 —— 点开哪条标哪条，没看的留着下次看；
  *    顶部给一个「全部已读」的出口。首页红点取自同一份未读数，所以红点会在真正看过之后才熄灭。
@@ -26,6 +27,13 @@ import './index.scss'
  *    全部铺开会把列表拉成一篇长文，「扫一眼有哪些消息」这件事就做不成了。
  * 3) **短内容保持原有习惯**：点一下直接进详情页（没有可展开的东西，就不该多一步）。
  *    长内容展开后才在卡片底部给「查看详情 ›」—— 展开的是内容，跳转要用户明确点。
+ * 4) **删除是逐条的、本机的、要二次确认的**（2026-10-10 新增）。做成卡片底部一个「删除」小字，
+ *    不藏进长按手势：长按没有任何可见线索，用户得先被告知才会用，而这一页本来就没有
+ *    值得教的隐藏操作。删除只在本机隐藏这一条（口径见 utils/messages.ts#deleteMessage），
+ *    所以确认弹窗里写清「不影响关注与周报」，避免用户以为删了会丢数据而不敢点。
+ *
+ * 本页**不做**「清空全部」：消息是「有新内容」类通知，逐条删才对应「这条我看过了」的本意；
+ * 一键清空更容易被误触，且清完明天照样有新消息，收益与风险不成比例。
  */
 
 const KIND_ICON: Record<MessageKind, string> = {
@@ -67,16 +75,40 @@ export default function Messages() {
   /* 未读数按当前列表实时算：点开一条就少一条，顶部文案与「全部已读」按钮跟着变 */
   const unread = items.filter((i) => i.unread).length
 
-  const readOne = (id: string) => {
-    markMessageRead(id)
+  const readOne = (id: string, at: string) => {
+    markMessageRead(id, at)
     setItems((prev) => prev.map((i) => (i.id === id ? { ...i, unread: false } : i)))
   }
 
   const readAll = () => {
     if (unread === 0) return
-    markAllMessagesRead(items.map((i) => i.id))
+    markAllMessagesRead(items.map((i) => ({ id: i.id, at: i.at })))
     setItems((prev) => prev.map((i) => ({ ...i, unread: false })))
     void Taro.showToast({ title: '已全部标为已读', icon: 'none' })
+  }
+
+  /**
+   * 删除单条（2026-10-10 新增）。
+   *
+   * 先弹确认再落笔：这里删掉的是「入口」，而这条消息背后的关注 / 周报并不会变 ——
+   * 误删一个「张三 有新动态」的代价是**这一条**再也找不回来（本机记录，云端无副本）。
+   * 文案里那半句「不影响关注与周报」不是客套：它正好回答了「删了会不会漏掉什么」。
+   *
+   * 成功后同步清掉展开态：条目都没了，`expanded` 里留着 id 只是垃圾。
+   */
+  const removeOne = (m: MessageItem) => {
+    void Taro.showModal({
+      title: '删除这条消息？',
+      content: '只在本机隐藏这一条，不影响关注与周报；之后的新消息仍会送达',
+      confirmText: '删除',
+      cancelText: '取消'
+    }).then((res) => {
+      if (!res.confirm) return
+      deleteMessage(m.id, m.at)
+      setItems((prev) => prev.filter((x) => x.id !== m.id))
+      setExpanded((prev) => prev.filter((x) => x !== m.id))
+      void Taro.showToast({ title: '已删除', icon: 'none' })
+    })
   }
 
   /**
@@ -98,12 +130,19 @@ export default function Messages() {
   /**
    * 卡片点击：先标已读；长内容切展开 / 收起，短内容直接进详情。
    *
-   * 底部「查看详情 ›」**不单独绑事件** —— 它冒泡到卡片，由这里的角色分流处理。
+   * 底部「查看详情 ›」与「删除」都**不单独绑事件** —— 它们冒泡到卡片，由这里的角色分流处理。
    * 不依赖 `stopPropagation`：小程序的 bindtap 是原生冒泡，JS 侧不一定拦得住，
    * 拦不住就会「跳转 + 顺手切换展开态」两件事一起发生。
+   *
+   * 「删除」必须**在标已读之前**分流：一条马上要消失的消息不该再改动未读数
+   * （否则首页红点会凭空跳一下，删掉一条反而像「读了一条」）。
    */
   const onCardTap = (m: MessageItem, role?: string) => {
-    readOne(m.id)
+    if (role === 'del') {
+      removeOne(m)
+      return
+    }
+    readOne(m.id, m.at)
     if (role === 'link' || !foldable(m)) {
       open(m)
       return
@@ -189,6 +228,10 @@ export default function Messages() {
                           查看详情 ›
                         </Text>
                       )}
+                      {/* 删除入口：与上面两个动作同排但不同色（见 scss），免得手滑删掉 */}
+                      <Text className='page-messages__del' data-role='del'>
+                        删除
+                      </Text>
                     </View>
                   </View>
                 </View>
@@ -203,7 +246,9 @@ export default function Messages() {
           关注更新仅覆盖最近关注的 30 位（每位需读两次缓存，不做无上限拉取）
         </View>
       )}
-      <View className='disclaimer'>消息仅自己可见；本机已读记录随「清空我的数据」一并清除</View>
+      <View className='disclaimer'>
+        消息仅自己可见；本机已读与删除记录随「清空我的数据」一并清除
+      </View>
     </View>
   )
 }

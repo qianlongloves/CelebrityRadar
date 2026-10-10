@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "envId": "${env.TCB_ENV_ID}",
+  "envId": "{{env.TCB_ENV_ID}}",
   "functionRoot": "cloudfunctions",
   "functions": [
     {
@@ -9,18 +9,19 @@
       "runtime": "Nodejs16.13",
       "installDependency": true,
       "envVariables": {
-        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
-        "LLM_PROVIDER": "${env.LLM_PROVIDER}",
-        "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}",
-        "QWEN_API_KEY": "${env.QWEN_API_KEY}",
-        "ZHIPU_API_KEY": "${env.ZHIPU_API_KEY}",
-        "MOONSHOT_API_KEY": "${env.MOONSHOT_API_KEY}",
-        "OPENAI_API_KEY": "${env.OPENAI_API_KEY}"
+        "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
+        "SERPER_API_KEY": "{{env.SERPER_API_KEY}}",
+        "TAVILY_API_KEY": "{{env.TAVILY_API_KEY}}",
+        "LLM_PROVIDER": "{{env.LLM_PROVIDER}}",
+        "QWEN_API_KEY": "{{env.QWEN_API_KEY}}",
+        "ZHIPU_API_KEY": "{{env.ZHIPU_API_KEY}}",
+        "OPENAI_API_KEY": "{{env.OPENAI_API_KEY}}",
+        "AI_PROXY_QUOTA_GUARD": "{{env.AI_PROXY_QUOTA_GUARD}}"
       }
     },
     {
       "name": "contentCheck",
-      "timeout": 10,
+      "timeout": 60,
       "runtime": "Nodejs16.13",
       "installDependency": true
     },
@@ -30,8 +31,8 @@
       "runtime": "Nodejs16.13",
       "installDependency": true,
       "envVariables": {
-        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
-        "SUBSCRIBE_TEMPLATE_ID": "${env.SUBSCRIBE_TEMPLATE_ID}"
+        "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
+        "SUBSCRIBE_TEMPLATE_ID": "{{env.SUBSCRIBE_TEMPLATE_ID}}"
       },
       "triggers": [
         {
@@ -47,8 +48,8 @@
       "runtime": "Nodejs16.13",
       "installDependency": true,
       "envVariables": {
-        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
-        "ALERT_TEMPLATE_ID": "${env.ALERT_TEMPLATE_ID}"
+        "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
+        "ALERT_TEMPLATE_ID": "{{env.ALERT_TEMPLATE_ID}}"
       },
       "triggers": [
         {
@@ -64,8 +65,8 @@
       "runtime": "Nodejs16.13",
       "installDependency": true,
       "envVariables": {
-        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
-        "RISK_TEMPLATE_ID": "${env.RISK_TEMPLATE_ID}"
+        "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
+        "RISK_TEMPLATE_ID": "{{env.RISK_TEMPLATE_ID}}"
       },
       "triggers": [
         {
@@ -81,13 +82,11 @@
       "runtime": "Nodejs16.13",
       "installDependency": true,
       "envVariables": {
-        "BOCHA_API_KEY": "${env.BOCHA_API_KEY}",
-        "LLM_PROVIDER": "${env.LLM_PROVIDER}",
-        "DEEPSEEK_API_KEY": "${env.DEEPSEEK_API_KEY}",
-        "QWEN_API_KEY": "${env.QWEN_API_KEY}",
-        "ZHIPU_API_KEY": "${env.ZHIPU_API_KEY}",
-        "MOONSHOT_API_KEY": "${env.MOONSHOT_API_KEY}",
-        "OPENAI_API_KEY": "${env.OPENAI_API_KEY}"
+        "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
+        "LLM_PROVIDER": "{{env.LLM_PROVIDER}}",
+        "QWEN_API_KEY": "{{env.QWEN_API_KEY}}",
+        "ZHIPU_API_KEY": "{{env.ZHIPU_API_KEY}}",
+        "OPENAI_API_KEY": "{{env.OPENAI_API_KEY}}"
       },
       "triggers": [
         {
@@ -99,18 +98,18 @@
     },
     {
       "name": "quotaGuard",
-      "timeout": 20,
+      "timeout": 60,
       "runtime": "Nodejs16.13",
       "installDependency": true
     },
     {
       "name": "payCreate",
-      "timeout": 20,
+      "timeout": 60,
       "runtime": "Nodejs16.13",
       "installDependency": true,
       "envVariables": {
-        "WX_PAY_SUB_MCH_ID": "${env.WX_PAY_SUB_MCH_ID}",
-        "PAY_CALLBACK_ENV_ID": "${env.PAY_CALLBACK_ENV_ID}"
+        "WX_PAY_SUB_MCH_ID": "{{env.WX_PAY_SUB_MCH_ID}}",
+        "PAY_CALLBACK_ENV_ID": "{{env.PAY_CALLBACK_ENV_ID}}"
       }
     },
     {
@@ -119,7 +118,7 @@
       "runtime": "Nodejs16.13",
       "installDependency": true,
       "envVariables": {
-        "PAY_ADMIN_TOKEN": "${env.PAY_ADMIN_TOKEN}"
+        "PAY_ADMIN_TOKEN": "{{env.PAY_ADMIN_TOKEN}}"
       },
       "triggers": [
         {
@@ -135,10 +134,22 @@
       "runtime": "Nodejs16.13",
       "installDependency": true,
       "envVariables": {
-        "DB_ADMIN_TOKEN": "${env.DB_ADMIN_TOKEN}",
-        "WX_APPID": "${env.WX_APPID}",
-        "WX_APPSECRET": "${env.WX_APPSECRET}"
+        "DB_ADMIN_TOKEN": "{{env.DB_ADMIN_TOKEN}}",
+        "WX_APPID": "{{env.WX_APPID}}",
+        "WX_APPSECRET": "{{env.WX_APPSECRET}}"
       }
+    },
+    {
+      "name": "userInit",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true
+    },
+    {
+      "name": "userBackfill",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true
     }
   ]
 }

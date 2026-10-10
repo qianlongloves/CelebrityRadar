@@ -20,6 +20,10 @@
  *            等于给任何调用者留一个「一次调用烧两笔上游钱」的开关（2026-10-09 修，见 exports.main）。
  *            端上「我的 → 测试连通性」入口已于 2026-10-07 移除（改为只保留「生成模型」选择），
  *            此动作现在只供控制台 / 云调用人工排障使用，业务链路只走 search / chat。
+ *            三个**可选**字段各自独立收费，都必须显式传（缺省一律不发，见 exports.main）：
+ *              models: true        逐档实测表内三档是否产 reasoning（probeModelTiers）
+ *              probeModels: [...]  改探给定的候选模型名，回答「该换成哪一档」（同上，最多 MAX_PROBE_MODELS 个）
+ *              listModels: true    列上游 /models 清单，回答「这家有哪些名字可用」（probeModelList）
  *   'search' 业务转发：代理一次博查检索，供端上 search.ts 在用户未自配 key 时使用
  *   'chat'   业务转发：代理一次大模型对话，供端上 llm.ts 在用户未自配 key 时使用
  *
@@ -43,9 +47,13 @@
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
-/* 供应商注册表 + 解析（换一家改它，不改本文件）。⚠ 与 hotBoardRefresh 目录下的副本逐字一致 */
-const { resolveLlm } = require('./llm.config')
-/* 服务端配额与限速（B8）：数值须与端上 MEMBER_BENEFITS 同值，用例钉住 */
+/*
+ * 供应商注册表 + 解析（换一家改它，不改本文件）。⚠ 与 hotBoardRefresh 目录下的副本逐字一致。
+ * PROVIDERS 本身也要导入：逐档模型探针（probeModelTiers）要按一家一家列出**所有档位**的模型名，
+ * 而 resolveLlm 只回当前生效的那一档（它回的是裁决结果，不是清单）。
+ */
+const { PROVIDERS, resolveLlm } = require('./llm.config')
+/* 服务端配额与限速（B8）：上限数值由 benefits.config.js 提供，本文件只管判定 */
 const {
   QUOTA_POOLS,
   DEFAULT_PURPOSE,
@@ -55,14 +63,53 @@ const {
   quotaGuardDisabled,
   todayKey
 } = require('./quota.config')
+/* 权益数值（自动生成，真源 src/config/benefits.ts）：检索条数上限与单请求字符上限 */
+const { SEARCH_MAX, MAX_CHAT_CHARS } = require('./benefits.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const db = cloud.database()
 
 const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
+/*
+ * 第二检索源（2026-10-10）：**博查抓到空内容时的兜底**。
+ *
+ * 为什么需要：全项目此前只有博查一个源，而冷门 / 低产名人常常是「博查没收录、别家有」。
+ * 端上 `fetchNews` 的降级阶梯（换句式 / 放宽时间窗）解决的是「同一个源里的查法问题」，
+ * 解决不了「这个源根本没有」—— 两件事，故两条都要有。
+ *
+ * 为什么是「多家自动探测」而不是钉死一家：**注册门槛才是这条路唯一的阻塞点**。
+ * 最初选的是 Bing Web Search，但微软 2023-08 起停止接受 Bing Search API 新客户、
+ * 2025-08-11 正式退役，Azure 门户里已经建不出这个资源了（且 Azure 本身要信用卡）——
+ * 相关代码已整体移除、不再保留。现在只剩这两家：按顺序取**第一个配了 key 的**，
+ * 你注册哪家就填哪个变量，代码一行都不用动。
+ * 一个都没配 = 整条跳过，行为与没有兜底时完全一致。
+ *
+ * ⚠ 两家的响应结构都与博查不同，**适配器里必须翻译成博查那套字段名**
+ *   （name / url / snippet）：端上 toNewsItem 与报告层的出处白名单按这三个字段认，
+ *   缺一个就会被当成无效素材剔掉。
+ * ⚠ 两家都在**境外**：从腾讯云（境内）调用要绕国际出口，延迟明显高于博查，
+ *   且可达性受跨境链路影响。故 `test` 探针会把两家的连通性与耗时一并报出来 ——
+ *   部署后先跑一次探针，比在报告里瞎猜强（见 handleTest）。
+ */
+const SERPER_ENDPOINT = 'https://google.serper.dev/search'
+/** freshness → Google 的 tbs 时间过滤（qdr:d/w/m/y）；更宽的两档不下发 = 不限时间 */
+const SERPER_TBS = { oneDay: 'qdr:d', oneWeek: 'qdr:w', oneMonth: 'qdr:m', oneYear: 'qdr:y' }
+/** Serper 单次条数（官方上限 100；取 50，够用且省额度） */
+const SERPER_MAX_COUNT = 50
+
+const TAVILY_ENDPOINT = 'https://api.tavily.com/search'
+/** Tavily 单次条数（官方上限 20） */
+const TAVILY_MAX_COUNT = 20
+
 const TIMEOUT_MS = 15000
 const SNIPPET = 200
+/*
+ * 逐档探针一次最多探几个模型名（见 probeModelTiers 的 requested 分支）。
+ * 每次探测都是一次**真实付费**的上游请求，而 probeModels 是运维手填的清单 ——
+ * 这个上限防的是手滑（把一个几十项的清单粘进来），不是产品限制。
+ */
+const MAX_PROBE_MODELS = 12
 
 /*
  * 会员专属模型（「质」权益，2026-10-07）：清单已移到 llm.config.js 的 memberOnlyModels
@@ -73,13 +120,14 @@ const SNIPPET = 200
 
 /*
  * 检索条数上限（按会员分档，2026-10-07）：
- *   FREE_SEARCH_MAX   就是改造前的硬上限 20，**不得下调**：端上主线 / 支线默认取 10 / 8，
- *                     下调等于回头削减既有免费额度，属于端上无感的「偷偷涨价」。
- *   MEMBER_SEARCH_MAX 为下一步「深度模式」（会员生成时素材加厚）预留的服务端能力；
- *                     端上接线前它只是把上限放宽，不改变任何现有行为。
+ *   free   就是改造前的硬上限 20，**不得下调**：端上主线 / 支线默认取 10 / 8，
+ *          下调等于回头削减既有免费额度，属于端上无感的「偷偷涨价」。
+ *   member 为「深度模式」（会员生成时素材加厚）预留的服务端能力；
+ *          端上接线前它只是把上限放宽，不改变任何现有行为。
+ * 数值取自 benefits.config.js（真源 src/config/benefits.ts 的 SEARCH_MAX）。
  */
-const FREE_SEARCH_MAX = 20
-const MEMBER_SEARCH_MAX = 40
+const FREE_SEARCH_MAX = SEARCH_MAX.free
+const MEMBER_SEARCH_MAX = SEARCH_MAX.member
 
 /*
  * 对话输出上限（O-11 第二步 2026-10-07 只给会员，2026-10-08 起对所有请求下发）。
@@ -98,13 +146,45 @@ const LLM_CHAT_TIMEOUT_MS = 50000
 /*
  * 防滥用：这是一条「平台付钱、客户端随便调」的通道，不设闸门就等于对外送一个免费 LLM 网关。
  * 端上实际只发 system + user 两条，这里的上限留了余量而非贴着用。
+ * MAX_CHAT_CHARS（单请求字符上限）来自 benefits.config.js —— 端上构造 user 消息时
+ * 按同一个值留余量，同源才不会出现「端上以为发得出去、云端直接拒」。
  */
 const MAX_CHAT_MESSAGES = 6
-const MAX_CHAT_CHARS = 24000
 
 function readEnv(name) {
   const v = process.env[name]
   return typeof v === 'string' && v.trim() ? v.trim() : null
+}
+
+/**
+ * 云端原始报文打印（**排障用**，默认关闭）。
+ *
+ * 为什么需要它：端上有 `utils/debug.ts#debugRaw`（`debug.rawIoLog`），但那条只能看到
+ * **云函数的返回** —— 「上游到底回了什么」永远看不到。而云端恰恰是这类问题的主场：
+ *   上游 200 但结构异常（解析器把正文吃掉了）、检索只回 3 条、模型输出被 max_tokens
+ *   截断（`finish_reason: 'length'`）…… 这些在端上要么被折成一句「平台通道未就绪」，
+ *   要么根本无从判断。
+ *
+ * ⚠ **只在「云开发控制台 → 云函数 → 日志」里看得到**，不在微信开发者工具的 Console
+ *   （那是端上的 console），两者是两套东西。
+ *
+ * 开关：环境变量 `AI_PROXY_RAW_LOG=on`，**默认关闭、只认 'on'**。
+ * 与 `AI_PROXY_QUOTA_GUARD` 的策略相反是刻意的：那个放开的是闸门，漏配的代价是「拦得狠」
+ * （症状显眼）；这个打的是上游报文，漏配的代价是**线上持续吐日志**（噪音，且模型正文会被
+ * 记进日志平台），所以必须显式打开。
+ *
+ * ⚠ **截断后再打**：云函数日志有大小上限，几万字的报告正文灌进去会挤掉同一次调用里的
+ *   计费 / 配额日志。要看完整报文请用端上的 `debugRaw`（那里传的是对象，Console 可逐层展开）。
+ */
+function rawLog(tag, payload) {
+  /* 每次现读 env、不缓存模块级常量：与 readEnv 同一取舍，也便于测试里开关取值 */
+  if ((process.env.AI_PROXY_RAW_LOG || '').toLowerCase() !== 'on') return
+  try {
+    const text = typeof payload === 'string' ? payload : JSON.stringify(payload)
+    console.log(`[raw:${tag}]`, String(text).slice(0, 2000))
+  } catch {
+    /* 循环引用等极端结构不该影响主流程（与端上 debugRaw 同一取舍） */
+  }
 }
 
 /** 只回长度与是否配置，绝不回明文片段：该值会进入客户端可读的返回值 */
@@ -286,20 +366,29 @@ function snippet(v) {
   return String(text || '').slice(0, SNIPPET)
 }
 
-/** 原生 https POST（不引 axios：微信云函数 Node 版本不保证有全局 fetch） */
-function postJson(target, headers, payload, timeoutMs) {
+/**
+ * 原生 https JSON 请求（不引 axios：微信云函数 Node 版本不保证有全局 fetch）。
+ *
+ * 抽成一个函数是因为「怎么收响应」这条路在 POST 与 GET 上逐字相同：拆成两份，
+ * 超时文案 / JSON 容错 / 状态码取值任何一处改了另一边就会落后。列上游模型清单走 GET
+ * （见 probeModelList），它和 chat / search 的 POST 必须是同一套读法。
+ */
+function sendJson(method, target, headers, payload, timeoutMs) {
   return new Promise((resolve, reject) => {
     const u = new URL(target)
-    const body = JSON.stringify(payload)
+    const body = method === 'GET' ? null : JSON.stringify(payload)
     const req = https.request(
       {
         hostname: u.hostname,
         path: u.pathname + u.search,
-        method: 'POST',
-        headers: Object.assign(
-          { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-          headers
-        ),
+        method,
+        headers:
+          body === null
+            ? Object.assign({}, headers)
+            : Object.assign(
+                { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+                headers
+              ),
         timeout: timeoutMs
       },
       (res) => {
@@ -319,9 +408,19 @@ function postJson(target, headers, payload, timeoutMs) {
     )
     req.on('timeout', () => req.destroy(new Error(`上游无响应（${timeoutMs}ms 超时）`)))
     req.on('error', reject)
-    req.write(body)
+    /* GET 不带体：连写都不要写，避免出现「带空体」这种两头都不认的混搭请求 */
+    if (body !== null) req.write(body)
     req.end()
   })
+}
+
+function postJson(target, headers, payload, timeoutMs) {
+  return sendJson('POST', target, headers, payload, timeoutMs)
+}
+
+/** GET：目前只有列上游模型清单（OpenAI 兼容端点的 /models）用它 */
+function getJson(target, headers, timeoutMs) {
+  return sendJson('GET', target, headers, null, timeoutMs)
 }
 
 async function probeBocha(key) {
@@ -367,6 +466,171 @@ async function probeLlm(llm) {
   }
   if (res.status === 401) return { ok: false, detail: '401 密钥无效' }
   return { ok: false, detail: `HTTP ${res.status}：${snippet(res.data) || '无响应体'}` }
+}
+
+/**
+ * 逐档模型探针（2026-10-10）：把当前供应商的**每一档**各探一次，回答「这一档到底带不带思考」。
+ *
+ * 起因（真实踩到，不是假想）：`deepseek-v4-flash` 顶着「极速版 / 免费档」的标签、描述还写着
+ * 「响应最快、成本最低，适合日常生成报告」，实际却先产出 14888 字 `reasoning_content`，
+ * 把 `max_tokens` 全吃光 ⇒ 正文 0 字、`finish_reason='length'` ⇒ 报告结构化生成整份降级
+ * （见 handleChat 里空正文分流那段的两种文案）。
+ * 而「这一家的哪一档不带思考」**不在本仓库任何配置里** —— 档位标签（极速版 / 标准版 /
+ * 深度推理）描述的是**期望**，不描述模型实际行为；这件事也不可能从端上日志看出来
+ * （端上只看到空正文）。所以只能问上游，这个探针就是那句问话。
+ *
+ * 判据只有一条：`message.reasoning_content` 非空 ⇒ 这一档是思考模型。
+ * 提示词与 probeLlm 同款（刻意不加料）：这里要测的是「会不会产 reasoning」，不是「思考多长」，
+ * 后者由长生成现场决定（端上 chat:upstream 的 reasoningChars 才是那个数）。
+ *
+ * ⚠ 局限：上游若不暴露 `reasoning_content`（思考藏在别的字段 / 干脆不返回），此处测不出来，
+ *   结论是假阴性 —— 那种情况只能靠端上长生成的实际表现判断。
+ * ⚠ 每次调用都真花钱（每个名字一次上游请求），故与 test 探针共用口令，且**必须显式传 `models: true`**
+ *   或 `probeModels: [...]`：默认那条 test 的请求次数被测试钉死为「博查 + 大模型 + 兜底源」各一次，
+ *   不能悄悄加发。
+ *
+ * 两个入口：
+ *   ① 不传 probeModels → 探表内三档，回答「现在配的这三档各自带不带思考」；
+ *   ② 传了 probeModels → 探给定的候选名，回答「这家还有哪些名字能用」。后者是必需的：
+ *      deepseek 家实测三档是「思考 / 400 / 思考」，想换档就必须先知道候选名从哪来 ——
+ *      而候选名**不在本仓库任何配置里**（不臆造上游模型名），只能先问上游要清单（probeModelList）。
+ */
+async function probeModelTiers(llm, requested) {
+  const conf = PROVIDERS[llm.provider] || {}
+  const memberOnly = conf.memberOnlyModels || []
+  /*
+   * 探哪些名字：`requested` 给了一份就按它探，否则探表内三档。两条路径的区别**只在这里**，
+   * 下面的请求构造与判定逐字共用 —— 判定标准换个入口就得换一套，那才是会漂移的地方。
+   */
+  const source = Array.isArray(requested) && requested.length ? requested : [conf.defaultModel].concat(memberOnly)
+  const names = source
+    .map((n) => (typeof n === 'string' ? n.trim() : ''))
+    .filter(Boolean)
+    .slice(0, MAX_PROBE_MODELS)
+  const out = []
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i]
+    /*
+     * 档位标注按**名字**反查（原实现按位置：i===0 即免费档）。探任意候选名时位置没有含义，
+     * 而 tier 是给人看的：'other' = 表里没登记，纯候选。
+     */
+    const tier = name === conf.defaultModel ? 'free' : memberOnly.includes(name) ? 'member' : 'other'
+    const startedAt = Date.now()
+    try {
+      const res = await postJson(
+        `${String(llm.baseUrl || '').replace(/\/+$/, '')}/chat/completions`,
+        { Authorization: `Bearer ${llm.apiKey}` },
+        {
+          model: name,
+          stream: false,
+          messages: [
+            { role: 'system', content: '你是连通性测试助手，只回复两个字：正常' },
+            { role: 'user', content: '连通性测试' }
+          ]
+        },
+        TIMEOUT_MS
+      )
+      const choice = res.data && res.data.choices && res.data.choices[0]
+      const msg = choice && choice.message
+      const chars = msg && typeof msg.content === 'string' ? msg.content.length : 0
+      const reasoningChars =
+        msg && typeof msg.reasoning_content === 'string' ? msg.reasoning_content.length : 0
+      const finishReason = (choice && choice.finish_reason) || ''
+      const failed = res.status < 200 || res.status >= 300
+      out.push({
+        model: name,
+        tier,
+        ok: res.status >= 200 && res.status < 300,
+        chars,
+        reasoningChars,
+        finishReason,
+        elapsedMs: Date.now() - startedAt,
+        /* 结论写成人话：看的人不必自己比对两个字数（判据只有 reasoningChars 一项） */
+        verdict: reasoningChars
+          ? `思考模型（思考 ${reasoningChars} 字）：长生成会先吃输出预算，不能用来生成报告 JSON`
+          : chars
+            ? '无思考：可安全用于长 JSON 生成'
+            : failed
+              ? /*
+                 * 非 2xx 必须带上游原话：`deepseek-v4` 那次 400 只回了个状态码，
+                 * 看不出是「模型名不存在」还是「参数不认」—— 等于没答，还得再猜一轮。
+                 */
+                `HTTP ${res.status}：${snippet(res.data) || '无响应体'}`
+              : `无正文（HTTP ${res.status}，finish_reason=${finishReason || '缺失'}）`
+      })
+    } catch (err) {
+      out.push({ model: name, tier, ok: false, verdict: failDetail(err) })
+    }
+  }
+  return out
+}
+
+/**
+ * 上游模型清单（2026-10-10）：`GET {baseUrl}/models`，回答「这家到底有哪些模型可用」。
+ *
+ * 为什么必须有它：probeModelTiers 只能测**名字已经写下来的**那些档 —— 它能回答
+ * 「现在配的这三档行不行」，但答不出「该换成哪一档」。而这正是当前的卡点：
+ * deepseek 家实测是「思考 / HTTP 400 / 思考」，表里三个名字没有一个能当免费档。
+ * 候选名不可能从本仓库推出来（仓库的规矩是不臆造上游模型名，见 src/config/public.ts），
+ * 所以只剩一条路：直接问上游要清单，再拿 probeModels 逐个实测行为。
+ *
+ * OpenAI 兼容端点都提供这个接口（DeepSeek / DashScope 兼容模式 / 智谱 / Moonshot 一致）。
+ * 形状认不出来时**原样回一段片段**，不硬凑一个空数组 —— 空数组会被读成「这家一个模型都没有」，
+ * 那与「上游不认这个接口」是两回事，排障方向也完全不同。
+ */
+async function probeModelList(llm) {
+  const res = await getJson(
+    `${String(llm.baseUrl || '').replace(/\/+$/, '')}/models`,
+    { Authorization: `Bearer ${llm.apiKey}` },
+    TIMEOUT_MS
+  )
+  if (res.status < 200 || res.status >= 300) {
+    return {
+      ok: false,
+      count: 0,
+      models: [],
+      detail: `HTTP ${res.status}：${snippet(res.data) || '无响应体'}`
+    }
+  }
+  const rows =
+    res.data && Array.isArray(res.data.data)
+      ? res.data.data
+      : res.data && Array.isArray(res.data.models)
+        ? res.data.models
+        : null
+  if (!rows) return { ok: false, count: 0, models: [], detail: `未识别的清单结构：${snippet(res.data)}` }
+  /* 每项可能是对象（{ id }）也可能直接是字符串，两种都收 */
+  const ids = rows.map((r) => (typeof r === 'string' ? r : r && r.id)).filter(Boolean)
+  return {
+    ok: true,
+    count: ids.length,
+    models: ids,
+    detail: ids.length ? `上游列出 ${ids.length} 个模型` : '清单为空（该 key 可能未开通任何模型）'
+  }
+}
+
+/**
+ * 兜底源探针：**只探装配表里第一个配了 key 的那家**（选取逻辑与 handleSearch 完全一致）。
+ *
+ * 为什么必须有它：两家兜底源都在**境外**，而云函数在境内（腾讯云）——「能不能连通、
+ * 跨境延迟多少」是这套兜底唯一的未知数，而且**在报告里看不出来**：兜底失败会被静默降级成
+ * 「主源没内容」（端上只看到 nonews），排查时根本分不清是没配、不通、还是真的没结果。
+ * 这个探针把它变成一句可执行的命令。
+ *
+ * 刻意探**真实的检索请求**（而不是健康检查端点）：两家都没有廉价的 ping 接口，而一次
+ * count:3 的检索相对其免费额度可以忽略；好处是「探通了 = 这条路真的能用」。
+ * 耗时一并回报：跨境链路的正常值与超时值差两个数量级，一眼分得出是「慢」还是「不通」。
+ */
+async function probeBackup(provider) {
+  const startedAt = Date.now()
+  const res = await provider.run(provider.key, {
+    query: '雷军 近期 新闻 动态 言论',
+    freshness: 'oneMonth',
+    count: 3
+  })
+  const cost = `（耗时 ${Date.now() - startedAt}ms）`
+  if (res.ok) return { ok: true, detail: `可用（返回 ${(res.pages || []).length} 条）${cost}` }
+  return { ok: false, detail: `${res.error || '失败'}${cost}` }
 }
 
 /**
@@ -459,6 +723,122 @@ async function runSearch(key, params) {
 }
 
 /**
+ * Serper.dev 适配器：走 **Google 索引**，是最接近「真的换一个搜索引擎」的一家 ——
+ * 也正对本项目要解的问题（博查没收录的中文长尾，Google 往往有）。
+ * 注册只需邮箱、无需信用卡（新账号送 2500 次），是目前门槛最低的可行选项。
+ *
+ * 请求：POST `https://google.serper.dev/search`，key 走 `X-API-KEY` 头；
+ *       body 用 `q` / `num` / `gl` / `hl`，时间过滤是 Google 原生的 `tbs=qdr:*`。
+ * 响应：`organic[]`，字段为 `{ title, link, snippet, date }` —— **与博查完全不同名**，
+ *       故这里翻译成 `{ name, url, snippet, datePublished }`（见文件头那条 ⚠）。
+ */
+async function runSearchSerper(key, params) {
+  const tbs = SERPER_TBS[params.freshness]
+  const body = {
+    q: params.query,
+    num: Math.min(params.count, SERPER_MAX_COUNT),
+    gl: 'cn',
+    hl: 'zh-cn',
+    ...(tbs ? { tbs } : {})
+  }
+  const res = await postJson(SERPER_ENDPOINT, { 'X-API-KEY': key }, body, TIMEOUT_MS)
+  const bad = backupFailure(res, 'SERPER_API_KEY')
+  if (bad) return bad
+
+  const list = (res.data && res.data.organic) || []
+  return {
+    ok: true,
+    pages: list.map((it) => ({
+      name: it.title || '',
+      url: it.link || '',
+      snippet: it.snippet || '',
+      ...(it.date ? { datePublished: it.date } : {})
+    }))
+  }
+}
+
+/**
+ * Tavily 适配器：面向 LLM 的检索 API，返回**已清洗的正文**（`content` 常几百到上千字，
+ * 比 snippet 长得多），对「喂给模型」最友好；代价是中文长尾覆盖弱于 Google。
+ * 注册同样只需邮箱、无需信用卡（免费 1000 次/月）。
+ *
+ * 请求：POST `https://api.tavily.com/search`，key 放 body 的 `api_key`。
+ * 响应：`results[]`，字段为 `{ title, url, content, published_date }`。
+ */
+async function runSearchTavily(key, params) {
+  const body = {
+    api_key: key,
+    query: params.query,
+    max_results: Math.min(params.count, TAVILY_MAX_COUNT),
+    search_depth: 'basic'
+  }
+  const res = await postJson(TAVILY_ENDPOINT, {}, body, TIMEOUT_MS)
+  const bad = backupFailure(res, 'TAVILY_API_KEY')
+  if (bad) return bad
+
+  const list = (res.data && res.data.results) || []
+  return {
+    ok: true,
+    pages: list.map((it) => ({
+      name: it.title || '',
+      url: it.url || '',
+      /* content 是清洗过的正文，与博查的 summary 同性质：交给端上的 maxItemChars 裁剪，
+         这里不自己截 —— 截了会让「单条素材上限」那个真源参数失去意义 */
+      snippet: it.content || '',
+      ...(it.published_date ? { datePublished: it.published_date } : {})
+    }))
+  }
+}
+
+/**
+ * 备选源的公共故障判定：把「HTTP 层出了什么事」翻成本函数统一的 kind。
+ *
+ * 抽出来是因为三家的失败分支**完全一样**，而 401/403 的文案里要带上各自的 key 变量名 ——
+ * 部署后配错了，用户看到的就是这一句，写清楚比让人猜强。
+ * 返回 null 表示「状态码正常，继续解析响应体」。
+ */
+function backupFailure(res, keyEnv) {
+  /*
+   * 401/403 = 备选源的 key 没配好 / 未开通：对端上等价于「这条兜底路不存在」，
+   * 故与主源的 auth 同档（不重试，也不换一句话去引导用户查自己的额度 —— 那是平台账户问题）。
+   */
+  if (res.status === 401 || res.status === 403) {
+    return {
+      ok: false,
+      kind: 'auth',
+      error: `备选检索密钥无效或未开通（云函数环境变量 ${keyEnv}），HTTP ${res.status}`
+    }
+  }
+  if (res.status === 429) return { ok: false, kind: 'rate', error: '备选搜索源请求过于频繁' }
+  if (res.status !== 200) {
+    return {
+      ok: false,
+      kind: 'upstream',
+      error: `备选检索返回 HTTP ${res.status}：${snippet(res.data) || '无响应体'}`
+    }
+  }
+  return null
+}
+
+/**
+ * 备选源装配表：**按顺序取第一个配了 key 的**。
+ *
+ * 顺序即推荐度，也是「同时配了多个」时的取舍：
+ *   serper（Google 索引，中文长尾最好，邮箱可注册）
+ *   → tavily（面向 LLM、返回已清洗正文，覆盖次之）
+ * 这里只登记 key 的变量名、不读它，是为了把 readEnv 留在 handler 里（便于测试注入）。
+ *
+ * 两家适配器**刻意都不转发 include（站点限定）**：`site:` 语法要改写整条 query，而这条路是
+ * 「主源一条都没捞到」时的兜底 —— 此时把搜索面**放宽**比继续收窄更有意义（而且走到这里的
+ * 支线请求本来就是锦上添花）。
+ * 两者也都**不带 probe**：probe 是给「往报告里加图 / 视频」做调研用的，那是博查的结构问题。
+ */
+const BACKUP_PROVIDERS = [
+  { name: 'serper', keyEnv: 'SERPER_API_KEY', run: runSearchSerper },
+  { name: 'tavily', keyEnv: 'TAVILY_API_KEY', run: runSearchTavily }
+]
+
+/**
  * 站点限定参数归一（§1.4 V1.5 多源分域检索）。
  * 端上可能传数组（['weibo.com']）也可能传串，这里统一成博查要的 `site:a.com|site:b.com`；
  * 全都取不出域名时返回 undefined —— 宁可不带该参数，也不要发一个空 include 把结果筛没。
@@ -475,9 +855,16 @@ function normalizeInclude(raw) {
 }
 
 async function handleSearch(event) {
-  const key = readEnv('BOCHA_API_KEY')
-  if (!key) {
-    /* 函数部署了但没配环境变量：对端上而言等同「这条通道不存在」，故单列一个 kind */
+  const bochaKey = readEnv('BOCHA_API_KEY')
+  /*
+   * 兜底源是**可选且可换**的：按 BACKUP_PROVIDERS 的顺序取第一个配了 key 的。
+   * 一个都没配 = 整条跳过，行为与没有兜底时完全一致（见那张表上方的说明）。
+   */
+  const backup = BACKUP_PROVIDERS.map((p) => Object.assign({}, p, { key: readEnv(p.keyEnv) })).find(
+    (p) => p.key
+  )
+  if (!bochaKey && !backup) {
+    /* 函数部署了但一个源都没配：对端上而言等同「这条通道不存在」，故单列一个 kind */
     return {
       ok: false,
       kind: 'unconfigured',
@@ -520,15 +907,55 @@ async function handleSearch(event) {
    * （上面那道闸门已经读过一次，这里是同一个 memo）。
    */
   const cap = want > FREE_SEARCH_MAX && (await isMember()) ? MEMBER_SEARCH_MAX : FREE_SEARCH_MAX
+  const params = {
+    query,
+    freshness: typeof event.freshness === 'string' ? event.freshness : 'oneMonth',
+    summary: true,
+    count: Math.min(want, cap),
+    /* 不传 include 时不发该字段：保持与原行为完全一致（端上主线检索走这条路径） */
+    ...(include ? { include } : {})
+  }
   try {
-    return await runSearch(key, {
-      query,
-      freshness: typeof event.freshness === 'string' ? event.freshness : 'oneMonth',
-      summary: true,
-      count: Math.min(want, cap),
-      /* 不传 include 时不发该字段：保持与原行为完全一致（端上主线检索走这条路径） */
-      ...(include ? { include } : {})
+    /*
+     * 主源（博查）→ 兜底源（BACKUP_PROVIDERS 里第一个配了 key 的）：
+     * **只有主源没捞出内容时才动用第二家**。
+     *
+     * 触发条件是两种：「主源 ok 但 pages 为空」与「主源整条失败」——
+     *   · 空内容就是要解的那个产品问题（付费用户最怕查不到）；
+     *   · 主源故障（限流 / 上游抖动）时换个源往往直接就绕过去了，值得一试。
+     * 两家都没内容时**交回主源的那份结论**（ok:true + 空数组），语义与从前一致：
+     * 端上据此判 `nonews`，而不是被兜底的失败搅成 coldstart。
+     */
+    const primary = bochaKey
+      ? await runSearch(bochaKey, params)
+      : { ok: false, kind: 'unconfigured', error: '平台未配置主检索源（BOCHA_API_KEY）' }
+    /*
+     * 检索侧只报「要了什么、拿到几条」：query 是人名（不敏感），而**条数正是「为什么报没素材」
+     * 的答案** —— 端上只看得到空数组 / 一句 nonews，分不清是主源真没收录、还是云端把 count 钳小了。
+     */
+    rawLog('search:primary', {
+      query: params.query,
+      freshness: params.freshness,
+      want: params.count,
+      ok: primary.ok,
+      got: (primary.pages || []).length,
+      kind: primary.kind || ''
     })
+    if (primary.ok && (primary.pages || []).length > 0) return primary
+    if (!backup) return primary
+
+    const result = await backup.run(backup.key, params)
+    rawLog('search:backup', {
+      provider: backup.name,
+      ok: result.ok,
+      got: (result.pages || []).length,
+      kind: result.kind || ''
+    })
+    if (result.ok && (result.pages || []).length > 0) {
+      /* source 只给端上诊断用（不改任何检索行为）：一眼看出这条结果来自哪家兜底源 */
+      return Object.assign({}, result, { source: backup.name })
+    }
+    return primary.ok ? primary : result
   } catch (err) {
     return { ok: false, kind: 'network', error: failDetail(err) }
   }
@@ -642,7 +1069,37 @@ async function handleChat(event) {
    * 输出上限对所有请求下发（理由见文件上方 chatMaxTokens 那段）：不给它，上游就用默认上限，
    * 而报告 JSON 比默认上限长。这里不查会员身份 —— 一次读库留给上面那道「模型档位」闸门就够了。
    */
-  const payload = { model, stream: false, messages: norm.messages, max_tokens: llm.chatMaxTokens }
+  const payload = {
+    model,
+    stream: false,
+    messages: norm.messages,
+    max_tokens: llm.chatMaxTokens,
+    /* 供应商自己的额外字段（qwen 的 enable_thinking:false 关思考，否则长报告把 50s 空闲超时耗光） */
+    ...(llm.extraBody || {})
+  }
+
+  /*
+   * 云端报文打印（AI_PROXY_RAW_LOG=on 时，见 rawLog 的说明）。
+   * 请求侧**刻意不打 messages 正文**：那是几万字的提示词，端上的 debugRaw 已能看到完整对象，
+   * 这里只报「这次让谁打、走哪个额度池、多大」，足够回答「为什么是这家模型 / 为什么被拦」。
+   */
+  rawLog('chat:req', {
+    provider: llm.provider,
+    /*
+     * `requested` 与 `model` **两个都要打**：两者不同就是被会员闸门降级了。
+     * 本机与真机都可能踩到 —— 端上按 `users.membership` 镜像行放行「深度推理」，
+     * 而云端读的是 memberships 权威表（端上那一行改包者能改，故这里不认）⇒ 判为非会员
+     * ⇒ 这里把 model 换成 `defaultModel`（该家的免费档）。若只打最终 model，现象就是
+     * 「我选了深度推理，怎么发出去的是 flash」，且没有任何线索指向降级。
+     */
+    requested,
+    model,
+    downgraded,
+    purpose: event.purpose || DEFAULT_PURPOSE,
+    messages: norm.messages.length,
+    chars: norm.messages.reduce((n, m) => n + String(m.content || '').length, 0),
+    maxTokens: llm.chatMaxTokens
+  })
 
   let res
   try {
@@ -653,8 +1110,34 @@ async function handleChat(event) {
       LLM_CHAT_TIMEOUT_MS
     )
   } catch (err) {
+    /* 上游根本没回（超时 / 断流）：这条最要紧 —— 端上只会看到一句「平台通道未就绪」 */
+    rawLog('chat:err', String(err && err.message ? err.message : err))
     return { ok: false, kind: 'network', error: failDetail(err) }
   }
+
+  /*
+   * 上游返回的**结构摘要**：状态码 + finish_reason + 正文字符数。
+   * 同样不打正文：日志有大小上限，而「报告为什么短了一截」看 finish_reason 与长度就够
+   * —— `finish_reason: 'length'` 且长度贴着 max_tokens，就是撞上限被砍。
+   * 片段只在**非 2xx** 时带：正常返回的正文不值得记，出错时的报错体才是关键。
+   */
+  const upstreamMsg =
+    res.data && res.data.choices && res.data.choices[0] && res.data.choices[0].message
+  rawLog('chat:upstream', {
+    status: res.status,
+    finishReason:
+      res.data && res.data.choices && res.data.choices[0] && res.data.choices[0].finish_reason,
+    chars: upstreamMsg && typeof upstreamMsg.content === 'string' ? upstreamMsg.content.length : 0,
+    /*
+     * 推理型模型的思考字数。**正文 0 字而这一项上千字**，就是「max_tokens 被思考吃光、
+     * 正文一个字都没轮到」的铁证（见下方空正文分流那段）—— 只看 chars 会误判成上游抖动。
+     */
+    reasoningChars:
+      upstreamMsg && typeof upstreamMsg.reasoning_content === 'string'
+        ? upstreamMsg.reasoning_content.length
+        : 0,
+    snippet: res.status < 200 || res.status >= 300 ? snippet(res.data) : ''
+  })
 
   if (res.status === 429) {
     return { ok: false, kind: 'rate', error: '大模型请求过于频繁，请稍后再试' }
@@ -688,15 +1171,58 @@ async function handleChat(event) {
   }
 
   const choices = res.data && res.data.choices
-  const content = choices && choices[0] && choices[0].message && choices[0].message.content
-  if (typeof content !== 'string' || !content.trim()) {
-    return { ok: false, kind: 'upstream', error: `大模型返回结构异常：${snippet(res.data)}` }
-  }
+  const choice = choices && choices[0]
+  const message = choice && choice.message
+  const content = message && message.content
   /*
-   * finishReason 原样回传端上：'length' = 输出撞上 max_tokens、被上游截断了。
-   * 报告这类长生成的失败基本都出在这里，端上据此在诊断日志里留一笔，下次不必靠猜。
+   * finishReason 先取出来：**空正文的两种成因要靠它分开**（见下）。它同时原样回传端上，
+   * 'length' = 输出撞上 max_tokens、被上游截断了 —— 报告这类长生成的失败基本都出在这里，
+   * 端上据此在诊断日志里留一笔，下次不必靠猜。
    */
-  const finishReason = choices[0].finish_reason || ''
+  const finishReason = (choice && choice.finish_reason) || ''
+
+  if (typeof content !== 'string' || !content.trim()) {
+    /*
+     * 空正文（2026-10-10）：**不能一律当成上游抖动**。
+     *
+     * 推理型模型（DeepSeek reasoner 一类）会先把整份 max_tokens 预算花在
+     * message.reasoning_content 上；预算在「思考」阶段就被吃光时，正文一个字都没轮到 ——
+     * 上游**仍返回 HTTP 200**，content 是空串，finish_reason='length'，响应前半段
+     * （id / object / created / model）看着完全正常，只有正文是空的。
+     *
+     * 旧代码在这里一律返回 kind='upstream'，而端上 RETRYABLE_KINDS 含 'upstream'
+     * ⇒ 原样重发同一请求（报告一次 30~40s，真金白银），**必然再次撞上同一道上限**。
+     * 故按 finishReason 分流：'length' 是确定性截断，回端上已经认识的那个 kind
+     * （llm.ts#truncatedFail 用的就是 'truncated'，不在 RETRYABLE_KINDS 里 ⇒ 不重试，
+     * 直接走降级与报错）；其余情况才是「上游偶发给了个空壳」，维持可重试。
+     */
+    const reasoning =
+      message && typeof message.reasoning_content === 'string' ? message.reasoning_content : ''
+    if (finishReason === 'length') {
+      /*
+       * 两种成因各给各的改法，别把「不带思考的模型撞上限」也说成「改用非推理档」——
+       * 诊断与建议对不上，等于教人去改一个与故障无关的设置。
+       */
+      const error = reasoning
+        ? `上游是带推理的模型（${model}）：思考了 ${reasoning.length} 字，把 max_tokens=${llm.chatMaxTokens} 全吃光，` +
+          `正文一个字都没产出。重发同一请求必然再撞同一道墙：请改用非推理档，或调大 llm.config.js 的 chatMaxTokens`
+        : `输出撞上 max_tokens=${llm.chatMaxTokens} 被截断，正文为空。` +
+          `重发同一请求必然再撞同一道墙：请调大 llm.config.js 的 chatMaxTokens，或缩短提示词`
+      return { ok: false, kind: 'truncated', finishReason, error }
+    }
+    /*
+     * 没有 finish_reason 可依（上游没给 / 给了别的值）：保持可重试，但**必须把这个字段报出来**。
+     * 旧文案只有 `snippet(res.data)`，而 JSON 的头 200 字是 id / created / model 这些与故障无关的
+     * 字段，真正有用的 finish_reason 与 reasoning_content 都在 200 字之后，恰好被截掉
+     * （实际报错停在 `"reasoning_conten`），现场等于没有线索。
+     */
+    return {
+      ok: false,
+      kind: 'upstream',
+      finishReason: finishReason || 'missing',
+      error: `大模型返回空正文（finish_reason=${finishReason || '缺失'}，reasoning=${reasoning.length}字）：${snippet(res.data)}`
+    }
+  }
   return { ok: true, content, model, downgraded, finishReason }
 }
 
@@ -774,12 +1300,88 @@ exports.main = async (event) => {
     }
   }
 
+  /*
+   * 兜底源（**可选**）：走与 handleSearch 相同的选取逻辑（表里第一个配了 key 的）。
+   * 刻意**不参与上面的 ok 判定** —— 它本就是可选增强项，没配或探不通都不该让整个探针变红，
+   * 否则「平台是好的，只是没开兜底」会被误读成故障。
+   * 但配了就必须报：这是判断「境外源到底通不通」的唯一入口（见 probeBackup 的说明）。
+   */
+  const backupConf = BACKUP_PROVIDERS.map((p) => Object.assign({}, p, { key: readEnv(p.keyEnv) })).find(
+    (p) => p.key
+  )
+  const backup = backupConf
+    ? Object.assign(keyInfo(backupConf.key), { provider: backupConf.name, ok: false, detail: '' })
+    : {
+        configured: false,
+        length: 0,
+        ok: false,
+        detail: '未配置（可选；第二检索源见 .env.example）'
+      }
+  if (backupConf) {
+    try {
+      Object.assign(backup, await probeBackup(backupConf))
+    } catch (err) {
+      backup.detail = failDetail(err)
+    }
+  }
+
+  /*
+   * 逐档实测（**显式 `models: true` 或 `probeModels: [...]` 才发**，见 probeModelTiers）：
+   * 回答「这一家的哪一档不带思考」/「这些候选名各自能不能用」。
+   * 与上面的 llm 探针分工不同：那边测「当前生效的这一档通不通」，这边把每个名字都测一遍是否产 reasoning。
+   * 同样**不参与 ok 判定** —— 它是诊断信息（「哪一档能用来生成报告」），不是「平台好不好」的结论。
+   * 候选清单（probeModels）与表内三档是同一个入口的两条路：前者用来找**新**名字，后者用来验**现有**配置。
+   */
+  const candidates = event && Array.isArray(event.probeModels) ? event.probeModels : null
+  let models = null
+  if (event && (event.models === true || (candidates && candidates.length))) {
+    if (!llmKey) models = [{ ok: false, verdict: `未配置环境变量 ${llmConf.apiKeyEnv}` }]
+    else if (!llmConf.baseUrl) models = [{ ok: false, verdict: `未配置端点（供应商 ${llmConf.provider}）` }]
+    else {
+      try {
+        models = await probeModelTiers(llmConf, candidates)
+      } catch (err) {
+        models = [{ ok: false, verdict: failDetail(err) }]
+      }
+    }
+  }
+
+  /*
+   * 上游模型清单（**显式 `listModels: true` 才发**）：`GET /models`，回答「这家有哪些模型名可用」。
+   * 与逐档实测配套：先拿清单（这里），再把清单里的候选名丢给 probeModels 实测行为（上面）。
+   * 缺了它就只能从表内三个名字里挑，而「表里那三个全不合用」正是引入它的原因。
+   * 同样不参与 ok 判定（同上：诊断信息，不是平台结论）。
+   */
+  let modelList = null
+  if (event && event.listModels === true) {
+    if (!llmKey)
+      modelList = { ok: false, count: 0, models: [], detail: `未配置环境变量 ${llmConf.apiKeyEnv}` }
+    else if (!llmConf.baseUrl)
+      modelList = { ok: false, count: 0, models: [], detail: `未配置端点（供应商 ${llmConf.provider}）` }
+    else {
+      try {
+        modelList = await probeModelList(llmConf)
+      } catch (err) {
+        modelList = { ok: false, count: 0, models: [], detail: failDetail(err) }
+      }
+    }
+  }
+
   return {
     ok: bocha.ok && llm.ok,
     checked_at: new Date().toISOString(),
     provider: llmConf.provider,
+    /*
+     * 三个模型维度的探针各自独立，别混着看：
+     *   model     = 当前生效的那一档（端上带的 / LLM_MODEL 覆写的），回答「这一档通不通」；
+     *   models    = 逐档实测：表内三档，或 probeModels 给的候选名，回答「谁带思考」（没要求时为 null）；
+     *   modelList = 上游 /models 清单，回答「这家还有哪些名字」（没要求时为 null）。
+     */
     model: llmConf.model,
+    models,
+    modelList,
     bocha,
-    llm
+    llm,
+    backup
   }
 }

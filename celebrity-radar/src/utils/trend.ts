@@ -86,14 +86,20 @@ export function buildHeatTrend(
   /* 去重键 = 日期 + 文本前缀：动态与时间线常记同一件事（同一天同一种说法），
      不去重会让同一事件在图上算两次；文本不同则视为两件事，宁可多算也不误合并。
      键用绝对日期而不是「距窗口起点的天数」—— 后者会随窗口放宽而变，同一个事件
-     在不同窗口下算不算重复就不一致了。 */
+     在不同窗口下算不算重复就不一致了。
+     文本为空时补一个序号而不是退化成「只按日期」：否则同一天所有「没标题也没摘要」的条目
+     会互相吞并，只剩 1 条，条数少算甚至把整卡压到 MIN_EVENTS 以下不出（判不出身份就按独立计）。 */
   const seen = new Set<string>()
   const events: dayjs.Dayjs[] = []
+  let seq = 0
   const collect = (date: string | undefined, text: string | undefined) => {
     const d = parseDay(date)
     if (!d) return
     const day = d.startOf('day')
-    const key = `${day.format('YYYY-MM-DD')}|${(text ?? '').slice(0, 12)}`
+    const prefix = (text ?? '').slice(0, 12)
+    const key = prefix
+      ? `${day.format('YYYY-MM-DD')}|${prefix}`
+      : `${day.format('YYYY-MM-DD')}|#${seq++}`
     if (seen.has(key)) return
     seen.add(key)
     events.push(day)

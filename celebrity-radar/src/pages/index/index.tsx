@@ -128,6 +128,17 @@ export default function Index() {
   }
 
   /**
+   * 周报入口（2026-10-10 新增）：紧挨关注动态图标右侧。
+   *
+   * 放在这里的理由：周报是「本周关注动态」的汇总产物，与动态流同源（都读关注名单）；
+   * 原先它只藏在关注动态页顶部的一张卡里 —— 而那条路径要求用户先想起来进动态页，
+   * 想「看周报」的人未必正想看流水账。两个入口并排，各自直达。
+   */
+  const goWeekly = () => {
+    void Taro.navigateTo({ url: '/pages/weekly/index' })
+  }
+
+  /**
    * 关键词预警入口（2026-10-09 从消息页顶部搬到首页，铃铛左侧，图标代替文字）。
    *
    * 铃铛是「有事情发生」的统一落点，但关键词命中新报道既不是某个名人的更新（不该混进关注流），
@@ -262,7 +273,7 @@ export default function Index() {
 
   return (
     <View className='page-index glow-page safe-tab'>
-      {/* 问候区（头像 + 昵称 + 右侧「关注流 / 关键词预警 / 消息」三个图标入口，点击头像进「我的」） */}
+      {/* 问候区（头像 + 昵称 + 右侧「关注流 / 周报 / 关键词预警 / 消息」四个图标入口，点击头像进「我的」） */}
       <View className='page-index__header'>
         <View className='page-index__avatar' onClick={goMine} hoverClass='page-index__tap'>
           {avatarUrl ? (
@@ -278,6 +289,8 @@ export default function Index() {
         </View>
         {/* 关注流入口：图标按钮，紧挨预警图标左侧（无文字，理由见 index.scss 的 __feed 注释） */}
         <View className='page-index__feed' onClick={goFeed} hoverClass='page-index__tap' />
+        {/* 周报入口：图标按钮，紧挨关注流右侧（无文字，理由见 index.scss 的 __weekly 注释） */}
+        <View className='page-index__weekly' onClick={goWeekly} hoverClass='page-index__tap' />
         {/* 关键词预警入口：图标按钮，紧挨铃铛左侧（无文字，文案见 index.scss 的 __alert 注释） */}
         <View className='page-index__alert' onClick={goAlerts} hoverClass='page-index__tap' />
         <View className='page-index__bell' onClick={onBellTap} hoverClass='page-index__tap'>

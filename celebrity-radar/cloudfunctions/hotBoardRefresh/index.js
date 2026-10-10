@@ -198,19 +198,204 @@ function buildPrompt(digests, today) {
   return { system, user }
 }
 
-/** 从模型输出里取 JSON（剥 markdown 栅栏、截取首尾大括号），与端上 extractJSONText 同口径 */
+/**
+ * 从模型输出里取 JSON：字符串感知配对扫描 + 畸形修复（2026-10-10 重写，
+ * 与端上 `utils/llm.ts#parseModelJson` 同口径）。
+ *
+ * 原来那版 `indexOf('{') + lastIndexOf('}')` 在两种情形下会取错，都表现为「模型明明返回了
+ * 正文，却parse 不出来」：值里写了 `{}` 时 lastIndexOf 会落进字符串内部截缺尾括号；被上游
+ * 截断时压根没有尾括号。故这里按「字符串外才算结构」扫，并对常见畸形做确定性修复。
+ */
 function extractJson(raw) {
   let s = String(raw || '').trim()
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
   if (fence) s = fence[1].trim()
-  const start = s.indexOf('{')
-  const end = s.lastIndexOf('}')
-  if (start < 0 || end <= start) return null
+
+  const balanced = []
+  let tail = null
+  let topStart = -1
+  let depth = 0
+  let inStr = false
+  let escaped = false
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (inStr) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inStr = false
+      continue
+    }
+    if (ch === '"') {
+      inStr = true
+      continue
+    }
+    /* 全角括号（`｛｝［］`）也算结构：模型偶尔整段写成全角，这里不认就连候选片段都取不出来
+       （连「语法错」都判不成），而它其实只需 repairJson 把结构位的全角归一半角。只用于定位，不改原文 */
+    if (ch === '{' || ch === '[' || ch === '｛' || ch === '［') {
+      if (depth === 0) topStart = i
+      depth++
+      continue
+    }
+    if (ch === '}' || ch === ']' || ch === '｝' || ch === '］') {
+      if (depth === 0) continue
+      depth--
+      if (depth === 0 && topStart >= 0) {
+        balanced.push(s.slice(topStart, i + 1))
+        topStart = -1
+      }
+    }
+  }
+  /* 扫到末尾仍是正的深度 = 有容器没合上：这一段就是被砍断的那一段 */
+  if (depth > 0 && topStart >= 0) tail = s.slice(topStart)
+
+  /* 取最长的配平片段（模型先举格式示例时，示例必然短于正文）；未配平的尾段更长则用它 */
+  let text = balanced.reduce((a, b) => (a === null || b.length > a.length ? b : a), null)
+  if (tail && (text === null || tail.length > text.length)) text = tail
+  if (!text) return null
+
   try {
-    return JSON.parse(s.slice(start, end + 1))
+    return unwrapSingleObject(JSON.parse(text))
+  } catch (e) {
+    /* 落到修复；截断的片段这里必然仍失败（不补右括号，理由见端上注释） */
+  }
+  try {
+    return unwrapSingleObject(JSON.parse(repairJson(text)))
   } catch (e) {
     return null
   }
+}
+
+/**
+ * 顶层 `[{...}]` → `{...}`（与端上 `utils/llm.ts#unwrapSingleObject` 同口径，改一端必须改另一端）。
+ *
+ * 模型偶尔把整个对象多包一层数组（它刚排过 `"items": []` 这类数组字段，顺手就多包了一层）。
+ * 语法完全合法、内容一个字不差，但 normalizeItems 只认 `parsed.items` —— 取不到就判「榜单不合格」，
+ * 整轮检索 + 生成全白跑，而这一切只因为多了一对方括号。仅在「长度为 1 且元素是普通对象」时解包：
+ * 多元素时无从判断该取哪一个，那才是真的没按格式答。
+ */
+function unwrapSingleObject(value) {
+  if (!Array.isArray(value) || value.length !== 1) return value
+  const first = value[0]
+  if (first === null || typeof first !== 'object' || Array.isArray(first)) return value
+  return first
+}
+
+/**
+ * 修复常见 JSON 畸形（只在原样解析失败后调用）：① 字符串内裸换行/制表符 → 转义；
+ * ② 字符串内未转义的双引号 → `\"`（收尾引号后面只可能跟 `:` `,` `}` `]` 或结束，否则它是
+ * 正文引号）；③ 字符串外的 `//` 与块注释 → 删；④ 尾随逗号 → 删；⑤ **字符串外**的全角标点
+ * （`，` `：` `｛` `｝` `［` `］`）→ 归一半角。
+ *
+ * ⑤ 与端上 `utils/llm.ts#repairJsonText` **同口径，改一端必须改另一端**（两份是手抄关系，
+ * 云函数不能 import 端上 TS）：中文模型把结构位的逗号写成全角是高频畸形，旧版只把它记进
+ * 报错、不救，代价是整轮检索 + 生成白跑。判据仍是「字符串内 / 外」—— 正文里的全角标点
+ * （`他说“好”，然后走了`）永远在字符串内、扫不到，能扫到的一定在结构位，不会碰到任何内容。
+ *
+ * 刻意不做的三件事：不把全角**引号**归一（引号是定界符，归一它就得保证开闭配对，而模型真用
+ * 全角引号定界时往往还混着半角引号做正文，归哪个都是赌）；不给未配平片段补括号（补出来的是
+ * 半句话，而榜单是全站共用的一份）；不归一单引号 / 无引号键 / `True` 这类「另一种语言的写法」
+ * （判据不可能可靠 —— 正文里的撇号 `don't` 就是合法内容）。
+ */
+function repairJson(text) {
+  let out = ''
+  let inStr = false
+  let escaped = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inStr) {
+      if (escaped) {
+        out += ch
+        escaped = false
+        continue
+      }
+      if (ch === '\\') {
+        out += ch
+        escaped = true
+        continue
+      }
+      if (ch === '\n') {
+        out += '\\n'
+        continue
+      }
+      if (ch === '\r') {
+        out += '\\r'
+        continue
+      }
+      if (ch === '\t') {
+        out += '\\t'
+        continue
+      }
+      if (ch === '"') {
+        let j = i + 1
+        while (j < text.length && /\s/.test(text[j])) j++
+        const next = j < text.length ? text[j] : ''
+        /* 全角标点同样算「收尾引号后面该出现的字符」—— 结构位写成全角时，这里的判据若只认半角，
+           会把**键的收尾引号**误判成正文引号（转义成 `\"`），结构直接崩 */
+        if (
+          next === '' ||
+          next === ':' ||
+          next === ',' ||
+          next === '}' ||
+          next === ']' ||
+          FULLWIDTH_PUNCT[next] !== undefined
+        ) {
+          inStr = false
+          out += '"'
+        } else {
+          out += '\\"'
+        }
+        continue
+      }
+      out += ch
+      continue
+    }
+    /* ⑤ 字符串外的全角标点 → 半角。归一后**继续走下面同一套判据**（这里不 continue）：
+       否则 `{"a":1，}` 会先变成 `{"a":1,}`、绕过尾随逗号那道处理，照样解析失败。
+       能走到这里就说明不在字符串内，正文里的全角标点（`他说“好”，然后走了`）扫不到。 */
+    const cur = halfPunct(ch)
+
+    if (cur === '"') {
+      inStr = true
+      out += cur
+      continue
+    }
+    if (cur === ',') {
+      let j = i + 1
+      while (j < text.length && /\s/.test(text[j])) j++
+      /* 闭合也可能是全角：`{"a":1,｝` 与 `{"a":1，}` 两种混搭都要认 */
+      if (halfPunct(text[j]) === '}' || halfPunct(text[j]) === ']') continue
+      out += ','
+      continue
+    }
+    if (ch === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++
+      continue
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      i += 2
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++
+      i++
+      continue
+    }
+    out += cur
+  }
+  return out
+}
+
+/** JSON 结构位真会出现的六个全角标点；**全角引号刻意不在其中**（理由见 repairJson 注释） */
+const FULLWIDTH_PUNCT = {
+  '，': ',',
+  '：': ':',
+  '｛': '{',
+  '｝': '}',
+  '［': '[',
+  '］': ']'
+}
+
+/** 全角标点归一半角（字符串外专用）；不是全角就原样返回 */
+function halfPunct(ch) {
+  const half = FULLWIDTH_PUNCT[ch]
+  return half === undefined ? ch : half
 }
 
 async function askLlm(llm, system, user) {
@@ -223,7 +408,8 @@ async function askLlm(llm, system, user) {
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user }
-      ]
+      ],
+      ...(llm.extraBody || {})
     },
     LLM_TIMEOUT_MS
   )

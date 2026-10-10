@@ -5,9 +5,12 @@ import { useAuth } from '@/stores/auth'
 import { publicConfig } from '@/config/public'
 import { ensureLogin } from '@/utils/auth'
 import {
+  DAILY_REFRESH_LIMIT,
   FREE_DAILY_ASK_LIMIT,
   FREE_DAILY_GENERATE_LIMIT,
   FREE_FEATURES_NOTE,
+  FREE_REFRESH_COOLDOWN_HOURS,
+  MEMBER_DAILY_REFRESH_LIMIT,
   MEMBER_DAILY_ASK_LIMIT,
   MEMBER_DAILY_GENERATE_LIMIT,
   readMemberState
@@ -16,6 +19,14 @@ import type { MemberState } from '@/utils/member'
 import { loadMemberSample } from '@/utils/member-sample'
 import type { MemberSample } from '@/utils/member-sample'
 import { dayKey8, fromNow } from '@/utils/time'
+/* 额度一览里「容量上限」一组的数字，各自取实现处的常量：这些上限分散在四个模块里，
+   页面不复制数值，只引用 —— 改上游一处，这一页跟着变 */
+import { HISTORY_LIMIT } from '@/utils/history'
+/* 报告模板的节数与名单也只有一个来源（utils/report-toc.ts），对比表同样只引用不复制 */
+import { FREE_TOC_COUNT, TEMPLATE_SIZE } from '@/utils/report-toc'
+import { KEYWORD_MAX_CHARS, MAX_WATCHES } from '@/utils/keyword-alert'
+import { QA_MAX_QUESTION } from '@/utils/qa'
+import { MAX_PERSON_WATCHES } from '@/utils/risk-watch'
 import {
   FALLBACK_MEMBERSHIP_PLANS,
   buyMembership,
@@ -100,6 +111,17 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
     member: '加厚素材 + 专享内容'
   },
   {
+    /*
+     * 2026-10-10 新增（用户需求「把报告模板纳入会员文字权益」）：上一行讲的是报告有多**厚**，
+     * 这一行讲报告按**模板**分档 —— 免费版只呈现免费档那几节，会员是完整模板。
+     * 两个数字都取自 utils/report-toc.ts（模板的唯一定义处），改了档位这一格跟着变；
+     * 具体多出哪几节写在下方的权益说明里（表格这一列窄，塞不下名单）。
+     */
+    name: '报告模板',
+    free: `核心 ${FREE_TOC_COUNT} 节`,
+    member: `完整 ${TEMPLATE_SIZE} 节`
+  },
+  {
     name: '每日主动生成报告',
     free: `${FREE_DAILY_GENERATE_LIMIT} 次`,
     member: `${MEMBER_DAILY_GENERATE_LIMIT} 次`
@@ -143,6 +165,83 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
     member: '按天顺延'
   }
 ]
+
+/**
+ * 额度与次数一览（2026-10-10 新增）。
+ *
+ * 为什么要在对比表之外**再列一遍**：对比表是「卖点表」，只挑得出差异的几行（模型档位、
+ * 报告厚度、生成 / 提问次数），而用户真正会撞上的限制散在四个模块里 —— 抓取动态 10 次/日、
+ * 周报占用生成额度、免费版 12 小时刷新冷却、关键词与监控各 5 个容量、提问 120 字上限。
+ * 这些此前只在撞上的一瞬间以 toast 出现（「今日刷新已达上限」「最多订阅 5 个关键词」），
+ * 用户不会为了知道规则而先把每一条都撞一遍。
+ *
+ * 三条硬口径（改动前先读）：
+ *   1. **数字全部引用常量**，页面里不写死 —— 与对比表同一条规则（见文件头原则 2）；
+ *      其中抓取次数与冷却时长唯一的来源是 utils/member.ts#MEMBER_BENEFITS，
+ *      utils/cache.ts 也从那里取，两处不可能对不上。
+ *   2. **不美化**：免费与会员同额的行照实写成同额（抓取动态），不玩「会员专属」的措辞 ——
+ *      这一页的说服力来自「说的和拦的一致」，把同额写成差异只会让会员开通后觉得被骗。
+ *   3. **容量类不能混进「每日次数」**：关键词 5 个、监控 5 人是**存量上限**（删一个才能加一个），
+ *      与每日重置的次数不是一回事，故另起一组、并写明「两版相同」。
+ */
+const QUOTA_ROWS: Array<{ name: string; free: string; member: string; note: string }> = [
+  {
+    name: '主动生成深度报告',
+    free: `${FREE_DAILY_GENERATE_LIMIT} 次 / 日`,
+    member: `${MEMBER_DAILY_GENERATE_LIMIT} 次 / 日`,
+    note: '只有真拿到新报告才计数：缓存命中、生成失败、上游拒答都不算'
+  },
+  {
+    /*
+     * 周报与报告共用同一池（utils/weekly.ts#generateWeekly 里 consumeGenerateQuota）：
+     * 单列这一行是因为用户完全可能以为「周报是另一份额度」，一周下来比预期少生成几次报告。
+     */
+    name: '生成本周周报',
+    free: '占用生成额度',
+    member: '占用生成额度',
+    note: '不额外计费：生成一份周报 = 当日生成次数里的 1 次'
+  },
+  {
+    name: 'AI 提问（基于报告）',
+    free: `${FREE_DAILY_ASK_LIMIT} 次 / 日`,
+    member: `${MEMBER_DAILY_ASK_LIMIT} 次 / 日`,
+    note: '与生成分开计数：问满额度不会少生成报告，反之亦然'
+  },
+  {
+    name: '抓取关注动态',
+    free: `${DAILY_REFRESH_LIMIT} 次 / 日`,
+    member: `${MEMBER_DAILY_REFRESH_LIMIT} 次 / 日`,
+    note: '会员 2 倍：单次刷新按「最久没更新」优先，覆盖你关注的一部分人'
+  },
+  {
+    name: '重复刷新同一份报告',
+    free: `${FREE_REFRESH_COOLDOWN_HOURS} 小时内会先提醒`,
+    member: '不受限',
+    note: `两版都能随时重新生成（每点一次消耗 1 次生成次数，失败或内容不完整时不计数）；免费版在报告生成后的 ${FREE_REFRESH_COOLDOWN_HOURS} 小时内再刷，会先提醒一句「内容不会有实质变化」`
+  }
+]
+
+/** 容量与输入上限（两版相同，不分档；数值取各自实现处的常量） */
+const QUOTA_CAPS: string[] = [
+  `关键词预警：每人最多订阅 ${MAX_WATCHES} 个词，每个词 ≤ ${KEYWORD_MAX_CHARS} 字`,
+  `风险监控：每人最多盯 ${MAX_PERSON_WATCHES} 位名人，云端每天自动检索一次`,
+  `单条提问：≤ ${QA_MAX_QUESTION} 字`,
+  `浏览历史：本机保留最近 ${HISTORY_LIMIT} 条，超出后丢弃最旧的`
+]
+
+/**
+ * 收尾口径。两件事必须说清，否则用户会按「所有联网动作都扣额度」的直觉猜：
+ *   ① 重置时刻（UTC+8 0 点，与云端同日，见 utils/time#todayKey）；
+ *   ② 有联网动作但**不占额度**的部分（输入名字时的消歧、探索页随机一位）——
+ *      这类请求走的是 aux 通道，只受限速与防滥用闸门，不动上面任何一条。
+ *
+ * 防滥用闸门（aiProxy 的 ABUSE_LIMITS）**刻意不给数字**：它的设计前提是「宽松到正常用户
+ * 永远碰不到」（两次生成 + 提问 + 消歧加起来约 10~15 次/日，上限是这个的几倍），
+ * 写出来只会变成一个「原来能刷这么多」的暗示。但也不能不提 —— 完全不提，撞上它的用户
+ * 会觉得这一页在骗人（「我明明没到任何额度」），所以留一句只说存在、不说门槛的话。
+ */
+const QUOTA_FOOT_NOTE =
+  '额度按 UTC+8 每日 0 点重置；输入名字时的自动消歧、探索页「随机一位」不占用上述任何额度（只受一层很宽的防滥用闸门保护）'
 
 /**
  * 会员到期日展示：ISO → yyyy-mm-dd。
@@ -358,6 +457,45 @@ export default function MemberPage() {
             </View>
           )}
 
+          {/*
+            额度与次数一览（2026-10-10 新增）。
+            位置：真实示例之后、选档位之前 —— 顺序是「买到的质（对比表）→ 亲眼看看（示例）
+            → 会被拦在哪（本卡）→ 该付多少钱（档位）」。刻意不插在对比表与示例之间：
+            那两张卡是因果相连的（示例回答对比表里「专享内容」是什么），拆开就读不通了。
+          */}
+          <View className='card page-member__quota'>
+            <Text className='page-member__section'>额度与次数一览</Text>
+            <Text className='page-member__section-note'>
+              以下都是真会被拦下来的限制，数字与线上闸门同源
+            </Text>
+
+            {QUOTA_ROWS.map((r) => (
+              <View key={r.name} className='page-member__quota-row'>
+                <Text className='page-member__quota-name'>{r.name}</Text>
+                <View className='page-member__quota-values'>
+                  <View className='page-member__quota-pill'>
+                    <Text className='page-member__quota-pill-label'>免费版</Text>
+                    <Text className='page-member__quota-pill-value'>{r.free}</Text>
+                  </View>
+                  <View className='page-member__quota-pill page-member__quota-pill--on'>
+                    <Text className='page-member__quota-pill-label'>会员</Text>
+                    <Text className='page-member__quota-pill-value'>{r.member}</Text>
+                  </View>
+                </View>
+                <Text className='page-member__quota-note'>{r.note}</Text>
+              </View>
+            ))}
+
+            <Text className='page-member__quota-sub'>容量与输入限制（两版相同）</Text>
+            {QUOTA_CAPS.map((c) => (
+              <Text key={c} className='page-member__quota-cap'>
+                · {c}
+              </Text>
+            ))}
+
+            <Text className='page-member__quota-foot'>{QUOTA_FOOT_NOTE}</Text>
+          </View>
+
           <View className='card page-member__plans'>
             <Text className='page-member__section'>{isMember ? '续费档位' : '选择档位'}</Text>
             <Text className='page-member__section-note'>
@@ -396,7 +534,11 @@ export default function MemberPage() {
           <View className='page-member__notes'>
             <Text className='page-member__note'>· 支付由微信支付完成，成功后会员立即生效（个别情况延迟几秒）</Text>
             <Text className='page-member__note'>· 同一账号可反复续费，剩余时长按购买天数顺延累加</Text>
-            <Text className='page-member__note'>· 每日额度 0 点重置；生成失败与缓存命中的报告都不计数</Text>
+            {/*
+              这一行原先写「每日额度 0 点重置；生成失败与缓存命中的报告都不计数」——
+              与上面的额度一览逐字重复。改成指路不加数字：两处各写一份，改额度时必然漏一处。
+            */}
+            <Text className='page-member__note'>· 会员档额度开通后立即生效，规则见上方「额度与次数一览」</Text>
           </View>
         </>
       )}

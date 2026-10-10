@@ -247,12 +247,21 @@
     height: 8rpx;
   }
 
+  /* 提示条：2026-10-10 加关闭键后改为行布局，正文 __notice-text 占满、✕ 贴右端 */
   &__notice {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
     padding: 14rpx 32rpx;
     background: $knowledge-warn-bg;
     color: $knowledge-warn-text;
     font-size: 22rpx;
     line-height: 1.5;
+  }
+
+  &__notice-text {
+    flex: 1;
+    min-width: 0;
   }
 
   /* 免费版额度用尽时的升级入口：贴着通知条出现，紧接用户「想继续问」的那一刻 */

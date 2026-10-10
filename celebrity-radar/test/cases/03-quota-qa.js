@@ -159,9 +159,25 @@ describe('会员权益层 utils/member', () => {
     ok(joined.includes(String(m.MEMBER_DAILY_ASK_LIMIT)), '权益说明应含会员提问上限')
     ok(joined.includes(String(m.FREE_DAILY_GENERATE_LIMIT)), '权益说明应含免费生成上限')
     ok(joined.includes(String(m.FREE_DAILY_ASK_LIMIT)), '权益说明应含免费提问上限')
-    /* 5 条：模型分级（O-10）/ 深度模式（O-11）/ 生成额度 / 提问额度 / 顺延叠加
-       （原第 6 条「热门榜看全部 24 位」随 2026-10-08 撤销分档一并删除，见下一个用例） */
-    eq(m.MEMBER_BENEFIT_POINTS.length, 5)
+    /* 抓取动态 2026-10-10 起按档位分叉，它就从「成本闸门」变成了真实权益，说明里必须有 */
+    ok(joined.includes(String(m.MEMBER_DAILY_REFRESH_LIMIT)), '权益说明应含会员抓取上限')
+    ok(joined.includes(String(m.DAILY_REFRESH_LIMIT)), '权益说明应含免费抓取上限')
+    /* 7 条：模型分级（O-10）/ 深度模式（O-11）/ 完整报告模板（2026-10-10 报告模板分档）/
+       生成额度 / 提问额度 / 抓取动态额度（2026-10-10 分档）/ 顺延叠加
+       （原「热门榜看全部 24 位」随 2026-10-08 撤销分档一并删除，见下一个用例） */
+    eq(m.MEMBER_BENEFIT_POINTS.length, 7)
+
+    /* 报告模板那条：节数必须与 utils/report-toc 的模板同源 —— 权益文案里写死数字，
+       改模板档位时就会各说各话（免费档从 13 节变 12 节，权益页还写着 13）。 */
+    const toc = load('utils/report-toc')
+    ok(
+      joined.includes(`完整报告模板（${toc.TEMPLATE_SIZE} 节）`),
+      `权益文案的模板节数应与模板同源：${joined}`
+    )
+    ok(
+      joined.includes(`只呈现 ${toc.FREE_TOC_COUNT} 节`),
+      `权益文案的免费档节数应与模板同源：${joined}`
+    )
   })
 
   it('热门榜不分档（2026-10-08 撤销 O-19）：策略、派生常量与两处文案全部清掉', () => {
@@ -325,7 +341,7 @@ describe('报告页会员促销条 utils/member（O-21 立起 / O-25 收敛 / O-
     eq(m.promoRoll([], () => mid), false, '两档之间：纯招揽应跳过')
   })
 
-  it('可关闭（O-26）：本机记住「别再出现」，清空我的数据时复位', () => {
+  it('可关闭（O-26）：本机记住「别再出现」，复位入口两处齐备', () => {
     const { load } = fresh()
     const m = load('utils/member')
 
@@ -337,8 +353,26 @@ describe('报告页会员促销条 utils/member（O-21 立起 / O-25 收敛 / O-
      * 关闭是**全局**的、与「这份报告」无关：换一份报告也不该重新出现。
      * 页面侧的顺序是「先看标记、再掷骰子」（见 pages/report 的 promoRolled 效果）。
      */
-    load('utils/settings').clearLocalSettings()
-    eq(m.isPromoDismissed(), false, '清空我的数据应把这条本机记忆一起复位')
+    m.clearPromoDismiss()
+    eq(m.isPromoDismissed(), false, '清掉记忆后应恢复展示')
+
+    /*
+     * 复位入口分两处，「清空我的数据」的流程依次调用：
+     *   · utils/settings#clearLocalSettings —— 历史遗留密钥 + 模型偏好（并复位云端那份偏好）
+     *   · utils/member#clearPromoDismiss   —— 促销条关闭记忆
+     * 为什么不合并成一个：member.ts import 了 auth.ts，而 auth.ts 要 import settings.ts
+     * （登录时把云端偏好灌进本地缓存），settings.ts 若反过来 import member.ts 就成环依赖。
+     * 故这里钉住的是「调用点上两处都在」—— 少任何一处，用户点完「清空我的数据」
+     * 都会留下一条他并不想要的本机记忆。
+     */
+    const fs = require('fs')
+    const path = require('path')
+    const mine = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'src', 'pages', 'mine', 'index.tsx'),
+      'utf8'
+    )
+    ok(mine.includes('clearLocalSettings()'), '「清空我的数据」没有调用 clearLocalSettings')
+    ok(mine.includes('clearPromoDismiss()'), '「清空我的数据」没有调用 clearPromoDismiss')
   })
 })
 
@@ -536,6 +570,33 @@ describe('生成配额 utils/quota', () => {
     seedCount(db, 'u1', 9, yesterday)
     const peek = await load('utils/quota').peekGenerateQuota('u1')
     eq(peek.used, 0)
+    eq(peek.allowed, true)
+  })
+
+  it('peek：调试开关只松闸门、不改数字（remaining 照实报，unlimited 另报）', async () => {
+    /*
+     * 起因（本机反馈「深度报告重新生成时，弹窗里的次数不对」）：开挂时报告页的确认弹窗说
+     * 「今日剩余 30/30」，而用户当天已经生成过多次。根因是 remaining 一个字段服务**两种用途** ——
+     * 判定方只看 allowed（报满额无害），展示方却把数字直接念给用户听。
+     * 修法与提问侧 QaUsage 一致：数字照实相减，另给一个 unlimited 让展示方改写措辞。
+     */
+    const { db, load } = fresh({ disableGenerateQuota: true })
+    seedCount(db, 'u1', 7)
+    const peek = await load('utils/quota').peekGenerateQuota('u1')
+
+    eq(peek.used, 7, '计数照旧（开关只放闸门，不丢排查证据）')
+    eq(peek.limit, 3)
+    eq(peek.remaining, 0, 'remaining 照实相减：不再为开挂圆场报满额')
+    eq(peek.allowed, true, '闸门确实被放开了：用满也放行')
+    eq(peek.unlimited, true, '展示方据此改写措辞，而不是改数字')
+  })
+
+  it('peek：正常态 unlimited 为 false（展示方照常念出剩余次数）', async () => {
+    const { db, load } = fresh()
+    seedCount(db, 'u1', 1)
+    const peek = await load('utils/quota').peekGenerateQuota('u1')
+    eq(peek.unlimited, false)
+    eq(peek.remaining, 2)
     eq(peek.allowed, true)
   })
 
@@ -1263,7 +1324,7 @@ describe('提问流程 utils/qa#askReport', () => {
   /** 装上「机审放行 + 模型成功」的两条云函数 */
   const online = (content = '这是回答') => {
     env.registerCloudFn('contentCheck', () => ({ ok: true, suggest: 'pass' }))
-    env.registerCloudFn('aiProxy', () => ({ ok: true, content, model: 'deepseek-v4-flash' }))
+    env.registerCloudFn('aiProxy', () => ({ ok: true, content, model: 'qwen3.8-flash' }))
   }
 
   const mirrorCount = () => (env.storage.get(USAGE_KEY) || {}).count || 0
@@ -1385,7 +1446,7 @@ describe('提问流程 utils/qa#askReport', () => {
         return { ok: true, pages: items }
       }
       box.chat = data
-      return { ok: true, content: '回答[1]', model: 'deepseek-v4-flash' }
+      return { ok: true, content: '回答[1]', model: 'qwen3.8-flash' }
     })
   }
 
@@ -1633,6 +1694,77 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
     eq(long.memberNotes.risk, '风险')
   })
 
+  it('verdict：两段皆空则整个字段不落库，非空各自收敛到 60 字', () => {
+    const { load } = fresh()
+    const { sanitizeReport } = load('utils/report')
+    const news = newsItems(2)
+    const fields = { dynamics: [], quotes: [], sources: [], timeline: [] }
+
+    eq(
+      sanitizeReport('k', '甲', Object.assign({}, fields, { verdict: { summary: '  ', positioning: '' } }), news)
+        .verdict,
+      undefined,
+      '两段皆空应整段不落库（UI 按有没有这个字段决定出不出一张卡）'
+    )
+    eq(sanitizeReport('k', '甲', fields, news).verdict, undefined, '老报告没有该字段时恒无此段')
+
+    const long = sanitizeReport(
+      'k',
+      '甲',
+      Object.assign({}, fields, { verdict: { summary: '长'.repeat(100), positioning: '定位'.repeat(50) } }),
+      news
+    )
+    eq(long.verdict.summary.length, 60, '一句话结论收敛到 60 字')
+    eq(long.verdict.positioning.length, 60, '行业定位收敛到 60 字')
+
+    /* 只有一段时也落库（另一段空串），UI 各自判空 */
+    const one = sanitizeReport(
+      'k',
+      '甲',
+      Object.assign({}, fields, { verdict: { summary: '只有结论', positioning: '' } }),
+      news
+    )
+    eq(one.verdict.summary, '只有结论')
+    eq(one.verdict.positioning, '')
+  })
+
+  it('reputation / consistency：全空不落库，非空各自收敛长度，且都属「评价类、不带出处」', () => {
+    const { load } = fresh()
+    const { sanitizeReport } = load('utils/report')
+    const news = newsItems(2)
+    const fields = { dynamics: [], quotes: [], sources: [], timeline: [] }
+
+    eq(
+      sanitizeReport('k', '甲', Object.assign({}, fields, { reputation: { positive: '  ', negative: '' } }), news)
+        .reputation,
+      undefined,
+      '口碑两侧皆空应整段不落库'
+    )
+    eq(
+      sanitizeReport('k', '甲', Object.assign({}, fields, { consistency: { claim: '', act: '', gap: '' } }), news)
+        .consistency,
+      undefined,
+      '言行三格皆空应整段不落库'
+    )
+    eq(sanitizeReport('k', '甲', fields, news).reputation, undefined, '老报告没有该字段时恒无此段')
+    eq(sanitizeReport('k', '甲', fields, news).consistency, undefined, '老报告没有该字段时恒无此段')
+
+    const r = sanitizeReport(
+      'k',
+      '甲',
+      Object.assign({}, fields, {
+        reputation: { positive: '正'.repeat(100), negative: '反'.repeat(100) },
+        consistency: { claim: '说'.repeat(60), act: '做'.repeat(60), gap: '差'.repeat(60) }
+      }),
+      news
+    )
+    eq(r.reputation.positive.length, 60, '口碑观点收敛 60 字')
+    eq(r.reputation.negative.length, 60)
+    eq(r.consistency.claim.length, 40, '言行各格收敛 40 字')
+    eq(r.consistency.act.length, 40)
+    eq(r.consistency.gap.length, 40)
+  })
+
   it('热度口径：深度模式多拿的素材不参与热度（截到 20 条，榜单不被档位污染）', () => {
     const { load } = fresh()
     const { sanitizeReport } = load('utils/report')
@@ -1652,7 +1784,18 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
       seen = data
       return { ok: true, content: JSON.stringify({ intro: 'x' }) }
     })
-    const news = newsItems(60, 300)
+    /*
+     * 60 条**互不相干**的素材，且标题两两不相似。
+     *
+     * 不能用 newsItems 默认的「报道0…报道59」：groupByEvent 会把「报道1 / 报道11」判成同一
+     * 事件，而组内正文又完全相同（同一个 '内容'×N），L1 的同源判重随即压掉后一条的片段 ——
+     * 整包因此变短、撑不到预算上限，这个用例想验证的「会员档真的用上了更宽预算」就落空了。
+     * 每条正文 800 字：总量落在 15000 ~ 20000 之间，免费档必然截断、会员档刚好用得上。
+     */
+    const news = newsItems(60, 400).map((n, i) => ({
+      ...n,
+      title: `${String.fromCharCode(0x4e00 + i * 7)}讯`
+    }))
 
     await load('utils/report').buildReport('甲#tech', '甲', news, 'all')
     const freeLen = seen.messages[1].content.length
@@ -1748,6 +1891,111 @@ describe('报告质量（素材分级保留 / 点评拆条 / 信源分歧）', (
     ok(user.includes('另一件事的正文'), '不相干的事件不受归组影响，仍给全文')
   })
 
+  it('L1 句子级抽取：长正文只留首句与带信号的整句，出处照旧', async () => {
+    /*
+     * 20 句、约 900 字的正文：既超过 extractMinChars(400)（否则不抽），又明显超过目标长度
+     * relevantItemChars(500)（否则「补齐到目标」会把所有句子都捡回来，等于没抽）。
+     * 只有第 3、7 句带信号（人名 / 数字），其余是与人物无关的背景铺垫 —— 抽取该留下的是它们。
+     */
+    const filler =
+      '一段记述的是与人物本身并无直接关系的背景复述与铺垫内容，用来把正文撑到足够触发抽取的长度。'
+    const sentences = Array.from({ length: 20 }, () => filler)
+    sentences[2] = '甲在现场回应了记者的提问并澄清了此前的传闻。'
+    sentences[6] = '据公开数据，该片首周票房达到 3.2 亿元。'
+    const body = sentences.join('')
+    const single = [newsItem({ title: '甲回应争议', url: 'https://example.com/l1', content: body })]
+
+    const { user } = await buildMessages(single)
+
+    ok(user.includes('https://example.com/l1'), '出处 url 必须在场')
+    ok(user.includes(sentences[0]), '首句（导语）必须保留')
+    ok(user.includes(sentences[2]), '含人名的整句必须保留')
+    ok(user.includes(sentences[6]), '带硬信息（数字）的整句必须保留')
+    ok(
+      user.length < body.length,
+      `抽取后应短于原文（原文 ${body.length} 字，整条提示词 ${user.length} 字）`
+    )
+  })
+
+  it('L1 抽取兜底：切不出句子的正文（无标点）原样保留，不硬裁', async () => {
+    const body = '长正文内容'.repeat(200) /* 1000 字，一个句末标点都没有 */
+    const single = [
+      newsItem({ title: '无标点正文', url: 'https://example.com/plain', content: body })
+    ]
+
+    const { user } = await buildMessages(single)
+
+    ok(user.includes(body.slice(0, 200)), '抽取失效时正文照常进提示词（走原文那条路）')
+    ok(user.includes('https://example.com/plain'), '出处照旧')
+  })
+
+  it('L1 同源判重：同事件的转载连正文片段也不再重复送（标记与出处一个不少）', async () => {
+    /* 三条标题完全相同 ⇒ 判为同一事件；正文逐字相同 ⇒ 判为「同一篇稿被多家转载」 */
+    const piece = '这是一篇通讯社供稿的正文内容，在多家平台上被逐字转载。'
+    const duplicated = [0, 1, 2].map((i) =>
+      newsItem({
+        title: '某影星新片官宣',
+        url: `https://example.com/same${i}`,
+        content: piece.repeat(20)
+      })
+    )
+
+    const { user } = await buildMessages(duplicated)
+
+    eq(countOf(user, '（正文从略）'), 2, '转载条目仍各自成条，压缩标记照旧（条数不受影响）')
+    ok(user.includes('https://example.com/same0'), '组代表的 url 在场')
+    ok(user.includes('https://example.com/same1'), '转载条目的 url 也在场（只省正文，不丢素材）')
+    ok(user.includes('https://example.com/same2'), '同上：每一条素材都还指得出处')
+    ok(
+      !user.includes(`（正文从略）${piece.slice(0, 10)}`),
+      '转载条目的「正文从略」后面不再跟正文片段（同一篇稿只送一次）'
+    )
+  })
+
+  it('L0 版面样板行剥离：网页尾巴不进提示词，正文一句不少', async () => {
+    const body = [
+      '甲在片场接受了采访，谈到新片的拍摄进度。',
+      '责任编辑：张三',
+      '来源：某某娱乐',
+      '相关阅读：另一篇稿件'
+    ].join('\n')
+    const single = [
+      newsItem({ title: '甲谈新片', url: 'https://example.com/noise', content: body })
+    ]
+
+    const { user } = await buildMessages(single)
+
+    ok(user.includes('甲在片场接受了采访，谈到新片的拍摄进度。'), '正文本身一句不能少')
+    ok(!user.includes('责任编辑'), '「责任编辑：…」整行是版面样板，不进提示词')
+    ok(!user.includes('来源：某某娱乐'), '「来源：…」与出处字段重复，整行不进提示词')
+    ok(!user.includes('相关阅读'), '「相关阅读：…」这类导流入口不进提示词')
+    ok(user.includes('https://example.com/noise'), '出处照旧')
+  })
+
+  it('L2 按用途分块：含可引用原话的进「言论表态」，其余进「动态事件」', async () => {
+    const withQuote = newsItem({
+      title: '某导演谈新片选角',
+      url: 'https://example.com/quote',
+      content: '他在采访中表示：“这次选角只看适配度，不看流量。”'
+    })
+    const plain = newsItem({
+      title: '某导演新片定档',
+      url: 'https://example.com/event',
+      content: '影片宣布定档十月一日上映，同期公布首支预告。'
+    })
+
+    const { user } = await buildMessages([withQuote, plain])
+
+    ok(user.includes('【动态事件】'), '有事件类素材时输出动态块头')
+    ok(user.includes('【言论表态】'), '有可引用原话时输出言论块头')
+    const dynAt = user.indexOf('【动态事件】')
+    const quoAt = user.indexOf('【言论表态】')
+    const eventAt = user.indexOf('https://example.com/event')
+    const quoteAt = user.indexOf('https://example.com/quote')
+    ok(eventAt > dynAt && eventAt < quoAt, '不带引语的素材落在「动态事件」块里')
+    ok(quoteAt > quoAt, '带可引用原话的素材落在「言论表态」块里')
+  })
+
   it('点评拆条的 basis 换成媒体名，编造的 url 收敛为「据公开资料」', () => {
     const { load } = fresh()
     const { sanitizeReport } = load('utils/report')
@@ -1809,6 +2057,61 @@ describe('报告质量（素材分级保留 / 点评拆条 / 信源分歧）', (
     const legacy = sanitizeReport('k', '甲', Object.assign({}, fields, { analysis: '老报告的整段点评' }), news)
     eq(legacy.analysis, '老报告的整段点评')
     eq(legacy.analysisPoints, undefined, '改动前落库的报告没有这个字段，UI 据此回落整段')
+  })
+
+  it('点评导读 reportGist：取第 1 条判断（老报告回落首句），没有判断给空串而不是编一句', () => {
+    /*
+     * 首屏速览卡末行那句导读（见 pages/report/index.tsx 的 gistRow）。它必须**就是点评卡里
+     * 的那一句话** —— 导读与正文各说各的，是这份报告里最难查的一类问题，故这里逐字钉住取值口径。
+     * 全程端上取现成句子、不新增模型调用，故存量报告也立刻生效（这正是它不走提示词的原因）。
+     */
+    const { load } = fresh()
+    const { reportGist, sanitizeReport } = load('utils/report')
+    const news = distinct(1)
+    const fields = { dynamics: [], quotes: [], sources: [], timeline: [] }
+
+    const withPoints = sanitizeReport(
+      'k',
+      '甲',
+      Object.assign({}, fields, {
+        analysisPoints: [
+          { point: '他的票房号召力正在被剧本质量拖累。', basis: 'https://example.com/0' },
+          { point: '综艺曝光替代不了作品。', basis: '' }
+        ]
+      }),
+      news
+    )
+    eq(reportGist(withPoints), '他的票房号召力正在被剧本质量拖累。')
+    eq(reportGist(withPoints), withPoints.analysisPoints[0].point, '导读必须与点评卡里那一句逐字相同')
+
+    /* 首条为空时顺延：模型偶发给一个空 point，不该让整条入口消失 */
+    eq(
+      reportGist(Object.assign({}, withPoints, { analysisPoints: [{ point: '  ', basis: '' }, { point: '第二句判断。', basis: '' }] })),
+      '第二句判断。'
+    )
+
+    /* 老报告只有整段 → 取第一句，与 utils/share.ts#briefOf 同一手法 */
+    const legacy = sanitizeReport('k', '甲', Object.assign({}, fields, { analysis: '老报告的第一句。第二句进不了导读。' }), news)
+    eq(legacy.analysisPoints, undefined, '前提：老报告没有拆条')
+    eq(reportGist(legacy), '老报告的第一句')
+
+    /* 都没有 → 空串，页面据此不渲染这一行（宁可不出现，也不编一句出来） */
+    eq(reportGist(sanitizeReport('k', '甲', fields, news)), '', '点评为空时导读必须为空串')
+    eq(reportGist(Object.assign({}, legacy, { analysis: '' })), '')
+    /* 降级简版的「点评」是抢救出来的整段纯文本，首句多半是「本次生成未能…」，不是判断 */
+    eq(reportGist(Object.assign({}, withPoints, { degraded: true })), '', '降级简版不给导读')
+
+    /* 批 2：有 verdict 时优先取它的 summary —— 整体结论的职责已从点评第一条挪到 AI 解读 */
+    eq(
+      reportGist(Object.assign({}, withPoints, { verdict: { summary: '一句话结论。', positioning: '定位' } })),
+      '一句话结论。',
+      '有 verdict 时导读取 summary，而不是点评第一条'
+    )
+    eq(
+      reportGist(Object.assign({}, withPoints, { verdict: { summary: '  ', positioning: 'p' } })),
+      '他的票房号召力正在被剧本质量拖累。',
+      'verdict.summary 为空时回落点评第一条（存量报告行为不变）'
+    )
   })
 
   it('信源分歧：缺任一侧的条目剔除、超 3 条截断、全空则不落库', () => {
@@ -1908,12 +2211,12 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
     return load('utils/report').sanitizeReport('k', '甲', Object.assign({}, emptyFields, llm), news)
   }
 
-  it('五段都进免费提示词：会员拿到的仍是「免费 + 追加」，不另起一套', async () => {
+  it('五段（及 verdict / reputation / consistency）都进免费提示词：会员拿到的是「免费 + 追加」', async () => {
     const news = distinct(2)
     const { system: freeSystem } = await buildMessages(news)
     const { system: paidSystem } = await buildMessages(news, true)
 
-    for (const key of ['profile', 'relations', 'watchlist', 'glossary', 'controversies']) {
+    for (const key of ['profile', 'relations', 'watchlist', 'glossary', 'controversies', 'verdict', 'reputation', 'consistency']) {
       ok(freeSystem.includes(key), `免费提示词应要求输出 ${key}（它对免费用户同样是核心信息）`)
       ok(paidSystem.includes(key), `会员提示词 = 免费 + 追加，故同样要它：${key}`)
     }
@@ -2046,6 +2349,122 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
   })
 })
 
+/* ------------------------------------ 检索拆路：人物背景线（P1，2026-10-10） */
+
+/*
+ * 「档案 / 关系图谱 / 时间线」这三节的素材**不进新闻流**（出生地、学历、履历、生平节点），
+ * 而生成时只发了一条「近期 30 天新闻」的检索 —— 用错尺子，于是这几节常年为空。
+ * P1 的修法是给它单开一路（utils/search.ts#fetchBackground，freshness=noLimit），
+ * 报告层随之做三件事，本组用例逐个钉住：
+ *   ① 背景素材**单独成段**进提示词 —— 不能混进「素材」，否则三年前的履历会被写成本周动态；
+ *   ② 它的 url 算**有效出处** —— 否则用背景资料写出来的档案会因「指不出近期素材」被整条剔除；
+ *   ③ 热度与报道画像**仍然只算近期素材** —— 否则同一个人「被谁生成过」会改变它的热度。
+ */
+describe('人物背景线：档案 / 关系 / 时间线的素材来源（P1）', () => {
+  const item = (over = {}) =>
+    Object.assign(
+      {
+        title: '标题',
+        content: '正文',
+        url: 'https://example.com/a',
+        source: '媒体A',
+        publishedDate: '2026-10-08T00:00:00.000Z'
+      },
+      over
+    )
+
+  /** 近期素材（走主线） */
+  const recent = [item({ title: '本周新片官宣', url: 'https://news.example.com/r1' })]
+  /** 背景素材（走背景线）：一条不限时间的履历报道 */
+  const bg = [
+    item({
+      title: '人物资料：出生与求学经历',
+      url: 'https://bg.example.com/profile',
+      publishedDate: '2015-03-02T00:00:00.000Z'
+    })
+  ]
+
+  /** 桩掉模型并捕获它收到的两条 message */
+  const spyChat = (body) => {
+    let seen = null
+    env.registerCloudFn('aiProxy', (data) => {
+      seen = data
+      return { ok: true, content: JSON.stringify(body) }
+    })
+    return () => seen
+  }
+
+  it('背景素材单独成段、排在近期素材之后 —— 混在一起会把三年前的履历写成本周动态', async () => {
+    const { load } = fresh()
+    const seen = spyChat({ intro: 'x' })
+
+    await load('utils/report').buildReport('甲#tech', '甲', recent, 'all', { background: bg })
+    const user = seen().messages[1].content
+
+    ok(user.includes('人物背景资料'), '背景线必须单独成段，模型才分得清「背景」与「近期」')
+    ok(user.includes('https://bg.example.com/profile'), '背景素材本身要在提示词里')
+    ok(user.includes('https://news.example.com/r1'), '近期素材照旧要给')
+    ok(
+      user.indexOf('人物背景资料') > user.indexOf('https://news.example.com/r1'),
+      '背景段排在近期素材之后'
+    )
+  })
+
+  it('没有背景素材就不出现那一段（免费档在检索失败时也要照常出报告）', async () => {
+    const { load } = fresh()
+    const seen = spyChat({ intro: 'x' })
+
+    await load('utils/report').buildReport('甲#tech', '甲', recent, 'all')
+    notOk(seen().messages[1].content.includes('人物背景资料'), '没有背景素材就不该凭空出现这一段')
+  })
+
+  it('背景素材的 url 算有效出处：用它写出来的档案不该被当成「没有出处」整条剔除', () => {
+    const { load } = fresh()
+    const { sanitizeReport } = load('utils/report')
+    const llm = {
+      profile: [{ label: '出生地', value: '杭州', basis: 'https://bg.example.com/profile' }]
+    }
+
+    deepEq(sanitizeReport('k', '甲', llm, recent).profile, [], '不传背景素材时它确实指不出出处')
+    const withBg = sanitizeReport('k', '甲', llm, recent, 'all', { background: bg })
+    eq(withBg.profile.length, 1, '传了背景素材后必须认它 —— 否则白跑一路检索')
+    eq(withBg.profile[0].value, '杭州')
+  })
+
+  it('热度与报道画像仍只算近期素材：背景线不得改变同一个人「被谁生成过」的热度', () => {
+    const { load } = fresh()
+    const { sanitizeReport } = load('utils/report')
+
+    const base = sanitizeReport('k', '甲', {}, recent)
+    const merged = sanitizeReport('k', '甲', {}, recent, 'all', { background: bg })
+
+    eq(merged.coverage.items, 1, 'coverage 是「近 30 天报道画像」，不该被不限时间的背景素材灌水')
+    eq(merged.heat, base.heat, '热度必须与背景线无关（跨档才可比）')
+  })
+
+  it('backgroundGaps：只报「键在且为空」的节；老报告与降级报告都不提示', () => {
+    const { load } = fresh()
+    const { backgroundGaps } = load('utils/report')
+
+    eq(
+      backgroundGaps({ degraded: false, timeline: [], profile: [], relations: [] }).join('/'),
+      '人物档案/关系图谱/时间线',
+      '三节都空就三节都报'
+    )
+    eq(
+      backgroundGaps({ degraded: false, timeline: recent }).length,
+      0,
+      '键不存在 = 老报告（整卡本来就降级），不该在这里断言「素材里没有」'
+    )
+    eq(backgroundGaps({ degraded: true, timeline: [], profile: [] }).length, 0, '降级报告只剩警示条，别再叠一条')
+    eq(
+      backgroundGaps({ degraded: false, timeline: recent, profile: [{ value: 'x' }], relations: [] }).join('/'),
+      '关系图谱',
+      '有内容的那节不报'
+    )
+  })
+})
+
 /* --------------------------------- 生成耗时：截断不重试（P0） */
 
 /**
@@ -2103,6 +2522,34 @@ describe('大模型调用（输出截断不再盲目重试）', () => {
     const res = await chat(load)
     eq(res.ok, false)
     eq(calls, 2, '正常结束但没产出 JSON，换一次采样可能就过了 —— 这条重试路径不能被顺手砍掉')
+  })
+
+  it('云端把「推理吃光上限」判成 kind=truncated 时：同样一次往返就收手', async () => {
+    /*
+     * 上面两条是「上游 200、但输出被截断」——端上凭 finishReason 就能自己收手。
+     * 这一条钉的是**另一半**：正文直接为空（推理型模型把 max_tokens 全花在思考上，
+     * 正文一个字都没轮到）。这种响应没有任何 JSON 可解析，端上拿不到 finishReason，
+     * 唯一信号就是云端 aiProxy 回传的 kind —— 云端照端上同一口径报 'truncated'
+     * （见 cloudfunctions/aiProxy 的空正文分流），端上必须认这个词、不得重发。
+     * 若哪天云端改回 'upstream'，这条会红：那正是「白烧一轮 30~40s 长生成」的回归。
+     */
+    const { load } = fresh()
+    let calls = 0
+    env.registerCloudFn('aiProxy', () => {
+      calls++
+      return {
+        ok: false,
+        kind: 'truncated',
+        finishReason: 'length',
+        error: '上游是带推理的模型：思考了 9000 字，把 max_tokens 全吃光，正文一个字都没产出'
+      }
+    })
+
+    const res = await chat(load)
+    eq(res.ok, false)
+    eq(calls, 1, "kind='truncated' 不在 RETRYABLE_KINDS 里：重发必然再撞同一道上限")
+    eq(res.retryable, false, 'retryable=false 让上层直接走降级，而不是再排一轮长生成')
+    eq(res.kind, 'truncated', 'kind 要原样带给上层（report.ts 据此决定文案与是否降级）')
   })
 })
 

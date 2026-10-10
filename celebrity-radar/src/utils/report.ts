@@ -4,6 +4,13 @@ import { FocusCode } from '@/config/filters'
 import { chatJSON, chatText, ChatJSONResult } from './llm'
 import { setCooldown } from './cooldown'
 import { diagLog } from './cloud-diagnostics'
+import { cleanText, clipText } from './text'
+import {
+  REPORT_BUDGET,
+  REPORT_FIELD_LIMITS,
+  REPORT_QUOTAS,
+  REPORT_SOURCE
+} from '../config/benefits'
 
 /**
  * AI 报告 Schema v2（§2.3）与生成/校验（附录 B）。
@@ -27,6 +34,157 @@ import { diagLog } from './cloud-diagnostics'
  *   升级这一常量时必须同时想清楚「新客户端读到旧版本行怎么办」——只加字段不改行为才安全。
  */
 export const REPORT_SCHEMA_VERSION = 2
+
+/**
+ * 一份报告至少要有的「实质条目」数（动态 + 语录 + 时间线）；数值在 config/benefits.ts
+ * 的 REPORT_SOURCE.shortfallMinFacts。
+ *
+ * 门槛刻意压低（3 条）：它只为挡住「明显不是一份报告」的产物。因为不达标意味着
+ * **不消耗用户次数**（见 utils/cache.ts 的计费点），用户可无限重试 —— 真正防滥用的
+ * 是云函数 quotaGuard 的 ai_calls 日限（先自增、失败不退），这里再设高门槛只会把
+ * 「模型偶尔少吐两段」也算成失败，用户反而不明所以。
+ */
+export const SHORTFALL_MIN_FACTS = REPORT_SOURCE.shortfallMinFacts
+
+/**
+ * 本次生成是否「够格交付」；`null` 表示达标，否则返回一句人话（进日志 / 页面提示）。
+ *
+ * 用途只有一个：决定这次要不要消耗用户的每日生成次数（2026-10-10）。
+ * 写在报告层是因为「什么算一份报告」只有这套 schema 说得清；扣减点仍在 utils/cache.ts。
+ *
+ * 四道判断，从「根本没生成出来」到「生成出来了但不该收钱」：
+ *   1. degraded —— 结构化输出两次失败，只剩一段纯文本，这不是报告；
+ *   2. 简介 / AI 点评缺任一 —— 这两段是报告的骨架，缺了读起来就是残的；
+ *   3. 实质条目 < SHORTFALL_MIN_FACTS —— 只有骨架没有事实，同样是残的；
+ *   4. 会员档生成却没有任何专享段落（memberNotes / conflicts）—— 会员权益没兑现
+ *      （检索不到素材是常见原因），这一份也不该收钱。免费读者不判这一条。
+ *
+ * ⚠ 刻意**不**判「人物档案 / 关系图谱 / 时间线」为空（P1，2026-10-10「达标判定与用户在意
+ *   的东西对齐」）：这三节的素材来自**不限时间**的背景线，空了多半是这位人物的公开资料
+ *   本来就少，判成失败只会让用户反复重试 —— 每次都不扣次数，但每次都拿不到东西，白等一场。
+ *   它们的缺口改由 backgroundGaps 交给页面**说明**（不计费，也不劝重试）。
+ */
+export function reportShortfall(report: Report, member: boolean): string | null {
+  return shortfallVerdict(report, member)?.reason ?? null
+}
+
+/**
+ * 不达标的判定结果：`reason` 给日志与页面用，`retryable` 决定页面**劝不劝重试**。
+ *
+ * 为什么「不达标」还要再分一次「值不值得重试」（P2，2026-10-10「文案分流」）：
+ * 页面此前对下面四条判定**共用同一句**「多为上游偶发抖动，重试通常就好」，可这句话对其中两条
+ * **是错的** —— 「实质条目不足」与「会员档没有专享段落」的常见原因是**素材本身就不够**
+ * （长尾人物近期报道本来就少；原注释自己写着「检索不到素材是常见原因」）。用户照着重试，
+ * 每次都不扣次数、每次都不达标，白等一场，还会把「素材少」误解成「服务坏了」——
+ * 与 backgroundGaps 踩的是同一个坑，故用同一套办法：**说清重试没用**。
+ *
+ * 判据一律取 `report.coverage.items`（端上按检索结果**原样统计**、不经模型改写，
+ * 是这份报告里最可信的一个数）：素材条数本身就不到门槛时，重试只是把同一批素材再喂一遍，
+ * 结果不会不同。
+ *
+ * degraded 与「缺简介 / 缺点评」两段骨架则**永远可重试**：那是模型少吐了一段，与素材多寡
+ * 无关（素材再少，简介也写得出来；结构化输出失败更是纯粹的上游抖动）。
+ */
+function shortfallVerdict(
+  report: Report,
+  member: boolean
+): { reason: string; retryable: boolean } | null {
+  /*
+   * 无素材兜底（C）判在最前：这份内容来自模型已有知识、没有素材支撑，**不达标是设计如此**，
+   * 且重试不会有变化（检索侧已经试过全部源与全部档位：见 utils/search.ts#fetchNews 的降级
+   * 阶梯与 aiProxy 的 Bing 兜底）。故给一句专门的话、并标成**不可重试** ——
+   * 否则页面会劝用户白等一场（与「素材本身就不够」那类是同一个理由）。
+   */
+  if (report.knowledgeOnly) {
+    return { reason: '本次未检索到公开素材，以下内容来自模型的已有知识、未经核实', retryable: false }
+  }
+  if (report.degraded) return { reason: '结构化输出失败，只拿到纯文本简版', retryable: true }
+  if (!report.intro.trim()) return { reason: '没有简介正文', retryable: true }
+  if (!report.analysis.trim()) return { reason: '没有 AI 点评正文', retryable: true }
+
+  /*
+   * 素材够不够门槛：不够 ⇒ 再试也是同一批素材（结构性缺失），劝重试是白等。
+   * 取不到 coverage（老报告没有这个字段）时按 0 处理 ⇒ 不可重试：本函数只在「本次新生成」
+   * 之后调用，那条路径上 coverage 必然有值（sanitizeReport 与降级分支都写了 buildCoverage），
+   * 故这条兜底实际不可达；写成 0 只是不给用户一句兑现不了的空头承诺。
+   */
+  const enoughMaterial = (report.coverage?.items ?? 0) >= SHORTFALL_MIN_FACTS
+
+  const facts = report.dynamics.length + report.quotes.length + report.timeline.length
+  if (facts < SHORTFALL_MIN_FACTS) {
+    return { reason: `实质条目不足（${facts}/${SHORTFALL_MIN_FACTS}）`, retryable: enoughMaterial }
+  }
+
+  if (member) {
+    const own =
+      (report.memberNotes?.compare.trim() ? 1 : 0) +
+      (report.memberNotes?.risk.trim() ? 1 : 0) +
+      (report.conflicts?.length ?? 0)
+    if (own === 0) {
+      return { reason: '会员档生成，但没有任何会员专享段落', retryable: enoughMaterial }
+    }
+  }
+
+  return null
+}
+
+/**
+ * 这次不达标「重试有没有意义」。页面据此选文案（劝重试 / 劝放弃），判据见 shortfallVerdict。
+ * 达标时恒为 `false` —— 那时页面根本不会渲染那条提示。
+ */
+export function reportShortfallRetryable(report: Report, member: boolean): boolean {
+  return shortfallVerdict(report, member)?.retryable === true
+}
+
+/**
+ * 背景类段落**本次确实为空**的节名（人物档案 / 关系图谱 / 时间线）。
+ *
+ * 与 reportShortfall 的分工（P1，2026-10-10）：
+ *   · reportShortfall = **计费门槛**：不达标就不扣次数；
+ *   · 本函数 = **阅读提示**：这几节空了照样计费 —— 门槛刻意不含它们（理由见上方那条 ⚠）。
+ *
+ * 「本次确实为空」按**键在不在**判（同 sanitizeReport 的约定）：
+ *   键不存在 = 本轮之前落库的老报告，整卡本来就走降级，不在这里提示；
+ *   数组为空 = 本次确实没有 —— 才是这条提示要说的事。timeline 恒落库，为空同样算。
+ *
+ * 页面拿到的这句话与 shortfall 那句的火候完全不同：shortfall 是「重试通常就好」，
+ * 这里是「本次已单独跑过人物背景线，仍为空说明公开资料本身缺少，重试不会有变化」。
+ */
+export function backgroundGaps(report: Report): string[] {
+  if (report.degraded) return []
+  const gaps: string[] = []
+  if (report.profile && report.profile.length === 0) gaps.push('人物档案')
+  if (report.relations && report.relations.length === 0) gaps.push('关系图谱')
+  if (report.timeline.length === 0) gaps.push('时间线')
+  return gaps
+}
+
+/**
+ * 导读要旨：这份报告里**最值得先看到的那一句结论**（报告页把它放在首屏的速览卡里当导读）。
+ *
+ * 要解决的问题与「目录」不同：目录解决的是「15 节在哪儿」，而最有价值的一句话要滑过好几张卡
+ * 才读到（AI 解读排在第 3 节、AI 点评排在第 8 节）。故把它提前到首屏。
+ *
+ * 取法（批 2 起，优先级自上而下）：
+ *   · verdict.summary → 提示词第 16 条明确要的「整体结论」，定位就是导读；批 2 把「整体判断」
+ *     这个职责从点评第一条挪到了 AI 解读，导读跟着它走；
+ *   · analysisPoints[0] → 存量报告没有 verdict，仍取点评第一条（行为与从前一致）；
+ *   · analysis 首句 → 更早的老报告只有整段点评；
+ *   · 都没有 → 空串，调用方据此不渲染这条入口（宁可不出现，也不编一个数出来）。
+ *
+ * 降级简版返回空串：那种报告的「点评」是一整段抢救出来的纯文本，首句多半是「本次生成未能…」
+ * 这类说明，不是判断。与 backgroundGaps 同一处理（降级时不谈缺口，也不谈判断）。
+ */
+export function reportGist(report: Report): string {
+  if (report.degraded) return ''
+  const verdictSummary = (report.verdict?.summary || '').trim()
+  if (verdictSummary) return verdictSummary
+  const point = (report.analysisPoints || []).map((p) => (p.point || '').trim()).filter(Boolean)[0]
+  if (point) return point
+  const text = (report.analysis || '').trim()
+  if (!text) return ''
+  return text.split(/[。！？!?；;\n]/)[0].trim() || text
+}
 
 /**
  * 宽容字符串：类型不对（null / 数字 / 对象）时回落成空串，而不是让**整份报告**校验失败。
@@ -246,7 +404,21 @@ const LlmReportSchema = z.union([
     relations: z.array(RelationSchema).catch([]),
     watchlist: z.array(WatchItemSchema).catch([]),
     glossary: z.array(GlossaryItemSchema).catch([]),
-    controversies: z.array(ControversySchema).catch([])
+    controversies: z.array(ControversySchema).catch([]),
+    /* 本系统的客观评价（批 2）：可选 —— 模型偶尔不给也不该让整份报告降级，故 .optional().catch */
+    verdict: z
+      .object({ summary: looseStr(), positioning: looseStr() })
+      .optional()
+      .catch(undefined),
+    /* 口碑两极 / 言行一致度（批 2）：同 verdict，评价类、可选、不给不崩 */
+    reputation: z
+      .object({ positive: looseStr(), negative: looseStr() })
+      .optional()
+      .catch(undefined),
+    consistency: z
+      .object({ claim: looseStr(), act: looseStr(), gap: looseStr() })
+      .optional()
+      .catch(undefined)
   })
 ])
 
@@ -264,6 +436,38 @@ export function isRefusedResult(x: unknown): x is { refused: true } {
 export interface AnalysisPoint {
   point: string
   basis: string
+}
+
+/**
+ * 本系统的客观评价（批 2，2026-10-10）：一句话结论 + 行业定位。
+ *
+ * 与 facts 类字段（dynamics / profile / relations…）不同，它答的是「怎么看」而非「是什么」：
+ * 允许在公开素材之上做归纳推断（对「仅基于素材」这条事实边界的一次有意识放宽），
+ * 但**不得编造不存在的事实**。展示处必须配「仅供参考」免责声明。
+ */
+export interface Verdict {
+  summary: string
+  positioning: string
+}
+
+/**
+ * 口碑两极（批 2）：大众/媒体对 TA 的两种声音。
+ * 同 Verdict —— 评价/判断类字段，不带出处、允许归纳推断，展示处配免责。
+ */
+export interface Reputation {
+  positive: string
+  negative: string
+}
+
+/**
+ * 言行一致度（批 2）：TA 公开说过的 vs 实际做过的。
+ * 刻意设计成「陈述差异、不裁决对错」—— claim/act 是事实摘录，gap 只说「一致与否」，
+ * 不给人品下结论（那会越出「客观评价」的边界）。
+ */
+export interface Consistency {
+  claim: string
+  act: string
+  gap: string
 }
 
 /** 一条信源分歧：争点 + 两边说法 */
@@ -291,6 +495,9 @@ export interface LlmReportFields {
   watchlist?: Array<{ when?: string; what?: string; basis?: string }>
   glossary?: Array<{ term?: string; explain?: string }>
   controversies?: Array<{ topic?: string; claim?: string; response?: string; basis?: string }>
+  verdict?: { summary?: string; positioning?: string }
+  reputation?: { positive?: string; negative?: string }
+  consistency?: { claim?: string; act?: string; gap?: string }
 }
 
 /** 完整报告（落库/渲染形态，§2.3 Schema v2） */
@@ -354,11 +561,36 @@ export interface Report {
    * 这里记的是**已发生**的争议与公开回应（事实），risk 是**面向未来**的风险提示（判断）。
    */
   controversies?: Array<z.infer<typeof ControversySchema>>
+  /**
+   * 本系统的客观评价（批 2，2026-10-10）：一句话结论 + 行业定位。
+   * 可选 —— 改动前落库的老报告没有这个字段，UI 整卡不出。
+   * 这是「评价/判断」而非「事实」，允许在公开素材之上做归纳推断（对「仅基于素材」这条
+   * 事实边界的有意识放宽），但不得编造不存在的事实；展示处必须配「仅供参考」免责。
+   */
+  verdict?: Verdict
+  /** 口碑两极（批 2）：评价类、可选、不带出处，展示处配免责。老报告没有此字段 */
+  reputation?: Reputation
+  /** 言行一致度（批 2）：陈述差异、不裁决对错。可选、不带出处，老报告没有此字段 */
+  consistency?: Consistency
   disclaimer: string
   /** 生成时的关注侧重（发现页「关注」筛选，'all' = 六段完整） */
   focus?: FocusCode
   /** 降级标记：结构化生成失败后由纯文本降级产出（§5.4 用例 9），UI 呈现降级提示 */
   degraded?: true
+  /**
+   * 「无素材兜底」（C，2026-10-10）：**所有检索源与档位都没抓到内容**时，由模型的已有知识
+   * 产出的简介 —— 与 degraded 是两回事，别混：
+   *   · degraded      = 素材抓到了，但结构化输出失败 ⇒ 剩一段纯文本（**有素材**）；
+   *   · knowledgeOnly = 素材**一条都没有** ⇒ 只给 intro，内容未经核实（**没素材**）。
+   *
+   * 只放 intro 是刻意的：profile 的契约是「每条都有素材出处、能回到一篇原文核对」
+   * （见 ProfileItemSchema.basis 的注释），模型知识给不出出处，塞进去会毁掉那条契约。
+   * 页面据此说明来源（文案见 shortfallVerdict），提示用户这不是检索结果。
+   *
+   * ⚠ 它**不进共享缓存**（见 utils/cache.ts 的 nonews 分支）：report_cache 是全站共享的一行，
+   * 把一份没素材的内容写进去会污染之后所有读者的视图。
+   */
+  knowledgeOnly?: true
   /** 报道画像（博查素材的原样聚合，见 ReportCoverage）：改动前落库的老报告没有这个字段 */
   coverage?: ReportCoverage
 }
@@ -401,18 +633,52 @@ const SYSTEM_REALTIME = [
    */
   '出处（basis）写法：优先直接复制素材里的 url（整串照抄，不要改写、不要省略）。若那串字符太长、记不准，写该素材的媒体名（如「新华社」）同样算指认出处。两者都必须来自本次素材。',
   '1. 仅基于素材作答，不编造日期与来源。',
-  '2. dynamics 每条字段：date(YYYY-MM-DD)、title、summary(一句摘要)、source(来源媒体名)、url(必须从素材 URL 原样复制)、sentiment(只能是 positive/neutral/negative)。',
-  '3. quotes 每条字段：text(名言原文)、context(出处场合/时间)、background(背景：这句话是在什么场合、什么背景下说的，1~2 句，须出自素材)、note(注解：这句话的含义 / 影响 / 争议，1~2 句，须出自素材，没有可说的就填空串)、source(素材 URL 或「据公开资料」)；background 与 note 合计不超过 100 字。',
-  '4. sources 列出全部用到的素材：title + url(原样复制)。',
-  '5. analysisPoints：3~4 条各自独立的判断，每条字段：point(一句完整的判断，40 字内，以句号结尾)、basis(这条判断依据的素材 url，原样复制；素材里找不到出处的写「据公开资料」)。判断必须具体到人、事、时间或具体说法，禁止「风格独特」「备受关注」「引发讨论」这类换个人名也成立的套话；各条之间不要互相重复。',
-  '6. stance：2~4 个近期热点话题上的舆论态度，每条字段：topic(话题名，12 字内)、attitude(只能是 positive/neutral/negative/mixed)、note(一句话依据，须出自素材)；素材里确实没有任何可判断的舆论态度才留空数组。',
-  '7. timeline：素材中可确认的关键事件(date + event)；素材里确实没有可确认的事件才留空数组。',
-  '8. profile：结构化人物档案 3~6 条（尽量给到 5 条），用来让人一眼看清「是谁」，每条字段：label(字段名，8 字内，如「职业」「出生年份」「代表作」「主要成就」)、value(40 字内)、basis(这条事实出自的素材，写法见开头「出处（basis）写法」)。**每条都必须能在素材里找到依据，找不到的整条不要写**；不要用常识去补全素材里没有的信息（那是编造，不是补充）。',
-  '9. relations：与本人有公开关系的人，最多 5 条，每条字段：name(对方姓名)、relation(只能是 cooperate/mentor/rival/other，依次表示合作、师承、对手、其他)、note(一句话说明这段关系，说不清就填空串)、basis(关系出自的素材，写法见开头)。关系必须是素材里**明确写到**的（同台合作、师徒、公开竞争等），不得由「同框」「同公司」「同时出现」推测；只有单方提及也不写。',
-  '10. watchlist：未来值得跟踪的时间点或事件，只写素材里**已公布**的，最多 4 条，每条字段：when(已公布的时间，如 2026-11 或「下月」，12 字内)、what(事件，40 字内)、basis(素材，写法见开头)。素材里确实没有公布任何时间点才留空数组（不得推测档期）。',
-  '11. glossary：本报告或素材里出现、普通读者可能不懂的行话或背景词（如文娱「番位」、财经「对赌」），最多 5 条，每条字段：term(词，10 字内)、explain(一句话解释，50 字内)。只解释确实出现过的词（确实没有这类词才留空数组）；解释用该词的通行含义即可（这一条答的是词义，不是关于本人的事实），不做褒贬评价。',
-  '12. controversies：近期公开争议与各方的回应，最多 3 条，每条字段：topic(争议点，12 字内)、claim(争议内容，60 字内)、response(当事方或相关方的公开回应，40 字内；素材里没有公开回应就填空串)、basis(素材，写法见开头)。只写素材里确实存在的争议，只陈述、不评价、不裁决。',
-  '13. 若素材显示该人物属政治、军事类敏感人物，仅返回 {"refused": true}。',
+  /*
+   * intro 的写法原先**只出现在第 16 条的 JSON 格式里**（"intro":string），没有任何质量要求：
+   * 它是全篇第一段、也是全篇唯一没有字数区间与内容骨架的段落，于是实测常出现「一句泛泛的
+   * 身份介绍」或与下面各段重复的流水账。这里补一条与 profile 同规格的要求。
+   */
+  '2. intro：人物简介（**只写客观身份，不做评价判断**），2~3 句、共 80~150 字。第一句给身份定位（是谁、以什么身份或作品成名），第二句给近期在做什么（事实性的动作，如「在拍新片」「发了新专辑」，不是「处于上升期」这类判断），有第三句才补充最值得注意的客观事实。不要复述下面动态与点评的原话；**「值不值得关注」「什么级别」这类判断不写在这里**（那是 verdict 的职责，见第 16 条）。',
+  /*
+   * 事实段（dynamics / quotes / timeline）的**条数目标**是本次补上的，理由：
+   * 这三段此前只声明了字段、没声明条数，而全项目有六处卡在它们的条数上 ——
+   * 端上聚合的词云（≥2 条命中才成词、<4 个词整卡空态）、语录主题（≥4 条语录才聚类）、
+   * 热度趋势（<3 个带日期条目不画线）、情绪条（按 dynamics 条数算比例）、风险雷达（从全篇字面挑），
+   * 以及 buildReport 的达标判定（dynamics+quotes+timeline ≥ 3）。模型给两三条就收工，
+   * 用户看到的不是「写得少」，而是**一整块卡片消失**。故给出与 profile / stance 同规格的区间。
+   */
+  `3. dynamics 每条字段：date(YYYY-MM-DD)、title、summary(一句摘要)、source(来源媒体名)、url(必须从素材 URL 原样复制)、sentiment(只能是 positive/neutral/negative)；素材里可确认的动态给 ${REPORT_QUOTAS.dynamicsMin}~${REPORT_QUOTAS.dynamicsMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.dynamicsTarget} 条），同一件事只写一条。`,
+  `4. quotes 每条字段：text(名言原文)、context(出处场合/时间)、background(背景：这句话是在什么场合、什么背景下说的，1~2 句，须出自素材)、note(注解：这句话的含义 / 影响 / 争议，1~2 句，须出自素材，没有可说的就填空串)、source(素材 URL 或「据公开资料」)；background 与 note 合计不超过 100 字。素材里可确认的语录给 ${REPORT_QUOTAS.quotesMin}~${REPORT_QUOTAS.quotesMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.quotesTarget} 条）。`,
+  '5. sources 列出全部用到的素材：title + url(原样复制)。',
+  `6. analysisPoints：${REPORT_QUOTAS.analysisPointsMin}~${REPORT_FIELD_LIMITS.analysisPointMax} 条**各自独立、就具体事件或说法给出的判断**，每条字段：point(一句完整的判断，40 字内，以句号结尾)、basis(这条判断依据的素材 url，原样复制；素材里找不到出处的写「据公开资料」)。判断必须具体到人、事、时间或具体说法，禁止「风格独特」「备受关注」「引发讨论」这类换个人名也成立的套话；各条之间不要互相重复。**整体结论不写在这里**——那是 verdict.summary 的职责（见第 16 条），这里的每一条都是「某件事怎么看」，不是「TA 这个人整体怎么样」。`,
+  `7. stance：${REPORT_QUOTAS.stanceMin}~${REPORT_QUOTAS.stanceMax} 个近期热点话题上的舆论态度，每条字段：topic(话题名，12 字内)、attitude(只能是 positive/neutral/negative/mixed)、note(一句话依据，须出自素材)；素材里确实没有任何可判断的舆论态度才留空数组。`,
+  `8. timeline：素材中可确认的**已经发生**的关键事件(date + event)，给 ${REPORT_QUOTAS.timelineMin}~${REPORT_QUOTAS.timelineMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.timelineTarget} 条），同一件事只写一条；素材里确实没有可确认的事件才留空数组。**尚未发生**的未来节点（已公布的档期一类）不写在这里，写进 watchlist。`,
+  /*
+   * profile 的 label 收敛成「优先选常用字段」：此前完全自由发挥，于是同一个人的档案里
+   * 出现「简介」「特点」「影响力」这类无信息量的字段名，且不同人物的档案彼此不可比
+   * （A 写「出道时间」、B 写「成名时间」，读的人没法横向看）。注意措辞是「优先…才自拟」，
+   * 不是白名单 —— 素材里真正重要的字段不在常用集里时，仍然要能写出来。
+   */
+  `9. profile：结构化人物档案 ${REPORT_QUOTAS.profileMin}~${REPORT_FIELD_LIMITS.profileMax} 条（尽量给到 ${REPORT_QUOTAS.profileTarget} 条），用来让人一眼看清「是谁」，每条字段：label(字段名，8 字内；优先从这几个常用字段里选：职业、出生年份、出生地、代表作、主要成就、所属机构、活跃领域 —— 都不合适才自拟)、value(40 字内)、basis(这条事实出自的素材，写法见开头「出处（basis）写法」)。**每条都必须能在素材里找到依据，找不到的整条不要写**；不要用常识去补全素材里没有的信息（那是编造，不是补充）。`,
+  `10. relations：与本人有公开关系的人，最多 ${REPORT_FIELD_LIMITS.relationMax} 条，每条字段：name(对方姓名)、relation(只能是 cooperate/mentor/rival/other，依次表示合作、师承、对手、其他)、note(一句话说明这段关系，说不清就填空串)、basis(关系出自的素材，写法见开头)。关系必须是素材里**明确写到**的（同台合作、师徒、公开竞争等），不得由「同框」「同公司」「同时出现」推测；只有单方提及也不写。`,
+  /*
+   * watchlist 的 when 禁掉相对时间表述（「下月」「年底」）：报告是**长期共享缓存**，
+   * 一份三个月前的报告里写「下月」，端上既不知道该折算成哪个月（它相对的是生成那一刻），
+   * 也就无法做过期判定 —— 只能原样摆着，与页面顶部「N 天前生成」自相矛盾。
+   * 只收绝对刻度后，端上才能标出「已过期」（见 utils/time.ts#isStampPast）。
+   *
+   * 同一条注释里把 timeline / watchlist 的边界也写死（本条第 2 句 + 第 8 条）：
+   * **已经发生的进 timeline，尚未发生的进 watchlist**。此前只说了 watchlist 收"未来值得跟踪的"，
+   * 没说"已经过去的不要写" —— 而素材是 30 天窗口的新闻，里面的日期天然带过去刻度
+   * （「已于 X 日上映」这类回顾写法），模型分不清它相对"今天"是过去还是未来，于是把已经发生的
+   * 事写进了「后续关注」，一份报告里两段互相打架（同一件事既是历史又是"未来"）。
+   * 存量报告的数据已经落库，端上救不了（只能把两类过期分开标，见 pages/report/index.tsx）；
+   * 这条边界的作用是让**新报告**不再产生这类条目。
+   */
+  `11. watchlist：未来值得跟踪的时间点或事件，只写素材里**已公布**的，最多 ${REPORT_FIELD_LIMITS.watchMax} 条，每条字段：when(已公布的时间刻度，只写**绝对时间**：能确定到日就写 YYYY-MM-DD、只到月就写 YYYY-MM（如 2026-11），**不要写「下月」「年底」这类相对说法**——报告会被长期复用，相对说法过一阵就连自己指哪个月都说不清，12 字内)、what(事件，40 字内)、basis(素材，写法见开头)。**只写尚未发生的**：素材里已公布、但时间已经过去的（已上映、已开播、已结束等）属于 timeline，不要写进这里。素材里确实没有已公布且尚未发生的时间点才留空数组（不得推测档期）。`,
+  `12. glossary：本报告或素材里出现、普通读者可能不懂的行话或背景词（如文娱「番位」、财经「对赌」），最多 ${REPORT_FIELD_LIMITS.glossaryMax} 条，每条字段：term(词，10 字内)、explain(一句话解释，50 字内)。只解释确实出现过的词（确实没有这类词才留空数组）；解释用该词的通行含义即可（这一条答的是词义，不是关于本人的事实），不做褒贬评价。`,
+  `13. controversies：近期公开争议与各方的回应，最多 ${REPORT_FIELD_LIMITS.controversyMax} 条，每条字段：topic(争议点，12 字内)、claim(争议内容，60 字内，**须写明发生时间**，时间要出自素材)、response(当事方或相关方的公开回应，40 字内；素材里没有公开回应就填空串)、basis(素材，写法见开头)。只写素材里确实存在的争议，只陈述、不评价、不裁决。`,
+  '14. 若素材显示该人物属政治、军事类敏感人物，仅返回 {"refused": true}。',
   /*
    * 「写满」这条是补上去的，它对应一类此前没被当成问题的失败：模板里每段都留了「素材不足
    * 则留空」的口子，而模型对这类口子的利用程度远超预期 —— 它会把「省事」读成「素材不足」，
@@ -421,8 +687,16 @@ const SYSTEM_REALTIME = [
    * 故这里把两个概念的边界写死：先尽力找，确实没有才留空；同时把第 1 条再钉一遍，
    * 免得这句被读成鼓励注水。
    */
-  '14. 除「素材里确实没有」之外，**每一段都要给出内容**（dynamics / quotes / analysisPoints / stance / timeline / sources / profile / relations / watchlist / glossary / controversies 都算）：先尽力在素材里找，确实找不到才留空数组。不许因为条数不好凑、懒得逐一核对就返回空数组 —— 用户看到的是一整块卡片直接消失，比少一条信息严重得多；但也不得为凑数编造（第 1 条）。',
-  '15. 只输出 JSON，格式：{"intro":string,"dynamics":[],"quotes":[],"analysisPoints":[],"stance":[],"timeline":[],"sources":[],"profile":[],"relations":[],"watchlist":[],"glossary":[],"controversies":[]}'
+  '15. 除「素材里确实没有」之外，**每一段都要给出内容**（dynamics / quotes / analysisPoints / stance / timeline / sources / profile / relations / watchlist / glossary / controversies / verdict / reputation / consistency 都算）：先尽力在素材里找，确实找不到才留空数组。不许因为条数不好凑、懒得逐一核对就返回空数组 —— 用户看到的是一整块卡片直接消失，比少一条信息严重得多；但也不得为凑数编造（第 1 条）。',
+  /*
+   * verdict / reputation / consistency 是批 2 的「本系统客观评价」三维。与事实字段不同：它们是
+   * **评价/判断**，允许在素材事实之上做归纳推断（比如「处于事业上升期」「在同领域属头部」），
+   * 这是对第 1 条「仅基于素材」的一次有意识放宽 —— 但放宽的只是「能不能下判断」，不是
+   * 「能不能编事实」：判断里的时间、事件、数据仍必须真实来自素材，不得杜撰。展示处配免责。
+   */
+  '16. verdict：本系统基于公开信息给出的**客观评价**（仅供参考，不构成对 TA 本人的定性或裁决）：summary(一句话结论，60 字内、以句号结尾：TA 目前大致处于什么状态、值不值得关注，**这是全篇的导读句**，要具体到人、事或领域，禁止「值得关注」「备受关注」这类套话)、positioning(行业定位，60 字内：在同领域大致处于什么位置，可提对标人物；公开信息不足以判断就写「公开信息不足以判断」)。这是归纳推断，允许在素材事实之上做判断，但不得编造不存在的事实或数据。',
+  '17. reputation 与 consistency（同为客观评价，口径同第 16 条）：reputation(口碑两极：positive 支持方/正面评价的核心观点 60 字内、negative 反对方/负面评价的核心观点 60 字内，两侧都要来自素材里的实际声音，某一侧素材里没有就写「素材里未见」)、consistency(言行一致度：claim 该人物公开表达过的立场或人设 40 字内、act 素材里与此相关的实际做法 40 字内、gap 客观说明两者是否一致 40 字内，只陈述差异、不裁决对错；素材不足以判断就整个字段留空)。',
+  '18. 只输出 JSON，格式：{"intro":string,"verdict":{"summary":string,"positioning":string},"reputation":{"positive":string,"negative":string},"consistency":{"claim":string,"act":string,"gap":string},"dynamics":[],"quotes":[],"analysisPoints":[],"stance":[],"timeline":[],"sources":[],"profile":[],"relations":[],"watchlist":[],"glossary":[],"controversies":[]}'
 ].join('\n')
 
 /**
@@ -432,8 +706,10 @@ const SYSTEM_REALTIME = [
  */
 const MEMBER_HINT_REALTIME = [
   '会员补充要求：额外输出 memberNotes 与 conflicts（**无素材支撑就留空**，不得为了凑数而编）。',
-  'memberNotes 含两段文字：compare —— 该名人与同领域其他公众人物的差异或相对位置，2~3 句，比较对象须出自素材并写清是谁；risk —— **面向未来**的风险提示（接下来值得留意什么），措辞中性、就事论事、不做人身评价；**已经发生的争议与回应属于免费段 controversies，不要在这里复述**；无则填空串。',
-  'conflicts：素材之间**互相矛盾**的地方（同一件事两边说法不一致、关键数字对不上、一方否认另一方的说法），最多 3 条，每条字段：topic(争点，12 字内)、a(一方说法，写清是哪家媒体、说了什么)、b(另一方说法，同 a)。两方都必须真实存在于素材中，不得自己想象一个对立面；素材里没有矛盾就留空数组。',
+  'memberNotes 含两段文字，两段都要**具体、可核对，禁止套话**。',
+  'compare（与同领域其他公众人物的差异或相对位置，2~3 句）：比较对象**必须具名**（写清是谁，须出自素材）；差异必须落到**具体可核对的事实**（作品、奖项、数据、事件、路径），**禁止「行业新锐」「代表人物」「更有影响力」「值得关注」这类评价套话**。素材里没有可具名的比较对象时，改写「该名人的辨识度 / 独特点」，同样要落到素材里的具体事实；**写不出具体事实就填空串**（禁止用套话占位）。',
+  'risk（**面向未来**的风险提示，即接下来值得留意什么；措辞中性、就事论事、不做人身评价）：必须落到素材里**已经出现的前兆**（如被调查、合作方解约、卷入诉讼、税务问题）并写清具体是什么，**禁止「注意合规风险」「注意舆情」「存在不确定因素」这类泛话**；**已经发生的争议与回应属于免费段 controversies，不要在这里复述**；**素材里没有可指认的前兆就填空串**。',
+  `conflicts：素材之间**互相矛盾**的地方（同一件事两边说法不一致、关键数字对不上、一方否认另一方的说法），最多 ${REPORT_FIELD_LIMITS.conflictMax} 条，每条字段：topic(争点，12 字内)、a(一方说法，写清是哪家媒体、说了什么)、b(另一方说法，同 a)。两方都必须真实存在于素材中，不得自己想象一个对立面；素材里没有矛盾就留空数组。`,
   '格式追加：{"memberNotes":{"compare":string,"risk":string},"conflicts":[{"topic":string,"a":string,"b":string}]}'
 ].join('\n')
 
@@ -445,130 +721,133 @@ const SYSTEM_FALLBACK = [
 ].join('\n')
 
 /**
- * 单条素材正文上限。博查开 summary:true 返回的是详细摘要，个别条目能到数千字，
- * 不设限时单条就能吃掉整个预算、把其余素材全挤掉。
+ * 「无素材兜底」提示词（C，2026-10-10）—— 只在**所有源与档位都没抓到内容**时使用。
+ *
+ * 与上面 SYSTEM_FALLBACK 的区别：那条是「素材抓到了、但结构化失败」的抢救，
+ * 这条是「素材一条都没有」时手里唯一还剩的东西。所以约束必须更紧：
+ *   · 只用**稳定事实**（身份 / 职业 / 代表作 / 机构 / 出生年份 / 出生地）；
+ *   · 不确定的一律留空 —— 这是它唯一的安全阀，宁可少写也不能写错；
+ *   · **明令禁止日期、事件、动态、争议、言论**：那些会过时或记错，而本工具的价值恰恰建立在
+ *     「只基于素材、不做推断」上，这条兜底不该成为编造的后门；
+ *   · 产物由 buildKnowledgeFallback 打上 `knowledgeOnly` 标记，页面明说「未经核实」。
  */
-const MAX_ITEM_CHARS = 1000
+const SYSTEM_KNOWLEDGE_FALLBACK = [
+  '你是名人资料助手。本次**没有检索到任何公开素材**，只能使用你已有的知识作答。',
+  '严格要求（按重要性排序）：',
+  '1. 只写你**确定知道**的稳定事实：身份 / 职业 / 代表作 / 所属机构 / 出生年份 / 出生地。',
+  '2. **不确定的一律留空**，不要猜、不要用「可能」「据传」来糊。宁可只写一句，也不要写错。',
+  '3. **禁止写任何日期、事件、近期动态、争议、言论、评价** —— 它们会过时或记错。',
+  '4. 只输出 JSON，不要任何解释：{"intro":string}',
+  '5. intro 为 2~3 句、60~140 字；若你对这个人几乎一无所知，就返回 {"intro":""}。'
+].join('\n')
+
+/** 无素材兜底的返回结构：只收 intro —— profile 要出处，模型知识给不出（见 Report.knowledgeOnly） */
+const KnowledgeFallbackSchema = z.object({ intro: looseStr() })
 
 /**
- * user 消息整体上限，取两级约束的小值再留余量：
- *   云函数侧 MAX_CHAT_CHARS = 24000（超了返回 badrequest「提示词过长」）；
- *   callFunction 链路侧官方建议大字段不超过 100KB（中文 UTF-8 3 字节/字，15000 字 ≈ 45KB）。
- * 15000 字叠加 system 提示词（SYSTEM_REALTIME 实测约 2250 字，改了提示词要重新量）后两端都不贴边。
- * 起因：素材不裁剪时请求体可超链路建议上限，callFunction 直接抛错，
- * 再被 chatViaPlatform 的 catch 合并成「平台通道未就绪」，表现为「配好了却生成失败」。
+ * 无素材兜底：所有检索源与档位都没抓到内容时，用模型的已有知识给一份**只含简介**的报告。
+ *
+ * 为什么只给 intro：`profile` 的契约是「每条都带素材出处、能回到一篇原文核对」
+ * （见 ProfileItemSchema 的 basis 注释），而模型知识给不出出处 —— 塞进 profile 会毁掉那条
+ * 契约。「每条都能核对」是这份报告的立身之本，不能为了「页面看起来满」而放弃。
+ *
+ * 返回 `ok:false` 表示这次兜底也没给出可用内容（模型对该人物确实没把握）：调用方据此照旧走
+ * `nonews` 空态 —— **不会**给用户一份空壳报告。
+ *
+ * ⚠ 调用点见 utils/cache.ts 的 nonews 分支：**不写共享缓存、不消耗用户的生成次数**。
  */
-const MAX_USER_CHARS = 15000
+export async function buildKnowledgeFallback(
+  personKey: string,
+  name: string,
+  focus: FocusCode = 'all'
+): Promise<ChatJSONResult<Report>> {
+  const result = await chatJSON(SYSTEM_KNOWLEDGE_FALLBACK, `人物：${name}`, KnowledgeFallbackSchema)
+  if (!result.ok) return result
 
-/**
- * 会员深度模式的 user 消息预算（O-11）：深度检索会多拿一倍素材，
- * 沿用 15000 字会把加厚的那部分**直接截掉**（等于花了检索钱却没用上）。
- * 放宽到 20000 后两级约束仍不贴边：
- *   云函数 MAX_CHAT_CHARS = 24000（本函数产出的 user 20000 + system 约 2750（会员在 free 段末尾追加
- *   MEMBER_HINT_REALTIME 约 500 字），余量约 1250 —— 提示词再加长就要同步抬高 MAX_CHAT_CHARS）；
- *   callFunction 链路建议 100KB（20000 中文字 ≈ 60KB）。
+  /* chatJSON 的返回被推断成宽类型，这里收敛一次（字段只有一个，不必为它再引一层类型别名） */
+  const { intro: rawIntro } = result.data as { intro?: string }
+  const intro = (rawIntro ?? '').trim()
+  /* 空串 = 模型对这个人物确实没把握：这次兜底没有价值，交回上层走空态 */
+  if (!intro) return { ok: false, error: '模型对该人物没有可用的既有资料', retryable: false }
+
+  return {
+    ok: true,
+    data: {
+      personKey,
+      name,
+      mode: 'realtime',
+      generatedAt: new Date().toISOString(),
+      heat: 0,
+      intro,
+      dynamics: [],
+      quotes: [],
+      analysis: '',
+      timeline: [],
+      sources: [],
+      disclaimer: DISCLAIMER,
+      focus,
+      knowledgeOnly: true,
+      /* 素材一条都没有：画像给全零，页面据此显示「本次未检索到素材」（而不是「检索失败」） */
+      coverage: buildCoverage([])
+    }
+  }
+}
+
+/*
+ * 下面这一组**长度与条数上限**的数值全部在 config/benefits.ts（REPORT_BUDGET /
+ * REPORT_FIELD_LIMITS / REPORT_SOURCE），每条为什么取这个值也写在那里。
+ * 这里只做转发，是为了让本文件下面上百处引用不必跟着改名 ——
+ * 要调报告厚度 / 裁剪尺度，改真源那一份（改完跑 npm run config:sync）。
  */
-const MAX_USER_CHARS_MEMBER = 20000
+const MAX_ITEM_CHARS = REPORT_BUDGET.maxItemChars
+const MAX_USER_CHARS = REPORT_BUDGET.maxUserChars
+const MAX_USER_CHARS_MEMBER = REPORT_BUDGET.maxUserCharsMember
 
-/**
- * 会员专属段落的长度上限（O-11）：与 stance 的 note（60 字）同属「自由文本只能收敛长度」的一段，
- * 但它是 2~3 句的完整判断，60 字装不下，故单列一档。
- */
-const MEMBER_NOTE_CHARS = 240
+const MEMBER_NOTE_CHARS = REPORT_FIELD_LIMITS.memberNoteChars
+const QUOTE_NOTE_CHARS = REPORT_FIELD_LIMITS.quoteNoteChars
 
-/**
- * 名言背景 / 注解的单段长度上限（本轮新增两段）。
- * 与 stance.note（60 字，一条判断依据）不同档：这里是 1~2 句的完整背景或含义，
- * 但又不能长成 memberNotes 那样的一段话 —— 名言卡本身已经很密，两段各 120 字是它的上限。
- * 与其它自由文本一样：没有可白名单的锚点，只能在 sanitize 里收敛长度。
- */
-const QUOTE_NOTE_CHARS = 120
+const ANALYSIS_POINT_CHARS = REPORT_FIELD_LIMITS.analysisPointChars
+const ANALYSIS_POINT_MAX = REPORT_FIELD_LIMITS.analysisPointMax
 
-/**
- * 单条点评的长度上限（本轮新增）：与 stance.note（60 字）同档，都是一句话的判断。
- * 上限存在的意义是自己约束自己 —— 一条判断长到 120 字，它就不再是「一条判断」，
- * 而是又变回了被拆掉的那种整段综述。
- */
-const ANALYSIS_POINT_CHARS = 80
-
-/** 点评条数上限：再多就不再是点评，而是又一篇综述 */
-const ANALYSIS_POINT_MAX = 4
-
-/** 争点的长度上限（12 字内的短语，超出说明模型把「说法」写进了「争点」） */
-const CONFLICT_TOPIC_CHARS = 24
-
-/** 单侧说法的长度上限：要能装下一句完整的陈述（谁 + 说了什么），故比 stance.note 宽 */
-const CONFLICT_SIDE_CHARS = 100
-
-/** 分歧条数上限：报告只摆最关键的几处，摆满一屏反而没了重点 */
-const CONFLICT_MAX = 3
+const CONFLICT_TOPIC_CHARS = REPORT_FIELD_LIMITS.conflictTopicChars
+const CONFLICT_SIDE_CHARS = REPORT_FIELD_LIMITS.conflictSideChars
+const CONFLICT_MAX = REPORT_FIELD_LIMITS.conflictMax
 
 /* ----- 第二批（免费可见的五段事实字段）：长度与条数上限 -----
  *
  * 这几段的共同点是「一段一条事实」，故各档上限都贴着「一条事实说清楚」的尺度定，
  * 与 stance.note（60 字）、analysisPoints（80 字）同一套克制：数值不同只是体裁不同，
  * 依据都是「超过就不再是一条，而是又变回一段综述」。 */
+const PROFILE_MAX = REPORT_FIELD_LIMITS.profileMax
+const PROFILE_LABEL_CHARS = REPORT_FIELD_LIMITS.profileLabelChars
+const PROFILE_VALUE_CHARS = REPORT_FIELD_LIMITS.profileValueChars
 
-/** 人物档案条数：档案是「一眼看清 who」，超过 6 条就不再是一眼 */
-const PROFILE_MAX = 6
-/** 字段名上限（「出生年份」四个字，够用且能左右对齐成一列） */
-const PROFILE_LABEL_CHARS = 8
-/** 字段值上限 */
-const PROFILE_VALUE_CHARS = 40
+const RELATION_MAX = REPORT_FIELD_LIMITS.relationMax
+const RELATION_NAME_CHARS = REPORT_FIELD_LIMITS.relationNameChars
+const RELATION_NOTE_CHARS = REPORT_FIELD_LIMITS.relationNoteChars
 
-/** 关系条数：人-人维度只摆最主要的几段关系 */
-const RELATION_MAX = 5
-/** 对方姓名上限（中文姓名 2~4 字，留出艺名 / 组合名的余量） */
-const RELATION_NAME_CHARS = 20
-/** 关系说明上限 */
-const RELATION_NOTE_CHARS = 40
+const WATCH_MAX = REPORT_FIELD_LIMITS.watchMax
+const WATCH_WHEN_CHARS = REPORT_FIELD_LIMITS.watchWhenChars
+const WATCH_WHAT_CHARS = REPORT_FIELD_LIMITS.watchWhatChars
 
-/** 后续关注条数 */
-const WATCH_MAX = 4
-/** 时间点上限（「2026-11」「下月」这类已公布的刻度，不是日期格式） */
-const WATCH_WHEN_CHARS = 12
-/** 事件上限 */
-const WATCH_WHAT_CHARS = 40
+const GLOSSARY_MAX = REPORT_FIELD_LIMITS.glossaryMax
+const GLOSSARY_TERM_CHARS = REPORT_FIELD_LIMITS.glossaryTermChars
+const GLOSSARY_EXPLAIN_CHARS = REPORT_FIELD_LIMITS.glossaryExplainChars
 
-/** 名词解释条数：行话注解只是阅读辅助，摆满一屏就成了词典 */
-const GLOSSARY_MAX = 5
-const GLOSSARY_TERM_CHARS = 10
-const GLOSSARY_EXPLAIN_CHARS = 50
+const CONTROVERSY_MAX = REPORT_FIELD_LIMITS.controversyMax
+const CONTROVERSY_TOPIC_CHARS = REPORT_FIELD_LIMITS.controversyTopicChars
+const CONTROVERSY_CLAIM_CHARS = REPORT_FIELD_LIMITS.controversyClaimChars
+const CONTROVERSY_RESPONSE_CHARS = REPORT_FIELD_LIMITS.controversyResponseChars
 
-/** 争议条数 */
-const CONTROVERSY_MAX = 3
-const CONTROVERSY_TOPIC_CHARS = 12
-const CONTROVERSY_CLAIM_CHARS = 60
-/** 单侧回应的长度上限：装得下一句「XX 已回应……」，与 conflicts 的单侧说法同档 */
-const CONTROVERSY_RESPONSE_CHARS = 40
-
-/* ===== 素材 → 提示词的选取（本轮升级：事件归组 + 分级保留） ===== */
-
-/**
- * 给全文的素材**事件**数上限（注意数的是事件，不是条数）。
- * 之外的条目压成一行「参考条目」。
- *
- * 为什么要数事件：同一件事常有多家媒体报道（URL 不同 → mergeNews 的 url 去重认不出），
- * 条数口径下「一件事 5 篇」会一口气吃掉 5 个全文名额。按事件计，一件事只占一个名额，
- * 该事件的其余报道自动降到压缩档。
- */
-const FULL_ITEM_COUNT = 10
-
-/**
- * 压缩条目的摘要片段长度。只够让模型判断「这条讲的是什么」，不足以据此展开叙述 ——
- * 这是刻意的：压缩条目在提示词里被明确标为「正文从略」，模型不该拿它当全文用。
- */
-const BRIEF_ITEM_CHARS = 160
-
-/** 同一事件的判定阈值：标题字符二元组的 Dice 系数（见 groupByEvent） */
-const SAME_EVENT_RATIO = 0.62
-
-/**
- * 「basis 写的是素材标题」这一层匹配的最短长度（归一化后的字符数）。
- * 要求足够长是因为这一层用的是「一方包含另一方」：短串（如「新剧开播」）会在一堆不相关的
- * 标题里误命中，而误命的代价是给一条编造的事实配上了一条真出处 —— 比少一条严重得多。
- */
-const TITLE_MATCH_MIN_CHARS = 8
+/* ===== 素材 → 提示词的选取（事件归组 + 分级保留） ===== */
+const FULL_ITEM_COUNT = REPORT_SOURCE.fullItemCount
+const BRIEF_ITEM_CHARS = REPORT_SOURCE.briefItemChars
+const SAME_EVENT_RATIO = REPORT_SOURCE.sameEventRatio
+const TITLE_MATCH_MIN_CHARS = REPORT_SOURCE.titleMatchMinChars
+/* L1：句子级抽取与同源判重（数值真源同样在 config/benefits.ts#REPORT_SOURCE） */
+const EXTRACT_MIN_CHARS = REPORT_SOURCE.extractMinChars
+const RELEVANT_ITEM_CHARS = REPORT_SOURCE.relevantItemChars
+const SAME_BODY_RATIO = REPORT_SOURCE.sameBodyRatio
 
 /**
  * 标题归一化：只留中英文与数字。
@@ -619,21 +898,269 @@ function groupByEvent(news: NewsItem[]): Array<{ lead: NewsItem; rest: NewsItem[
   return groups.map(({ lead, rest }) => ({ lead, rest }))
 }
 
-/** 素材段落（全文）：标题 / 来源 / url 前置，正文随后 */
-function fullItemText(n: NewsItem): string {
-  const content =
-    n.content.length > MAX_ITEM_CHARS ? `${n.content.slice(0, MAX_ITEM_CHARS)}…` : n.content
+/*
+ * ═══ L0：素材正文的零语义损失精简（2026-10-10） ═══
+ *
+ * 目标：不删任何素材、不碰分级规则、不改提示词结构，只把「按字计费却对报告零贡献」的
+ * 部分挡在提示词之外。三层优化里的第一层，风险必须为零 —— 报告是全局共享缓存。
+ */
+
+/**
+ * 网页版面的样板行首词：博查的 content 是**整页正文的机器摘要**，尾部常挂着一批与新闻本身
+ * 无关的样板文字（「责任编辑：张三」「原标题：…」「点击进入专题」「更多精彩内容请下载…」
+ * 「版权声明」「相关推荐」）。它们对报告零贡献，却按字计费 —— 单条上限 1000 字时这类尾巴
+ * 能吃掉一成以上的预算。
+ */
+const NOISE_LINE_HEADS = [
+  '责任编辑',
+  '责编',
+  '编辑',
+  '来源',
+  '原标题',
+  '本文来源',
+  '文章出处',
+  '版权声明',
+  '免责声明',
+  '特别声明',
+  '未经授权',
+  '转载请注明',
+  '转载请',
+  '点击查看',
+  '点击进入',
+  '点击阅读',
+  '更多精彩',
+  '更多内容',
+  '相关推荐',
+  '相关阅读',
+  '延伸阅读',
+  '猜你喜欢',
+  '热门推荐',
+  '扫码关注',
+  '长按识别',
+  '关注我们',
+  '投稿邮箱'
+]
+
+/**
+ * 单行是否「整行都是版面样板」。
+ *
+ * 判据刻意收得很紧：**行首命中词表 + 后接分隔符或空格 + 整行够短**。三者缺一即不判样板 ——
+ * 「来源：新华社」是样板，而「来源不明的传闻在社交平台扩散」是正文本身。宽松匹配（只要行里
+ * 出现「来源」就删）会把真新闻删掉，猜错的代价是往共享缓存里写坏内容。
+ */
+function isNoiseLine(line: string): boolean {
+  const s = line.trim()
+  if (s === '') return false
+  for (const head of NOISE_LINE_HEADS) {
+    if (!s.startsWith(head)) continue
+    const tail = s.slice(head.length)
+    if (/^[\s:：]/.test(tail) && s.length <= head.length + 40) return true
+  }
+  return false
+}
+
+/**
+ * 剥离正文里的样板行。只做整行删除，不做行内裁剪 —— 「这句话有没有用」猜不出来，猜错就是坏内容
+ * （与 utils/text 同一原则：只做确定性替换，不猜测内容）。
+ *
+ * 兜底：若剥离后一行不剩，判据在本条上明显失灵（正文恰好全是「编辑」「来源」开头的短句），
+ * 原样返回 —— 宁可多带噪声，也不能让一条素材变成空正文。
+ */
+function pruneNewsBody(text: string): string {
+  if (text === '') return text
+  const lines = text.split('\n')
+  const kept = lines.filter((line) => !isNoiseLine(line))
+  if (kept.every((line) => line.trim() === '')) return text
+  return kept.join('\n').trim()
+}
+
+/*
+ * ═══ L1：正文的句子级抽取与同源判重（2026-10-10） ═══
+ *
+ * 全文条目是输入的大头（10 条 × 1000 字 ≈ 免费档预算的三分之二），而报告真正用得上的
+ * 只是其中一部分句子。这一层做两件事，**只动正文、不动条数与出处**：
+ *   · 抽取：首句（导语）必留，其余按信号（人名 / 引语 / 数字）挑**整句**，不足再按序补齐；
+ *   · 判重：同事件组内与组代表几乎是同一篇稿的（通讯社供稿被多家转载），不再重复送正文片段。
+ * 抽出来的一律是**原文切片** —— 不是模型改写、不是摘要生成，所以出处仍然对得上，
+ * 「事实仅基于素材、每条可溯源」这条契约不受影响。
+ */
+
+/** 句子切分：句末标点 / 换行后断句，标点留在前一句里（不丢字符） */
+const SENTENCE_END = '。！？；!?;\n'
+/** 判重的可比长度：太短的正文算相似度没有意义（三五个字也可能「很像」），不参与判定 */
+const SAME_BODY_MIN_CHARS = 100
+/** 判重只比正文开头这一段：转载的差异通常在结尾的站点尾巴上，开头几乎逐字相同 */
+const SAME_BODY_PROBE_CHARS = 400
+
+/** 判重用的归一化正文：去样板行、去空白（标点保留 —— 标点是句子结构的证据） */
+function normalizeBody(text: string): string {
+  return pruneNewsBody(text).replace(/\s+/g, '')
+}
+
+/**
+ * 切句：按码点遍历逐个字符判断，不用正则 lookbehind（老 iOS 的 JSCore 会让整个正则字面量
+ * 编译失败，同 utils/text#dropLoneSurrogates 的取舍）。
+ */
+function splitSentences(text: string): string[] {
+  const out: string[] = []
+  let buf = ''
+  for (const ch of text) {
+    buf += ch
+    if (SENTENCE_END.indexOf(ch) >= 0) {
+      out.push(buf)
+      buf = ''
+    }
+  }
+  if (buf !== '') out.push(buf)
+  return out.filter((s) => s.trim() !== '')
+}
+
+/**
+ * 句子信号：含人名（+3，报告所有事实字段都围着这个人转）、含引号（+2，引语是 quotes 的原料）、
+ * 含数字（+1，票房 / 档期 / 年份这类硬信息）。
+ *
+ * 刻意不给「长句加分」：长句多半是复述与背景铺垫，恰恰是压缩最该砍的部分。
+ */
+function sentenceScore(sentence: string, name: string): number {
+  let score = 0
+  if (name !== '' && sentence.includes(name)) score += 3
+  if (/[「」『』“”‘’"']/.test(sentence)) score += 2
+  if (/\d/.test(sentence)) score += 1
+  return score
+}
+
+/**
+ * 句子级抽取：保序、保原文，只决定「留哪几句」。
+ *
+ * 三处兜底都是「宁可少省，不可写坏」：
+ *   · 短正文不抽（< extractMinChars）：省不下几个字，白担一层「看到的不是连续原文」的风险；
+ *   · 切不出多句就原样返回（无标点的正文、或本来就只剩两句）：抽取在此条上失效，不动它；
+ *   · 第二轮按序补齐到目标：信号不足时不能只留几句，句间上下文断掉后模型更容易读歪 ——
+ *     补进来的同样是整句原文，只是不带信号。
+ */
+function extractRelevantBody(body: string, name: string): string {
+  if (body.length <= EXTRACT_MIN_CHARS) return body
+  const sentences = splitSentences(body)
+  if (sentences.length <= 2) return body
+
+  const target = Math.min(RELEVANT_ITEM_CHARS, body.length)
+  const picked: boolean[] = new Array(sentences.length).fill(false)
+  /* 首句是导语：时间 / 地点 / 事件一句话交代，删了它后面的句子就没有锚点 */
+  picked[0] = true
+  let used = sentences[0].length
+
+  for (let i = 1; i < sentences.length && used < target; i++) {
+    if (sentenceScore(sentences[i], name) === 0) continue
+    picked[i] = true
+    used += sentences[i].length
+  }
+  for (let i = 1; i < sentences.length && used < target; i++) {
+    if (picked[i]) continue
+    picked[i] = true
+    used += sentences[i].length
+  }
+  /* 一句都没裁掉：省不出字符时返回原文，不制造无意义的差异 */
+  if (used >= body.length) return body
+  return sentences.filter((_, i) => picked[i]).join('')
+}
+
+/** 同源判重：两条正文在开头这 400 字里的字符二元组重合度（复用标题归组的 Dice） */
+function isSameBody(a: string, b: string): boolean {
+  if (a.length < SAME_BODY_MIN_CHARS || b.length < SAME_BODY_MIN_CHARS) return false
+  return (
+    dice(bigrams(a.slice(0, SAME_BODY_PROBE_CHARS)), bigrams(b.slice(0, SAME_BODY_PROBE_CHARS))) >=
+    SAME_BODY_RATIO
+  )
+}
+
+/** 素材段落（全文）：标题 / 来源 / url 前置，正文经 L1 抽取后随后 */
+function fullItemText(n: NewsItem, name: string): string {
+  const body = extractRelevantBody(pruneNewsBody(n.content), name)
+  const content = body.length > MAX_ITEM_CHARS ? `${clipText(body, MAX_ITEM_CHARS)}…` : body
   return `- ${n.title}（${n.source}）${n.url}\n${content}`
 }
 
 /**
  * 素材段落（压缩）：标题 / 来源 / url 全部保留（引用与溯源不受影响），只把正文换成片段。
  * 「正文从略」四个字是给模型看的信号：这条的细节它并不掌握，不该据此展开叙述。
+ *
+ * 截断走 clipText 而非裸 slice：单条正文的上限是**按字算预算**的地方，裸 slice 按 UTF-16
+ * 码元切会把 emoji / 生僻字切成半个字符，落进提示词后被模型照抄（同 utils/text 的口径）。
+ *
+ * `dropBody`（L1）：与组代表同一篇稿的转载条目只留出处行 —— 标记不变（仍是「正文从略」），
+ * 所以条数与溯源完全不受影响，省掉的只是重复文字。
  */
-function briefItemText(n: NewsItem): string {
-  const flat = n.content.replace(/\s+/g, ' ')
-  const snippet = flat.slice(0, BRIEF_ITEM_CHARS)
-  return `- ${n.title}（${n.source}）${n.url}\n（正文从略）${snippet}${flat.length > BRIEF_ITEM_CHARS ? '…' : ''}`
+function briefItemText(n: NewsItem, dropBody = false): string {
+  const head = `- ${n.title}（${n.source}）${n.url}\n（正文从略）`
+  if (dropBody) return head
+  const flat = pruneNewsBody(n.content).replace(/\s+/g, ' ')
+  const snippet = clipText(flat, BRIEF_ITEM_CHARS)
+  return `${head}${snippet}${flat.length > BRIEF_ITEM_CHARS ? '…' : ''}`
+}
+
+/**
+ * 背景资料段（P1，2026-10-10，配合 utils/search.ts#fetchBackground）。
+ *
+ * 为什么必须**单独成段**，而不是把两路素材混成一个数组：
+ *   · dynamics（近期动态）是报告最核心的一节，判据就是「近期」。背景线的 freshness 是
+ *     noLimit，混进同一份「素材」里，模型很容易把一条三年前的履历报道写成本周动态；
+ *   · 分成两段，模型才看得见「哪些是背景、哪些是近期」，各归各的节。
+ *
+ * 严格程度：**整体进 / 整体不进**（不做逐条裁剪），条目超上限时丢尾部 —— 背景段是补充，
+ * 宁缺毋滥；它的长度也从主线预算里扣掉（见 buildUserMessage），不让 user 消息冲破通道上限。
+ */
+const BACKGROUND_HEAD = [
+  '人物背景资料（不限时间，可能较旧）：',
+  '用途限定 —— 只用于 profile（人物档案）/ relations（关系图谱）/ timeline（经历履历）与 glossary；',
+  '**不要**据此写 dynamics（近期动态）与 controversies（争议与回应）：那两段只认上面「素材」里的内容。',
+  '出处的写法与上面一致：url 从下面各条原样复制。'
+].join('\n')
+
+/** 背景资料段的字数上限（约 12 条压缩条目）；这段长度从主线预算里扣，见 buildUserMessage */
+const MAX_BACKGROUND_CHARS = 3000
+
+/*
+ * ═══ L2：素材按报告模板的用途分块（2026-10-10） ═══
+ *
+ * 模板里各节的「食性」不同：dynamics / timeline / analysisPoints / stance 吃事件与时间，
+ * quotes / controversies 只吃原话。分成两块呈现，块头一句话点明用途，模型不必自己在一堆
+ * 条目里翻找「哪条有原话」。分块只改**呈现顺序**，条数、出处、压缩标记一律不动。
+ */
+const DYNAMIC_HEAD =
+  '【动态事件】以下条目含可确认的事件与时间（dynamics / timeline / analysisPoints / stance 取用）：'
+
+/** 另一块：只放带得动引语的条目 */
+const QUOTE_HEAD = '【言论表态】以下条目含可直接引用的原话（quotes / controversies 取用）：'
+
+/**
+ * 一条素材里是否有**可引用的原话**（L2 的归类判据）。
+ *
+ * 判据是「引号里夹着 10 个字以上」，而不是「正文里有引号」：新闻稿里的引号太常见
+ * （「某某表示」几乎每段都有），只按「有引号」分类会让绝大多数条目涌进言论块，分块就白分了。
+ */
+const QUOTABLE_INLINE = /[「“"][^」”"]{10,}[」”"]/
+
+function hasQuotableLine(content: string): boolean {
+  return QUOTABLE_INLINE.test(content)
+}
+
+/** 背景素材 → 提示词里的一段；空数组返回空串，调用方据此不加那一段 */
+function buildBackgroundText(background: NewsItem[]): string {
+  if (background.length === 0) return ''
+  const out = [BACKGROUND_HEAD]
+  let used = BACKGROUND_HEAD.length
+  let dropped = 0
+  for (const n of background) {
+    const line = briefItemText(n)
+    if (used + line.length + 1 > MAX_BACKGROUND_CHARS) {
+      dropped++
+      continue
+    }
+    out.push(line)
+    used += line.length + 1
+  }
+  if (dropped > 0) diagLog('warn', 'db', `背景资料超预算，${dropped} 条未进提示词`)
+  return out.join('\n')
 }
 
 /**
@@ -647,48 +1174,100 @@ function buildUserMessage(
   name: string,
   news: NewsItem[],
   focus: FocusCode,
-  member = false
+  member = false,
+  background: NewsItem[] = []
 ): string {
-  const budget = member ? MAX_USER_CHARS_MEMBER : MAX_USER_CHARS
+  /* 背景段先定稿：它**整体**占位，长度从总预算里扣（见下方 budget），主线才不会把它顶穿通道上限 */
+  const bg = buildBackgroundText(background)
+  /*
+   * 块头的长度同样先从总预算里扣（多扣 8 字余量）：块头是固定开销，不占素材的额度，
+   * 否则 final 会比通道上限多出两个块头的长度 —— 「user ≤ 上限」是硬约束，不能靠巧合成立。
+   */
+  const sectionOverhead = DYNAMIC_HEAD.length + QUOTE_HEAD.length + 8
+  const budget =
+    (member ? MAX_USER_CHARS_MEMBER : MAX_USER_CHARS) - (bg ? bg.length + 1 : 0) - sectionOverhead
   const head = [
     `名人：${name}`,
     `关注侧重：${focus === 'all' ? '综合（六段完整）' : FOCUS_LABEL[focus]}`,
-    '素材：'
+    '素材（按用途分组）：'
   ]
 
   /* 先分组分档、再按预算拼装：预算只在这一步起作用，避免边算边丢 */
-  const full: string[] = []
-  const brief: string[] = []
+  type Line = { text: string; quote: boolean }
+  const full: Line[] = []
+  const brief: Line[] = []
   groupByEvent(news).forEach((g, gi) => {
-    /* 同一事件的其余报道一律压缩：它是重复信息，最该给别的事件让位 */
-    g.rest.forEach((n) => brief.push(briefItemText(n)))
-    if (gi < FULL_ITEM_COUNT) full.push(fullItemText(g.lead))
-    else brief.push(briefItemText(g.lead))
+    /*
+     * 同一事件的其余报道一律压缩：它是重复信息，最该给别的事件让位。
+     * L1：其中「正文与组代表几乎是同一篇稿」的（通讯社供稿被多家转载）连片段也不再重复送出 ——
+     * 标记与普通压缩条目完全一致（仍是「正文从略」），条数与溯源不受影响，省掉的只是重复文字。
+     * L2：每条顺带记下它归属哪一块（含可引用原话 → 言论块），归类只看内容，不重排、不拆条。
+     */
+    const leadBody = normalizeBody(g.lead.content)
+    g.rest.forEach((n) =>
+      brief.push({
+        text: briefItemText(n, isSameBody(leadBody, normalizeBody(n.content))),
+        quote: hasQuotableLine(n.content)
+      })
+    )
+    const quote = hasQuotableLine(g.lead.content)
+    if (gi < FULL_ITEM_COUNT) full.push({ text: fullItemText(g.lead, name), quote })
+    else brief.push({ text: briefItemText(g.lead), quote })
   })
 
-  const out = [...head]
   /* used 恒等于 join('\n') 之后的真实长度：每条多算一个换行符，因此判断时要把换行一起算进去 */
   let used = head.join('\n').length
+  const kept: Line[] = []
   for (const line of full) {
     /* 首条无论如何保留：模型拿到空素材会凭空作答，比截断更糟（沿用改造前的兜底） */
-    if (out.length > head.length && used + line.length + 1 > budget) break
-    out.push(line)
-    used += line.length + 1
+    if (kept.length > 0 && used + line.text.length + 1 > budget) break
+    kept.push(line)
+    used += line.text.length + 1
   }
   let dropped = 0
   for (const line of brief) {
-    if (used + line.length + 1 > budget) {
+    if (used + line.text.length + 1 > budget) {
       dropped++
       continue
     }
-    out.push(line)
-    used += line.length + 1
+    kept.push(line)
+    used += line.text.length + 1
   }
   if (dropped > 0) {
     /* 只看日志的 warn（不抛错）：报告仍然生成，只是尾部条目没进提示词 */
     diagLog('warn', 'db', `素材超预算，${dropped} 条压缩条目未进提示词（${name}）`)
   }
-  return out.join('\n')
+
+  /*
+   * 出块：块内保持原有先后（事件组的顺序即重要性顺序），只把两类条目分开 ——
+   * 预算判定仍在上面完成，所以「装不下时丢尾部」的行为一字未变，只是丢的对象换成了块内尾部。
+   * 空块不输出块头：素材里一条可引用原话都没有时，不该留一个空标题给模型。
+   */
+  const dyn = kept.filter((l) => !l.quote).map((l) => l.text)
+  const quo = kept.filter((l) => l.quote).map((l) => l.text)
+  const parts = [head.join('\n')]
+  if (dyn.length > 0) parts.push(DYNAMIC_HEAD, dyn.join('\n'))
+  if (quo.length > 0) parts.push(QUOTE_HEAD, quo.join('\n'))
+  /* 背景段追加在最末：它是补充材料，被截断的永远是它后面没有的东西（上面那一步已扣掉它的额度） */
+  if (bg !== '') parts.push(bg)
+  const final = parts.join('\n')
+
+  /*
+   * 规模度量（L0，2026-10-10）：这一行是「输入过大」的仪表盘 —— 只读日志、不改行为。
+   * 全文段通常吃掉总预算的六到七成，调 L1/L2 之前先读它，别凭感觉砍素材：
+   *   · full 条数贴住 FULL_ITEM_COUNT（=10）且 user 贴住 budget ⇒ 预算已被全文段吃满；
+   *   · dropped > 0 ⇒ 连压缩条目都放不下了，是最该压缩的一档。
+   * 云开发控制台的日志按 'db' 归类，与素材超预算那条 warn 同一频道，便于对照。
+   */
+  const fullCount = kept.filter((l) => !l.text.includes('（正文从略）')).length
+  diagLog(
+    'info',
+    'db',
+    `报告提示词规模（${name}${member ? '·会员' : ''}）：素材 ${fullCount} 全文 / ${kept.length - fullCount} 压缩` +
+      `（动态 ${dyn.length} / 言论 ${quo.length}）` +
+      `${dropped > 0 ? ` / 丢弃 ${dropped}` : ''}，user ${final.length} 字（预算 ${budget}，背景 ${bg.length} 字）`
+  )
+  return final
 }
 
 /* ===== 发现页「关注」筛选 → 生成侧重（§2.3 六段中的可聚焦段） ===== */
@@ -723,15 +1302,21 @@ export async function buildReport(
   name: string,
   news: NewsItem[],
   focus: FocusCode = 'all',
-  opts: { member?: boolean } = {}
+  opts: { member?: boolean; background?: NewsItem[] } = {}
 ): Promise<ChatJSONResult<Report | { refused: true }>> {
   const member = opts.member === true
+  /*
+   * 背景素材（P1，2026-10-10）：与 news **分开**传 —— 它进 user 消息里单独的「人物背景资料」段，
+   * 且**不参与**热度与报道画像（那两项必须只用近期素材，否则同一个人「被谁生成过」会改变热度，
+   * 跨档就不可比了，见 sanitizeReport 里的 HEAT_COUNT_CAP 注释）。
+   */
+  const background = opts.background ?? []
   /* 补充要求按序叠加：侧重在先、会员专属在后（后者是本轮新加的一层，不覆盖既有取舍） */
   const hints = [FOCUS_HINT_REALTIME[focus], member ? MEMBER_HINT_REALTIME : ''].filter(
     (h) => h !== ''
   )
   const system = hints.length > 0 ? `${SYSTEM_REALTIME}\n${hints.join('\n')}` : SYSTEM_REALTIME
-  const user = buildUserMessage(name, news, focus, member)
+  const user = buildUserMessage(name, news, focus, member, background)
 
   const result = await chatJSON(system, user, LlmReportSchema)
   if (!result.ok) {
@@ -800,7 +1385,9 @@ export async function buildReport(
    * 字段都是防御式读取（?? ''），所以这条边界用一个显式断言收掉，比为了类型好看而放弃
    * .catch() 的运行时宽容更划算 —— 前者只是少一层类型检查，后者是「一个 null 让整份报告降级」。
    */
-  const report = sanitizeReport(personKey, name, result.data as LlmReportFields, news, focus)
+  const report = sanitizeReport(personKey, name, result.data as LlmReportFields, news, focus, {
+    background
+  })
   return { ok: true, data: report }
 }
 
@@ -967,7 +1554,7 @@ function strictSourceOf(basis: string | undefined, index: SourceIndex): string {
  * 2. quotes.source 为素材 url 或「据公开资料」，否则剔除
  * 3. heat 由 §1.6 公式本地计算；sentiment 已由 zod 枚举保证
  * 4. memberNotes 是会员专属段落，两段皆空则整段不落库（免费报告恒无此字段）
- * 5. analysisPoints 的 basis 同第 2 条（换成媒体名），空判断剔除、超 4 条截断；
+ * 5. analysisPoints 的 basis 同第 3 条（换成媒体名），空判断剔除、超 4 条截断；
  *    analysis 由各条拼出 —— 拆条不改变 analysis 这个字符串的存在性（问答上下文要用）
  * 6. conflicts 是会员专享段落，缺任一侧的条目剔除（只有一方在说话不叫分歧）
  * 7. 第二批（profile / relations / watchlist / controversies）：basis 必须是**真素材**，
@@ -980,12 +1567,19 @@ export function sanitizeReport(
   name: string,
   llm: LlmReportFields,
   news: NewsItem[],
-  focus: FocusCode = 'all'
+  focus: FocusCode = 'all',
+  opts: { background?: NewsItem[] } = {}
 ): Report {
   /* 出处索引：本函数所有段落共用。它把「模型抄歪一点的 URL」「写成媒体名」都算作有效出处
      （理由见 buildSourceIndex）—— 逐字符全等会把明明确定、只是写法不同的出处判成没有出处，
      代价是整条事实消失，而用户看到的就是「报告少了一块」。 */
-  const srcIndex = buildSourceIndex(news)
+  /*
+   * ⚠ 背景线素材**只进这个索引**（P1，2026-10-10）：档案 / 关系 / 时间线的 basis 允许指向它，
+   * 否则「用背景资料写出来的档案」会因指不出近期素材而被整条剔除 —— 那等于白跑一路检索。
+   * 而下面的热度与报道画像**仍然只用 news**：背景素材不限时间，混进去会让 coverage 的
+   * items / latestAt 失真，也会让同一个人「被谁生成过」改变 heat（跨档不可比）。
+   */
+  const srcIndex = buildSourceIndex([...news, ...(opts.background ?? [])])
 
   const normSentiment = (s?: string): 'positive' | 'neutral' | 'negative' =>
     s === 'positive' || s === 'negative' ? s : 'neutral'
@@ -1008,9 +1602,10 @@ export function sanitizeReport(
     if (!hit) continue
     dynamics.push({
       date: d.date ?? '',
-      title: d.title || hit.title,
-      summary: d.summary ?? '',
-      source: d.source || hit.source,
+      /* title / summary 是段落级文本（提示词只要一句摘要，但字段本身无上限），故只净化不截断 */
+      title: cleanText(d.title) || cleanText(hit.title),
+      summary: cleanText(d.summary),
+      source: cleanText(d.source) || cleanText(hit.source),
       url: hit.url,
       sentiment: normSentiment(d.sentiment)
     })
@@ -1024,11 +1619,12 @@ export function sanitizeReport(
        与凭空说一个有出处不是一回事，而语录本身是核心内容，不该因此整段消失。 */
     if (raw !== '' && raw !== '据公开资料' && !hit) continue
     quotes.push({
-      text: q.text,
-      context: q.context ?? '',
+      /* text 是语录原文、报告的核心内容：只净化不截断（把一句名言截半，等于改了它） */
+      text: cleanText(q.text),
+      context: cleanText(q.context),
       /* 背景 / 注解：自由文本，照旧「去空 + 收敛长度」；空串保留（UI 按空串决定渲不渲染那一段） */
-      background: (q.background ?? '').trim().slice(0, QUOTE_NOTE_CHARS),
-      note: (q.note ?? '').trim().slice(0, QUOTE_NOTE_CHARS),
+      background: clipText(q.background, QUOTE_NOTE_CHARS),
+      note: clipText(q.note, QUOTE_NOTE_CHARS),
       /* 落库用素材里的原始 URL：quote-check 要靠这一串精确对上动态 / 来源清单，
          两边都换成素材原串才匹配得上（此前是模型抄来的那串，抄歪了就永远对不上） */
       source: hit ? hit.url : '据公开资料'
@@ -1046,11 +1642,16 @@ export function sanitizeReport(
   const timeline = (llm.timeline ?? []).map((t) => ({ date: t.date ?? '', event: t.event ?? '' }))
   /* 话题态度：topic / note 是自由文本，没有像 url 那样可白名单的锚点，
      只能做「去空 + 限条数 + 收敛长度」，因此它排在各段之后（见附录 B 的校验顺序） */
+  /*
+   * 文本落库口径（2026-10-10）：有长度上限的一律走 clipText（净化 + 按字形簇截断），段落级
+   * 无上限的走 cleanText（只净化）。裸 slice 按 UTF-16 码元切，会把 emoji 与生僻字切成半个，
+   * 落库即坏字符 —— 而报告是全局共享缓存，坏字符会被全站读到。详见 utils/text.ts。
+   */
   const stance = (llm.stance ?? [])
     .map((s) => ({
-      topic: (s.topic ?? '').trim(),
+      topic: cleanText(s.topic),
       attitude: normStance(s.attitude),
-      note: (s.note ?? '').trim().slice(0, 60)
+      note: clipText(s.note, 60)
     }))
     .filter((s) => s.topic !== '')
     .slice(0, 4)
@@ -1066,7 +1667,7 @@ export function sanitizeReport(
   /* 点评拆条（本轮）：basis 是 url 引用位，与 quotes.source 走同一套出处匹配（srcIndex） */
   const analysisPoints = (llm.analysisPoints ?? [])
     .map((p) => ({
-      point: (p.point ?? '').trim().slice(0, ANALYSIS_POINT_CHARS),
+      point: clipText(p.point, ANALYSIS_POINT_CHARS),
       basis: sourceNameOf(p.basis, srcIndex)
     }))
     .filter((p) => p.point !== '')
@@ -1076,16 +1677,17 @@ export function sanitizeReport(
    *   它是问答上下文（utils/qa.ts 读的是这个字符串）与老 UI / 分享文案的出口，
    *   拆条只是让它多了一份结构化形态，不能让它断供。
    * 各条已按提示词要求以句号结尾，拼装时补一次句号，兜住模型偶发的漏写。
+   * 回落分支（降级简版的一整段文字）无长度上限，故只净化不截断。
    */
   const analysis =
     analysisPoints.length > 0
       ? analysisPoints.map((p) => (/[。！？!?]$/.test(p.point) ? p.point : `${p.point}。`)).join('')
-      : llm.analysis ?? ''
+      : cleanText(llm.analysis)
 
   /* 会员专属段落（O-11）：两段都空就整个字段不落库 —— UI 按「有没有这个字段」决定出不出一张卡 */
   const notes = llm.memberNotes
-  const noteCompare = (notes?.compare ?? '').trim().slice(0, MEMBER_NOTE_CHARS)
-  const noteRisk = (notes?.risk ?? '').trim().slice(0, MEMBER_NOTE_CHARS)
+  const noteCompare = clipText(notes?.compare, MEMBER_NOTE_CHARS)
+  const noteRisk = clipText(notes?.risk, MEMBER_NOTE_CHARS)
   const memberNotes = noteCompare !== '' || noteRisk !== '' ? { compare: noteCompare, risk: noteRisk } : undefined
 
   /*
@@ -1095,9 +1697,9 @@ export function sanitizeReport(
    */
   const conflicts = (llm.conflicts ?? [])
     .map((c) => ({
-      topic: (c.topic ?? '').trim().slice(0, CONFLICT_TOPIC_CHARS),
-      a: (c.a ?? '').trim().slice(0, CONFLICT_SIDE_CHARS),
-      b: (c.b ?? '').trim().slice(0, CONFLICT_SIDE_CHARS)
+      topic: clipText(c.topic, CONFLICT_TOPIC_CHARS),
+      a: clipText(c.a, CONFLICT_SIDE_CHARS),
+      b: clipText(c.b, CONFLICT_SIDE_CHARS)
     }))
     .filter((c) => c.topic !== '' && c.a !== '' && c.b !== '')
     .slice(0, CONFLICT_MAX)
@@ -1110,8 +1712,8 @@ export function sanitizeReport(
    */
   const profile = (llm.profile ?? [])
     .map((p) => ({
-      label: (p.label ?? '').trim().slice(0, PROFILE_LABEL_CHARS),
-      value: (p.value ?? '').trim().slice(0, PROFILE_VALUE_CHARS),
+      label: clipText(p.label, PROFILE_LABEL_CHARS),
+      value: clipText(p.value, PROFILE_VALUE_CHARS),
       basis: strictSourceOf(p.basis, srcIndex)
     }))
     .filter((p) => p.label !== '' && p.value !== '' && p.basis !== '')
@@ -1119,9 +1721,9 @@ export function sanitizeReport(
 
   const relations = (llm.relations ?? [])
     .map((r) => ({
-      name: (r.name ?? '').trim().slice(0, RELATION_NAME_CHARS),
+      name: clipText(r.name, RELATION_NAME_CHARS),
       relation: normRelation(r.relation),
-      note: (r.note ?? '').trim().slice(0, RELATION_NOTE_CHARS),
+      note: clipText(r.note, RELATION_NOTE_CHARS),
       basis: strictSourceOf(r.basis, srcIndex)
     }))
     .filter((r) => r.name !== '' && r.basis !== '')
@@ -1129,8 +1731,8 @@ export function sanitizeReport(
 
   const watchlist = (llm.watchlist ?? [])
     .map((w) => ({
-      when: (w.when ?? '').trim().slice(0, WATCH_WHEN_CHARS),
-      what: (w.what ?? '').trim().slice(0, WATCH_WHAT_CHARS),
+      when: clipText(w.when, WATCH_WHEN_CHARS),
+      what: clipText(w.what, WATCH_WHAT_CHARS),
       basis: strictSourceOf(w.basis, srcIndex)
     }))
     .filter((w) => w.when !== '' && w.what !== '' && w.basis !== '')
@@ -1142,8 +1744,8 @@ export function sanitizeReport(
    */
   const glossary = (llm.glossary ?? [])
     .map((g) => ({
-      term: (g.term ?? '').trim().slice(0, GLOSSARY_TERM_CHARS),
-      explain: (g.explain ?? '').trim().slice(0, GLOSSARY_EXPLAIN_CHARS)
+      term: clipText(g.term, GLOSSARY_TERM_CHARS),
+      explain: clipText(g.explain, GLOSSARY_EXPLAIN_CHARS)
     }))
     .filter((g) => g.term !== '' && g.explain !== '')
     .slice(0, GLOSSARY_MAX)
@@ -1151,13 +1753,45 @@ export function sanitizeReport(
   /* 争议与回应：response 允许空串（素材里没有公开回应是常态），故它不进 filter 条件 */
   const controversies = (llm.controversies ?? [])
     .map((c) => ({
-      topic: (c.topic ?? '').trim().slice(0, CONTROVERSY_TOPIC_CHARS),
-      claim: (c.claim ?? '').trim().slice(0, CONTROVERSY_CLAIM_CHARS),
-      response: (c.response ?? '').trim().slice(0, CONTROVERSY_RESPONSE_CHARS),
+      topic: clipText(c.topic, CONTROVERSY_TOPIC_CHARS),
+      claim: clipText(c.claim, CONTROVERSY_CLAIM_CHARS),
+      response: clipText(c.response, CONTROVERSY_RESPONSE_CHARS),
       basis: strictSourceOf(c.basis, srcIndex)
     }))
     .filter((c) => c.topic !== '' && c.claim !== '' && c.basis !== '')
     .slice(0, CONTROVERSY_MAX)
+
+  /*
+   * 本系统的客观评价（批 2）：评价/判断类字段，**不带出处**（它答的是「怎么看」而非「是什么」，
+   * 与 glossary 同一性质，只是更长）。只做「去空 + 收敛长度」；两段都空就不落库（UI 整卡不出，
+   * 与 memberNotes 同一口径 —— 「没给评价」与「给了空评价」在呈现上无差别，都该不出卡）。
+   */
+  const verdictRaw = llm.verdict
+  const verdictSummary = clipText(verdictRaw?.summary, 60)
+  const verdictPositioning = clipText(verdictRaw?.positioning, 60)
+  const verdict =
+    verdictSummary !== '' || verdictPositioning !== ''
+      ? { summary: verdictSummary, positioning: verdictPositioning }
+      : undefined
+
+  /* 口碑两极 / 言行一致度（批 2）：与 verdict 同一套「评价类、不带出处、去空 + 收敛长度」。
+     口碑两极：两侧都空则整段不落库；言行一致度：claim/act/gap 三者都空则不落库。 */
+  const reputationRaw = llm.reputation
+  const reputationPositive = clipText(reputationRaw?.positive, 60)
+  const reputationNegative = clipText(reputationRaw?.negative, 60)
+  const reputation =
+    reputationPositive !== '' || reputationNegative !== ''
+      ? { positive: reputationPositive, negative: reputationNegative }
+      : undefined
+
+  const consistencyRaw = llm.consistency
+  const consistencyClaim = clipText(consistencyRaw?.claim, 40)
+  const consistencyAct = clipText(consistencyRaw?.act, 40)
+  const consistencyGap = clipText(consistencyRaw?.gap, 40)
+  const consistency =
+    consistencyClaim !== '' || consistencyAct !== '' || consistencyGap !== ''
+      ? { claim: consistencyClaim, act: consistencyAct, gap: consistencyGap }
+      : undefined
 
   /* 事实字段被剔除的条数单独记一笔：它是「不做推断」这道闸门在真实生成里生效的证据 */
   const factDropped =
@@ -1198,7 +1832,10 @@ export function sanitizeReport(
     glossary: glossary.length,
     controversies: controversies.length,
     conflicts: conflicts.length,
-    memberNotes: memberNotes ? 1 : 0
+    memberNotes: memberNotes ? 1 : 0,
+    verdict: verdict ? 1 : 0,
+    reputation: reputation ? 1 : 0,
+    consistency: consistency ? 1 : 0
   })
 
   return {
@@ -1207,7 +1844,8 @@ export function sanitizeReport(
     mode: 'realtime',
     generatedAt: new Date().toISOString(),
     heat,
-    intro: llm.intro ?? '',
+    /* intro 是整篇报告的门面（也是分享卡片上的那段话），段落级无上限：只净化不截断 */
+    intro: cleanText(llm.intro),
     dynamics,
     quotes,
     analysis,
@@ -1235,6 +1873,9 @@ export function sanitizeReport(
     watchlist,
     glossary,
     controversies,
+    ...(verdict ? { verdict } : {}),
+    ...(reputation ? { reputation } : {}),
+    ...(consistency ? { consistency } : {}),
     disclaimer: DISCLAIMER,
     focus,
     coverage: buildCoverage(news)

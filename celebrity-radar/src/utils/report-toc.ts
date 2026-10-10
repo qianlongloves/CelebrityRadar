@@ -1,11 +1,18 @@
 import type { Report } from './report'
 
 /**
- * 报告页目录（本轮）：把「这份报告**实际**呈现了哪些节」集中在这里算，页面只管渲染与跳转。
+ * 报告模板 + 目录（2026-10-10：目录升级成**模板**）。
+ *
+ * 此前这里只有「这份报告实际呈现了哪些节」这一个问题；现在它是两件事的第一性来源：
+ *   1. **模板**：报告由哪些节组成、每节属于哪一档（`REPORT_TEMPLATE`）；
+ *   2. **目录**：给定一份报告 + 读者身份，这一档实际看得到哪几节（`buildReportToc`）。
+ * 免费与会员看的是同一份模板，差别只在「哪一档」—— 相关口径集中在这一个文件，
+ * 页面、会员权益文案都从它取数，不各自再写一份名单。
  *
  * 为什么单独立一个纯函数，而不是在页面里就地写一个数组：
- * 报告页的卡片已经从最初六段涨到十七节，其中一半是条件渲染（降级简版、老报告的字段缺失、
- * 端上聚合的门槛、会员态）。目录若与页面条件各写一份，**增删一段必然有一处对不上** ——
+ * 报告页的卡片已经从最初六段涨到十五节（2026-10-10 撤销三张工具视图后），其中一部分是
+ * 条件渲染（降级简版、老报告的字段缺失、端上聚合的门槛、会员档）。目录若与页面条件各写一份，
+ * **增删一段必然有一处对不上** ——
  * 要么目录里点得动、页面里没有这张卡（点了没反应），要么页面有卡、目录里找不到入口。
  * 这与 utils/member.ts#presentSections 是同一条理由：「哪些段落算专享」那种口径一旦散进页面，
  * 就会失控。放在这里还有一个直接好处：**可以被测试钉住**（见 test/cases/01-pure.js）。
@@ -17,14 +24,43 @@ import type { Report } from './report'
  * 标签刻意比卡片标题短（「争议与回应」对应卡片上的「近期争议与回应」）：
  * 目录是胶囊条，标签长了排版就散；用户点进去看到全称不算落差。
  */
+
+/** 档位：free = 免费用户与会员都看得到；member = 只有会员档才渲染的节 */
+export type TocTier = 'free' | 'member'
+
 export interface TocSection {
   /** 锚点 id：页面卡片上的 `id` 属性必须与它一字不差（页面直接拿它拼 `#${id}` 跳转） */
   id: string
   label: string
 }
 
+/**
+ * 目录分组（2026-10-10 三改）：18 节平铺成一格格胶囊后，「人物速览」与「名词解释」并排、
+ * 「AI 点评」与「热度趋势」相邻，读起来是一堆无序的词 —— 分组给它们一条阅读线索。
+ *
+ * 分组**不改顺序**，只是给相邻的几节贴同一张标签：页面仍按模板顺序渲染卡片，目录也仍是
+ * 同一条顺序。若分组把顺序打乱（先列完所有组，某些组又跳回前面），点完「明细」里的时间线
+ * 再看到「深度」的词云，目录就不再是导航了。故有一条硬约束：
+ * **同一组在模板里必须是连续的一段** —— 由 01-pure.js「分组不得打断顺序」那条用例钉住。
+ */
+export type TocGroupKey = 'identity' | 'facts' | 'judgement' | 'detail'
+
+export interface TocGroup {
+  key: TocGroupKey
+  /** 组标签：它不是一节，是给几节归类的行首小字，故比节标签更短 */
+  label: string
+}
+
+/** 组的顺序 = 页面呈现顺序（与模板顺序一致） */
+export const TOC_GROUPS: TocGroup[] = [
+  { key: 'identity', label: '基本档案' },
+  { key: 'facts', label: '事实' },
+  { key: 'judgement', label: '判断与风险' },
+  { key: 'detail', label: '细节与延伸' }
+]
+
 export interface TocOptions {
-  /** 当前是否会员：会员专享那一节只对会员渲染（免费用户整卡不出，见页面注释） */
+  /** 当前是否会员：会员档的节（tier === 'member'）只对会员列出 / 渲染 */
   member: boolean
   /**
    * 「人物速览」那一节是否会出现。
@@ -34,44 +70,163 @@ export interface TocOptions {
   hasOverview: boolean
 }
 
-export function buildReportToc(report: Report | null | undefined, opts: TocOptions): TocSection[] {
-  if (!report) return []
+/** 模板里的一节：目录条目 + 档位 + 可见性条件 */
+export interface ReportTemplateSection {
+  id: string
+  label: string
+  tier: TocTier
+  /** 目录里归到哪一组（见 TOC_GROUPS；同组必须在模板里连续） */
+  group: TocGroupKey
+  /** 这一节在**给定报告**上会不会出现（与 pages/report 卡片的外层条件平行） */
+  visible: (report: Report, opts: TocOptions) => boolean
+}
 
-  const list: TocSection[] = []
-  const add = (id: string, label: string) => list.push({ id, label })
+/** 「不是降级简版」—— 大多数节的共同门槛（降级简版整份只剩警示条） */
+const ready = (report: Report) => !report.degraded
 
-  /* 顺序 = pages/report/index.tsx 里卡片的渲染顺序 */
-  if (opts.hasOverview) add('sec-overview', '人物速览')
+/**
+ * 报告模板（顺序 = pages/report/index.tsx 里卡片的渲染顺序）。
+ *
+ * 分档口径（2026-10-10 定，改档位要同时跑报告页与会员页的用例）：
+ *   · **免费档给「事实与判断」** —— 人物速览 / 简介 / 人物档案 / 关系图谱 / 近期动态 /
+ *     经典名言 / AI 点评 / 争议与回应 / 风险雷达 / 立场与舆情 / 时间线 / 后续关注 / 名词解释。
+ *     这批是报告的主体，也是别处的下游：立场与舆情被对比页 / 话题速览 / 问答当上下文用，
+ *     时间线被周报的「动态时间线」用，风险雷达与风险监控同源 —— 抽掉任何一节都不只是
+ *     「报告页少张卡」，故一律留在免费档。
+ *   · **会员档给「商业速览 + 专享解析」** —— 商业价值速览 ＋ 会员专享卡
+ *     （对比视角 / 风险提示 / 信源分歧，其内容由 MEMBER_HINT_REALTIME 单独请求，免费档
+ *     的报告里根本不存在这几段）。2026-10-10 起，原「分析视图」里的三张工具视图
+ *     （关键词云 / 语录主题 / 热度趋势）已删除 —— 它们回答的是「素材长什么样」而非
+ *     「这个人怎么样」，与用户诉求不符。
+ *
+ * ⚠ 与提示词的关系：模板只决定**渲染哪几节**，不改变报告的生成本身 —— 报告仍是全局共享缓存
+ *   （personKey 唯一键，免费/会员同读一份）。会员档里唯一「数据上真的没有」的是
+ *   memberNotes / conflicts 这三段文字段（见 utils/member.ts#stripMemberSections）与
+ *   提示词的关系记在 utils/report.ts 的 MEMBER_HINT_REALTIME 上。
+ */
+export const REPORT_TEMPLATE: ReportTemplateSection[] = [
+  /* ── 基本档案：先回答「是谁」。
+     商业速览（会员档）也归这一组 —— 它讲的是同一个人的商业面，位置又紧挨着关系图谱，
+     正好构成连续的 identity 段（组必须连续，见 TOC_GROUPS 的说明）。 */
+  { id: 'sec-overview', label: '人物速览', tier: 'free', group: 'identity', visible: (_r, o) => o.hasOverview },
   /* 简介：降级简版且没有 intro 时，空态卡与实体卡两个分支都不成立 */
-  if (!report.degraded || report.intro) add('sec-intro', '简介')
-  if (report.profile) add('sec-profile', '人物档案')
-  if (report.relations) add('sec-relations', '关系图谱')
-  /* 商业价值速览（第 0 期）：非降级简版恒出卡 —— 门槛只决定卡里是速览还是「缺什么」的说明，
-     两种形态都是一张可读的卡，故目录里始终列它（utils/commercial.ts 的 ready 不参与这里） */
-  if (!report.degraded) add('sec-commercial', '商业速览')
-  if (!report.degraded) {
-    add('sec-dynamics', '近期动态')
-    add('sec-quotes', '经典名言')
-  }
+  { id: 'sec-intro', label: '简介', tier: 'free', group: 'identity', visible: (r) => !r.degraded || !!r.intro },
+  /* 本系统评价（批 2）：verdict / reputation / consistency 任一存在才出卡 —— 老报告没有这些字段，整卡不出 */
+  { id: 'sec-verdict', label: 'AI 解读', tier: 'free', group: 'identity', visible: (r) => !!(r.verdict || r.reputation || r.consistency) },
+  { id: 'sec-profile', label: '人物档案', tier: 'free', group: 'identity', visible: (r) => !!r.profile },
+  { id: 'sec-relations', label: '关系图谱', tier: 'free', group: 'identity', visible: (r) => !!r.relations },
+  /* 商业价值速览（第 0 期，会员档）：非降级简版恒出卡 —— 门槛只决定卡里是速览还是
+     「缺什么」的说明，两种形态都是一张可读的卡，故目录里始终列它 */
+  { id: 'sec-commercial', label: '商业速览', tier: 'member', group: 'identity', visible: ready },
+  /* ── 事实：素材原样统计出来的那两段（不掺模型判断），是下面「判断」的取材处 */
+  { id: 'sec-dynamics', label: '近期动态', tier: 'free', group: 'facts', visible: ready },
+  { id: 'sec-quotes', label: '经典名言', tier: 'free', group: 'facts', visible: ready },
+  /*
+   * ── 判断与风险：AI 点评 / 争议 / 风险雷达 + 会员专享（它本身就是「对比视角 / 风险提示 /
+   * 信源分歧」三条判断，位置紧接风险雷达，构成连续的 judgement 段）。
+   */
   /* AI 点评有三个分支（降级简版 / 无正文空态 / 实体），至少命中一个 → 始终在 */
-  add('sec-analysis', 'AI 点评')
+  { id: 'sec-analysis', label: 'AI 点评', tier: 'free', group: 'judgement', visible: () => true },
   /*
    * P2-13（2026-10-09）：条件从 `report.controversies` 改为 `!report.degraded` —— 卡片在
    * **缺这一段**时也会出现（说明「这一段缺数据 ≠ 确认没有争议」），目录若还按字段判，
    * 就会出现「页面有卡、目录里点不到」。与 sec-risk 同一口径，两条放在一起。
    */
-  if (!report.degraded) add('sec-controversies', '争议与回应')
-  if (!report.degraded) add('sec-risk', '风险雷达')
-  if (opts.member && !report.degraded) add('sec-member', '会员专享')
-  if (!report.degraded) {
-    add('sec-stance', '立场与舆情')
-    add('sec-cloud', '关键词云')
-    add('sec-qtheme', '语录主题')
-    add('sec-trend', '热度趋势')
-    add('sec-timeline', '时间线')
-  }
-  if (report.watchlist) add('sec-watchlist', '后续关注')
-  if (report.glossary) add('sec-glossary', '名词解释')
+  { id: 'sec-controversies', label: '争议与回应', tier: 'free', group: 'judgement', visible: ready },
+  { id: 'sec-risk', label: '风险雷达', tier: 'free', group: 'judgement', visible: ready },
+  { id: 'sec-member', label: '会员专享', tier: 'member', group: 'judgement', visible: ready },
+  /*
+   * ── 立场与舆情（免费档）：「大众怎么看 TA」本是判断类，故归入上面的判断组。
+   * 2026-10-10 起撤销「深度视图」组：关键词云 / 语录主题 / 热度趋势三张工具视图已删除
+   * （它们回答的是「素材长什么样」而非「这个人怎么样」，见 CHANGELOG 批 25），
+   * 本组随之取消，这一节是唯一剩下的，被对比页 / 话题速览 / 问答当上下文用。
+   */
+  { id: 'sec-stance', label: '立场与舆情', tier: 'free', group: 'judgement', visible: ready },
+  /* ── 细节与延伸：时间轴、还没发生的、看不懂的词 */
+  { id: 'sec-timeline', label: '时间线', tier: 'free', group: 'detail', visible: ready },
+  { id: 'sec-watchlist', label: '后续关注', tier: 'free', group: 'detail', visible: (r) => !!r.watchlist },
+  { id: 'sec-glossary', label: '名词解释', tier: 'free', group: 'detail', visible: (r) => !!r.glossary }
+]
 
-  return list
+/** 模板总节数（**名义值**：不随某一份报告降级 / 缺字段而变，权益文案与目录提示取它） */
+export const TEMPLATE_SIZE = REPORT_TEMPLATE.length
+
+/** 会员档独有的节（顺序即页面顺序），权益文案与目录提示的唯一来源 */
+export const MEMBER_ONLY_SECTIONS = REPORT_TEMPLATE.filter((s) => s.tier === 'member')
+
+/** 会员档独有节数 */
+export const MEMBER_TOC_COUNT = MEMBER_ONLY_SECTIONS.length
+
+/** 免费档可见节数（名义值） */
+export const FREE_TOC_COUNT = TEMPLATE_SIZE - MEMBER_TOC_COUNT
+
+/** 会员档独有的节名（顺序即页面顺序） */
+export function memberOnlyTocLabels(): string[] {
+  return MEMBER_ONLY_SECTIONS.map((s) => s.label)
+}
+
+/**
+ * 这一档实际要列出的**模板项**（含档位与分组）：先按档筛（免费档滤掉 member 节），
+ * 再按报告内容滤。顺序 = 模板顺序 = 页面卡片顺序。
+ *
+ * `buildReportToc`（平铺）与 `buildReportTocGroups`（分组）都只从这里取材，
+ * 于是「分好组再拍平」必然等于「平铺目录」—— 两个视图不会各说各话。
+ */
+function visibleSections(
+  report: Report | null | undefined,
+  opts: TocOptions
+): ReportTemplateSection[] {
+  if (!report) return []
+  return REPORT_TEMPLATE.filter((s) => s.tier === 'free' || opts.member).filter((s) =>
+    s.visible(report, opts)
+  )
+}
+
+/** 这一档的目录（平铺）：页面顶部的「目录 · N 节」与测试都用它 */
+export function buildReportToc(report: Report | null | undefined, opts: TocOptions): TocSection[] {
+  return visibleSections(report, opts).map(({ id, label }) => ({ id, label }))
+}
+
+/** 目录的一个分组块：组标签 + 这一档在这一组里实际要列的节（空组不返回，不占一行标题） */
+export interface TocGroupBlock {
+  key: TocGroupKey
+  label: string
+  sections: TocSection[]
+}
+
+/**
+ * 分好组的目录（页面的目录展开态渲染它）：把 `visibleSections` 按 `group` 切块，
+ * **组内保持模板顺序**，组间按 `TOC_GROUPS` 顺序。
+ *
+ * 空组不返回：某一档的组只剩一节也算有（一节也要有组标签，否则那颗胶囊会孤零零挂在
+ * 上一个组底下），但一节都没有的组连标题都不该出现 —— 标题行本身占 40rpx，空白组是纯浪费。
+ */
+export function buildReportTocGroups(
+  report: Report | null | undefined,
+  opts: TocOptions
+): TocGroupBlock[] {
+  const all = visibleSections(report, opts)
+  return TOC_GROUPS.map((g) => ({
+    key: g.key,
+    label: g.label,
+    sections: all.filter((s) => s.group === g.key).map(({ id, label }) => ({ id, label }))
+  })).filter((b) => b.sections.length > 0)
+}
+
+/**
+ * 免费读者**看不到**的会员档节：目录底部那行「会员另含 N 节」用它。
+ *
+ * 按「会员会看到什么」来判（`visible` 用 `member: true` 求值），而不是按手里这份报告
+ * 有没有对应字段 —— 免费读者拿到的 Report 里那些节**本来就被摘掉了**，
+ * 从它自己算恒为空（同 utils/member.ts#presentLockedSections 的取舍）。
+ * 会员传进来返回空数组（他自己就看得见，不需要这行提示）。
+ */
+export function lockedReportToc(
+  report: Report | null | undefined,
+  opts: TocOptions
+): TocSection[] {
+  if (!report || opts.member) return []
+  return MEMBER_ONLY_SECTIONS.filter((s) => s.visible(report, { ...opts, member: true })).map(
+    ({ id, label }) => ({ id, label })
+  )
 }

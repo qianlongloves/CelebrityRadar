@@ -2,6 +2,7 @@
 @import './_bell.scss';
 @import './_alert.scss';
 @import './_feed.scss';
+@import './_weekly.scss';
 
 /* 雷达扫描（加载态）：命名加 pi- 前缀，避免与其他页面/组件的动画同名冲突 */
 @keyframes pi-radar-spin {
@@ -73,9 +74,9 @@
   }
 
   /* 关注流入口（原底部菜单第二格，2026-10-09 由文字胶囊改为图标按钮）。
-     与铃铛 / 预警同构：白圆 56rpx + 卡片阴影 + 居中图标 —— 头部右侧三个入口
+     与铃铛 / 预警同构：白圆 56rpx + 卡片阴影 + 居中图标 —— 头部右侧四个入口
      同形同尺寸，扫一眼就能定位，不再靠文字宽窄分主次。
-     原先胶囊里的「关注 N」计数随之去掉：计数属于页面内的信息，而三个圆钮并排时
+     原先胶囊里的「关注 N」计数随之去掉：计数属于页面内的信息，而四个圆钮并排时
      多一个数字只会让这一行显得参差；关注态在榜单卡片上本来就有（已关注 / + 关注）。
      入口依然常显（0 关注也在）：它是本页通向「关注的人都在说什么」的唯一出口，
      按有没有关注人决定藏不藏，会让新用户找不到它。 */
@@ -89,6 +90,25 @@
     background: #fff;
     box-shadow: $shadow-card;
     background-image: $icon-feed;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 44% 44%;
+  }
+
+  /* 周报入口（2026-10-10 新增）：紧挨关注动态图标右侧，与它同构同尺寸。
+     为什么并排放在一起：两者是同一件事的两端 —— 「关注的人此刻在说什么」（动态流）
+     与「关注的人这一周发生了什么」（周报），都取材于关注名单，凑近了才成组。
+     入口常显：周报取材于本机动态缓存，空动态时点进去也有「先去抓取」的引导
+     （见 pages/feed 与 utils/weekly），不依赖当前有没有抓到内容。 */
+  &__weekly {
+    flex-shrink: 0;
+    width: 56rpx;
+    height: 56rpx;
+    margin-right: 16rpx;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: $shadow-card;
+    background-image: $icon-weekly;
     background-repeat: no-repeat;
     background-position: center;
     background-size: 44% 44%;

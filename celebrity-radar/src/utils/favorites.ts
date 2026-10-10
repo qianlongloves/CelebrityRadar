@@ -255,8 +255,18 @@ export async function listFavorites(type?: FavoriteType): Promise<FavoriteRow[]>
   return (data as FavoriteRow[]) ?? []
 }
 
-export async function removeFavorite(id: string): Promise<void> {
-  await table('favorites').delete().eq('id', id)
+/**
+ * 取消收藏。**失败必须让调用方知道**：吞掉 error 的话，页面已经把卡片从本地列表移走并提示
+ * 「已取消收藏」，下次进来它又原样出现 —— 用户只会认为「删了又自己冒出来」。
+ * 返回是否真的删掉了（与 listFavorites 的 diagLog 口径一致）。
+ */
+export async function removeFavorite(id: string): Promise<boolean> {
+  const { error } = await table('favorites').delete().eq('id', id)
+  if (error) {
+    diagLog('warn', 'db', `favorites 删除失败：${error.message ?? error}`)
+    return false
+  }
+  return true
 }
 
 /** 报告卡的内容摘要（收藏卡改版新增）：卡片从「只有一条热度刻度」变成能看出「里面有什么」 */

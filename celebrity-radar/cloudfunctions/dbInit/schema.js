@@ -54,7 +54,17 @@ const collections = [
       f('_openid', 'string', { system: true, required: true }),
       f('nickname', 'string?', { required: true }),
       f('avatar_url', 'string?', { required: true }),
+      /* 用户个性化配置（模型供应商 / 档位）。**真源**：src/config/user-defaults.ts，
+         由 npm run config:sync 生成 cloudfunctions/userInit/user-defaults.config.js；
+         端上只读、不直写 —— 改配置一律走云函数 userInit 的 set（它是这一列的唯一写者）。
+         ⚠ 只放「用户自己能决定的偏好」：本集合是「仅创建者可读写」，端上能改自己那一行，
+         任何**影响权限 / 额度 / 计费**的开关都不许放进来（与下面 membership 只是镜像同理），
+         云端（aiProxy / quotaGuard）不得读本列做判定。 */
       f('settings', 'object', { required: true }),
+      /* 配置结构版本号（userInit 的 ensure 靠它决定「要不要补齐缺失的键」）。
+         老用户的行没有这个字段 —— def 给 1 而不是 null：语义上「老行的空配置」就是版本 1，
+         回填是无损的。靠它，加配置项不需要迁移脚本。 */
+      f('settings_version', 'number', { def: 1 }),
       f('created_at', 'string', { required: true }),
       f('last_seen_at', 'string?', { def: null }),
       f('subscribe_ok', 'boolean', { def: false }),

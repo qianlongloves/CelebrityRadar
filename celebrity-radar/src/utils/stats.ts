@@ -433,10 +433,14 @@ function titleKey(s: string): string {
  * 收录顺序不是时间顺序，拿它冒充首报就是编。
  */
 function buildCredibility(report: Report): CredibilityProfile | null {
-  const total = report.dynamics.length
-  if (total < MIN_SOURCE_ITEMS) return null
-
+  /* 门槛看**可判定来源的条数**而不是动态总条数：total 只要求「有 3 条动态」，
+     而这张卡的两个核心数字（独立信源数 families、重复报道比 repeatRatio）全都建立在
+     「知道这条是谁报的」之上 —— 总条数够、来源全判不出的报告会出一张 sourced=0 的空卡。
+     与来源分布卡（buildSources）同一判据，也正是 MIN_SOURCE_ITEMS 注释所写的口径。 */
   const labels = collectSourceLabels(report)
+  if (labels.length < MIN_SOURCE_ITEMS) return null
+
+  const total = report.dynamics.length
   const repOf = mergeSources(labels)
   const families = new Set(labels.map((l) => repOf.get(l) ?? l)).size
 
@@ -512,12 +516,17 @@ function bucketize<A>(
   const seen = new Set<string>()
   const byOffset = new Map<number, DatedFact[]>()
   let total = 0
-  for (const f of facts) {
+  for (let i = 0; i < facts.length; i++) {
+    const f = facts[i]
     const d = parseDay(f.date)
     if (!d) continue
     const offset = d.startOf(step).diff(anchorStart, step)
     if (offset > 0 || offset <= -windowSize) continue
-    const key = `${offset}|${(f.text ?? '').slice(0, 12)}`
+    /* 文本为空时不能只靠 offset 做键：同一桶里所有「没标题也没摘要」的条目会共用一个键，
+       被当成同一件事重复去重、只剩 1 条，条数直接少算（还可能把这张卡压到 minEvents 以下）。
+       与 buildCredibility 里 `__anon-${i}` 同一处理：判不出身份就按独立事件计，宁多不误合。 */
+    const text = (f.text ?? '').slice(0, 12)
+    const key = text ? `${offset}|${text}` : `${offset}|#${i}`
     if (seen.has(key)) continue
     seen.add(key)
     const list = byOffset.get(offset) ?? []

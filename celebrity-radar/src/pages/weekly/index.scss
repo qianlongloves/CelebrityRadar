@@ -240,6 +240,211 @@
     }
   }
 
+  /* ===== 本期要点（模型产出的短句清单） ===== */
+  &__points {
+    display: flex;
+    flex-direction: column;
+    gap: 18rpx;
+  }
+
+  &__point {
+    display: flex;
+    align-items: flex-start;
+    gap: 16rpx;
+  }
+
+  &__point-index {
+    flex-shrink: 0;
+    width: 36rpx;
+    height: 36rpx;
+    line-height: 36rpx;
+    text-align: center;
+    border-radius: 50%;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 22rpx;
+    font-weight: 600;
+  }
+
+  &__point-text {
+    flex: 1;
+    font-size: 27rpx;
+    line-height: 1.6;
+    color: $text-1;
+  }
+
+  /* ===== 动态时间线（跨人，按日期倒序） ===== */
+  &__tl-range {
+    display: block;
+    margin-bottom: 20rpx;
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  &__tl {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__tl-item {
+    display: flex;
+    align-items: stretch;
+    gap: 18rpx;
+  }
+
+  /* 轴：圆点 + 连接线。连接线的 stretch 高度靠 items 之间首尾相接撑出来 */
+  &__tl-axis {
+    flex-shrink: 0;
+    width: 20rpx;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  &__tl-dot {
+    flex-shrink: 0;
+    width: 14rpx;
+    height: 14rpx;
+    margin-top: 12rpx;
+    border-radius: 50%;
+    background: $brand;
+
+    &--tech { background: $domain-tech; }
+    &--internet { background: $domain-internet; }
+    &--business { background: $domain-business; }
+    &--finance { background: $domain-finance; }
+    &--auto { background: $domain-auto; }
+    &--ent { background: $domain-ent; }
+    &--art { background: $domain-art; }
+    &--sports { background: $domain-sports; }
+    &--health { background: $domain-health; }
+    &--academia { background: $domain-academia; }
+    &--edu { background: $domain-edu; }
+    &--other { background: $domain-other; }
+  }
+
+  &__tl-line {
+    flex: 1;
+    width: 2rpx;
+    margin: 6rpx 0;
+    background: $line;
+  }
+
+  &__tl-body {
+    flex: 1;
+    min-width: 0;
+    padding-bottom: 26rpx;
+  }
+
+  &__tl-head {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  &__tl-date {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__tl-who {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    color: $text-1;
+  }
+
+  /* 来源靠右、过长省略：中间是标题，来源太长的平台名不该把标题挤到折行 */
+  &__tl-source {
+    flex: 1;
+    min-width: 0;
+    font-size: 20rpx;
+    color: $text-3;
+    text-align: right;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__tl-title {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* ===== 本期素材构成（来源 / 领域 / 最活跃） ===== */
+  &__mix-lead {
+    display: block;
+    margin-bottom: 18rpx;
+    font-size: 24rpx;
+    color: $text-1;
+  }
+
+  &__mix-label {
+    display: block;
+    margin: 18rpx 0 12rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12rpx;
+  }
+
+  &__chip {
+    padding: 8rpx 20rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    color: $text-2;
+    font-size: 22rpx;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  &__domain {
+    display: flex;
+    align-items: center;
+    gap: 14rpx;
+    margin-bottom: 12rpx;
+  }
+
+  &__domain-name {
+    flex-shrink: 0;
+    width: 96rpx;
+    font-size: 22rpx;
+    color: $text-2;
+  }
+
+  &__domain-track {
+    flex: 1;
+    min-width: 0;
+    height: 16rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    overflow: hidden;
+  }
+
+  &__domain-bar {
+    height: 100%;
+    border-radius: 999rpx;
+    background: linear-gradient(90deg, $brand-soft 0%, $brand 100%);
+  }
+
+  &__domain-count {
+    flex-shrink: 0;
+    width: 150rpx;
+    text-align: right;
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
   /* ===== 本周话题 ===== */
   &__topics {
     display: flex;

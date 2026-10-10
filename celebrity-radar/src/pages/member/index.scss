@@ -1,7 +1,8 @@
 @import '../../styles/variables.scss';
 
-/* 会员中心（付费转化页）：Hero → 权益对比 → 真实示例 → 选档位 → 说明，支付按钮吸底。
-   底部留白 = 吸底栏高度 + 安全区，避免最后一条说明被按钮压住。 */
+/* 会员中心（付费转化页）：Hero → 权益对比 → 真实示例 → 额度一览 → 选档位 → 说明，支付按钮吸底。
+   底部留白 = 吸底栏高度 + 安全区，避免最后一条说明被按钮压住。
+   额度一览刻意夹在「真实示例」和「选档位」之间：先给质、再看实物，然后说清会被拦在哪，最后付钱。 */
 .page-member {
   padding-bottom: calc(200rpx + env(safe-area-inset-bottom));
 
@@ -153,6 +154,100 @@
   &__sample-foot {
     display: block;
     margin-top: 20rpx;
+    padding-top: 18rpx;
+    border-top: 2rpx solid $line;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* ===== 额度与次数一览（2026-10-10 新增） =====
+     每条一行「名称 → 两枚数值胶囊 → 口径小字」：胶囊负责对照（免费版 / 会员各一枚），
+     小字负责解释「怎么算、什么时候重置」。**同额的行也照样摆两枚** —— 只写一枚会读成
+     「会员专属」，而这页的可信度正来自「写的和拦的一致」（抓取动态就是两版同额）。
+     数值胶囊用底色而不是纯文字：对照时视线落在两枚色块上，不用逐字读。 */
+  &__quota-row {
+    margin-top: 22rpx;
+    padding-top: 22rpx;
+    border-top: 2rpx solid $line;
+  }
+
+  &__quota-name {
+    display: block;
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__quota-values {
+    display: flex;
+    align-items: stretch;
+    gap: 16rpx;
+    margin-top: 12rpx;
+  }
+
+  &__quota-pill {
+    flex: 1;
+    min-width: 0;
+    padding: 12rpx 16rpx;
+    border-radius: $radius-sm;
+    background: $bg;
+  }
+
+  /* 会员列高亮：与对比表同一条规则（整页要回答「买了差在哪」，视线应落在会员这一枚） */
+  &__quota-pill--on {
+    background: $brand-weak;
+  }
+
+  &__quota-pill-label {
+    display: block;
+    font-size: 18rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__quota-pill-value {
+    display: block;
+    margin-top: 2rpx;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__quota-pill--on &__quota-pill-value {
+    color: $brand;
+  }
+
+  &__quota-note {
+    display: block;
+    margin-top: 10rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 容量组：与每日次数不是一回事，加一条分隔 + 小标题，避免被读成「每天 5 个」 */
+  &__quota-sub {
+    display: block;
+    margin-top: 26rpx;
+    padding-top: 22rpx;
+    border-top: 2rpx solid $line;
+    font-size: 22rpx;
+    font-weight: 600;
+    color: $text-2;
+  }
+
+  &__quota-cap {
+    display: block;
+    margin-top: 10rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  &__quota-foot {
+    display: block;
+    margin-top: 22rpx;
     padding-top: 18rpx;
     border-top: 2rpx solid $line;
     font-size: 20rpx;

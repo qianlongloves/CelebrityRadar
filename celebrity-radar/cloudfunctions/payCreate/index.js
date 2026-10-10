@@ -33,44 +33,17 @@ function readEnv(name) {
 }
 
 /**
- * 套餐白名单（**唯一价格源**，2026-10-07 产品定稿）。
+ * 套餐白名单（**唯一价格源**）—— 数值不在本文件：取自 benefits.config.js
+ * （自动生成，真源 src/config/benefits.ts 的 PLANS）。改价 = 改真源 + `npm run config:sync`
+ * + 重新部署本函数，**端上无需发版**（它通过 `{ action:'plans' }` 把这份清单拉回去渲染，
+ * 见 main）。
  *
- * 端上不再复制这份价格，而是通过 `{ action: 'plans' }` 拉取（见 main）。
  * 字段口径（与 `src/utils/pay.ts` 的 `MembershipPlan` 一一对应）：
  *   priceFen  实付金额（分）—— 下单时即 `totalFee`，端上展示价也用它（整数，无浮点误差）
  *   priceLabel 展示价文案；badge 角标（运营文案，空串 = 不显示）
- *   body      微信支付订单标题（仅本文件使用，不下发）
- * 档位差额：年卡折合 ¥5.7/月、季卡 ¥8.3/月，用于把用户往年卡引导（badge 即锚点）。
+ *   body      微信支付订单标题（仅本函数使用，不下发）
  */
-const PLANS = [
-  {
-    id: 'monthly',
-    name: '月度会员',
-    days: 30,
-    priceFen: 990,
-    priceLabel: '¥9.9',
-    badge: '',
-    body: '名人雷达·月度会员'
-  },
-  {
-    id: 'quarterly',
-    name: '季度会员',
-    days: 90,
-    priceFen: 2500,
-    priceLabel: '¥25',
-    badge: '省 16%',
-    body: '名人雷达·季度会员'
-  },
-  {
-    id: 'annual',
-    name: '年度会员',
-    days: 365,
-    priceFen: 6800,
-    priceLabel: '¥68',
-    badge: '最划算',
-    body: '名人雷达·年度会员'
-  }
-]
+const { PLANS } = require('./benefits.config')
 
 /** id → 套餐（下单按 id 查白名单，未知 id 一律拒绝） */
 const PLAN_BY_ID = PLANS.reduce((acc, p) => {

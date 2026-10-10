@@ -3,8 +3,12 @@
 .page-feed {
   min-height: 100vh;
 
-  /* ===== 部分读取失败提示（可点重试） ===== */
+  /* ===== 部分读取失败提示（可点重试） =====
+     2026-10-10 加关闭键后改为行布局：正文占满，✕ 贴右端（整条仍可点重试，✕ 会 stopPropagation）。 */
   &__notice {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
     margin: 24rpx 32rpx 0;
     padding: 18rpx 24rpx;
     border-radius: 20rpx;
@@ -12,108 +16,28 @@
   }
 
   &__notice-text {
+    flex: 1;
+    min-width: 0;
     font-size: 24rpx;
     line-height: 1.5;
     color: $domain-business;
   }
 
-  /* ===== 按人物筛选（横向滚动芯片） ===== */
-  &__chips {
-    width: 100%;
-    white-space: nowrap;
-    padding: 24rpx 0 0;
-  }
-
-  &__chips-inner {
-    display: inline-flex;
-    gap: 16rpx;
-    padding: 0 32rpx;
-  }
-
-  &__chip {
-    flex-shrink: 0;
-    padding: 12rpx 28rpx;
-    border-radius: 999rpx;
-    background: #fff;
-    color: $brand;
-    font-size: 24rpx;
-    box-shadow: $shadow-card;
-
-    &--active {
-      background: $brand;
-      color: #fff;
-      font-weight: 600;
-    }
-  }
-
-  /* ===== 周报入口卡 ===== */
-  &__weekly {
-    display: flex;
-    align-items: center;
-    gap: 20rpx;
-    margin: 24rpx 32rpx 0;
-    padding: 26rpx 28rpx;
-    border-radius: $radius-lg;
-    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
-    box-shadow: 0 12rpx 48rpx rgba(95, 51, 225, 0.24);
-
-    &-icon {
-      flex-shrink: 0;
-      width: 68rpx;
-      height: 68rpx;
-      border-radius: 20rpx;
-      background: rgba(255, 255, 255, 0.22);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 32rpx;
-    }
-
-    &-info {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 6rpx;
-      min-width: 0;
-    }
-
-    &-title {
-      font-size: 30rpx;
-      font-weight: 600;
-      color: #fff;
-    }
-
-    &-desc {
-      font-size: 22rpx;
-      line-height: 1.5;
-      color: rgba(255, 255, 255, 0.82);
-    }
-
-    &-cta {
-      flex-shrink: 0;
-      font-size: 24rpx;
-      font-weight: 600;
-      color: #fff;
-      padding: 10rpx 24rpx;
-      border-radius: 999rpx;
-      background: rgba(255, 255, 255, 0.22);
-    }
-  }
-
-  /* ===== 统计双列卡 ===== */
+  /* ===== 顶部聚合卡：统计 + 下拉筛选 + 抓取按钮（2026-10-10） =====
+     .card 已提供底色/圆角/外边距，这里只管卡内布局：统计在上、动作行在下。
+     三块原先分散在页面上下不同区块，现在收进同一格，信息与动作各归其位。 */
   &__stats {
     display: flex;
-    gap: 24rpx;
-    padding: 24rpx 32rpx 0;
+    gap: 20rpx;
   }
 
   &__stat {
     flex: 1;
-    border-radius: 38rpx;
-    padding: 26rpx 30rpx;
+    border-radius: 28rpx;
+    padding: 22rpx 26rpx;
     display: flex;
     flex-direction: column;
-    gap: 8rpx;
+    gap: 6rpx;
 
     &--brand { background: $brand-weak; }
     &--blue { background: $accent-blue-bg; }
@@ -124,10 +48,90 @@
     }
 
     &-value {
-      font-size: 40rpx;
+      font-size: 36rpx;
       font-weight: 600;
       color: $text-1;
     }
+  }
+
+  /* ===== 动作行：下拉筛选（左）+ 抓取按钮（右） ===== */
+  &__actions {
+    margin-top: 24rpx;
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+  }
+
+  /* Picker 外壳：占满剩余宽度，与抓取按钮同高 */
+  &__picker {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* 下拉触发器：浅底描边胶囊，右侧一枚 caret 表示「可展开」 */
+  &__select {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12rpx;
+    height: 76rpx;
+    padding: 0 26rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    border: 2rpx solid $line;
+  }
+
+  &__select-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 26rpx;
+    font-weight: 500;
+    color: $text-1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__select-caret {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    line-height: 1;
+    color: $brand;
+  }
+
+  /* 主按钮：与「搜索名人」同色同圆角风格（实心品牌紫 + 胶囊），
+     它是本页唯一会花掉配额的主动作，值得占满视觉重量。 */
+  &__fetch {
+    flex-shrink: 0;
+    height: 76rpx;
+    display: flex;
+    align-items: center;
+    padding: 0 34rpx;
+    border-radius: 999rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 26rpx;
+    font-weight: 600;
+    box-shadow: 0 8rpx 24rpx rgba(95, 51, 225, 0.28);
+    transition: opacity 0.15s;
+
+    &--busy {
+      background: $brand-soft;
+      /* 抓取中不给点：连点会各花一次配额，而它们抓的是同一批人 */
+      pointer-events: none;
+    }
+
+    &--tap {
+      opacity: 0.85;
+    }
+  }
+
+  /* 卡内脚注：抓取新鲜度 + 每日次数口径 */
+  &__panel-note {
+    display: block;
+    margin-top: 18rpx;
+    font-size: 22rpx;
+    color: $text-3;
   }
 
   /* ===== 列表卡（左侧圆底头像 + 日期胶囊） ===== */

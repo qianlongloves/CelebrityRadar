@@ -53,9 +53,19 @@ export interface GenerateQuotaSummary {
   used: number
   /** 今日上限（会员/免费版不同，取自 utils/member.ts 的权益表） */
   limit: number
-  /** 剩余可发起次数 */
+  /**
+   * 剩余可发起次数 —— **照实相减，不因调试开关而报满额**。
+   *
+   * 它与 `allowed` 分开，正是这个字段存在的意义：两者在正常态同进同退，但调试开关
+   * （见 utils/debug.ts）只该松开**闸门**、不改**数字** —— 计数照常自增（那是排查时
+   * 最直接的证据），展示就该跟着动。合成一个数字只剩两种写法，且两种都撒谎：
+   *   · 照实相减（现写法）→ 开挂时显示「剩余 0 次」却仍能一直生成（自相矛盾）；
+   *   · 报满额（旧写法）→ 数字永远停在满额，等于「生成次数没有计数」。
+   * 「还能不能生成」交给 `allowed` / `unlimited`，数字本身始终真实。
+   * 这套拆分照搬提问侧 utils/qa.ts#QaUsage —— 那边已踩过同一个坑（见其注释）。
+   */
   remaining: number
-  /** 是否还能发起生成 */
+  /** 是否还能发起生成（正常态 = 剩余 > 0；调试开关放开时恒为 true） */
   allowed: boolean
   /** 会员是否生效中 */
   member: boolean
@@ -63,6 +73,15 @@ export interface GenerateQuotaSummary {
   expiresAt: string | null
   /** 距到期天数（向上取整；非会员 -1），会员卡展示「还剩几天」用 */
   daysLeft: number
+  /**
+   * 调试开关是否放开了生成额度（`config/public.ts` 的 `debug.disableGenerateQuota`）。
+   *
+   * 展示方据此**改写措辞、而不是改写数字**：开挂态要与真实用户所见逐字一致
+   * （见 utils/debug.ts 的上线口径），所以不能报假数字；但「今日剩余 N 次」这句话在
+   * 开挂时已经不成立，此时只说「将消耗 1 次生成次数」就够 —— 与提问侧 qa-panel 的
+   * `!usage.unlimited` 是同一处理（那边开挂时不弹升级条）。
+   */
+  unlimited: boolean
 }
 
 async function readCount(userId: string): Promise<number> {
@@ -85,15 +104,19 @@ export async function peekGenerateQuota(userId: string): Promise<GenerateQuotaSu
     used,
     limit,
     /*
-     * 关闭闸门时把剩余次数固定报成满额：两个调用方（cache.ts / weekly.ts）只看 allowed，
-     * 但「我的」页与周报页会直接渲染 remaining —— 照实返回会出现
-     * 「剩余 0 次」却仍能一直生成的矛盾展示，反而更像故障。
+     * 照实相减（理由见 GenerateQuotaSummary.remaining）。此前这里是
+     * `GENERATE_QUOTA_DISABLED ? limit : realRemaining`，出发点是不想让页面出现
+     * 「剩余 0 次却还能生成」；但代价是**报告页的确认弹窗会念出一个假的剩余次数** ——
+     * 本机开挂时已生成多次，弹窗仍说「今日剩余 30/30」。两害相权：假数字是**静默**的错
+     * （用户照着它做判断），而矛盾展示的来源看得见，且真机上开关恒为 false，这个矛盾
+     * 根本不会出现。
      */
-    remaining: GENERATE_QUOTA_DISABLED ? limit : realRemaining,
+    remaining: realRemaining,
     allowed: GENERATE_QUOTA_DISABLED || realRemaining > 0,
     member: state.member,
     expiresAt: state.expiresAt,
-    daysLeft: state.daysLeft
+    daysLeft: state.daysLeft,
+    unlimited: GENERATE_QUOTA_DISABLED
   }
 }
 

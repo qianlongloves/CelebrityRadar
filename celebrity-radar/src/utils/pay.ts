@@ -2,6 +2,7 @@ import Taro from '@tarojs/taro'
 import { callCloudFunction } from './cloud'
 import { diagLog } from './cloud-diagnostics'
 import { MEMBER_DAILY_GENERATE_LIMIT, readMemberState } from './member'
+import { PLANS } from '../config/benefits'
 
 /**
  * 会员支付（微信支付 · CloudBase 云支付）。
@@ -43,13 +44,18 @@ export interface MembershipPlan {
  * 离线兜底套餐（**仅占位，不是定价源**）。
  *
  * 出现场景：`payCreate` 未部署（未开通支付）或首次冷启拉取失败。
- * ⚠ id 必须与云函数 `PLANS` 对齐，否则未部署时页面会渲染出「点了必然失败」的档位。
+ * 数值直接取自权益真源 `config/benefits.ts` 的 PLANS —— 云函数 payCreate 用的是
+ * 同一份数据经 `npm run config:sync` 生成的副本，于是「id 必须与云端对齐」这条
+ * 不再靠人记：两边本来就是同一个数组，只在这里去掉云端专用的 body（微信订单标题）。
  */
-export const FALLBACK_MEMBERSHIP_PLANS: MembershipPlan[] = [
-  { id: 'monthly', name: '月度会员', days: 30, priceFen: 990, priceLabel: '¥9.9', badge: '' },
-  { id: 'quarterly', name: '季度会员', days: 90, priceFen: 2500, priceLabel: '¥25', badge: '省 16%' },
-  { id: 'annual', name: '年度会员', days: 365, priceFen: 6800, priceLabel: '¥68', badge: '最划算' }
-]
+export const FALLBACK_MEMBERSHIP_PLANS: MembershipPlan[] = PLANS.map((p) => ({
+  id: p.id,
+  name: p.name,
+  days: p.days,
+  priceFen: p.priceFen,
+  priceLabel: p.priceLabel,
+  badge: p.badge
+}))
 
 /** 套餐清单的本机缓存（随「清空我的数据」一并清理） */
 const PLAN_CACHE_KEY = 'member_plans'

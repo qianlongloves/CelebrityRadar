@@ -13,7 +13,8 @@
  *      替**全站**把缓存升级，不该掏他自己的每日次数。端上只「申请」，复核在云函数。
  *   批 1 档位隔离 —— 会员段在**数据层**就不下发给非会员（存在性由 memberLocked 单独带回，
  *      否则促销条的承诺会退化成泛泛的招揽）。
- *   批 2 免费档成本闸门 —— 免费档不发社交支线检索；刚生成过的报告不接受免费档的重复刷新。
+ *   批 2 免费档成本闸门 —— 免费档不发社交支线检索；刚生成过的报告不再被冷却拦下，
+ *      而是在确认弹窗里被提醒一句（2026-10-10：拦截撤销，改为「随时可刷 + 先提醒代价」）。
  *
  * 云函数与端上各存一份判定（同源，无法共用代码），故两处都用源码比对钉住，
  * 避免以后有人只改一边 —— 那会让「能否覆盖」变成两个不同的答案。
@@ -169,14 +170,77 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
   it('「只升不降」在**落库之前**判并提前 return，且不消耗配额（没拿到新东西就不该扣次数）', () => {
     const saveAt = src.indexOf('const saved = await saveReady')
     const earlyAt = src.indexOf('if (!hasMemberBlocks(report) && shouldKeepMemberVersion(')
-    const plainQuotaAt = src.indexOf('if (!memberUpgrade) void consumeGenerateQuota(userId)')
+    const plainQuotaAt = src.indexOf('void consumeGenerateQuota(userId)')
     const keptBranchAt = src.indexOf("if (saved === 'kept')")
 
     ok(earlyAt > 0 && saveAt > 0, '必须同时存在「落库前判定」与落库调用')
     ok(earlyAt < saveAt, '只升不降必须在落库之前判 —— 覆盖之后就再也读不到那一版了')
-    ok(plainQuotaAt > saveAt, '普通计数在落库之后（落库失败就不计数）')
-    ok(keptBranchAt > saveAt && keptBranchAt < plainQuotaAt, '兜底 kept 分支同样在计数之前 return')
+    ok(keptBranchAt > saveAt, '兜底 kept 分支在计数之前 return')
+    ok(plainQuotaAt > saveAt, '普通计数在落库之后（落库失败会抛到 catch，同样不计数）')
     ok(src.includes('keptMember: true'), '页面要靠这个标记解释「刷新了却没变化」')
+  })
+
+  it('配额只在**产物达标**时才消耗：不达标（reportShortfall）一分不扣（2026-10-10 公平计费）', () => {
+    const saveAt = src.indexOf('const saved = await saveReady')
+    const shortfallAt = src.indexOf('const shortfall = reportShortfall(report, memberDeep)')
+    const consumeAt = src.indexOf('void consumeGenerateQuota(userId)')
+
+    ok(saveAt > 0 && shortfallAt > saveAt, '达标判定在落库之后（落库失败会抛到 catch，不计数）')
+    ok(consumeAt > shortfallAt, '计费点在不达标判定之后')
+    /* 计数只在不达标分支的 else 里：`if (shortfall) {…} else if (!memberUpgrade) { consume… }` */
+    ok(src.slice(shortfallAt, consumeAt).includes('} else if (!memberUpgrade) {'), '不达标走 if 分支，计数只在 else 分支里')
+    notOk(/if \(shortfall\) \{[^}]*consumeGenerateQuota/.test(src), '不达标分支里绝不能调用计费')
+    ok(src.includes("track('report_generate_shortfall'"), '不达标要单独埋点，便于观察上游抖动频次')
+  })
+
+  /*
+   * P2「文案分流」（2026-10-10）：不达标的原因有两类，页面此前一律劝「重试通常就好」——
+   * 可其中「实质条目不足」「会员档没有专享段落」的常见原因是**素材本身就不够**（长尾人物
+   * 近期报道本来就少）。用户照着重试，每次不扣次数、每次都不达标，白等一场，还会把
+   * 「素材少」误解成「服务坏了」。判据取 coverage.items（端上原样统计、不经模型改写）。
+   */
+  it('不达标要分「上游抖动」与「素材本来就不够」—— 后者不劝重试', () => {
+    const { load } = fresh()
+    const { reportShortfall, reportShortfallRetryable } = load('utils/report')
+
+    /** 骨架齐、实质条目 0 条的最小报告；coverage.items = 本次检索到几条素材 */
+    const mk = (items, over = {}) =>
+      Object.assign(
+        {
+          degraded: false,
+          intro: '简介正文',
+          analysis: 'AI 点评正文',
+          dynamics: [],
+          quotes: [],
+          timeline: [],
+          coverage: { items, recent: items, firstAt: null, latestAt: null }
+        },
+        over
+      )
+
+    ok(reportShortfall(mk(10), false)?.includes('实质条目不足'), '0 条实质条目必须判不达标')
+    eq(reportShortfallRetryable(mk(10), false), true, '素材有 10 条却只吐回 0 条 ⇒ 模型少吐，重试通常就好')
+    eq(reportShortfallRetryable(mk(1), false), false, '素材本身只有 1 条 ⇒ 重试还是同一批素材，劝重试就是让用户白等')
+
+    /* 骨架段落缺失 / 结构化失败：与素材多寡无关（素材再少，简介也写得出来）⇒ 永远可重试 */
+    eq(reportShortfallRetryable(mk(1, { intro: '  ' }), false), true, '缺简介是模型少吐一段')
+    eq(reportShortfallRetryable(mk(1, { degraded: true }), false), true, '结构化输出失败是纯上游抖动')
+
+    /* 会员档没有专享段：同样按素材判（原注释自己写着「检索不到素材是常见原因」） */
+    const threeFacts = { dynamics: [1, 2, 3].map((i) => ({ title: `动态 ${i}` })) }
+    ok(reportShortfall(mk(10, threeFacts), true)?.includes('会员专享'), '会员档没有专享段落要判不达标')
+    eq(reportShortfallRetryable(mk(10, threeFacts), true), true, '素材够 ⇒ 重试有意义')
+    eq(reportShortfallRetryable(mk(1, threeFacts), true), false, '素材不够 ⇒ 重试没用')
+
+    /* 达标时恒为 false：那时页面根本不渲染这条提示 */
+    eq(reportShortfall(mk(10, threeFacts), false), null, '这份达标')
+    eq(reportShortfallRetryable(mk(10, threeFacts), false), false, '达标就没有「要不要重试」这回事')
+  })
+
+  it('「可重试」要一路带到页面与埋点（源码钉住）：否则判了也没人用', () => {
+    ok(src.includes('reportShortfallRetryable(report, memberDeep)'), '主流程要给出这个判定')
+    ok(src.includes('reason: shortfall, retryable'), '埋点带上它，才能从数据上分离「素材少」与「真故障」')
+    ok(src.includes('...(shortfall ? { shortfall, shortfallRetryable: retryable } : {})'), '判定要交回页面')
   })
 
   it('免计费申请在**落库之前**发出（云端复核读的就是那一行，晚一步条件就恒不成立）', () => {
@@ -431,7 +495,14 @@ describe('档位隔离已接进读取路径（源码钉住，防「写了剥离�
   it('批量只读一次身份，而不是逐份读（tabBar 页每次切回来都会重跑）', () => {
     const body = src.slice(src.indexOf('export async function getCachedReports'))
     ok(body.includes('ready.some('), '先看有没有人藏着东西，再决定要不要读')
-    eq((body.match(/readMemberState\(\)/g) || []).length, 1, '读一次身份，然后 map 剥离')
+    /*
+     * 只数**这个函数体**内的次数。以前直接切到文件尾，等于默认「后面没有别的读身份的代码」——
+     * 2026-10-10 加了按身份取刷新上限的兜底（tallyRefreshQuota → localRefreshLimit），
+     * 那个默认就不成立了：切到下一个顶层 export 之前，范围才对得上。
+     */
+    const nextExport = body.indexOf('\nexport ', 1)
+    const fnBody = nextExport > 0 ? body.slice(0, nextExport) : body
+    eq((fnBody.match(/readMemberState\(\)/g) || []).length, 1, '读一次身份，然后 map 剥离')
   })
 
   it('页面不再从 report 自己算专享段落（剥离之后那是恒空的）', () => {
@@ -503,7 +574,7 @@ describe('免费档不再付社交支线的检索成本（批 2）', () => {
   })
 })
 
-describe('免费档「刷新最新」冷却（批 2）', () => {
+describe('免费档「刷新最新」提醒窗口（批 2 → 2026-10-10 撤销拦截）', () => {
   const HOUR = 60 * 60 * 1000
 
   /** 落库行（`__seed` 认 _id，见上文说明） */
@@ -519,17 +590,30 @@ describe('免费档「刷新最新」冷却（批 2）', () => {
       }
     ])
 
-  it('刚生成过的报告：force 也不再买一遍，直接交回并说明', async () => {
+  it('刚生成过也照常刷新：不再有冷却拦截（点了刷新必须有反应）', async () => {
     const { load } = fresh()
     const { getOrBuildReport } = load('utils/cache')
     env.db.__seed('report_cache', [row(generatedAgo(1 * HOUR))])
 
     const out = await getOrBuildReport('测试人物#tech', { force: true })
 
-    eq(out.kind, 'report')
-    eq(out.fromCache, true)
-    eq(out.refreshCooled, true, '页面要靠它说明「为什么点了刷新却没变」')
-    eq(out.report.heat, 5, '交回的是刚生成过的那一版')
+    eq(out.kind, 'coldstart', '检索通道不可用 → 说明它真的去生成了一次、没被冷却拦下')
+  })
+
+  it('冷却判定降级成提醒：免费档刚生成过 isFreeRefreshCooling=true（弹窗据此多说一句）', async () => {
+    const { load } = fresh()
+    const { isFreeRefreshCooling } = load('utils/cache')
+
+    eq(await isFreeRefreshCooling(generatedAgo(1 * HOUR)), true)
+    eq(await isFreeRefreshCooling(generatedAgo(48 * HOUR)), false, '过了窗口就不再提醒')
+  })
+
+  it('会员不受提醒：付了钱、有每日额度，刚生成过也不多说一句', async () => {
+    const { load } = fresh()
+    asMember(env.db)
+    const { isFreeRefreshCooling } = load('utils/cache')
+
+    eq(await isFreeRefreshCooling(generatedAgo(1 * HOUR)), false)
   })
 
   it('报告旧了：force 照常重新生成（冷却只拦「刚看过就想再刷」）', async () => {

@@ -2,6 +2,8 @@ import { setCooldown } from './cooldown'
 import { debugRaw } from './debug'
 import { diagLog } from './cloud-diagnostics'
 import { callCloudFunction, isCloudConfigured } from './cloud'
+import { SEARCH_COUNTS } from '../config/benefits'
+import { cleanText } from './text'
 
 /** 检索结果条目（附录 A） */
 export interface NewsItem {
@@ -50,31 +52,39 @@ function normDate(raw: unknown): string | undefined {
   return Number.isFinite(t) ? new Date(t).toISOString() : undefined
 }
 
-/** 博查单条结果 → NewsItem（字段固定，取值全部兜底，避免脏数据穿透到报告层） */
+/**
+ * 博查单条结果 → NewsItem（字段固定，取值全部兜底，避免脏数据穿透到报告层）。
+ *
+ * 文本字段一律过 cleanText({ markup: true })：上游（搜索引擎）会给命中词加 `<em>` 高亮、
+ * 把 `&` 写成 `&amp;`、顺手夹带零宽字符，不清掉就会被模型照抄进报告，用户看到的是一串标签。
+ * 这一步放在**素材入口**而不是报告出口，是因为素材还要进提示词 —— 脏字符一旦进了上下文，
+ * 就会以各种形态被抄出来，出口再拦只能拦到抄剩的那部分。
+ *
+ * url 刻意不清洗：它是出处的比对键（见 report.ts#buildSourceIndex），改动它等于让出处对不上。
+ */
 function toNewsItem(r: Record<string, unknown>): NewsItem {
   const url = typeof r.url === 'string' ? r.url : ''
-  const summary = typeof r.summary === 'string' ? r.summary.trim() : ''
-  const snippet = typeof r.snippet === 'string' ? r.snippet.trim() : ''
-  const siteName = typeof r.siteName === 'string' ? r.siteName.trim() : ''
+  /* summary 是详细摘要、snippet 是短摘，前者更适合喂给 LLM */
+  const content = cleanText(r.summary, { markup: true }) || cleanText(r.snippet, { markup: true })
   return {
-    title: typeof r.name === 'string' ? r.name : '',
+    title: cleanText(r.name, { markup: true }),
     url,
-    /* summary 是详细摘要、snippet 是短摘，前者更适合喂给 LLM */
-    content: summary || snippet,
+    content,
     /* siteName 比裸域名可读，缺失时回落 host */
-    source: siteName || hostOf(url),
+    source: cleanText(r.siteName, { markup: true }) || hostOf(url),
     publishedDate: normDate(r.datePublished) ?? normDate(r.dateLastCrawled)
   }
 }
 
-const MAX_ATTEMPTS = 3
+/* 检索重试次数与条数上限：数值在 config/benefits.ts 的 SEARCH_COUNTS（改那里即改策略） */
+const MAX_ATTEMPTS = SEARCH_COUNTS.maxAttempts
 /**
- * 与云函数 runSearch 的 count 上限对齐（免费 20 / 会员 40，见 aiProxy 的 FREE_SEARCH_MAX）。
+ * 与云函数 runSearch 的 count 上限对齐（免费 20 / 会员 40，见 aiProxy 的 SEARCH_MAX）。
  *
  * 端上取的是**两者中大的那个**：这一层只决定「要多少」，真正按身份钳住的是云函数
  * （免费用户即便改包要 40 也会被钳回 20）。若这里仍写死 20，深度模式就永远要不到加厚的那部分。
  */
-const MAX_RESULTS_CAP = 40
+const MAX_RESULTS_CAP = SEARCH_COUNTS.maxResultsCap
 
 interface SearchParams {
   query: string
@@ -234,10 +244,11 @@ async function requestChannel(params: SearchParams): Promise<NewsItem[] | null> 
  * 只列域名、不往 request 合法域名里加东西 —— 过滤发生在博查服务端。
  */
 const SOCIAL_SITES = ['weibo.com', 'zhihu.com', 'bilibili.com', 'xiaohongshu.com']
+/* 主线 / 支线 / 深度档条数：数值在 config/benefits.ts 的 SEARCH_COUNTS（改那里即改策略） */
 /** 支线条数：够补齐社交维度即可，不为支线付主线的检索成本 */
-const SOCIAL_COUNT = 8
+const SOCIAL_COUNT = SEARCH_COUNTS.socialCount
 /** 主线默认条数（免费口径，与改造前一致） */
-const MAIN_COUNT = 10
+const MAIN_COUNT = SEARCH_COUNTS.mainCount
 
 /**
  * 深度模式的检索厚度（O-11「质」权益，2026-10-07）：只在**报告生成路径**使用。
@@ -247,8 +258,28 @@ const MAIN_COUNT = 10
  * 为什么只加厚生成：报告是「一次生成、长期缓存」的资产，加厚一次能长期受益；
  * 关注流刷新是每日 10 次的常态动作，放大等于常态成本翻倍且用户几乎无感（见 cache.ts 的应用点）。
  */
-export const DEEP_MAIN_COUNT = 24
-export const DEEP_SOCIAL_COUNT = 16
+export const DEEP_MAIN_COUNT = SEARCH_COUNTS.deepMainCount
+export const DEEP_SOCIAL_COUNT = SEARCH_COUNTS.deepSocialCount
+
+/**
+ * 人物背景线（2026-10-10，P1「检索拆路」）：一次生成只发一条「近期新闻」主线，答不了
+ * 「人物档案 / 关系图谱 / 时间线」这几个字段 —— 出生地、学历、履历、生平节点**不进新闻流**，
+ * 30 天窗里天然搜不到，于是这几节常年为空。
+ *
+ * 故单独开一路，只做一件事：用 noLimit（不限时间）捞公开的人物背景资料。
+ *   · freshness 取 noLimit 而不是 oneMonth：履历不随时间变，窗口越窄越搜不到；
+ *   · 与主线**分开成两个调用**（而不是一个 query 里堆关键词）：主线要保持「近期」这个语义，
+ *     混进旧闻会让 dynamics（近期动态）被年代久远的事件污染 —— 那是最核心的一节。
+ * 代价：每次生成多一次检索调用（免费 2 路、会员 3 路），调用点见 utils/cache.ts。
+ */
+const BACKGROUND_QUERY_SUFFIX = '个人资料 简介 出生地 学历 经历'
+
+/* 背景线条数：数值在 config/benefits.ts 的 SEARCH_COUNTS（改那里即改策略） */
+/** 免费档背景线条数：够补出档案与时间线即可，不为「一次生成」付两次深度检索的钱 */
+export const BG_COUNT = SEARCH_COUNTS.bgCount
+
+/** 会员档背景线条数（随深度模式一并加厚） */
+export const DEEP_BG_COUNT = SEARCH_COUNTS.deepBgCount
 
 /** 按 url（去锚点）去重合并：主线在前，支线补充在后 */
 function mergeNews(groups: Array<NewsItem[] | null>): NewsItem[] {
@@ -283,43 +314,92 @@ export async function fetchNews(
   name: string,
   opts: { days?: number; maxResults?: number; socialCount?: number } = {}
 ): Promise<NewsItem[] | null> {
-  const freshness = freshnessOf(opts.days ?? 30)
-  const main: SearchParams = {
-    query: `${name} 近期 新闻 动态 言论`,
-    freshness,
-    count: Math.min(opts.maxResults ?? MAIN_COUNT, MAX_RESULTS_CAP)
+  const count = Math.min(opts.maxResults ?? MAIN_COUNT, MAX_RESULTS_CAP)
+  const days = opts.days ?? 30
+
+  /*
+   * 主线走**降级阶梯**（2026-10-10）：一档抓空就试下一档，直到有内容为止。
+   *
+   * 为什么：此前只有单档（`人名 近期 新闻 动态 言论` @ 30 天），而冷门 / 低产名人的报道常是
+   * 「半年内有过、近 30 天没有」—— 单档配置下直接空手而归，用户看到「暂未检索到公开信息」。
+   * 对**付费**用户尤其不可接受：他买的就是「查得到」。
+   *
+   * 各档的取舍：
+   *   ① 原句式 + 原时间窗（绝大多数人物在这一档就结束，命中率最高）；
+   *   ② **去掉后缀只留人名** —— 博查对「张三」的人名召回常好于「张三 近期 新闻 动态 言论」，
+   *      后缀词把排序拉向「新闻体」标题，反而会挤掉一手内容；
+   *   ③ 放宽到一年（天数值见 config/benefits.ts 的 SEARCH_COUNTS.mainFreshnessLadderDays）。
+   *
+   * ⚠ 只放宽到「年内」为止：`dynamics` 要的是近期动态，`noLimit` 会把年代久远的事件混成
+   *   「近期」—— 那比空着更糟（与背景线用 noLimit 是两回事，那条只捞履历、不进 dynamics）。
+   * 成本：只有上一档为空时才发下一档，正常人物仍是 1 次调用；最坏 3 次。
+   */
+  const ladder = SEARCH_COUNTS.mainFreshnessLadderDays
+  let main: NewsItem[] = []
+  for (let i = 0; i < ladder.length; i++) {
+    /* 第一档用调用方给的时间窗（days），之后按阶梯放宽 */
+    const pages = await requestChannel({
+      query: i === 0 ? `${name} 近期 新闻 动态 言论` : name.trim(),
+      freshness: freshnessOf(i === 0 ? days : ladder[i]),
+      count
+    })
+    /* null = 通道未就绪（不是「抓空了」）：换句式也一样，交回调用方走 coldstart */
+    if (pages === null) return null
+    main = pages
+    if (pages.length > 0) break
   }
 
   /* 不要支线：只发主线这一路（成本口径见函数头注释） */
   const socialCount = Math.min(opts.socialCount ?? SOCIAL_COUNT, MAX_RESULTS_CAP)
-  if (socialCount <= 0) {
-    const only = await requestChannel(main)
-    return only === null ? null : mergeNews([only, null])
-  }
+  if (socialCount <= 0) return mergeNews([main, null])
 
   const social: SearchParams = {
     query: `${name} 近期 动态`,
-    freshness,
+    freshness: freshnessOf(days),
     count: socialCount,
     include: SOCIAL_SITES
   }
 
-  const [mainNews, socialNews] = await Promise.all([
-    requestChannel(main),
-    requestChannel(social).catch((err) => {
-      diagLog('warn', 'http', `社交源定向检索跳过：${err instanceof Error ? err.message : String(err)}`)
-      return null
-    })
-  ])
+  /* 支线是「锦上添花」：失败一律吞掉，主线才是判据（见函数头注释） */
+  const socialNews = await requestChannel(social).catch((err) => {
+    diagLog('warn', 'http', `社交源定向检索跳过：${err instanceof Error ? err.message : String(err)}`)
+    return null
+  })
 
-  if (mainNews === null) return null
-  return mergeNews([mainNews, socialNews])
+  return mergeNews([main, socialNews])
+}
+
+/**
+ * 人物背景线（P1，2026-10-10）：专供 profile / relations / timeline 这三节，**不进 dynamics**。
+ *
+ * 与 fetchNews 的分工：
+ *   · fetchNews —— 「近期」语义（freshness 30 天），用户消息里的「素材」段，喂动态 / 名言 / 争议；
+ *   · 本函数 —— 「不限时间」语义（noLimit），用户消息里单独的「人物背景资料」段，喂档案 / 关系 / 履历。
+ * 拿近期窗口去找出生地、学历，等于用错尺子（这也正是这几节此前常年为空的原因）。
+ *
+ * 降级语义：`count <= 0` 返回空数组（调用方完全不启用这一路）；
+ * 通道未就绪返回 null；请求失败一律吞掉返回 null —— 背景线是**补充**，主线才是判据，
+ * 它挂了只是「这几节没有内容」，不该让整次生成失败（与社交支线的取舍一致）。
+ */
+export async function fetchBackground(name: string, count: number): Promise<NewsItem[] | null> {
+  const want = Math.min(count, MAX_RESULTS_CAP)
+  if (want <= 0) return []
+  try {
+    return await requestChannel({
+      query: `${name} ${BACKGROUND_QUERY_SUFFIX}`,
+      freshness: 'noLimit',
+      count: want
+    })
+  } catch (err) {
+    diagLog('warn', 'http', `人物背景线检索跳过：${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
 }
 
 /** 问答联网检索的条数：够补「报告之后发生了什么」即可，不为一次提问付生成级的检索成本 */
-const ASK_COUNT = 8
+const ASK_COUNT = SEARCH_COUNTS.askCount
 /** 问答联网检索的时间窗：用户问的往往是「最近」，而报告可能已经是两周前的快照 */
-const ASK_FRESHNESS_DAYS = 7
+const ASK_FRESHNESS_DAYS = SEARCH_COUNTS.askFreshnessDays
 
 /**
  * 问答的「联网检索」补充（2026-10-08，供 utils/qa.ts 的联网补充调用）。

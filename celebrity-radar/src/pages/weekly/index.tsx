@@ -2,10 +2,12 @@ import { useMemo, useState } from 'react'
 import Taro, { useDidShow, useShareAppMessage } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
 import EmptyState from '@/components/empty-state'
+import NoticeClose from '@/components/notice-close'
 import Skeleton from '@/components/skeleton'
 import {
   WEEKLY_WINDOW_DAYS,
   MATERIAL_FAIL_TEXT,
+  buildWeeklyDigest,
   collectWeeklyMaterial,
   generateWeekly,
   readWeeklyCache
@@ -15,7 +17,7 @@ import { buildDayDistribution } from '@/utils/stats'
 import { peekGenerateQuota } from '@/utils/quota'
 import { useAuth } from '@/stores/auth'
 import { DOMAIN_META } from '@/config/domains'
-import { fromNow } from '@/utils/time'
+import { dayKey8, fromNow } from '@/utils/time'
 import { track } from '@/utils/events'
 import './index.scss'
 
@@ -49,13 +51,30 @@ export default function Weekly() {
   const [message, setMessage] = useState('')
   /** 今日剩余生成次数：仅在能读到配额时展示，读不到就不显示（不阻塞主流程） */
   const [quotaLeft, setQuotaLeft] = useState<number | null>(null)
+  /**
+   * 「本次未生成 AI 概述」警示条是否被用户关掉（2026-10-10，需求：提示框都要有关闭按钮）。
+   * 每次生成出新报告时复位 —— 关掉的是「这一份」的说明，换一份就该重新出现。
+   */
+  const [warnClosed, setWarnClosed] = useState(false)
+
+  /* 端上聚合（时间线 / 来源 / 领域 / 跨度）：纯函数，同一份周报任何时候打开结果都一样 */
+  const digest = useMemo(() => (report ? buildWeeklyDigest(report) : null), [report])
+  /** 本期要点（模型产出）。旧缓存没有这一段，按「本来就没有」处理并写明怎么补（见字段注释） */
+  const highlights = report?.highlights ?? []
+  /** 领域分布的归一基准：条数最多的那个领域占满整条 */
+  const domainMax = digest?.domains[0]?.entries ?? 1
 
   const refreshQuota = async () => {
     const uid = useAuth.getState().userId
     if (!uid) return
     try {
       const q = await peekGenerateQuota(uid)
-      setQuotaLeft(q.remaining)
+      /*
+       * 开挂态（调试开关放开生成额度）不显示剩余次数：数字本身是真实的，但「剩 N 次」
+       * 这句话在闸门放开时已不成立（见 utils/quota.ts 的 unlimited）。
+       * 复用 null 这个既有的「不显示」信号，不新增状态。
+       */
+      setQuotaLeft(q.unlimited ? null : q.remaining)
     } catch {
       /* 配额只是提示信息，读不到就不显示 */
     }
@@ -124,6 +143,8 @@ export default function Weekly() {
       setReport(outcome.report)
       setFromCache(false)
       setPhase('ready')
+      /* 新周报：警示条若是这一版才出的，得重新可见（见 warnClosed 注释） */
+      setWarnClosed(false)
       return
     }
 
@@ -181,7 +202,19 @@ export default function Weekly() {
   const copyAll = () => {
     if (!report) return
     const blocks: string[] = [`【本周周报 · ${report.windowLabel}】`]
+    /* 收录范围先写：分享出去时「这份周报覆盖了什么」和内容一样重要，读者据此判断完整度 */
+    if (report.coverage) {
+      const c = report.coverage
+      blocks.push(
+        `收录：${c.withEntries} 位有动态的关注人 / 共关注 ${c.followed} 位${
+          c.failed > 0 ? `，${c.failed} 位读取失败未计入` : ''
+        }`
+      )
+    }
     if (report.overview) blocks.push(report.overview)
+    if (highlights.length > 0) {
+      blocks.push(`本期要点：\n${highlights.map((h, i) => `${i + 1}. ${h}`).join('\n')}`)
+    }
     for (const p of report.persons) {
       const lines = [`■ ${p.name}（${DOMAIN_META[p.domain].label}）`]
       if (p.summary) lines.push(p.summary)
@@ -189,6 +222,13 @@ export default function Weekly() {
         lines.push(`· ${e.title}${e.source ? `（${e.source}）` : ''} ${e.url}`)
       }
       blocks.push(lines.join('\n'))
+    }
+    if (digest && digest.timeline.items.length > 0) {
+      blocks.push(
+        `本周时间线：\n${digest.timeline.items
+          .map((t) => `· ${t.date || '近期'} ${t.personName}：${t.title}`)
+          .join('\n')}`
+      )
     }
     if (report.topics.length > 0) blocks.push(`本周话题：${report.topics.join('、')}`)
     blocks.push(report.disclaimer)
@@ -222,7 +262,7 @@ export default function Weekly() {
         <EmptyState
           icon='📰'
           title='生成本周周报'
-          desc={`将汇总最近 ${WEEKLY_WINDOW_DAYS} 天 ${material.persons.length} 位关注人的 ${material.entryCount} 条动态，生成一份可复制、可分享的周报；消耗 1 次今日生成额度${quotaHint}${
+          desc={`将汇总最近 ${WEEKLY_WINDOW_DAYS} 天关注人的 ${material.entryCount} 条动态，生成一份可复制、可分享的周报：本周综述 + 本期要点 + 动态时间线 + 逐人清单。共关注 ${material.followedCount} 位，其中 ${material.persons.length} 位近 7 天有动态；消耗 1 次今日生成额度${quotaHint}${
             material.failedCount > 0 ? `。另有 ${material.failedCount} 位的动态读取失败，本次不会计入` : ''
           }`}
           actionText='生成周报'
@@ -258,15 +298,31 @@ export default function Weekly() {
               </View>
             </View>
 
+            {/*
+              收录范围（coverage）：材料里只剩「最近 7 天确实有动态」的人，不写清总关注数，
+              用户会把「10 位关注里只有 3 位有动静」读成「我的关注丢了」。
+              旧缓存没有这一段（2026-10-10 之前生成），故整行不出而不是显示 0。
+            */}
+            {report.coverage && (
+              <Text className='page-weekly__banner-note'>
+                收录 {report.coverage.withEntries} 位有动态的关注人
+                {report.coverage.followed > report.coverage.withEntries
+                  ? ` · 共关注 ${report.coverage.followed} 位`
+                  : ''}
+                {report.coverage.failed > 0 ? ` · ${report.coverage.failed} 位读取失败未计入` : ''}
+              </Text>
+            )}
+
             <Text className='page-weekly__banner-note'>
               {fromCache ? '本周已生成，读取本机缓存 · 不消耗额度' : '本次生成已消耗 1 次今日额度'}
               {` · 生成于 ${fromNow(report.generatedAt)}`}
             </Text>
           </View>
 
-          {report.degraded && (
+          {report.degraded && !warnClosed && (
             <View className='warn-bar page-weekly__warn'>
-              本次未生成 AI 概述，以下为素材清单；可稍后点「重新生成」
+              <Text className='warn-bar__text'>本次未生成 AI 概述，以下为素材清单；可稍后点「重新生成」</Text>
+              <NoticeClose onClose={() => setWarnClosed(true)} />
             </View>
           )}
 
@@ -287,6 +343,80 @@ export default function Weekly() {
                   下方「关注的人」里逐条列出了本次收录的动态与原文链接，可先据此阅读。
                 </Text>
               )}
+            </View>
+          )}
+
+          {/*
+            本期要点：模型产出的「人 + 事实」短句，是这份周报最像「一份东西」的一段。
+            降级周报不出（上方警示条已说明本次没有 AI 文字）；
+            模型这次没给（或这是 2026-10-10 之前的旧缓存）则照出卡片写清原因与补救入口，
+            而不是少一块让用户猜 —— 与本页其余卡片的取舍一致。
+          */}
+          {!report.degraded && (
+            <View className='card'>
+              <View className='card-title'>本期要点</View>
+              {highlights.length > 0 ? (
+                <View className='page-weekly__points'>
+                  {highlights.map((h, i) => (
+                    <View key={`${i}-${h}`} className='page-weekly__point'>
+                      <Text className='page-weekly__point-index'>{i + 1}</Text>
+                      <Text className='page-weekly__point-text'>{h}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text className='page-weekly__dist-note'>
+                  这一版没有给出要点（模型本次没写，或这份是本功能升级前生成的旧周报）。
+                  点右上「重新生成」可让模型再写一遍；下方时间线与逐人卡片里的动态直接取自素材，不受这段影响。
+                </Text>
+              )}
+            </View>
+          )}
+
+          {/*
+            动态时间线（端上聚合，见 utils/weekly.ts#buildWeeklyDigest）：
+            逐人卡片回答「某人这周做了什么」，时间线回答「这周整体是什么节奏」，
+            两者是同素材的两种切法 —— 所以它零成本、确定性，存量旧周报打开也立刻有。
+          */}
+          {digest && digest.timeline.total > 0 && (
+            <View className='card'>
+              <View className='card-title'>动态时间线</View>
+              {digest.span && (
+                <Text className='page-weekly__tl-range'>
+                  按日期倒序 · 跨度 {digest.span.first} ~ {digest.span.last}
+                </Text>
+              )}
+              <View className='page-weekly__tl'>
+                {digest.timeline.items.map((t, i) => (
+                  <View
+                    key={`${t.personKey}-${t.url || i}`}
+                    className='page-weekly__tl-item'
+                    onClick={() => openPerson(t.personKey)}
+                  >
+                    <View className='page-weekly__tl-axis'>
+                      <View className={`page-weekly__tl-dot page-weekly__tl-dot--${t.domain}`} />
+                      {i < digest.timeline.items.length - 1 && <View className='page-weekly__tl-line' />}
+                    </View>
+                    <View className='page-weekly__tl-body'>
+                      <View className='page-weekly__tl-head'>
+                        <Text className='page-weekly__tl-date'>{t.date ? t.date.slice(5) : '近期'}</Text>
+                        <Text className='page-weekly__tl-who'>{t.personName}</Text>
+                        {!!t.source && <Text className='page-weekly__tl-source'>{t.source}</Text>}
+                      </View>
+                      <Text className='page-weekly__tl-title'>{t.title}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+              <Text className='page-weekly__dist-note'>
+                共 {digest.timeline.total} 条动态
+                {digest.timeline.dated < digest.timeline.total
+                  ? `，其中 ${digest.timeline.dated} 条带发布日期`
+                  : ''}
+                {digest.timeline.total > digest.timeline.items.length
+                  ? `，此处列最近 ${digest.timeline.items.length} 条；完整清单见下方「关注的人」。`
+                  : '，已全部列在上面。'}
+              </Text>
             </View>
           )}
 
@@ -328,52 +458,112 @@ export default function Weekly() {
             </View>
           )}
 
+          {/*
+            本期素材构成（端上聚合）：来源与领域都直接数素材字段，不引入模型的判断 ——
+            「这些动态是从哪些渠道来的、集中在哪些领域」是读者判断这份周报可靠性的依据。
+            一条都没有时整卡不出（上方分布卡已说明本次收录不足）。
+          */}
+          {digest && digest.domains.length > 0 && (
+            <View className='card'>
+              <View className='card-title'>本期素材构成</View>
+
+              {digest.mostActive && (
+                <Text className='page-weekly__mix-lead'>
+                  动态最多：{digest.mostActive.name}（{digest.mostActive.count} 条）
+                </Text>
+              )}
+
+              {digest.sources.length > 0 && (
+                <>
+                  <Text className='page-weekly__mix-label'>来源</Text>
+                  <View className='page-weekly__chips'>
+                    {digest.sources.map((s) => (
+                      <Text key={s.name} className='page-weekly__chip'>
+                        {s.name} · {s.count}
+                      </Text>
+                    ))}
+                  </View>
+                </>
+              )}
+
+              <Text className='page-weekly__mix-label'>领域</Text>
+              {digest.domains.map((d) => (
+                <View key={d.domain} className='page-weekly__domain'>
+                  <Text className='page-weekly__domain-name'>{DOMAIN_META[d.domain].label}</Text>
+                  <View className='page-weekly__domain-track'>
+                    <View
+                      className='page-weekly__domain-bar'
+                      style={{ width: `${Math.max(6, Math.round((d.entries / domainMax) * 100))}%` }}
+                    />
+                  </View>
+                  <Text className='page-weekly__domain-count'>
+                    {d.persons} 人 · {d.entries} 条
+                  </Text>
+                </View>
+              ))}
+
+              <Text className='page-weekly__dist-note'>
+                口径：条数与来源取自本机已抓取的动态缓存（同一说法只计一次），不含模型输出。
+              </Text>
+            </View>
+          )}
+
           <View className='section-head'>
             <Text className='section-head__title'>关注的人</Text>
             <Text className='section-head__extra'>{report.personCount} 位</Text>
           </View>
 
-          {report.persons.map((p) => (
-            <View
-              key={p.personKey}
-              className='card page-weekly__person'
-              onClick={() => openPerson(p.personKey)}
-            >
-              <View className='page-weekly__person-head'>
-                <View className={`page-weekly__person-icon page-weekly__person-icon--${p.domain}`}>
-                  {p.name.slice(0, 1)}
-                </View>
-                <View className='page-weekly__person-info'>
-                  <Text className='page-weekly__person-name'>{p.name}</Text>
-                  <Text className='page-weekly__person-domain'>
-                    {DOMAIN_META[p.domain].label} · {p.entries.length} 条动态
-                  </Text>
-                </View>
-              </View>
-
-              {!!p.summary && <View className='page-weekly__person-summary'>{p.summary}</View>}
-
-              {p.entries.map((e, i) => (
-                <View key={`${p.personKey}-${i}`} className='page-weekly__entry'>
-                  <Text className='page-weekly__entry-title'>{e.title}</Text>
-                  <View className='page-weekly__entry-foot'>
-                    <Text className='page-weekly__entry-meta'>
-                      {e.source || '公开来源'} · {e.publishedDate?.slice(0, 10) ?? '近期'}
-                    </Text>
-                    <Text
-                      className='page-weekly__entry-copy'
-                      onClick={(ev) => {
-                        ev.stopPropagation?.()
-                        Taro.setClipboardData({ data: e.url })
-                      }}
-                    >
-                      复制链接
+          {report.persons.map((p) => {
+            /* 该人素材里最近一条的日期（UTC+8）与来源个数：两条都是从素材直接读出的元信息 */
+            const latest = p.entries.reduce((acc, e) => {
+              const d = dayKey8(e.publishedDate ?? '')
+              return d > acc ? d : acc
+            }, '')
+            const srcCount = new Set(p.entries.map((e) => (e.source || '').trim()).filter(Boolean)).size
+            return (
+              <View
+                key={p.personKey}
+                className='card page-weekly__person'
+                onClick={() => openPerson(p.personKey)}
+              >
+                <View className='page-weekly__person-head'>
+                  <View className={`page-weekly__person-icon page-weekly__person-icon--${p.domain}`}>
+                    {p.name.slice(0, 1)}
+                  </View>
+                  <View className='page-weekly__person-info'>
+                    <Text className='page-weekly__person-name'>{p.name}</Text>
+                    <Text className='page-weekly__person-domain'>
+                      {DOMAIN_META[p.domain].label} · {p.entries.length} 条动态
+                      {latest ? ` · 最近 ${latest.slice(5)}` : ''}
+                      {srcCount > 0 ? ` · ${srcCount} 个来源` : ''}
                     </Text>
                   </View>
                 </View>
-              ))}
-            </View>
-          ))}
+
+                {!!p.summary && <View className='page-weekly__person-summary'>{p.summary}</View>}
+
+                {p.entries.map((e, i) => (
+                  <View key={`${p.personKey}-${i}`} className='page-weekly__entry'>
+                    <Text className='page-weekly__entry-title'>{e.title}</Text>
+                    <View className='page-weekly__entry-foot'>
+                      <Text className='page-weekly__entry-meta'>
+                        {e.source || '公开来源'} · {dayKey8(e.publishedDate ?? '') || '近期'}
+                      </Text>
+                      <Text
+                        className='page-weekly__entry-copy'
+                        onClick={(ev) => {
+                          ev.stopPropagation?.()
+                          Taro.setClipboardData({ data: e.url })
+                        }}
+                      >
+                        复制链接
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )
+          })}
 
           {/* 归不出话题也出卡（原先 `topics.length > 0 &&` 直接整卡不出）：说明为什么没有话题 */}
           {report.topics.length === 0 && (

@@ -1,14 +1,39 @@
 import { table } from './db'
-import { Report, buildReport, isRefusedResult, REPORT_SCHEMA_VERSION } from './report'
+import {
+  Report,
+  buildReport,
+  buildKnowledgeFallback,
+  isRefusedResult,
+  REPORT_SCHEMA_VERSION,
+  reportShortfall,
+  reportShortfallRetryable
+} from './report'
 import { FocusCode } from '@/config/filters'
-import { fetchNews, hasSearchChannel, DEEP_MAIN_COUNT, DEEP_SOCIAL_COUNT, NewsItem } from './search'
+import {
+  fetchNews,
+  fetchBackground,
+  hasSearchChannel,
+  BG_COUNT,
+  DEEP_BG_COUNT,
+  DEEP_MAIN_COUNT,
+  DEEP_SOCIAL_COUNT,
+  NewsItem
+} from './search'
 import { parsePersonKey } from '@/config/domains'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { todayKey } from './time'
 import { cooldownMinutesLeft } from './cooldown'
 import { peekGenerateQuota, consumeGenerateQuota } from './quota'
-import { quotaExhaustedMessage, presentSections, readMemberState, stripMemberSections } from './member'
+import {
+  quotaExhaustedMessage,
+  presentSections,
+  readMemberState,
+  stripMemberSections,
+  DAILY_REFRESH_LIMIT,
+  dailyRefreshLimit,
+  FREE_REFRESH_COOLDOWN_HOURS
+} from './member'
 import { incrQuotaViaCloud } from './quota-guard'
 import {
   acquireLockViaCloud,
@@ -36,7 +61,12 @@ const BUILDING_TIMEOUT_MS = 90 * 1000
 // 原值 30s 短于构建时间，导致「同一个人被重复查询」时等待方必然超时报错。
 const WAIT_TIMEOUT_MS = 75 * 1000
 const POLL_INTERVAL_MS = 2000
-const DAILY_REFRESH_LIMIT = 10
+/*
+ * 每日刷新次数上限（10）不再写在这里：它是会员页要展示给用户的数字，唯一来源是
+ * utils/member.ts#MEMBER_BENEFITS.refreshPerDay（免费与会员同额）。本文件此前自带一份
+ * `const DAILY_REFRESH_LIMIT = 10`，与会员页各写一份 ⇒ 迟早出现「页面说 10 次、
+ * 闸门按别的数拦」。判定权威在云函数 quotaGuard，本常量只在云函数不可用时兜底。
+ */
 
 export type ReportOutcome =
   | {
@@ -60,11 +90,22 @@ export type ReportOutcome =
        */
       memberLocked?: string[]
       /**
-       * 本次 force 被免费档「刷新最新」冷却拦下（批 2，2026-10-09）：交回的是刚生成过的那一版，
-       * **没有真的重新生成**。页面得说明一句 —— 否则用户点了刷新却看不出任何变化，
-       * 会以为按钮坏了（与 keptMember 同一个「点了没变」的问题，故提示挂在同一处）。
+       * 本次产物没达到最低交付要求（2026-10-10，判定见 utils/report.ts#reportShortfall）。
+       *
+       * ⚠ 与 refreshFailed 的关键差别：报告**真的生成出来了**（上面那份就是这次的新产物），
+       * 只是质量够不上「一份报告」，所以**没有消耗用户的生成次数**。页面必须说明这一点 ——
+       * 否则用户看着一份明显残的报告，只能自己猜「这次是不是白花了」。
        */
-      refreshCooled?: boolean
+      shortfall?: string
+      /**
+       * 上面这条不达标「重试有没有意义」（P2，2026-10-10，判据见 utils/report.ts#shortfallVerdict）。
+       *
+       * 页面必须按它分流文案：不达标里有两类原因，一类是上游抖动（重试通常就好），
+       * 另一类是**素材本身就不够**（长尾人物近期报道少）—— 后者劝重试就是让用户白等一场，
+       * 每次不扣次数、每次都不达标，最后把「素材少」误解成「服务坏了」。
+       * 只有不达标时才带这个字段。
+       */
+      shortfallRetryable?: boolean
       /**
        * 本次 force 刷新**失败**，交回的是缓存里原有的那一版（P1-8，2026-10-09）。
        *
@@ -186,27 +227,37 @@ async function exposeReport(
 }
 
 /**
- * 免费档「刷新最新」的冷却窗口（批 2，2026-10-09）。
+ * 免费档「重复生成」的提醒窗口（批 2，2026-10-09；2026-10-10 收窄为只做提醒）。
  *
- * 为什么是 12 小时：报告是「一次生成、长期复用」的资产，不按时间过期（见文件顶部），
+ * 为什么仍是 12 小时：报告是「一次生成、长期复用」的资产，不按时间过期（见文件顶部），
  * 半天的间隔内内容不会有实质变化（素材时间窗 30 天，热度按 N30/N7 算），
- * 而每次重新生成都要付一整笔检索 + LLM 输出。
- * 窗口只拦「刚看过就想再刷」这类无意义重复，跨天使用的用户碰不到它。
- * 会员不受限：他有每日 30 次，且「补齐共享缓存」那类刷新本就免计费（见 memberUpgrade）。
+ * 而每次重新生成都要付一整笔检索 + LLM 输出 —— 用户刚看完就想再刷时，值得提醒一句。
+ * ⚠ 但它**只用于确认弹窗里的那句话**，不再拦下任何一次 force：原先命中就交回旧版本，
+ * 用户点了刷新却什么都没发生，与「重新生成随时可用」直接冲突（判定见 isFreeRefreshCooling）。
+ * 会员不受限：他有每日 30 次，故这句提醒只对免费档发。
+ *
+ * 数值取自权益表（utils/member.ts#freeRefreshCooldownHours）：它仍是**按身份分叉**的
+ * 规则，会员页要原样告诉用户「免费版 12 小时内会先提醒、会员不受限」，两边各写一份
+ * 就会出现「页面说 12 小时、提醒按别的时长发」。
  */
-const FREE_REFRESH_COOLDOWN_MS = 12 * 60 * 60 * 1000
+const FREE_REFRESH_COOLDOWN_MS = FREE_REFRESH_COOLDOWN_HOURS * 60 * 60 * 1000
 
 /**
- * 这次 force 是否该被免费档冷却拦下（批 2）。
+ * 这份报告是否还在免费档的「重复生成提示窗口」内（批 2 → 2026-10-10 改语义）。
+ *
+ * ⚠ 语义变了：它**不再是一道拦截闸门**。原先命中就直接交回旧版本、根本不重新生成，
+ * 用户点了刷新却什么都没发生 —— 与「重新生成随时可用」直接冲突。
+ * 现在只服务于**页面弹确认时的一句提醒**：免费用户刚生成完再刷，先告诉他「这份 X 小时前
+ * 刚生成过、内容可能没实质变化」，确认后照常生成、照常计数。
+ * 会员不受限（有每日额度），故这条只对免费档成立。
  *
  * 快路径**先看时间、再看身份**：绝大多数 force 都发生在报告已经旧了的时候（用户就是为这个点的），
- * 那种情况连身份都不必读 —— 与 exposeReport 同一取舍，别让这个闸门给常态动作加成本。
+ * 那种情况连身份都不必读 —— 与 exposeReport 同一取舍，别让这个判断给常态动作加成本。
  *
  * 读库失败时 readMemberState 按非会员处理（全项目口径，见 utils/member.ts）：
- * 代价是极少数抖动会让免费用户这一下刷新被拦（拿到的是刚生成过的那一版，内容无差），
- * 比反过来放行一次本可省下的生成强。
+ * 这里判错方向的代价只是多弹一句提醒，可以忽略。
  */
-async function isFreeRefreshCooling(report: Report): Promise<boolean> {
+export async function isFreeRefreshCooling(report: Report): Promise<boolean> {
   const at = Date.parse(report.generatedAt ?? '')
   if (!Number.isFinite(at)) return false
   if (Date.now() - at >= FREE_REFRESH_COOLDOWN_MS) return false
@@ -437,25 +488,22 @@ export async function getOrBuildReport(
   // 0. 缓存命中优先（随用随查）：已生成的报告读取零成本，不受冷却影响。
   //    冷却检查后置到第 1.5 步，只拦「重新生成」，不拦「看已有报告」。
   let row = await getRow(personKey)
-  if (isUsable(row)) {
+  if (isUsable(row) && !opts.force) {
     /*
-     * 免费档「刷新最新」冷却（批 2，2026-10-09）：force 不等于一定要重新生成 ——
-     * 刚生成过的那一份内容不会有实质变化，重做只是把同一件事再买一遍
-     * （一次检索 + 一次完整 LLM 输出）。判定见 isFreeRefreshCooling。
+     * force 的「免费档冷却」拦截原先就在这个分支里（批 2，2026-10-09），2026-10-10 撤销：
+     * 用户要的是「重新生成随时可用」—— 拦下来的结果是点了刷新什么都不变，
+     * 而那道闸门想省下的成本，现在已经改由确认弹窗（提示消耗次数）把门，
+     * 没必要再来一道用户看不见、点不动任何东西的拦截。
+     * 冷却判定本身没删，降级成弹窗里的一句提醒（见 isFreeRefreshCooling）。
      */
-    const cooled = opts.force ? await isFreeRefreshCooling(row.report) : false
-    if (!opts.force || cooled) {
-      track(cooled ? 'report_refresh_cooled' : 'report_hit_cache', { personKey })
-      /* 交回前先按读者身份过滤（批 1）：免费用户拿到的对象里不该有会员段（见 exposeReport） */
-      const shown = await exposeReport(row.report)
-      return {
-        kind: 'report',
-        report: shown.report,
-        fromCache: true,
-        memberLocked: shown.locked,
-        /* 只有「被冷却拦下的 force」要告诉页面：用户明明点了刷新（见 ReportOutcome.refreshCooled） */
-        ...(cooled ? { refreshCooled: true } : {})
-      }
+    track('report_hit_cache', { personKey })
+    /* 交回前先按读者身份过滤（批 1）：免费用户拿到的对象里不该有会员段（见 exposeReport） */
+    const shown = await exposeReport(row.report)
+    return {
+      kind: 'report',
+      report: shown.report,
+      fromCache: true,
+      memberLocked: shown.locked
     }
   }
 
@@ -589,20 +637,58 @@ export async function getOrBuildReport(
      *   这是「共享缓存 + 免费共用」的必然；会员点「刷新最新」即可按自己的档位重生成一份厚的，
      *   且那一次免计费（见上方 memberUpgrade），所以会员并没有被免费档的产物锁死。
      */
-    const news = await fetchNews(
-      name,
-      memberDeep
-        ? { maxResults: DEEP_MAIN_COUNT, socialCount: DEEP_SOCIAL_COUNT }
-        : { socialCount: 0 }
-    )
+    /*
+     * 两路素材并行取（P1，2026-10-10「检索拆路」）：近期线 + 人物背景线。
+     *
+     * 为什么要两路：一条「近期新闻」查询答不了档案 / 履历 / 时间线 —— 出生地、学历、生平节点
+     * 不进新闻流，30 天窗里天然搜不到（这几节此前常年为空的原因，详见 utils/search.ts#fetchBackground）。
+     * 两路并行而非串行：单路 1~2s，串行会把首次生成的等待拉长近一倍。
+     *
+     * 判据仍然是主线：背景线返回 null（通道未就绪 / 上游失败）一律吞掉 —— 它只是补充，
+     * 与社交支线同一个取舍。
+     */
+    const [news, background] = await Promise.all([
+      fetchNews(
+        name,
+        memberDeep
+          ? { maxResults: DEEP_MAIN_COUNT, socialCount: DEEP_SOCIAL_COUNT }
+          : { socialCount: 0 }
+      ),
+      fetchBackground(name, memberDeep ? DEEP_BG_COUNT : BG_COUNT)
+    ])
 
     if (news === null || news.length === 0) {
+      /*
+       * 抓空了（注意**不是**通道故障）：先试一次「模型知识兜底」（C，2026-10-10）。
+       * 产品要求是「付费的价值在查到的必须有内容」—— 全源都没抓到时的空手而归，正是最伤
+       * 付费用户的那一种。检索侧的两层兜底（utils/search.ts 的降级阶梯、aiProxy 的 Bing
+       * 第二源）此刻已经试完，到这里就是「确实没有公开素材」，只剩模型知识这一条路。
+       *
+       * 三条边界，都不是可选的：
+       *   ① 只在 `news !== null`（**通道可用**）时试 —— 通道不通时 chat 多半也不通，且那时的
+       *      成因是配置问题，硬塞一份知识版会把「通道坏了」掩盖成「查不到」；
+       *   ② 产物带 `knowledgeOnly` 标记，页面明说「未经核实」，绝不与检索结果混为一谈；
+       *   ③ **不写共享缓存**：`report_cache` 是**全站共享**的一行，把一份没素材的内容写进去，
+       *      之后所有读者（包括本来能搜到素材的那些档位）都会读到它 —— 那是污染，不是兜底。
+       */
+      if (news !== null) {
+        const know = await buildKnowledgeFallback(personKey, name, focus)
+        if (know.ok) {
+          await release(personKey, userId)
+          track('report_knowledge_fallback', { personKey })
+          /* fromCache: false —— 这是刚生成的内容，不是缓存命中（口径与其它 report 分支一致） */
+          return { kind: 'report', report: know.data, fromCache: false }
+        }
+      }
       // 无联网素材（搜索源不可用 / 抓取为空）：不生成，进引导态（§2.4）
       await release(personKey, userId)
       return { kind: news === null ? 'coldstart' : 'nonews' }
     }
 
-    const res = await buildReport(personKey, name, news, focus, { member: memberDeep })
+    const res = await buildReport(personKey, name, news, focus, {
+      member: memberDeep,
+      background: background ?? []
+    })
     if (!res.ok) {
       await release(personKey, userId)
       return (await cachedFallback(res.error, memberDeep)) ?? { kind: 'error', message: res.error }
@@ -683,14 +769,30 @@ export async function getOrBuildReport(
 
     track('report_generate', { personKey, mode: 'realtime' })
     /*
-     * 配额只在「用户真的拿到报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
+     * 配额只在「用户真的拿到一份合格报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
      *   上方的 refused / error / coldstart / nonews 分支均已提前 return，不计数；
-     *   缓存命中（第 0 步 / 抢锁失败等待他人构建）与上面的 kept 分支同样不计数。
-     *   ⚠ 落库失败会抛到下面的 catch，此时用户拿不到报告 → 不计数（release 会把上一版交还）。
+     *   缓存命中（第 0 步 / 抢锁失败等待他人构建）与上面的 kept 分支同样不计数；
+     *   落库失败会抛到下面的 catch，此时用户拿不到报告 → 不计数（release 会把上一版交还）。
+     * 2026-10-10 加严：**产物不达标同样不计数**（判定见 utils/report.ts#reportShortfall）——
+     *   上游把模型调用搞挂了、或者只吐回一段降级文本，用户买的是报告而不是一次失败的尝试。
      *   best-effort：计数写失败不影响本次返回，少量丢失可接受（宁可少算不多算）。
      *   memberUpgrade 的那一次已在落库前申请（见上方 ②），此处不再重复申请。
      */
-    if (!memberUpgrade) void consumeGenerateQuota(userId)
+    const shortfall = reportShortfall(report, memberDeep)
+    /*
+     * 不达标还要再分一次「值不值得重试」（P2，2026-10-10）：页面按它选文案。
+     * 判据在 utils/report.ts#shortfallVerdict（素材够不够，取 coverage.items），
+     * 这里只管把它带给页面与埋点 —— 埋点带上这个字段，才能从数据上看出
+     * 「不达标里有多少是素材本来就少」（那部分不该按故障去追）。
+     */
+    const retryable = shortfall !== null && reportShortfallRetryable(report, memberDeep)
+    if (shortfall) {
+      /* tag 取 'db'：诊断标签只有 http/storage/auth/db/llm 五档，配额类日志一律归 db（同 utils/quota.ts） */
+      diagLog('info', 'db', `本次产物未达最低要求，不消耗次数：${shortfall}（可重试：${retryable}）`)
+      track('report_generate_shortfall', { personKey, reason: shortfall, retryable })
+    } else if (!memberUpgrade) {
+      void consumeGenerateQuota(userId)
+    }
     /* 本次产物按**本次身份**过滤（批 1）：非会员生成的报告本就不含会员段 → 快路径直出、零额外读 */
     const shown = await exposeReport(report, memberDeep)
     return {
@@ -698,7 +800,9 @@ export async function getOrBuildReport(
       report: shown.report,
       fromCache: false,
       prev: prevReport,
-      memberLocked: shown.locked
+      memberLocked: shown.locked,
+      /* 只有不达标时才带：页面据此说明「这次没有扣次数」+「要不要再试」（见 ReportOutcome 两字段） */
+      ...(shortfall ? { shortfall, shortfallRetryable: retryable } : {})
     }
   } catch (err) {
     await release(personKey, userId).catch(() => undefined)
@@ -822,8 +926,55 @@ export async function getFeedDetail(
   return { ok: true, items: row?.items ?? [], fetchedAt: row?.fetched_at ?? null }
 }
 
+/** 关注流详情（含 ok / 抓取时间），批量版与单人版返回同一个形状 */
+export interface FeedDetail {
+  /** false = 读取失败（与「这个人还没抓过」区分开，见 getFeedDetail 注释） */
+  ok: boolean
+  items: NewsItem[]
+  fetchedAt: string | null
+}
+
+/** 批量读取的分片大小：一串过长的 `in` 条件会顶到云端查询的体积上限 */
+const FEED_BATCH_KEYS = 50
+
 /**
- * 检查并消耗一次刷新配额（每账号/日 ≤10，§3.8）。
+ * 批量读多位关注人的动态缓存（关注流、周报素材的公共入口）。
+ *
+ * 为什么要成批：这两个页面进入时都要对**每一位**关注人各读一行 feed_cache。
+ * 逐人读 = N 次云数据库往返（每人还可能因内部 20 条分页再翻一次），关注十几位时
+ * 就是十几路请求同时在飞，页面进得去但「要等一下」。一次 `in` 查询把 N 次压成 1 次，
+ * 关注人数再多也只多几次翻页。
+ *
+ * 语义与 getFeedDetail 完全对齐，调用方不需要区分两个入口：
+ *   - 整批读失败 → 该批所有人 `ok:false`（本次结果不完整，界面必须显式告知）；
+ *   - 行不存在   → `ok:true` + 空 items（这是「还没抓过」这种确定的无内容）。
+ * 返回 Map 按 personKey 取，**没有**这个人（未传或已取关）由调用方按失败处理。
+ */
+export async function getFeedDetails(personKeys: string[]): Promise<Map<string, FeedDetail>> {
+  const out = new Map<string, FeedDetail>()
+  const keys = [...new Set(personKeys.filter((k) => !!k))]
+  if (keys.length === 0) return out
+
+  for (let i = 0; i < keys.length; i += FEED_BATCH_KEYS) {
+    const slice = keys.slice(i, i + FEED_BATCH_KEYS)
+    const { data, error } = await table('feed_cache').select('*').in('id', slice)
+    if (error) {
+      diagLog('warn', 'db', `feed_cache 批量读取失败：${error.message ?? error}`)
+      for (const k of slice) out.set(k, { ok: false, items: [], fetchedAt: null })
+      continue
+    }
+    const byId = new Map<string, FeedCacheRow>()
+    for (const row of (data as FeedCacheRow[]) ?? []) byId.set(row.id, row)
+    for (const k of slice) {
+      const row = byId.get(k)
+      out.set(k, { ok: true, items: row?.items ?? [], fetchedAt: row?.fetched_at ?? null })
+    }
+  }
+  return out
+}
+
+/**
+ * 检查并消耗一次刷新配额（每账号/日：免费 10、会员 20，§3.8）。
  *
  * 计数优先走云函数 `quotaGuard` 原子自增；未部署时回退本地读-改-写。
  *
@@ -833,42 +984,77 @@ export async function getFeedDetail(
  * 同源常量兜底（此时本就无法强判）。
  * 注意云端是「先自增、再判定」：已超限时再刷新会让计数多涨 1（只影响展示，
  * `remaining` 已夹到 0），闸门是否放行不受影响。
+ *
+ * 2026-10-10 起上限**按档位分叉**，于是云端的 `limit` 不再是一个常量：端上把它连同
+ * `remaining` 一起回报给调用方（错误文案要写「已达上限（20 次）」而不能写死 10）。
  */
-export async function consumeRefreshQuota(userId: string): Promise<{ allowed: boolean; remaining: number }> {
+export async function consumeRefreshQuota(
+  userId: string
+): Promise<{ allowed: boolean; remaining: number; limit: number; unlimited: boolean }> {
   const real = await tallyRefreshQuota(userId)
   /*
-   * 调试开关（见 utils/debug.ts）：关闭额度时不拦请求，但计数照记 ——
-   * 计数是排查问题时最直接的证据，不该因为调试而丢失。
-   * remaining 一并报成满额，避免出现「剩余 0 次」却仍能刷新的矛盾展示。
+   * 调试开关（见 utils/debug.ts）：关闭额度时**只放闸门、不改数字** ——
+   * 计数照记（那是排查时最直接的证据，不该因为调试而丢失），remaining 也照实相减。
+   *
+   * 此前这里把 remaining 一并报成满额，理由是「避免出现『剩余 0 次』却仍能刷新的矛盾展示」。
+   * 那条理由对**判定方**成立（调用方只看 allowed），但**展示方**会把「剩余 N 次刷新」
+   * 直接写进提示文案给用户看 —— 报满额就是在骗他，而且骗得静默无声。
+   * 这与生成侧 `peekGenerateQuota` 是同一个毛病（见 utils/quota.ts#GenerateQuotaSummary），
+   * 两处一起改：数字照实，措辞交给 `unlimited` 决定。
    */
-  return REFRESH_QUOTA_DISABLED ? { allowed: true, remaining: DAILY_REFRESH_LIMIT } : real
+  return {
+    allowed: REFRESH_QUOTA_DISABLED || real.allowed,
+    remaining: real.remaining,
+    limit: real.limit,
+    unlimited: REFRESH_QUOTA_DISABLED
+  }
 }
 
-/** 刷新额度的真实口径：自增计数并据此判定（不感知调试开关） */
-async function tallyRefreshQuota(userId: string): Promise<{ allowed: boolean; remaining: number }> {
+/**
+ * 端上「按身份」的抓取上限 —— 只在云端**没有**给出 limit 时兜底
+ * （云函数未部署，或旧版云函数不返回 limit）。
+ *
+ * 判定权威始终是云端（它读 `memberships` 后按档回报 limit，端上直接采用）；
+ * 这里读的 `users.membership` 只是界面镜像（见 utils/member.ts 顶部说明），
+ * 且读失败一律按免费档 —— 宁可少给，也不因为一次读库异常放开上限。
+ */
+async function localRefreshLimit(): Promise<number> {
+  try {
+    return dailyRefreshLimit((await readMemberState()).member)
+  } catch {
+    return DAILY_REFRESH_LIMIT
+  }
+}
+
+/** 刷新额度的真实口径：自增计数并据此判定（不感知调试开关）；`limit` 一并回报给展示用 */
+async function tallyRefreshQuota(
+  userId: string
+): Promise<{ allowed: boolean; remaining: number; limit: number }> {
   const cloud = await incrQuotaViaCloud('refresh')
   if (cloud !== null) {
     /* P2-30：服务端给了判定就用它（`limit` 一并采用，顺带消掉两份常量漂移的风险）；
-       老版本云函数不返回这两个字段 ⇒ 回落到同源常量，行为与从前一致。 */
-    const limit = typeof cloud.limit === 'number' ? cloud.limit : DAILY_REFRESH_LIMIT
+       老版本云函数不返回这两个字段 ⇒ 回落到**按身份**取的同源常量，行为与从前一致。 */
+    const limit = typeof cloud.limit === 'number' ? cloud.limit : await localRefreshLimit()
     const allowed = typeof cloud.allowed === 'boolean' ? cloud.allowed : cloud.count <= limit
-    return { allowed, remaining: Math.max(0, limit - cloud.count) }
+    return { allowed, remaining: Math.max(0, limit - cloud.count), limit }
   }
 
+  /* 云函数不可用 → 端上回退读-改-写；上限同样按身份取（两端读的是同一份真源） */
   const id = `${userId}#${todayKey()}`
+  const fallbackLimit = await localRefreshLimit()
   const { data, error } = await table('refresh_quota').select('*').eq('id', id).maybeSingle()
   if (error) diagLog('warn', 'db', `refresh_quota 读取失败：${error.message ?? error}`)
   const row = data as RefreshQuotaRow | null
   const count = row?.count ?? 0
-  if (count >= DAILY_REFRESH_LIMIT) {
-    return { allowed: false, remaining: 0 }
+  if (count >= fallbackLimit) {
+    return { allowed: false, remaining: 0, limit: fallbackLimit }
   }
   if (!row) {
     await table('refresh_quota').insert({ id, count: 1 })
   } else {
     await table('refresh_quota').update({ count: count + 1 }).eq('id', id)
   }
-  return { allowed: true, remaining: DAILY_REFRESH_LIMIT - count - 1 }
+  return { allowed: true, remaining: fallbackLimit - count - 1, limit: fallbackLimit }
 }
 
 /**
@@ -946,7 +1132,7 @@ export async function refreshAllFeeds(
 
   const quota = await consumeRefreshQuota(userId)
   if (!quota.allowed) {
-    return { ok: false, message: `今日刷新已达上限（${DAILY_REFRESH_LIMIT} 次），明日再来`, refreshed: 0 }
+    return { ok: false, message: `今日刷新已达上限（${quota.limit} 次），明日再来`, refreshed: 0 }
   }
 
   const targets = await pickStalestFollows(follows, FEED_REFRESH_MAX_PERSONS)
@@ -985,7 +1171,11 @@ export async function refreshAllFeeds(
     targets.length < follows.length ? `（本次刷新 ${targets.length} 位，按最久未刷新优先）` : ''
   return {
     ok: true,
-    message: `已刷新 ${refreshed} 位名人${partial}（剩余 ${quota.remaining} 次刷新）`,
+    /* 开挂态不报剩余次数：数字是真的（remaining 已照实），但「剩 N 次」这句话在闸门放开时
+       已不成立（见 consumeRefreshQuota 的 unlimited） */
+    message: `已刷新 ${refreshed} 位名人${partial}${
+      quota.unlimited ? '' : `（剩余 ${quota.remaining} 次刷新）`
+    }`,
     refreshed
   }
 }
@@ -1007,16 +1197,18 @@ export async function refreshFeed(
 
   const quota = await consumeRefreshQuota(userId)
   if (!quota.allowed) {
-    return { ok: false, message: `今日刷新已达上限（${DAILY_REFRESH_LIMIT} 次），明日再来` }
+    return { ok: false, message: `今日刷新已达上限（${quota.limit} 次），明日再来` }
   }
 
   /* 口径与批量刷新一致（只走主线，见 FEED_SEARCH_OPTS）：两处写的是同一张 feed_cache */
   const news = await fetchNews(name, FEED_SEARCH_OPTS)
   if (!news) return { ok: false, message: '联网素材不可用' }
-  if (news.length === 0) return { ok: true, items: [], message: `暂无新动态（剩余 ${quota.remaining} 次刷新）` }
+  /* 开挂态（quota.unlimited）不报剩余次数：理由同 refreshAllFeeds（见 consumeRefreshQuota） */
+  const left = quota.unlimited ? '' : `（剩余 ${quota.remaining} 次刷新）`
+  if (news.length === 0) return { ok: true, items: [], message: `暂无新动态${left}` }
 
   await writeFeedCache(personKey, news)
   /* count: 1 —— 批量刷新报的是人数，这里保持同一字段可比（否则同一事件两种口径） */
   track('refresh_feed', { personKey, count: 1 })
-  return { ok: true, items: news, message: `已更新（剩余 ${quota.remaining} 次刷新）` }
+  return { ok: true, items: news, message: `已更新${left}` }
 }

@@ -19,15 +19,20 @@
  *
  * 两道闸都用 `memberships`（端上不可读写）判会员档位，故自授会员对成本没有帮助。
  *
- * ⚠ QUOTA_POOLS 的数值必须与端上 MEMBER_BENEFITS 一一对应：
- *   test/cases/07-cloud-authority.js 会读本文件比对端上那份，改一端会红。
- *   表名与 quotaGuard 的 TABLE_BY_KIND 一致（_id = openid#yyyy-MM-dd）。
+ * ⚠ 上限数值**不在本文件**：来自同目录的 benefits.config.js（自动生成，真源是
+ *   src/config/benefits.ts）—— 端上 utils/member.ts 与这里读同一份数据，
+ *   于是「改一端忘了另一端」这个错从根上没有了。调额度请改真源 → `npm run config:sync`
+ *   → 重新部署本函数（端上随下次发版）。
+ *   表名与 quotaGuard 的 TABLE_BY_KIND 一致（_id = openid#yyyy-MM-dd），
+ *   由 test/cases/07-cloud-authority.js 钉住。
  */
+const { MEMBER_BENEFITS, ABUSE_LIMITS } = require('./benefits.config')
+
 const QUOTA_POOLS = {
-  /* 主动生成报告 / 周报共用一池（与端上 generatePerDay 同源） */
-  generate: { table: 'generate_quota', free: 3, member: 30 },
-  /* AI 提问独立一池，且「成功才计数」（与端上 askPerDay 同源） */
-  ask: { table: 'ask_quota', free: 5, member: 30 }
+  /* 主动生成报告 / 周报共用一池 */
+  generate: { table: 'generate_quota', ...MEMBER_BENEFITS.generatePerDay },
+  /* AI 提问独立一池，且「成功才计数」 */
+  ask: { table: 'ask_quota', ...MEMBER_BENEFITS.askPerDay }
 }
 
 /**
@@ -50,15 +55,11 @@ const DEFAULT_PURPOSE = 'generate'
 /* 防滥用计数表（本函数写入，端上不可读写） */
 const ABUSE_TABLE = 'ai_calls'
 
-/**
- * 防滥用上限（次/日）：按**每一次真实付费调用**计，包含生成、提问与辅助调用。
- *
- * 取值依据（正常用户一天的调用量）：
- *   免费档 ~ 3 次生成 + 5 次提问 + 若干消歧/选题 ≈ 10~15 次；
- *   会员档 ~ 30 次生成 + 30 次提问（报告可能带一次纯文本降级）≈ 60~70 次。
- * 留 2~3 倍余量，于是正常用户碰不到，改包者最多也就花掉这些。
+/*
+ * 防滥用上限（次/日）：已随上面的 require 从 benefits.config.js 引入。
+ * 按**每一次真实付费调用**计（生成 / 提问 / 辅助调用），取值依据（按正常用户一天的
+ * 调用量留 2~3 倍余量）写在真源 src/config/benefits.ts 的 ABUSE_LIMITS 上方。
  */
-const ABUSE_LIMITS = { free: 40, member: 200 }
 
 /**
  * 云端闸门开关（**本地联调专用**，2026-10-09 补）。

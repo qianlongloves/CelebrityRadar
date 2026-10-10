@@ -22,7 +22,7 @@
  *   'peek'    只读当日计数，不自增
  * kind：
  *   'generate' → generate_quota（报告生成配额，免费 3 / 会员 30）
- *   'refresh'  → refresh_quota（关注流刷新配额，10）
+ *   'refresh'  → refresh_quota（关注流刷新配额，免费 10 / 会员 20）
  *   'ask'      → ask_quota（AI 提问配额，免费 5 / 会员 30）
  *
  * 免计费（可选，仅 generate 的 consume，2026-10-09 新增）：
@@ -172,25 +172,57 @@ function hasMemberBlocks(report) {
 const MAX_KEY_LEN = 120
 
 /**
- * 刷新的每日上限（P2-30）。**必须与端上 `src/utils/cache.ts#DAILY_REFRESH_LIMIT` 同源**。
+ * 刷新的每日上限（P2-30）—— **按档位**取（2026-10-10 起分档：免费 10 / 会员 20）。
  *
  * 以前这个数字只在端上判：`tallyRefreshQuota` 把云端计数取回来自己比一遍。同一份业务规则
  * 存两个副本就有两个真相 —— 端上那份可被改包改掉，而云端连「越界的尝试」都不会留痕。
  * 现在判定由本函数给出（回报 `limit` / `allowed`），端上直接采用、不再本地算数。
  *
+ * 上限值不手写：取自 benefits.config.js（自动生成，真源 src/config/benefits.ts），
+ * 与端上 utils/member.ts 的 refreshPerDay 是同一份数据。**分档之后**这里的档位判定必须是
+ * 权威值 —— 端上那份只在云函数不可用时兜底（它可被改包，挡不住谁）。
+ *
  * ⚠ 本函数仍然**只记账、只判定，不阻断调用**：真正的硬顶是 aiProxy 强判的 `generate` 池
  *   （3/日）—— 刷新一次报告要过一次生成配额，改包也绕不过去。本判定的作用是「让限制只有
  *   一个真相，并让越界尝试在云端日志里留痕」。
  */
-const REFRESH_DAILY_LIMIT = 10
+const { MEMBER_BENEFITS } = require('./benefits.config')
+
+/**
+ * 调用者是不是有效期内的会员。
+ *
+ * 读 `memberships`（_id = openid，客户端完全不可读写）—— **刻意不读 users.membership**：
+ * 后者那张表的权限是「仅创建者可读写」，端上能改自己那一行，以它为准等于把会员判定
+ * 交给改包者。读不到 / 读库异常一律按**非会员**：方向是「宁可少给，不留白拿口子」。
+ *
+ * 只有 refresh 的额度判定用得到它 —— generate / ask 的限额在 aiProxy 入口，那边有自己
+ * 的一份（各云函数独立打包，跨目录 require 部署后必失效）。
+ */
+async function isActiveMember(openid) {
+  try {
+    const res = await db.collection('memberships').doc(openid).get()
+    return isMembershipActive((res && res.data) || null)
+  } catch (err) {
+    return false
+  }
+}
+
+/** refresh 的当日上限（按档位）；调用方 await 一次，peek / consume 两个分支共用 */
+async function refreshDailyLimit(openid) {
+  const member = await isActiveMember(openid)
+  return member ? MEMBER_BENEFITS.refreshPerDay.member : MEMBER_BENEFITS.refreshPerDay.free
+}
 
 /**
  * 只有 `refresh` 有服务端判定；`generate` / `ask` 的限额在 aiProxy 入口（见文件头）。
  * 返回 `{}` 表示「本类配额没有服务端上限」，调用方用 Object.assign 挂上去即可。
+ *
+ * `refreshLimit` 由调用方**先按调用者身份算好**再传进来（见 refreshDailyLimit）：
+ * 保持同步是为了让「读一次会员身份、两个分支共用」这件事在调用点看得见。
  */
-function judgeLimit(kind, count) {
+function judgeLimit(kind, count, refreshLimit) {
   if (kind !== 'refresh') return {}
-  return { limit: REFRESH_DAILY_LIMIT, allowed: count <= REFRESH_DAILY_LIMIT }
+  return { limit: refreshLimit, allowed: count <= refreshLimit }
 }
 
 /** target 只用于 doc(id) 取值：禁掉路径分隔符，限定长度（与写口同源） */
@@ -237,9 +269,18 @@ exports.main = async (event) => {
   const action = (event && event.action) || 'consume'
 
   try {
+    /*
+     * refresh 要按身份判额度，其余 kind 不需要会员身份 —— 别为 generate / ask 白读一次
+     * memberships（那是每次生成 / 提问都要多付的一次库读，而它们根本不看这个值）。
+     */
+    const refreshLimit = kind === 'refresh' ? await refreshDailyLimit(openid) : 0
+
     if (action === 'peek') {
       const peeked = await readCount(table, id)
-      return Object.assign({ ok: true, kind, date, count: peeked }, judgeLimit(kind, peeked))
+      return Object.assign(
+        { ok: true, kind, date, count: peeked },
+        judgeLimit(kind, peeked, refreshLimit)
+      )
     }
     if (action !== 'consume') {
       return { ok: false, error: `未知 action：${action}（支持 consume / peek）` }
@@ -262,7 +303,7 @@ exports.main = async (event) => {
     const r = await incr(table, id, openid)
     return Object.assign(
       { ok: true, kind, date, count: r.count, created: r.created, waived: false },
-      judgeLimit(kind, r.count)
+      judgeLimit(kind, r.count, refreshLimit)
     )
   } catch (err) {
     return { ok: false, error: `配额写入失败：${err instanceof Error ? err.message : String(err)}` }

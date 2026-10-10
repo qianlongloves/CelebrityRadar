@@ -105,6 +105,12 @@ export const RISK_TERMS: ReadonlyArray<{ word: string; category: RiskCategory }>
   { word: '罚款', category: 'judicial' },
   { word: '律师函', category: 'judicial' },
   { word: '调查', category: 'judicial' },
+  /* 2026-10-10 补：资产/执行的司法表述 —— 娱乐新闻里常见「资产被冻结」「被限制高消费」
+     「列入失信被执行人」，此前都要靠「强制执行」间接命中或直接漏掉 */
+  { word: '查封', category: 'judicial' },
+  { word: '冻结', category: 'judicial' },
+  { word: '限制高消费', category: 'judicial' },
+  { word: '失信被执行人', category: 'judicial' },
   { word: '解约', category: 'contract' },
   { word: '终止合作', category: 'contract' },
   { word: '停止合作', category: 'contract' },
@@ -114,17 +120,70 @@ export const RISK_TERMS: ReadonlyArray<{ word: string; category: RiskCategory }>
   { word: '下架', category: 'contract' },
   { word: '索赔', category: 'contract' },
   { word: '违约', category: 'contract' },
+  /* 2026-10-10 补：合作关系终止的常见表述（解聘/辞退是人事、撤档是影视发行） */
+  { word: '解聘', category: 'contract' },
+  { word: '辞退', category: 'contract' },
+  { word: '撤档', category: 'contract' },
   { word: '名誉权', category: 'rights' },
   { word: '肖像权', category: 'rights' },
   { word: '诽谤', category: 'rights' },
   { word: '造谣', category: 'rights' },
   { word: '侵权', category: 'rights' },
   { word: '维权', category: 'rights' },
+  /* 2026-10-10 补：名誉/肖像被侵犯的字面表述（盗用肖像、假冒名义） */
+  { word: '盗用', category: 'rights' },
+  { word: '假冒', category: 'rights' },
   { word: '道歉', category: 'statement' },
   { word: '致歉', category: 'statement' },
   { word: '澄清', category: 'statement' },
   { word: '辟谣', category: 'statement' }
 ]
+
+/**
+ * 双向词（2026-10-10）：命中后**必须再看宾语方向**，不能直接按表里的类别下结论。
+ *
+ * 「起诉 / 诉讼」这类词，原告与被告都在用：同一篇报道里「被起诉」（本人是被诉方）与
+ * 「起诉造谣者」（本人是维权方）指向正好相反 —— 前者是**司法监管**（本人被盯上，是有风险
+ * 信号），后者是**名誉维权**（本人在正当维权，不该被读成负面）。字面层面读不出语义，
+ * 只能看「这个动词后面是否跟着维权对象」来粗判方向（见 RIGHTS_OBJECTS）。
+ *
+ * 判反的代价不对称：把「被起诉」错判成维权，会让真正的风险从雷达上消失（漏报）；
+ * 把「维权起诉」错判成司法监管，会让正当行为看起来像负面（误导，正是本轮要修的）。
+ * 故默认一律按司法（保守），只有明确识别出维权宾语才改判维权。
+ */
+export const BIDIRECTIONAL_TERMS: ReadonlyArray<string> = ['起诉', '诉讼']
+
+/**
+ * 维权对象 / 事由：双向动词后面跟着这些词时，说明本人是**维权方**（起诉造谣者 / 追究侵权方），
+ * 归入名誉维权而不是司法监管。
+ *
+ * 与 RISK_TERMS 里 rights 类的词有重叠（造谣 / 诽谤 / 侵权 / 维权），但两者用途不同：
+ * 那边是「命中它就产出一条信号」，这里是「命中它说明前面的动词是主动维权」。
+ */
+export const RIGHTS_OBJECTS: ReadonlyArray<string> = [
+  '造谣',
+  '诽谤',
+  '侵权',
+  '名誉',
+  '肖像',
+  '网暴',
+  '黑粉',
+  '抹黑',
+  '诋毁',
+  '抄袭',
+  '盗用',
+  '假冒',
+  '维权'
+]
+
+/**
+ * 方向判定窗口：只看双向动词**后** N 个字。
+ *
+ * 取 8 是权衡：够到紧邻的宾语（「起诉长期造谣的账号」里「造谣」离动词 4 个字），
+ * 又不会把动词后另一件事扯进来（「起诉 A 公司，B 在网上造谣」里那个「造谣」已超出窗口，
+ * 不会让这条被判成维权）。与 NEG_WINDOW 一样是启发式，不是语义理解。
+ */
+export const RIGHTS_AFTER_WINDOW = 8
 
 /**
  * 否定词：命中词前 NEG_WINDOW 个字符内出现即整条丢弃。
@@ -188,6 +247,14 @@ function matchTerm(text: string): { word: string; category: RiskCategory } | nul
     if (at < 0) continue
     const before = text.slice(Math.max(0, at - NEG_WINDOW), at)
     if (NEG_WORDS.some((n) => before.includes(n))) continue
+    /*
+     * 双向词再看宾语方向：「起诉造谣者」是维权、「被起诉」才是司法监管（见 BIDIRECTIONAL_TERMS）。
+     * 只改「类别」，word 仍是命中的原词（界面照旧展示「出现『起诉』」）。
+     */
+    if (BIDIRECTIONAL_TERMS.indexOf(term.word) >= 0) {
+      const after = text.slice(at + term.word.length, at + term.word.length + RIGHTS_AFTER_WINDOW)
+      if (RIGHTS_OBJECTS.some((o) => after.includes(o))) return { word: term.word, category: 'rights' }
+    }
     return term
   }
   return null

@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-572%20passing-success.svg)](#development--testing)
+[![Tests](https://img.shields.io/badge/tests-688%20passing-success.svg)](#development--testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), with a keyword cloud, sentiment trend and heat curve aggregated on the client.
@@ -84,7 +84,7 @@ It is built around two principles:
 
 ### Membership (freemium)
 
-- **Quota** — Free tier: 3 on-demand generations per day, 30 for members (cache hits never count); AI Q&A: 5 questions free, 30 for members; quota is displayed transparently on the profile page
+- **Quota** — Free tier: 3 on-demand generations per day, 30 for members (cache hits never count; the **weekly digest draws on this same pool**); AI Q&A: 5 questions free, 30 for members (counted separately from generation, and only successful answers count); feed refresh: 10 per day on **both** tiers; the free tier additionally has a 12-hour repeat-generation cooldown for the same report that members do not have. All of it appears both on the profile page's quota card and item by item in the membership centre's **"Quotas & limits"** section (including capacity/input caps such as 5 keywords, 5 monitored people, 120 characters per question); every number comes from `src/utils/member.ts#MEMBER_BENEFITS`, referenced by pages and gates alike rather than hard-coded
 - **Quality perks** — **User-selectable model provider** (DeepSeek / Qwen / Zhipu GLM / Moonshot — keys all live in the cloud function, so users configure nothing) + model tier (free tier is locked to the fast model; members unlock standard / deep reasoning; switching provider swaps the whole tier list while the tier you picked stays the same) plus a **deep report mode** (thicker retrieval plus three member-only sections: comparison angles, risk notes, source disagreements)
 - **Pricing** — ¥9.9 monthly / ¥25 quarterly / ¥68 yearly; the price has **a single source of truth** (the `PLANS` map in the `payCreate` cloud function, fetched by the client, so changing prices needs no release)
 
@@ -266,6 +266,30 @@ None of the three is committed (all are in `.gitignore`), so your edits never po
 - **`project.private.config.json`** — your private WeChat DevTools project settings (your appid and tool preferences). Without it you re-enter the appid and settings in DevTools every time
 - **`.env`** — deploy-time secrets for cloud functions (`DEEPSEEK_API_KEY` / `BOCHA_API_KEY` …), referenced from `cloudbaserc.json` as `${env.XXX}`. Without it, deployed functions have no upstream keys, so retrieval and generation fail
 
+### Benefits & pricing (one file to edit)
+
+Member quotas, daily limits, cooldowns, abuse caps, cloud-side search/char limits, plan prices &
+durations, and the report's target counts / clipping limits / retrieval depth all live in
+**`src/config/benefits.ts`** — the single source of truth.
+
+Cloud functions are packaged and uploaded independently and cannot `require` the app's TypeScript
+at runtime, so the cloud side uses **generated copies**:
+
+```bash
+# 1. edit src/config/benefits.ts
+npm run config:sync     # 2. refresh copies in cloudfunctions/{aiProxy,quotaGuard,payCreate}/
+npm test                # 3. verify (skipping step 2 turns the suite red: 14-config-sync.js)
+npm run config:check    # read-only check for CI (exit 1 on drift)
+```
+
+The copies (`cloudfunctions/*/benefits.config.js`) are **auto-generated** and marked "do not edit";
+redeploy the affected cloud function for a change to take effect (the app side ships with the next
+release).
+
+**Still hand-synced**: the two `llm.config.js` copies in `aiProxy` and `hotBoardRefresh` (they carry
+the `resolveLlm` function and per-vendor key variable names — not plain values, and adding a vendor
+needs human verification anyway).
+
 ---
 
 ## Configuration
@@ -307,7 +331,8 @@ None of the three is committed (all are in `.gitignore`), so your edits never po
 - **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** — environment variables of the three scheduled functions (**three different templates**, or they consume each other's one-time grants). ❌ not in the bundle
 - **`WX_APPSECRET`** — `dbInit` only (to exchange an access_token for index updates). ❌ not in the bundle
 - **`DB_ADMIN_TOKEN`** — `dbInit` only (custom token, the gate for write actions). ❌ not in the bundle
-- **`AI_PROXY_TEST_TOKEN`** — `aiProxy` only (token for the paid `test` probe; **unset means that action is always rejected**, which is the intended default). It is an ops token rather than a deployment item, so normally you add it in the console only while troubleshooting. ❌ not in the bundle
+- **`AI_PROXY_TEST_TOKEN`** — `aiProxy` only (token for the paid `test` probe; **unset means that action is always rejected**, which is the intended default). It is an ops token rather than a deployment item, so normally you add it in the console only while troubleshooting. The probe also reports the **second search source's connectivity and latency** — both providers live outside mainland China, so calls from a domestic cloud function cross the international gateway; that probe is the only way to tell whether the link actually works. ❌ not in the bundle
+- **`AI_PROXY_RAW_LOG`** — optional `aiProxy` variable (cloud-side raw payload logging; **only `on` enables it**). It covers the half the client cannot see: `local.ts`'s `debug.rawIoLog` only prints the **cloud function's return**, never what upstream actually replied — and that is where most LLM problems live (200 but malformed body, output cut off by `max_tokens`, a search returning only 3 items). When enabled, `chat:req` / `chat:upstream` / `chat:err` / `search:primary` / `search:backup` go to the cloud function log; it is **off by default and always truncated, never the full body** (the function log has a size limit; tens of thousands of characters would push out the same call's billing entries). ⚠ **Those logs live in the CloudBase console → Cloud Functions → Logs, not in the WeChat DevTools console** — the latter is the client console; they are two separate things, and looking in the wrong place looks like "nothing was printed". ❌ not in the bundle
 - **`WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID`** — `payCreate`. ❌ not in the bundle
 - **`PAY_ADMIN_TOKEN`** — `payCallback` only (token for the refund / manual-reconcile ops write port; **unset means the write port is always rejected**). ❌ not in the bundle
 - **`PAY_CALLBACK_GUARD`** — optional `payCallback` variable, the rollout switch: `log` (default, client calls are only logged) / `strict` (client calls rejected) / `off` (no check). Switch to `strict` once real-device logs confirm the callback shape. ❌ not in the bundle
@@ -369,6 +394,8 @@ Fill in the **Bocha key plus all four LLM keys** in `.env`: skip one and users w
 
 ```
 BOCHA_API_KEY=...
+SERPER_API_KEY=...      # optional: 2nd search source (Google index; 2500 free, no credit card)
+TAVILY_API_KEY=...      # optional: alternative 2nd source (LLM-oriented; 1000/mo, no card)
 DEEPSEEK_API_KEY=...
 QWEN_API_KEY=...
 ZHIPU_API_KEY=...
@@ -386,7 +413,7 @@ tcb fn deploy aiProxy       -e <your-env-id>
 
 `cloudbaserc.json` already declares the functions, environment variables and timers, so deploy each one with `tcb fn deploy <name>`.
 
-- **`aiProxy`** — platform-paid upstream keys (`search` / `chat`) + **server-side gates** (membership read from `memberships`; daily caps from `quota.config.js`; anti-abuse counter incremented in place in `ai_calls`; thicker retrieval gated by `count`) + a chat output cap applied to **every** request (see `chatMaxTokens`); **the provider comes from the client request** (user-selectable), the cloud only falls back. Trigger: client call; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`) + `OPENAI_API_KEY` (unused by default) + `AI_PROXY_TEST_TOKEN` (optional: token for the `test` probe — **unset means that action is always rejected**)
+- **`aiProxy`** — platform-paid upstream keys (`search` / `chat`) + **server-side gates** (membership read from `memberships`; daily caps from `quota.config.js`; anti-abuse counter incremented in place in `ai_calls`; thicker retrieval gated by `count`) + a chat output cap applied to **every** request (see `chatMaxTokens`); **the provider comes from the client request** (user-selectable), the cloud only falls back. Trigger: client call; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`) + `SERPER_API_KEY` / `TAVILY_API_KEY` (optional: second search source — fill any one) + `OPENAI_API_KEY` (unused by default) + `AI_PROXY_TEST_TOKEN` (optional: token for the `test` probe — **unset means that action is always rejected**) + `AI_PROXY_RAW_LOG` (optional: cloud-side raw payload logging — **only `on` enables it**; logs live in the CloudBase console)
 - **`quotaGuard`** — authoritative quota counting (atomic increments with server dates): `refresh` / `generate` / `ask`. Trigger: client call; environment variables: —
 - **`contentCheck`** — content moderation via `security.msgSecCheck`, applied to AI questions. Trigger: client call; environment variables: —
 - **`hotBoardRefresh`** — builds the daily hot board (writes `hot_board`). Trigger: cron 06:30; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (a cron job has no client preference, so it takes `LLM_PROVIDER`, DeepSeek by default — **that provider must therefore have a key**)
@@ -564,7 +591,7 @@ celebrity-radar/
 │   │   └── agreement/          # Privacy & disclaimer
 │   ├── components/             # person-card / favorites-view / report-loading / share-poster / qa-panel ...
 │   ├── utils/                  # Business logic & cloud access (48 modules, see Core Modules)
-│   ├── config/                 # public.ts (shared) / local.ts (local, untracked) / domains / hot / filters / notices
+│   ├── config/                 # benefits.ts (benefits & pricing truth) / public.ts (shared) / local.ts (local, untracked) / domains / hot / filters / notices
 │   ├── stores/                 # zustand stores
 │   ├── styles/                 # Theme variables, tab-bar icons
 │   └── custom-tab-bar/         # Custom bottom tab bar
@@ -579,7 +606,8 @@ celebrity-radar/
 │   ├── riskWatch/              # Person risk monitoring (cron 09:40, client calls rejected)
 │   ├── hotBoardRefresh/        # Daily hot board (cron 06:30; client may `ensure`, `force` is ops-only)
 │   └── dbInit/                 # Ops tool (schema.js is the schema source of truth)
-├── test/                       # Local unit tests (11 case files / 572 cases)
+├── test/                       # Local unit tests (14 case files / 688 cases)
+├── scripts/                    # Repo scripts (sync-config.js: benefits truth → cloud-function copies)
 ├── config/                     # Taro build config (dev / index / prod)
 ├── cloudbaserc.json            # CloudBase deployment descriptor (functions + env vars + timers)
 ├── .env.example                # Deployment secret template
@@ -639,20 +667,21 @@ celebrity-radar/
 ## Development & Testing
 
 ```bash
-npm test          # compile tests with tsc, then run everything (572 cases, fully local, no cloud)
+npm test          # compile tests with tsc, then run everything (688 cases, fully local, no cloud)
 npm run test:only # skip tsc and run directly
 ```
 
 The suite adds **no dependencies** (a hand-written in-memory CloudBase plus Taro / `wx` stubs and a minimal assertion library) and asserts against the **compiled product code itself**.
 It needs no cloud environment, no DevTools and no network. It does not cover page rendering, on-device interaction, cloud-function execution, or payments and push.
 
-Before submitting a change, confirm these five:
+Before submitting a change, confirm these six:
 
-1. `npm test` is green (currently 572 / 572)
+1. `npm test` is green (currently 688 / 688)
 2. `npx tsc --noEmit` reports no new warnings
 3. The mini program **main package size** is within the hard 2MB limit (the current build output is about 1.3MB); check the build output before adding dependencies
 4. `src/config/local.ts` and the `debug` flags are **not** committed (already in `.gitignore`)
 5. Schema changes come with matching updates to `cloudfunctions/dbInit/schema.js` (the single source of truth)
+6. Benefits / pricing changes come with a `npm run config:sync` run (source and cloud copies drifting apart turns `npm test` red)
 
 ---
 

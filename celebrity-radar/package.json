@@ -9,7 +9,9 @@
     "build:weapp": "taro build --type weapp",
     "build:h5": "taro build --type h5",
     "test": "tsc -p test/tsconfig.test.json && node test/run.js",
-    "test:only": "node test/run.js"
+    "test:only": "node test/run.js",
+    "config:sync": "node scripts/sync-config.js",
+    "config:check": "node scripts/sync-config.js --check"
   },
   "browserslist": [
     "last 3 versions",

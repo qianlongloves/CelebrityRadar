@@ -61,63 +61,21 @@ import { localConfig } from './local'
  */
 const LLM_PROVIDERS = [
   {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    models: [
-      {
-        tier: 'fast',
-        id: 'deepseek-v4-flash',
-        label: '极速版',
-        desc: '响应最快、成本最低，适合日常生成报告',
-        memberOnly: false
-      },
-      { tier: 'standard', id: 'deepseek-v4', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
-      {
-        tier: 'reason',
-        id: 'deepseek-reasoner',
-        label: '深度推理',
-        desc: '推理更强、耗时更长，适合深度分析',
-        memberOnly: true
-      }
-    ]
-  },
-  {
     id: 'qwen',
     label: '通义千问',
     models: [
-      { tier: 'fast', id: 'qwen-turbo', label: '极速版', desc: '响应最快、成本最低，适合日常生成报告', memberOnly: false },
-      { tier: 'standard', id: 'qwen-plus', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
-      { tier: 'reason', id: 'qwen-max', label: '深度推理', desc: '推理更强、耗时更长，适合深度分析', memberOnly: true }
+      { tier: 'fast', id: 'qwen3.8-flash', label: '极速版', desc: '响应最快、成本最低，适合日常生成报告', memberOnly: false },
+      { tier: 'standard', id: 'qwen3.7-plus', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
+      { tier: 'reason', id: 'qwen3.8-max', label: '深度推理', desc: '推理更强、耗时更长，适合深度分析', memberOnly: true }
     ]
   },
   {
     id: 'zhipu',
     label: '智谱 GLM',
     models: [
-      { tier: 'fast', id: 'glm-4-flash', label: '极速版', desc: '响应最快、成本最低，适合日常生成报告', memberOnly: false },
-      { tier: 'standard', id: 'glm-4-air', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
-      { tier: 'reason', id: 'glm-4-plus', label: '深度推理', desc: '推理更强、耗时更长，适合深度分析', memberOnly: true }
-    ]
-  },
-  {
-    id: 'moonshot',
-    label: 'Moonshot Kimi',
-    models: [
-      {
-        tier: 'fast',
-        id: 'moonshot-v1-8k',
-        label: '极速版',
-        desc: '响应最快、成本最低，适合日常生成报告',
-        memberOnly: false
-      },
-      { tier: 'standard', id: 'moonshot-v1-32k', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
-      {
-        tier: 'reason',
-        id: 'moonshot-v1-128k',
-        label: '深度推理',
-        desc: '推理更强、耗时更长，适合深度分析',
-        memberOnly: true
-      }
+      { tier: 'fast', id: 'glm-4.7-flash', label: '极速版', desc: '响应最快、成本最低，适合日常生成报告', memberOnly: false },
+      { tier: 'standard', id: 'glm-4.6', label: '标准版', desc: '质量与速度均衡，长文更完整', memberOnly: true },
+      { tier: 'reason', id: 'glm-4.7', label: '深度推理', desc: '推理更强、耗时更长，适合深度分析', memberOnly: true }
     ]
   }
 ] as const
@@ -145,13 +103,13 @@ export const publicConfig = {
      * 生成时随请求带给云函数（云函数侧 LLM_PROVIDER 只在端上没带 / 带了不认识的 id 时才接管，
      * 见 llm.config.js 的 resolveLlm）。
      */
-    provider: 'deepseek',
+    provider: 'qwen',
 
     /**
      * 默认档位：providers[0]（默认供应商）那一档的模型名，须与他家的 fast 档一致。
      * 是「端上没带模型名」时的展示与请求值，云函数侧另有 llm.config.js 的 defaultModel 兜底。
      */
-    model: 'deepseek-v4-flash',
+    model: 'qwen3.8-flash',
 
     /**
      * 默认供应商的档位清单（= providers[0].models）。

@@ -110,6 +110,94 @@ describe('时间工具 utils/time', () => {
     )
   })
 
+  it('「后续关注」时间刻度 isStampPast：只认绝对刻度，且粒度内不算过期', () => {
+    /*
+     * 报告是长期共享缓存，watchlist 里的时间点会自然过期（「2026-11」到了 12 月就是过去），
+     * 页面据此给条目盖「已过期」标。判定方向刻意保守：只到月的刻度当月内不算过期、
+     * 只到年的刻度年内不算过期 —— 宁可少标一次，也不要把还没发生的事标成已过去。
+     */
+    const now = '2026-10-10T09:00:00+08:00'
+    /* 到日：当天不算过期（UTC+8 口径） */
+    eq(time.isStampPast('2026-10-10', now), false, '当天还没过')
+    eq(time.isStampPast('2026-10-09', now), true)
+    /* 到月：当月内不算过期 */
+    eq(time.isStampPast('2026-10', now), false)
+    eq(time.isStampPast('2026-09', now), true)
+    /* 只到年：年内不算过期 */
+    eq(time.isStampPast('2026', now), false)
+    eq(time.isStampPast('2025', now), true)
+    /* 其它绝对写法一并归一 */
+    eq(time.isStampPast('2026年9月30日', now), true)
+    eq(time.isStampPast('2027-01-01', now), false, '还没到的刻度不该被标成已过期')
+    /* 相对说法 / 空值 = 未知，一律不当作已过期（老报告里的 when 就是这类） */
+    eq(time.isStampPast('下月', now), false)
+    eq(time.isStampPast('年底', now), false)
+    eq(time.isStampPast('', now), false, '空串不是已过期')
+
+    /*
+     * 第二参（基准时刻）就是给 watchlist 用的：报告页拿它传 report.generatedAt，
+     * 问的是「这个刻度在**生成那一刻**是不是就已经过去了」。同一个刻度在生成时与今天读，
+     * 答案可以不同 —— 这正是两种标的分界线：「生成时已过期」= 模型把已发生的事写成了
+     * 未来待跟踪（缺陷），「已过期」= 长缓存自然老化（不是缺陷）。
+     */
+    const built = '2026-09-01T09:00:00+08:00'
+    eq(time.isStampPast('2026-08-20', built), true, '生成前就已过去 → 模型把已发生的事当成了未来')
+    eq(time.isStampPast('2026-09-20', built), false, '生成时还没到 → 是正常的后续关注')
+    eq(time.isStampPast('2026-09-20', now), true, '同一刻度今天读已过期（老化，不是生成缺陷）')
+    /* 基准取 ISO 串（generatedAt 的真实形态，带 T/Z）也要按 UTC+8 归一到同一天 */
+    eq(time.isStampPast('2026-09-01', '2026-09-01T20:00:00.000Z'), true, 'UTC 20:00 = UTC+8 次日 04:00')
+    /* 单调性：基准越晚越容易判过期，故「生成时已过期」必然也「已过期」——两种标不会互相打架 */
+    for (const when of ['2026-01', '2026-08-20', '2025']) {
+      ok(time.isStampPast(when, built), `${when} 在生成时已过去（用例前提）`)
+      eq(time.isStampPast(when, now), true, `${when} 生成时已过期，今天必然也过期`)
+    }
+    /* 基准不可解析（generatedAt 缺失 / 脏数据）→ 一律不判，绝不把还没到的刻度误标成「生成时已过期」 */
+    eq(time.isStampPast('2026-08-20', ''), false, '基准为空时退化成不标')
+    eq(time.isStampPast('2026-08-20', '坏时间'), false)
+  })
+
+  it('时间线相对时间 stampAgo：粒度决定说法，未到的刻度与相对说法一律为空', () => {
+    /*
+     * 时间线的刻度是绝对日期（「2021-05」），离现在多远用户得自己对着日历算 —— 故页面在日期后
+     * 补一句「5 年前」。它与 isStampPast 共用解析与 UTC+8 基准，口径也必须同源：
+     * 刻度还没到时 isStampPast=false，stampAgo 就该是空串（时间线讲的是已经发生了什么）。
+     */
+    const now = '2026-10-10T09:00:00+08:00'
+    /* 到日：天 → 月 → 年逐级换档 */
+    eq(time.stampAgo('2026-10-10', now), '今天')
+    eq(time.stampAgo('2026-10-09', now), '昨天')
+    eq(time.stampAgo('2026-10-01', now), '9 天前')
+    eq(time.stampAgo('2026-09-11', now), '29 天前', '刚好不到 30 天仍按天说')
+    eq(time.stampAgo('2026-08-10', now), '2 个月前')
+    eq(time.stampAgo('2025-10-10', now), '1 年前')
+    eq(time.stampAgo('2021-05-20', now), '5 年前')
+    /* 到月：整月差说「月」，满 12 个月换成「年」 */
+    eq(time.stampAgo('2026-10', now), '本月')
+    eq(time.stampAgo('2026-09', now), '上个月')
+    eq(time.stampAgo('2026-05', now), '5 个月前')
+    eq(time.stampAgo('2025-10', now), '1 年前')
+    /* 只到年 */
+    eq(time.stampAgo('2026', now), '今年')
+    eq(time.stampAgo('2025', now), '去年')
+    eq(time.stampAgo('2023', now), '3 年前')
+    /* 还没到的刻度：空串，不是「-3 个月前」这种怪话（时间线只讲已发生的事） */
+    eq(time.stampAgo('2026-11', now), '', '下个月的刻度不该说成过去了多久')
+    eq(time.stampAgo('2026-10-31', now), '')
+    eq(time.stampAgo('2027', now), '')
+    /* 解析不出绝对刻度（老报告里的相对说法 / 空值）= 未知，一律空串，绝不编一个数 */
+    eq(time.stampAgo('下月', now), '')
+    eq(time.stampAgo('年底', now), '')
+    eq(time.stampAgo('', now), '')
+    /* 与 isStampPast 同口径：已过去的刻度一定有说法；未过去 / 未知的两个函数都不认 */
+    for (const when of ['2026-10-10', '2026-10', '2026', '2025', '2021-05-20']) {
+      ok(time.stampAgo(when, now) !== '', `${when} 已经过去，相对时间不该为空`)
+    }
+    for (const when of ['2026-11', '2027', '下月', '']) {
+      eq(time.isStampPast(when, now), false)
+      eq(time.stampAgo(when, now), '', `${when} 未过去或不可解析，相对时间不该有值`)
+    }
+  })
+
   it('formatDay / formatDate 输出稳定格式', () => {
     eq(time.formatDay('2026-10-07T10:00:00.000Z'), dayjs('2026-10-07T10:00:00.000Z').format('YYYY-MM-DD'))
     eq(time.formatDate('2026-10-07T10:00:00.000Z'), dayjs('2026-10-07T10:00:00.000Z').format('YYYY-MM-DD HH:mm'))
@@ -533,6 +621,21 @@ describe('热度趋势 utils/trend', () => {
     ok(onlyTimeline, '只有时间线时也该出卡')
     eq(onlyTimeline.total, 3)
   })
+
+  it('同一天多条「没标题也没摘要」的条目各自算一条，不因去重键退化成「只按日期」而被吞', () => {
+    const t = buildHeatTrend(
+      mkReport({
+        generatedAt: '2026-10-08T10:00:00.000Z',
+        dynamics: [
+          dyn({ date: '2026-10-01', title: '', summary: '' }),
+          dyn({ date: '2026-10-01', title: '', summary: '' }),
+          dyn({ date: '2026-10-02', title: '', summary: '' })
+        ]
+      })
+    )
+    ok(t, '三条空文本条目足以撑起折线')
+    eq(t.total, 3, '判不出身份就按独立事件计，不能被「日期 + 空文本」的键合并成 1 条')
+  })
 })
 
 describe('名人主页数据聚合 utils/stats', () => {
@@ -749,6 +852,21 @@ describe('名人主页数据聚合 utils/stats', () => {
     eq(c.repeatRatio, 0)
   })
 
+  it('素材可信度：门槛看「可判定来源的条数」，来源判不出的条目多也不算数', () => {
+    const c = buildProfileStats(
+      mkReport({
+        dynamics: [
+          dyn({ title: '甲', source: 'A', date: '2026-09-05' }),
+          dyn({ title: '乙', source: 'B', date: '2026-09-06' }),
+          /* 下面两条来源与 url 都缺 → 不进 labels */
+          dyn({ title: '丙', date: '2026-09-07' }),
+          dyn({ title: '丁', date: '2026-09-08' })
+        ]
+      })
+    ).credibility
+    eq(c, null, '4 条动态但只有 2 条能判来源 → 与来源分布卡同判据（MIN_SOURCE_ITEMS），不出卡')
+  })
+
   it('情绪走势：按月分层统计情绪，与月度分布同一套分桶规则', () => {
     const s = buildProfileStats(
       mkReport({
@@ -824,15 +942,17 @@ describe('两人对比 utils/compare', () => {
     stance: [{ topic: '智能汽车', attitude: 'neutral', note: '近期提及' }]
   })
 
-  it('六项对照指标齐备，且只有曝光度类给方向', () => {
+  it('六项对照指标齐备，且只有热度给方向', () => {
     const r = buildComparison(A, B)
     eq(r.metrics.length, 6)
     const byKey = Object.fromEntries(r.metrics.map((m) => [m.key, m]))
     eq(byKey.heat.a, '80')
     eq(byKey.heat.b, '70')
     eq(byKey.heat.higher, 'a')
-    eq(byKey.news.higher, 'a')
-    eq(byKey.recent.higher, 'a')
+    /* 报道量按原样素材统计、深度档抓得更多，不能当人气读数比大小 —— 与热度同口径的只有热度本身 */
+    eq(byKey.news.higher, null, '报道量不参与优劣判断')
+    eq(byKey.recent.higher, null)
+    eq(byKey.news.a, '20', '数字仍原样给出，只是不给方向')
     eq(byKey.dynamics.higher, null, '条数类不做优劣判断')
     eq(byKey.quotes.higher, null)
     eq(byKey.timeline.higher, null)
@@ -901,6 +1021,16 @@ describe('两人对比 utils/compare', () => {
 
   it('同一对报告多次对比结果一致（纯函数）', () => {
     deepEq(buildComparison(A, B), buildComparison(A, B))
+  })
+
+  it('sameTopic 对空串恒不匹配（模型漏给 topic 时不能算「命中任意主题」）', () => {
+    const { sameTopic } = env.load('utils/compare')
+    eq(sameTopic('', '手机'), false, '空串不该被当成任意主题的子串')
+    eq(sameTopic('手机', ''), false)
+    eq(sameTopic('', ''), false)
+    eq(sameTopic('手机', '手机'), true)
+    eq(sameTopic('手机', '旗舰手机'), true, '互为子串仍算同一话题')
+    eq(sameTopic('手机', '足球'), false)
   })
 })
 
@@ -1026,6 +1156,20 @@ describe('主题知识库 utils/topic-digest', () => {
     eq(d.stances.filter((s) => s.personKey === '甲#tech').length, 1, '同一个人只出一条立场')
   })
 
+  it('stance.topic 为空的报告不出立场（空串不能与任意主题「互为子串」）', () => {
+    const noisy = mkReport({
+      name: '丁',
+      personKey: '丁#tech',
+      heat: 50,
+      dynamics: [dyn({ title: '手机又有新进展' })],
+      quotes: [],
+      stance: [{ topic: '', attitude: 'positive', note: '模型漏给了主题' }]
+    })
+    const d = buildTopicDigest('手机', [noisy])
+    eq(d.members.length, 1, '正文提到「手机」仍是本主题成员')
+    deepEq(d.stances, [], 'topic 为空的立场不该被算成「针对手机」')
+  })
+
   it('相关言论带出所属报告（渲染时要复用「查证」口径）', () => {
     const d = buildTopicDigest('手机', [P1, P2])
     eq(d.quotes.length, 1)
@@ -1104,16 +1248,39 @@ describe('风险雷达 utils/risk', () => {
       })
     )
     eq(r.signals.length, 1)
-    eq(r.signals[0].category, 'judicial')
+    /* 2026-10-10 起「起诉造谣者」判为名誉维权（本人是维权方、不是被诉方），
+       见紧随其后的方向用例 —— 这条只证明「类别、原词、出处、链接都带了出来」 */
+    eq(r.signals[0].category, 'rights')
     eq(r.signals[0].keyword, '起诉')
     eq(r.signals[0].from, 'dynamics')
     eq(r.signals[0].url, 'https://a.com/1')
     eq(r.signals[0].source, '新浪娱乐')
     eq(r.signals[0].date, '2026-10-01')
-    eq(r.byCategory.judicial, 1)
+    eq(r.byCategory.rights, 1)
     eq(r.byCategory.contract, 0)
     eq(r.total, 1)
     eq(r.scanned, 1)
+  })
+
+  it('双向词看方向：「起诉造谣者」是维权、「被起诉」才是司法监管（2026-10-10 降误导）', () => {
+    /*
+     * 「起诉 / 诉讼」原告被告都在用，字面读不出语义，只能看动词后面是否跟着维权对象。
+     * 判反的代价不对称：把「被起诉」错判成维权会让真风险从雷达上消失（漏报），
+     * 故默认按司法（保守），只有明确识别出维权宾语才改判维权。
+     * 已知局限：宾语前置的形态（「对造谣者提起诉讼」）识别不到，会保守地留在司法监管。
+     */
+    const sue = buildRiskSignals(mkReport({ dynamics: [dyn({ title: '工作室起诉造谣者' })] }))
+    eq(sue.signals[0].category, 'rights', '起诉他人维权 = 名誉维权')
+    eq(sue.signals[0].keyword, '起诉', '原词照旧是「起诉」')
+
+    const far = buildRiskSignals(mkReport({ dynamics: [dyn({ title: '起诉长期造谣的账号' })] }))
+    eq(far.signals[0].category, 'rights', '宾语离动词几个字也要认得出')
+
+    const sued = buildRiskSignals(mkReport({ dynamics: [dyn({ title: '本人被起诉' })] }))
+    eq(sued.signals[0].category, 'judicial', '本人被起诉 = 司法监管')
+
+    const involved = buildRiskSignals(mkReport({ dynamics: [dyn({ title: '卷入诉讼' })] }))
+    eq(involved.signals[0].category, 'judicial', '没写宾语 → 保守按司法')
   })
 
   it('否定表述整条不计入（「未被起诉」「否认解约」都不该被读成信号）', () => {
@@ -1230,13 +1397,24 @@ describe('风险雷达 utils/risk', () => {
 /* -------------------------------------------------- 报告目录 utils/report-toc（本轮） */
 
 describe('报告目录 utils/report-toc', () => {
-  const { buildReportToc } = env.load('utils/report-toc')
+  const {
+    buildReportToc,
+    buildReportTocGroups,
+    lockedReportToc,
+    REPORT_TEMPLATE,
+    TOC_GROUPS,
+    TEMPLATE_SIZE,
+    FREE_TOC_COUNT,
+    MEMBER_TOC_COUNT,
+    memberOnlyTocLabels
+  } = env.load('utils/report-toc')
 
   /* 顺序必须与 pages/report/index.tsx 的卡片渲染顺序一致：
      目录点了却到别处，比没有目录更糟。 */
   const FULL_ORDER = [
     'sec-overview',
     'sec-intro',
+    'sec-verdict',
     'sec-profile',
     'sec-relations',
     'sec-commercial',
@@ -1247,9 +1425,6 @@ describe('报告目录 utils/report-toc', () => {
     'sec-risk',
     'sec-member',
     'sec-stance',
-    'sec-cloud',
-    'sec-qtheme',
-    'sec-trend',
     'sec-timeline',
     'sec-watchlist',
     'sec-glossary'
@@ -1261,18 +1436,107 @@ describe('报告目录 utils/report-toc', () => {
       relations: [{ name: '某某', relation: '合作', note: 'n', basis: 'b' }],
       controversies: [{ topic: 't', claim: 'c', response: 'r', basis: 'b' }],
       watchlist: [{ item: 'i', why: 'w', basis: 'b' }],
-      glossary: [{ term: 't', explain: 'e', basis: 'b' }]
+      glossary: [{ term: 't', explain: 'e', basis: 'b' }],
+      verdict: { summary: 's', positioning: 'p' }
     })
 
-  it('完整报告 + 会员：18 节齐、顺序与卡片一致', () => {
+  it('完整报告 + 会员：15 节齐、顺序与卡片一致', () => {
     const toc = buildReportToc(fullReport(), { member: true, hasOverview: true })
     deepEq(toc.map((s) => s.id), FULL_ORDER)
   })
 
-  it('免费用户没有「会员专享」这一节（那张卡本来就不渲染）', () => {
+  /*
+   * 2026-10-10 分档（需求「目录配成模板」）：免费档 = 事实与判断，会员档 = 商业速览 + 会员专享。
+   * 名单在这里也写一份，是为了**钉住边界** —— 挪一节进出会员档，这两组常量与权益文案
+   * （utils/member.ts#MEMBER_BENEFIT_POINTS，03-quota-qa.js 已钉住同源）必须一起改。
+   * 2026-10-10 二改：三张工具视图（关键词云 / 语录主题 / 热度趋势）已删除，会员档从 5 节缩到 2 节。
+   */
+  const MEMBER_ONLY_ORDER = ['sec-commercial', 'sec-member']
+  const FREE_ORDER = FULL_ORDER.filter((id) => !MEMBER_ONLY_ORDER.includes(id))
+
+  it('免费用户只列免费档那几节：会员档 2 节一个都不进目录', () => {
     const toc = buildReportToc(fullReport(), { member: false, hasOverview: true })
-    notOk(toc.some((s) => s.id === 'sec-member'))
-    eq(toc.length, FULL_ORDER.length - 1)
+    deepEq(toc.map((s) => s.id), FREE_ORDER)
+    for (const id of MEMBER_ONLY_ORDER) notOk(toc.some((s) => s.id === id), `免费目录不该有 ${id}`)
+    /* 反向：免费档的节不能被顺手滤掉（尤其 stance / timeline 有下游消费者） */
+    for (const id of ['sec-stance', 'sec-timeline', 'sec-risk']) {
+      ok(toc.some((s) => s.id === id), `免费目录丢了 ${id}`)
+    }
+  })
+
+  it('模板是目录 / 权益文案的唯一来源：顺序、档位、节数都可被断言', () => {
+    eq(TEMPLATE_SIZE, FULL_ORDER.length)
+    deepEq(REPORT_TEMPLATE.map((s) => s.id), FULL_ORDER)
+    eq(FREE_TOC_COUNT + MEMBER_TOC_COUNT, TEMPLATE_SIZE)
+    eq(MEMBER_TOC_COUNT, MEMBER_ONLY_ORDER.length)
+    deepEq(memberOnlyTocLabels(), ['商业速览', '会员专享'])
+    for (const s of REPORT_TEMPLATE) ok(s.tier === 'free' || s.tier === 'member', `档位异常：${s.id}`)
+    for (const s of REPORT_TEMPLATE) eq(typeof s.visible, 'function', `${s.id} 缺可见性条件`)
+  })
+
+  it('分组目录与平铺目录同源（2026-10-10 三改）：拍平后逐项相等，一节都没重排', () => {
+    /*
+     * 页面展开态渲染的是 buildReportTocGroups（组标签 + 组内胶囊格），而标题上的「目录 · N 节」
+     * 与跳转目标出自 buildReportToc。两者若各算一套，症状是「标题说 18 节、格子里 17 颗」
+     * 或「点得到但排到了别处」。故这里钉住「分组只是切块」：拍平必须与原样平铺逐项相等。
+     */
+    const groups = buildReportTocGroups(fullReport(), { member: true, hasOverview: true })
+    const flat = groups.flatMap((g) => g.sections.map((s) => s.id))
+    deepEq(flat, FULL_ORDER, '分组不得增删或重排任何一节 —— 目录的顺序就是卡片的顺序')
+    eq(new Set(flat).size, flat.length, '同一节不能同时落进两个组')
+    for (const g of groups) ok(g.sections.length > 0, `空组不该返回（会多一行没有胶囊的标题）：${g.key}`)
+    /* 组标签全部有值，且组间顺序与 TOC_GROUPS 一致 */
+    deepEq(groups.map((g) => g.key), TOC_GROUPS.map((g) => g.key).filter((k) => groups.some((x) => x.key === k)))
+    for (const g of groups) ok(!!g.label, `组 ${g.key} 缺标签`)
+    /* 免费档同样成立（少掉会员档那 5 节，组可能因此消失，但剩下的一节都不能挪位） */
+    const freeGroups = buildReportTocGroups(fullReport(), { member: false, hasOverview: true })
+    deepEq(freeGroups.flatMap((g) => g.sections.map((s) => s.id)), FREE_ORDER)
+    /* 没有报告 / 降级到只剩兜底卡时，行为与平铺一致 */
+    deepEq(buildReportTocGroups(null, { member: true, hasOverview: true }), [])
+    deepEq(
+      buildReportTocGroups(mkReport({ degraded: true }), { member: true, hasOverview: false }).flatMap((g) =>
+        g.sections.map((s) => s.id)
+      ),
+      ['sec-analysis']
+    )
+  })
+
+  it('同一组在模板里必须连续（分组的硬约束，断一次顺序就不对了）', () => {
+    /*
+     * buildReportTocGroups 的做法是「按 group 切块、组内保持模板顺序」：只要某一组的节在模板里
+     * 不连续，切块就会把后出现的那些节提前 —— 拍平顺序与卡片顺序不一致，用户点完一节往下滑，
+     * 看到的却是另一组的卡（上一条用例会因此报红）。这条用例把约束钉在模板本身，
+     * 报错信息能直接指出是哪一节把分组打断了。
+     * 新增一节时请放进它语义所属的组，并且放在该组那一段的末尾（或同组相邻处）。
+     */
+    const keys = TOC_GROUPS.map((g) => g.key)
+    for (const s of REPORT_TEMPLATE) ok(keys.includes(s.group), `${s.id} 的分组「${s.group}」未在 TOC_GROUPS 里声明`)
+    const seen = new Set()
+    let prev = ''
+    for (const s of REPORT_TEMPLATE) {
+      if (s.group !== prev) {
+        notOk(seen.has(s.group), `${s.id} 所在的分组 ${s.group} 被拆成了两段（不连续）`)
+        seen.add(s.group)
+        prev = s.group
+      }
+    }
+    /* 每个组至少得有一节，否则页面上会出现一行没有内容的组标题 */
+    for (const g of TOC_GROUPS) {
+      ok(REPORT_TEMPLATE.some((s) => s.group === g.key), `分组 ${g.key} 一节都没有，标签不该存在`)
+    }
+  })
+
+  it('免费用户的「会员另含 N 节」提示：按「会员会看到什么」判，会员自己为空', () => {
+    const locked = lockedReportToc(fullReport(), { member: false, hasOverview: true })
+    deepEq(locked.map((s) => s.id), MEMBER_ONLY_ORDER)
+    eq(locked.length, MEMBER_TOC_COUNT)
+    /* 会员自己看得见，不需要这行提示 */
+    deepEq(lockedReportToc(fullReport(), { member: true, hasOverview: true }), [])
+    /* 降级简版只剩兜底卡，本来就没有会员档的内容，不该再说「另含 5 节」 */
+    deepEq(lockedReportToc(mkReport({ degraded: true }), { member: false, hasOverview: false }), [])
+    /* 没有报告就没有目录，也就没有提示 */
+    deepEq(lockedReportToc(null, { member: false, hasOverview: true }), [])
+    deepEq(lockedReportToc(undefined, { member: false, hasOverview: true }), [])
   })
 
   it('算不出覆盖范围时也不列「人物速览」的空态卡', () => {
@@ -1319,15 +1583,16 @@ describe('报告目录 utils/report-toc', () => {
   })
 })
 
-/* ----------------------- 报告页渲染条件与刷新入口（源码钉住，P2-12 / P2-13 / P2-18 / P2-19） */
+/* --------------- 报告页渲染条件与刷新入口（源码钉住，P2-12 / P2-13 / P2-18 / P2-19 / 浮层层级） */
 
 /*
- * 报告页是 tsx，跑不进 Node（无 DOM），但它有两类口径与纯逻辑是**平行**的两份：
+ * 报告页是 tsx，跑不进 Node（无 DOM），但它有三类口径与纯逻辑是**平行**的两份：
  *   · 卡片渲染条件 ↔ utils/report-toc（目录点了却到别处）；
- *   · 「刷新最新」的可用性 ↔ 状态行（同一件事给出两个相反答案）。
- * 这类错只有线上才暴露，故这里读源码把口径钉住。改页面条件必须同步这几条断言。
+ *   · 「刷新最新」的可用性 ↔ 状态行（同一件事给出两个相反答案）；
+ *   · 刷新浮层的层级 ↔ app.scss 的 `.glow-page > view`（组件里写了 fixed 也会被页面样式盖掉）。
+ * 这类错只有线上才暴露，故这里读源码把口径钉住。改页面条件 / 容器样式必须同步这几条断言。
  */
-describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19）', () => {
+describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层层级）', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.tsx'), 'utf8')
   /** 取 needle 前后的一段源码，用于断言「某元素/常量处在什么条件下」 */
   const around = (needle, before = 60, after = 0) => {
@@ -1343,16 +1608,131 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19）', () => {
     notOk(/['"]对比视角['"]/.test(src), '段名不得作为字符串常量写死在页面里')
   })
 
+  it('会员档标题写法一致：前缀「会员专享 · 」，右侧不挂角标', () => {
+    /*
+     * 二次调整（本机反馈「去除右侧会员专享字样，保持和深度解析一样的标题」）：
+     * 一改给四节挂的是右侧角标，而深度解析那张把「会员专享」写在标题里 —— 同一档东西
+     * 于是有两种写法，读起来的观感是「这几张和那张不是一回事」。现统一为**标题前缀**。
+     * 2026-10-10 三改：三张工具视图已删，会员档只剩「商业速览」用前缀写法（深度解析本来如此）。
+     */
+    ok(
+      src.includes(`<View className='card-title'>会员专享 · 商业价值速览</View>`),
+      '商业价值速览要用前缀写法（与深度解析一致）'
+    )
+    /* 深度解析那张本就如此，且会员页文案引用了这个字符串，不改它 */
+    ok(src.includes('会员专享 · 深度解析'), '深度解析保持原样')
+    /*
+     * 判「角标那个具体用法」而**不判类名** —— 报告页的**会员促销条**用的是同一个
+     * `page-report__vip`（另一个组件，与本组标题无关）。`__card-head` 只服务角标，一并废弃。
+     */
+    eq((src.match(/className='page-report__vip'>会员专享</g) || []).length, 0, '右侧角标不该再有使用点')
+    eq((src.match(/className='page-report__card-head'/g) || []).length, 0, '__card-head 只服务角标，一并废弃')
+
+    const scss = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'),
+      'utf8'
+    )
+    /* 判「选择器定义」而不是裸名字：注释里会提到这个名字，拿它判会自己撞自己 */
+    ok(!scss.includes('&__card-head {'), '废弃的容器样式要一并删掉（留着就是死代码）')
+    /*
+     * 促销条的样式必须留着：它与本次删掉的标题角标**同名**（都叫 `&__vip`），
+     * 同名在 CSS 里是属性级互相覆盖 —— 删错一个就是促销条失去布局。
+     * 而它此前恰恰被角标那份覆盖过（两处同名定义并存），本次删除顺带修好了这一点。
+     */
+    ok(
+      scss.includes('&__vip {') && scss.includes('&__vip-tag'),
+      '促销条的 &__vip / &__vip-tag 不能被误删'
+    )
+  })
+
+  it('大模型调用的入参与返回都进控制台（rawIoLog 打开时）', () => {
+    const llm = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'utils', 'llm.ts'), 'utf8')
+    /* 只打返回的话，「这句回答为什么长这样」是无从下手的：看不出问的是什么、用的哪一档 */
+    ok(/debugRaw\('llm:proxy:req',\s*\{[^}]*messages/s.test(llm), '入参没打印（必须含 messages）')
+    ok(llm.includes("debugRaw('llm:proxy', res)"), '返回没打印')
+    ok(llm.includes("debugRaw('llm:proxy:err', err)"), '链路异常要连原始对象一起打印')
+  })
+
   it('P2-13：争议卡以 !report.degraded 为条件（缺键也出卡，不能静默隐藏合规相关段落）', () => {
     const cond = around("id='sec-controversies'", 60)
     ok(cond.includes('!report.degraded'), `争议卡的外层条件应为 !report.degraded，实际：${cond}`)
     ok(src.includes('这一段缺数据与「确认没有争议」不是一回事'), '缺键要出说明卡，而不是整卡消失')
   })
 
-  it('P2-18：底部「刷新最新」按 showFresh 禁用并改文案（与状态行同一判据）', () => {
-    const btn = around('disabled={showFresh}', 0, 300)
-    ok(btn.includes("'已是最新'"), `禁用时应说明原因，实际：${btn}`)
-    ok(src.includes("showFresh ? '已是最新' : '刷新最新'"))
+  it('报告分档两侧一致（2026-10-10）：会员档的卡在页面里也判了 member', () => {
+    /*
+     * 档位口径只写在 utils/report-toc.ts（REPORT_TEMPLATE 的 tier），但**页面得自己再判一次**
+     * `member` —— 这两处一错开，症状是「目录里不列、页面却有卡」或「目录列了却点不到」，
+     * 而且只在免费账号上出现（开发时多是会员态，测不到）。故分档必须两侧一起钉住。
+     * 允许中间夹注释 / 换行（`[\s\S]{0,60}`），但条件本身必须是那一句。
+     */
+    ok(src.includes('{member && commercial && !report.degraded && ('), '商业速览属会员档')
+    ok(src.includes('{member && !report.degraded && ('), '会员专享（深度解析）卡也要 member 门槛')
+    /* 免费档的节不能被顺手加门槛：stance 被对比页 / 话题页 / 问答当上下文，timeline 被周报复用 */
+    for (const id of ['sec-stance', 'sec-timeline']) {
+      notOk(
+        new RegExp(`member && [\\s\\S]{0,40}id='${id}'`).test(src),
+        `${id} 属免费档，卡前面不该出现 member 门槛`
+      )
+    }
+    ok(src.includes('lockedReportToc(report,'), '目录底部的「会员另含 N 节」要用模板口径，不另写一套')
+  })
+
+  it('时间线按年份切块（跨年履历的脉络感，2026-10-10）', () => {
+    /*
+     * 时间线是报告里唯一跨年的段落，平铺时「2021-05」「2024-03」混在一起，读者要自己对着
+     * 每个日期算。年份小标题把它切成一段段脉络 —— 纯端上按 date 前 4 位切，不改数据、
+     * 不重生成，存量报告立即受益。解析不出 4 位年份的条目归入「无年份」组（不显示标题），
+     * 不因此丢数据。
+     */
+    ok(src.includes('const timelineGroups'), '要派生按年份分组的结构')
+    ok(src.includes("(t.date || '').slice(0, 4)"), '分组键是 date 前 4 位')
+    ok(src.includes('/^\\d{4}$/'), '只有 4 位数字才算年份，否则归入无标题组')
+    ok(src.includes('page-report__timeline-year'), '年份小标题要真的渲染出来')
+    ok(src.includes('timelineGroups.map'), '渲染走分组，而不是继续平铺 timelineView')
+  })
+
+  it('目录展开态：两列胶囊 + 分组（2026-10-10 二改瘦身、三改分组）', () => {
+    /*
+     * 批 10 把展开态做成竖向时间线（主轴 + 每节一颗节点），视觉成立但**一次占近两屏**
+     * （18 行 × 68rpx ≈ 1200rpx）—— 在一个「本来就嫌报告太长」的目录里自相矛盾。
+     * 这里钉住「两列 + 没有主轴」：改回单列 / 时间线即红。
+     */
+    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
+    const at = scss.indexOf('&__toc-item {')
+    const block = scss.slice(at, at + 700)
+    ok(block.includes('width: calc(50% - 12rpx)'), `目录胶囊应为两列，实际：${block.slice(0, 120)}`)
+    notOk(block.includes('&::before'), '竖向时间线的主轴必须去掉（它才是占空间的那一半）')
+    /* 标签得包一层 Text 才能出省略号（直接写在小程序 View 上不生效） */
+    ok(src.includes('page-report__toc-item-text'), '目录标签要包一层 Text 才能省略号')
+    /* 免费档的提示行是唯一「还差什么」的说明，必须真的渲染出来 */
+    ok(src.includes('会员另含 ${tocLocked.length} 节'), '会员档提示行不得写死节数')
+
+    /*
+     * 三改（分组）：数据侧的口径由上面两条用例钉住，这里钉**界面确实用了它** ——
+     * 只加数据结构、页面照旧平铺渲染，是最容易发生的「改了等于没改」。
+     */
+    ok(src.includes('tocGroups.map'), '展开态要渲染分组目录，而不是平铺的 tocSections')
+    ok(src.includes('page-report__toc-group-label'), '组标签必须渲染出来（否则分组只是数据结构）')
+    notOk(
+      /page-report__toc-list'>\s*\{tocSections\.map/.test(src),
+      '旧的平铺渲染要彻底换掉，不许两套并存'
+    )
+    /* 两列的负右外边距得跟着组容器走：留在 __toc-list 上，每组右侧都会窄 12rpx */
+    const gAt = scss.indexOf('&__toc-group-items {')
+    ok(gAt > 0, '组内容器缺样式（胶囊格的两列技巧挂在它身上）')
+    ok(scss.slice(gAt, gAt + 200).includes('margin-right: -12rpx'), '负右外边距要跟着组容器')
+  })
+
+  it('P2-18（2026-10-10 改）：两个刷新入口都走唯一出口 requestRefresh，按钮不再按 showFresh 禁用', () => {
+    notOk(/disabled=\{showFresh\}/.test(src), '按钮不再变灰 —— 用户要的是「重新生成随时可用」')
+    notOk(/showFresh \? '已是最新' : '刷新最新'/.test(src), '文案不再随状态变化（代价改由确认弹窗说明）')
+    ok(src.includes('const requestRefresh = useCallback'), '统一出口必须存在，两处入口不许再各判一次')
+    const hits = src.split('onClick={() => void requestRefresh()}').length - 1
+    ok(hits >= 2, `顶部状态行与底部按钮都该走唯一出口，实际 ${hits} 处`)
+    ok(src.includes('confirmRefresh'), '点刷新前必须先确认代价')
+    ok(src.includes('将消耗 1 次生成次数'), '确认弹窗要说清消耗几次')
+    ok(src.includes('生成失败或内容不完整时不计数'), '确认弹窗要给出「不达标不计数」的承诺')
   })
 
   it('P2-19：waiting 态有轮询（5s 一次、90s 封顶转 error），兑现「无需刷新自动展示」的承诺', () => {
@@ -1361,6 +1741,159 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19）', () => {
     ok(src.includes("if (state.phase !== 'waiting') return"), '轮询只在 waiting 态启动')
     ok(src.includes('setInterval'), '必须有轮询定时器（此前一行都没有，等待页永远转不完）')
     ok(src.includes('clearInterval'), '离开该态要清定时器')
+  })
+
+  it('时间线条目带上「距今多久」（算出相对时间就必须真的渲染出来）', () => {
+    /*
+     * utils/time.ts#stampAgo 的用例已经钉住了说法本身，这里钉「页面用了它」——
+     * 加了工具却没接上，是最容易发生的「改了等于没改」。
+     */
+    /* 2026-10-10 起时间线按年份分组（timelineGroups），相对时间仍在每条里算 —— 分组是外壳，stampAgo 是里子 */
+    ok(
+      /g\.items\.map\(\(t, i\) => \{[\s\S]{0,500}const ago = stampAgo\(t\.date\)/.test(src),
+      '时间线要用 stampAgo 算相对时间'
+    )
+    ok(src.includes('page-report__timeline-meta'), '相对时间要渲染在日期行里（否则工具白算了）')
+    /* 不可解析时必须不渲染这一句，不能留下「2021-05 · 」这种没有下文的尾巴 */
+    ok(/ago !== '' && /.test(src), 'stampAgo 返回空串时不该渲染这一句')
+    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
+    ok(scss.includes('&__timeline-meta'), '日期行缺样式（两个 Text 会贴在一起）')
+    /* 顺带钉住这条卡片自己的门槛没被顺手改掉（时间线仍只在非降级简版里出现） */
+    ok(around("id='sec-timeline'", 60).includes('!report.degraded'), '时间线的可见条件不该被改动')
+  })
+
+  it('速览卡末行的点评导读真的接在点评卡上（算了要旨就必须渲染，点了必须去对地方）', () => {
+    /*
+     * utils/report.ts#reportGist 的取值口径由 03-quota-qa.js 钉住，这里钉「页面用了它」，
+     * 以及「点了真的滚到点评卡」：导读最怕两件事 —— 算了不用（改了等于没改），
+     * 和锚点接错（点了没反应，而用户会以为是加载慢）。
+     */
+    ok(src.includes('reportGist'), '速览卡要用 reportGist 取要旨')
+    ok(src.includes('{gistRow}'), '取到要旨要真的渲染进速览卡')
+    /* 空串时整行不渲染：页面上不能留一行只有「AI 点评」、没有下文的空壳 */
+    ok(src.includes("const gist = report ? reportGist(report) : ''"), '没有要旨时不该留下空壳行')
+    ok(src.includes("const gistRow = gist !== '' &&"), '没有要旨时不该留下空壳行')
+    /* 两个分支都要有：空态卡是老报告（无 coverage）的那一支，漏了它一半的报告看不到导读 */
+    eq([...src.matchAll(/\{gistRow\}/g)].length, 2, '空态与常规两个分支都要带上导读')
+    ok(src.includes("jumpToSection('sec-analysis')"), '导读必须跳到点评卡，否则这一行没有意义')
+    ok(src.includes("id='sec-analysis'"), '锚点指向的节必须真的在页面上（否则点了没反应）')
+
+    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
+    ok(scss.includes('&__gist-text'), '导读句缺样式：会照数值那样加粗，且长句子不封顶')
+  })
+
+  it('「后续关注」的两种过期标各用各的基准（生成时刻 vs 现在），卡尾把口径说全', () => {
+    /*
+     * 只有「现在」一个基准时，能看出「这条现在过期了」，却看不出它是**生成时**就已经过期 ——
+     * 后者才是缺陷（模型把已经发生的事写成了未来待跟踪，同一件事因此既在时间线又在后续关注），
+     * 而且提示词那一侧改没改好，也只有它会说出来。故钉住三条：两支各传什么基准、文案不同、
+     * 卡尾对读者解释了这两个标分别是什么。
+     */
+    ok(src.includes('isStampPast(w.when, report.generatedAt)'), '「生成时已过期」要用报告生成时刻做基准')
+    ok(src.includes('isStampPast(w.when)'), '「已过期」仍以「现在」为基准')
+    ok(src.includes('生成时已过期'), '两种过期要有不同文案，否则读者分不出哪个是生成质量的问题')
+    ok(src.includes('「已过期」是报告生成之后才过去的'), '卡尾要解释两个标各是什么，不能只改标签')
+  })
+
+  it('「重新生成」弹窗在开挂态不念剩余次数（调试开关只松闸门、不改数字）', () => {
+    /*
+     * 本机反馈的 bug：弹窗说「今日剩余 30/30」，而当天已生成多次。
+     * 数据层的修法在 utils/quota.ts（remaining 照实相减 + 另给 unlimited，用例在 03），
+     * 这条钉住**展示方真的用了它** —— 否则后端不再撒谎，前端却继续把归零的 remaining
+     * 念出来，用户拿到的依然是错的信息。
+     */
+    ok(src.includes('quota && !quota.unlimited'), '弹窗要按 unlimited 分流措辞')
+  })
+
+  it('会员档共用同一层底色（不只是深度解析那一张）', () => {
+    /*
+     * 本机反馈：报告页「会员专享」的卡与「深度解析」那张长得不一样。
+     * 根因是底色只给了后者，商业速览只有一个角标 —— 同一档东西在版面上分成了两类。
+     * 现在共享 `page-report__vip-card`（2026-10-10 三改：三张工具视图已删，会员档只剩商业速览）。
+     */
+    ok(src.includes(`id='sec-commercial' className='card page-report__vip-card'`), '商业速览要套用会员档底色')
+    /* 深度解析那张保留自己的别名（它另有两个子元素类 __notes-head / __notes-badge 挂在上面） */
+    ok(src.includes("id='sec-member' className='card page-report__notes'"), '深度解析卡保持原类名')
+    /*
+     * 两种类名必须落在**同一个选择器组**里：否则哪天调底色只改一处，
+     * 五节又会长回两种样子 —— 这正是本次要修的那个毛病。
+     */
+    const scss = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
+    ok(/&__notes,\s*&__vip-card\s*\{/.test(scss), '两类名要在同一个选择器组里，改一处即两处同时生效')
+
+    /*
+     * 标题也用**同一种写法**（前缀，而不是右侧角标）：五节在版面上应当是一个样子。
+     * 一改时四节挂的是角标、深度解析写的是前缀，读起来的观感是「这几张和那张不是一回事」。
+     */
+    /*
+     * 这里只管**底色**。标题写法不在这里判（见「报告页渲染条件」里那条），
+     * 也**不判 `page-report__vip` 这个类名** —— 报告页的会员促销条用的是同一个类名。
+     */
+  })
+
+  it('刷新加载浮层真的浮在最顶层（2026-10-10 四改：`.glow-page > view` 会盖掉组件自己的 fixed）', () => {
+    const read = (p) => fs.readFileSync(path.join(__dirname, '..', '..', 'src', p), 'utf8')
+    const loadingTsx = read('components/report-loading/index.tsx')
+    const loadingScss = read('components/report-loading/index.scss')
+    const appScss = read('app.scss')
+
+    /*
+     * 这条坑的形态很隐蔽：组件写了 `position: fixed` 也写了 z-index，看着没问题，但报告页根节点是
+     * `.page-report.glow-page`，而 app.scss 的 `.glow-page > view`（特异性 0,1,1）压过组件选择器
+     * （0,1,0），把浮层按回文档流、z-index 压成 1 —— 于是「没浮在最顶层，还被正文压住」。
+     * 光读组件的样式永远发现不了，必须同时钉住「组件挂了口子」与「口子确实在 app.scss 里」。
+     */
+    ok(src.includes("import ReportLoading, { ReportRefreshing }"), '浮层的渲染入口变了，本组断言要同步')
+    ok(loadingTsx.includes("className='report-refreshing glow-overlay'"), '根节点必须挂 glow-overlay，否则仍是 relative + z-index:1')
+    ok(loadingTsx.includes('catchMove'), '全屏蒙层要拦 touchmove，否则浮层只是看着盖住、底下的报告照滚')
+    ok(loadingScss.includes('&__mask'), '要有蒙层才叫「覆盖当前页面」')
+
+    const at = appScss.indexOf('> .glow-overlay')
+    ok(at > 0, 'app.scss 必须提供浮层出口 `.glow-page > .glow-overlay`')
+    const rule = appScss.slice(at, at + 200)
+    ok(rule.includes('position: fixed'), '出口要给回 fixed')
+    const z = Number((rule.match(/z-index:\s*(\d+)/) || [])[1])
+    ok(Number.isFinite(z), '出口必须给死 z-index —— 只放开 position 不够，组件自己的 z-index 仍会被 `> view` 压成 1')
+    ok(z > 1000, `z-index 要压过 custom-tab-bar 的 999 与 share-poster 的 1000，实际 ${z}`)
+  })
+
+  it('提示条的 ✕ 各关各的（2026-10-10：此前四条共用一个开关，点一个全关）', () => {
+    /*
+     * 报告页有多条提示条同时在场（刷新失败 / 刷新变化 / 保留旧版 / 不达标 / 降级简版），
+     * 它们讲的不是同一件事，用户常常只想关掉已经看懂的那一条。此前四条刷新结果条共用
+     * 一个 `refreshNoticeClosed` —— 点任意一条的 ✕，四条一起消失，看起来就像「关错了」。
+     * 这里钉住「一个开关只对应一条提示」，改回共用即红。
+     */
+    const handlers = [...src.matchAll(/<NoticeClose onClose=\{([^}]+)\}/g)].map((m) => m[1].trim())
+    ok(handlers.length >= 5, `报告页的提示条都该有关闭键，实际只找到 ${handlers.length} 条`)
+    eq(
+      new Set(handlers).size,
+      handlers.length,
+      `每条 ✕ 必须只关自己那一条，出现了重复的同一个开关：${handlers.join(' | ')}`
+    )
+
+    const keys = [...src.matchAll(/closeNotice\('(\w+)'\)/g)].map((m) => m[1])
+    deepEq(keys.sort(), ['bgGaps', 'degraded', 'diff', 'error', 'keptMember', 'shortfall'])
+    for (const k of keys) ok(src.includes(`!closedNotices.${k} &&`), `key ${k} 必须真的接在渲染条件上，否则 ✕ 点了没反应`)
+
+    notOk(/refreshNoticeClosed|warnClosed/.test(src), '旧的「多条共用一个开关」必须彻底拆掉')
+    ok(src.includes('setClosedNotices({})'), '每次 load 整体复位，否则新一轮的结果被上一轮的「已关」吞掉')
+  })
+
+  it('不达标提示按「值不值得重试」分流文案（P2，2026-10-10）', () => {
+    /*
+     * 「这次没扣次数」是承诺，「要不要再试一次」是指路 —— 后者必须分情况：
+     * 素材本身就不够时劝重试，用户会每次不扣次数、每次都不达标，白等一场，
+     * 还会把「素材少」理解成「服务坏了」（判据见 utils/report.ts#shortfallVerdict）。
+     */
+    ok(src.includes('outcome.shortfallRetryable'), '页面必须接住这次判定的结果')
+    ok(src.includes('setShortfallRetryable(false)'), '新一轮要复位，否则上一轮的判断串到这一次')
+
+    const at = src.indexOf('{shortfallRetryable')
+    ok(at > 0, '文案要按 shortfallRetryable 分支，不能两条都写死')
+    const branch = src.slice(at, at + 400)
+    ok(branch.includes('重试通常就好'), '可重试那一支才说「重试通常就好」')
+    ok(branch.includes('重新生成通常也不会有变化'), '不可重试那一支要说清重试没用，否则用户会一直点')
   })
 })
 
@@ -1475,7 +2008,8 @@ describe('商业价值速览 utils/commercial', () => {
  * 漂移即红。改动词典必须两端一起改。
  */
 describe('风险词典两端一致（cloudfunctions/riskWatch ↔ src/utils/risk）', () => {
-  const { RISK_TERMS, NEG_WORDS, NEG_WINDOW, RISK_CATEGORY_LABEL } = env.load('utils/risk')
+  const { RISK_TERMS, NEG_WORDS, NEG_WINDOW, RISK_CATEGORY_LABEL, BIDIRECTIONAL_TERMS, RIGHTS_OBJECTS, RIGHTS_AFTER_WINDOW } =
+    env.load('utils/risk')
   const src = fs.readFileSync(
     path.join(__dirname, '..', '..', 'cloudfunctions', 'riskWatch', 'index.js'),
     'utf8'
@@ -1512,6 +2046,12 @@ describe('风险词典两端一致（cloudfunctions/riskWatch ↔ src/utils/risk
   it('否定词表与窗口相同（「未被起诉」这类必须两端都排除）', () => {
     deepEq(literal('NEG_WORDS'), NEG_WORDS)
     eq(literal('NEG_WINDOW'), NEG_WINDOW)
+  })
+
+  it('双向词方向判定同源（「起诉造谣者」两端都要判成维权，不能一端司法一端维权）', () => {
+    deepEq(literal('BIDIRECTIONAL_TERMS'), BIDIRECTIONAL_TERMS)
+    deepEq(literal('RIGHTS_OBJECTS'), RIGHTS_OBJECTS)
+    eq(literal('RIGHTS_AFTER_WINDOW'), RIGHTS_AFTER_WINDOW)
   })
 
   it('类别标签相同（预警页按 category_label 展示，两端口径须一致）', () => {

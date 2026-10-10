@@ -417,6 +417,49 @@ module.exports = function createAfterSales(deps) {
     }
   }
 
+  /* ───────────────────────── ⑤ 运营写口：手动发放会员 ───────────────────────── */
+
+  /**
+   * 手动发放会员（联调 / 人工补偿用）：不经过订单，直接给指定 openid 续 `days` 天。
+   *
+   * 为什么不新开一个云函数：写会员数据 = 写 `memberships` 权威 + 写 `users.membership` 镜像，
+   * 本函数是全项目**唯一允许写会员数据的地方**（见 index.js 顶部）。手动发放同样要两处都写、
+   * 值一致，于是复用 grantMembership 的 `base = max(now, 权威, 镜像)` 与 writeMembership /
+   * writeMirror，不另起炉灶。
+   *
+   * last_order_id **保留权威行现有值**（若为首次发放则用 `manual:<时间>` 占位）：
+   * 手动发放不该覆盖真实订单留在权威行上的发货凭据 —— 覆盖了，微信再重试那笔订单时
+   * 「权威已记录这一单」判据就失效、会重发一遍天数。占位值只在从未有订单时才出现。
+   * 手动发放可叠加：每次调用 = 在当前有效期的更晚者之上再 +days（与续费同一套口径）。
+   */
+  async function adminGrantMember(event) {
+    const openid = String(event.openid || '').trim()
+    const days = Number(event.days)
+    const plan = String(event.plan || 'annual')
+    if (!openid) return { ok: false, error: '缺少 openid' }
+    if (!Number.isFinite(days) || days <= 0) return { ok: false, error: 'days 必须是正数（默认 365）' }
+
+    const row = await findUserRow(openid)
+    if (!row) return { ok: false, error: `找不到用户行：${openid}（该用户尚未登录过，先登录再发放）` }
+
+    const auth = await readMembership(openid)
+    const mirror = row.membership || null
+    const base = Math.max(Date.now(), tsOf(auth && auth.expires_at), tsOf(mirror && mirror.expires_at))
+    const expiresAt = new Date(base + days * DAY_MS).toISOString()
+    const lastOrderId = (auth && auth.last_order_id) || `manual:${nowIso()}`
+
+    await writeMembership(openid, {
+      plan,
+      expires_at: expiresAt,
+      last_order_id: lastOrderId,
+      refunded_orders: auth && auth.refunded_orders
+    })
+    await writeMirror(row._id, openid, { plan, expires_at: expiresAt, last_order_id: lastOrderId })
+
+    log(`手动发放会员：openid=${openid} plan=${plan} days=${days} expires_at=${expiresAt}`)
+    return { ok: true, openid, plan, days, expires_at: expiresAt }
+  }
+
   /**
    * adminOp 总闸：口令闸门 + 分派。
    *
@@ -436,7 +479,8 @@ module.exports = function createAfterSales(deps) {
 
     if (op === 'refund') return adminRefund(event)
     if (op === 'reconcile') return Object.assign({ manual: true }, await reconcile())
-    return { ok: false, error: `未知 adminOp：${op}（支持 refund / reconcile）` }
+    if (op === 'grantMember') return adminGrantMember(event)
+    return { ok: false, error: `未知 adminOp：${op}（支持 refund / reconcile / grantMember）` }
   }
 
   return { handleAdminOp, reconcile, settleRefund }

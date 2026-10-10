@@ -1,12 +1,15 @@
 import {
   isCloudConfigured,
   cloudInitErrorMessage,
+  callCloudFunction,
   uploadToCloud,
   deleteCloudFile
 } from './cloud'
 import { table } from './db'
+import { DEFAULT_USER_SETTINGS, SETTINGS_VERSION } from '@/config/user-defaults'
 import { useAuth } from '@/stores/auth'
 import { diagLog } from './cloud-diagnostics'
+import { hydrateUserSettings } from './settings'
 
 /** users 集合行。_openid 由云端写入时自动注入，业务上即登录用户标识 userId */
 export interface UserRow {
@@ -14,7 +17,17 @@ export interface UserRow {
   _openid?: string
   nickname: string | null
   avatar_url: string | null
+  /**
+   * 个性化配置（模型供应商 / 档位）。**真源是云端这一列**，端上只读、不直写：
+   * 改配置一律走云函数 userInit 的 set（见 utils/settings.ts 文件头）。
+   * 允许的键与默认值在 config/user-defaults.ts，那是唯一真源。
+   */
   settings: Record<string, unknown>
+  /**
+   * 配置结构版本号：userInit 的 ensure 靠它决定「要不要补齐缺失的键」。
+   * 老用户的行可能还没有这个字段（等价于版本 1 的空配置），下次登录时补齐。
+   */
+  settings_version?: number
   created_at: string
   last_seen_at: string | null
   /**
@@ -62,10 +75,14 @@ export function ensureLogin(): Promise<void> {
 }
 
 /**
- * 微信登录 → users 幂等初始化（由 ensureLogin 调用，勿直接调）。
+ * 微信登录 → users 行就位 + 云端偏好灌进本地缓存（由 ensureLogin 调用，勿直接调）。
  *
  * 与 WorkBuddy 版的关键差异：不再有 Taro.login + signInWithWechat 换会话，
- * 微信身份由 cloud.database 隐式携带；首次登录（无行）先写占位行再读回 _openid。
+ * 微信身份由 cloud.database 隐式携带。
+ *
+ * 初始化交给云函数 userInit（见 ensureUserRow）：端上不再决定默认配置长什么样、
+ * 也不再自己写 `settings` —— 否则「默认值」就会有端上与云端两份，
+ * 而端上那份改包就能改（users 是「仅创建者可读写」）。
  *
  * 失败不抛出：写入 auth store 的 error，由「我的」页展示并提供重试。
  */
@@ -79,20 +96,7 @@ async function doLogin(): Promise<void> {
 
   try {
     const now = new Date().toISOString()
-    let row = await readSelf()
-
-    if (!row) {
-      // 首次登录：不指定 _id（由云端生成），_openid 随之自动注入
-      const { error } = await table('users').insert({
-        nickname: null,
-        avatar_url: null,
-        settings: {},
-        created_at: now,
-        last_seen_at: now
-      })
-      if (error) throw new Error(`users 初始化失败：${error.message}`)
-      row = await readSelf()
-    }
+    const row = await ensureUserRow()
 
     if (!row?._openid) {
       throw new Error('无法取得用户标识：请确认 users 集合权限为「仅创建者可读写」')
@@ -100,6 +104,9 @@ async function doLogin(): Promise<void> {
 
     // 回写活跃时间；失败不阻断登录（best-effort）
     await table('users').update({ last_seen_at: now }).eq('id', row.id)
+
+    /* 云端 settings 是真源：灌进本地缓存，此后所有同步读口走本地（见 utils/settings.ts） */
+    hydrateUserSettings(row.settings)
 
     /* avatarUrl 必须一并回填：否则冷启后头像丢失，「我的」页与首页会退回首字占位 */
     useAuth.getState().setLogin({
@@ -113,6 +120,56 @@ async function doLogin(): Promise<void> {
     diagLog('error', 'auth', `登录异常：${msg}`)
     useAuth.getState().setError(`登录失败：${msg}`)
   }
+}
+
+/** userInit 云函数 ensure 返回的行：云端的 `_id` 就是端上的 `id` */
+type CloudUserRow = Partial<UserRow> & { _id?: string }
+
+/** 云端返回的行 → 端上 UserRow（只把 _id 映射成 id，其余字段同名） */
+function normalizeUserRow(r: CloudUserRow): UserRow {
+  return { ...(r as UserRow), id: r._id ?? (r as UserRow).id }
+}
+
+/**
+ * 让本人的 users 行就位（幂等），返回该行。
+ *
+ * 首选云端 userInit，它是 users 行的**唯一初始化者**：插入时带完整默认配置
+ * （不再是一句 `settings: {}`）、给存量行补齐缺失的键、按 settings_version 迁移。
+ *
+ * 云函数未部署 / 调用失败时**回退端上直插**（带同一份默认值）：登录是主路径，
+ * 不能因为一个可选云函数没部署就登不进去。两条路语义一致（都是「没有才插」），
+ * 因此先走了回退、之后才部署云函数，也不会插出重复行。
+ */
+async function ensureUserRow(): Promise<UserRow | null> {
+  try {
+    const res = (await callCloudFunction('userInit', { action: 'ensure' })) as
+      | { ok?: boolean; error?: string; row?: CloudUserRow }
+      | null
+    if (res?.ok && res.row?._openid) return normalizeUserRow(res.row)
+    diagLog('warn', 'auth', `userInit 未返回可用用户行（${res?.error ?? '无 row'}），回退端上初始化`)
+  } catch (err) {
+    diagLog(
+      'warn',
+      'auth',
+      `userInit 调用失败（${err instanceof Error ? err.message : String(err)}），回退端上初始化`
+    )
+  }
+
+  const exist = await readSelf()
+  if (exist) return exist
+
+  const now = new Date().toISOString()
+  // 首次登录：不指定 _id（由云端生成），_openid 随之自动注入
+  const { error } = await table('users').insert({
+    nickname: null,
+    avatar_url: null,
+    settings: { ...DEFAULT_USER_SETTINGS },
+    settings_version: SETTINGS_VERSION,
+    created_at: now,
+    last_seen_at: now
+  })
+  if (error) throw new Error(`users 初始化失败：${error.message}`)
+  return readSelf()
 }
 
 /** 昵称长度上限（与 <Input maxlength> 保持一致） */

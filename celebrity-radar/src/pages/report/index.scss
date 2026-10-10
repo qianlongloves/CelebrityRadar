@@ -301,12 +301,22 @@
     line-height: 1;
   }
 
-  /* 刷新结果条：点「刷新最新」后告诉用户到底刷出了什么 */
+  /* 刷新结果条：点「刷新最新」后告诉用户到底刷出了什么。
+     2026-10-10 加关闭键后改为「行」：左列正文（__diff-main）自适应，右端挂 NoticeClose，
+     正文不再直接当 flex 子项排（否则 ✕ 会掉到正文下面一行）。 */
   &__diff {
     margin: 16rpx 32rpx 0;
     padding: 20rpx 24rpx;
     border-radius: $radius-md;
     background: $brand-weak;
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+  }
+
+  &__diff-main {
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 6rpx;
@@ -382,13 +392,33 @@
   }
 
   /*
-    会员专享段落（O-11）：排版与上面的 AI 点评同源（同属模型判断），
-    但它是付费差异点，故给一层极淡的品牌底色，扫一眼就知道这段是「多出来的」。
-    不做整卡紫色渐变 —— 报告页的卡片语言已经够多，再加一种只会更乱（见上方 AI 点评的注释）。
+    会员档的专属底色（O-11，2026-10-10 扩到全部 5 节）。
+
+    原先只有「会员专享 · 深度解析」那一张有（`&__notes`），其余四节（商业速览 / 词云 /
+    语录主题 / 热度趋势）只在标题行挂了「会员专享」角标、卡片本身与免费卡长得一模一样 ——
+    同一档东西在版面上因此分成两类，读的人看不出「这五节是一回事」。
+    现在五节共用这一层底色，标题一律用「会员专享 · 」前缀（见下方标题写法的注释）。
+
+    底色刻意做得极淡（顶部 10% 品牌色渐到白）：它要回答的是「这张卡属于哪一档」，
+    而不是「这张卡很重要」—— 太重会与报告页既有的卡片语言打架（见上方 AI 点评的注释）。
+    `&__notes` 保留为深度解析那张的别名，免得改一个选择器牵动三处（__notes-head / __notes-badge）。
   */
-  &__notes {
+  &__notes,
+  &__vip-card {
     background: linear-gradient(180deg, rgba(135, 100, 255, 0.1), rgba(255, 255, 255, 0.9) 45%);
   }
+
+  /*
+    会员档各节的标题写法（2026-10-10 二次调整）。
+
+    一改时给四节挂的是右侧「会员专享」角标，而深度解析那张是写在标题里的
+    「会员专享 · 深度解析」—— 同一档东西于是有了两种写法，读起来的观感是
+    「这几张和那张不是一回事」。现统一为**标题前缀**（与深度解析同一种），
+    右侧不再挂角标；`&__card-head` / `&__vip` 随之废弃删除（它们只服务那个角标）。
+
+    `&__notes-badge`（「已生效」）保留：那是深度解析**独有**的确认位（顶部促销条已对会员
+    隐藏，改由它承担「权益在」的确认），与「这是哪一档」是两件事，故不跟着一起去掉。
+  */
 
   /* 专享卡标题行（O-25）：右侧「已生效」小标是会员权益的确认位 —— 顶部促销条已对会员隐藏，
      确认改由这里承担（卡在 = 权益在）。与 .card-title 同一行、右对齐，不额外占高度。 */
@@ -396,6 +426,60 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+  }
+
+  /*
+    折叠头（2026-10-10）：后续关注 / 名词解释的标题行，可点击就地展开 / 收起。
+    与 &__notes-head 同一手法（标题 + 右侧小标），差别是这里的小标是动作提示而非状态徽章。
+    默认收起：这两节是「按需查」的内容（行话、未来档期），不该占住报告主体的一屏。
+  */
+  &__fold-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__fold-arrow {
+    flex-shrink: 0;
+    margin-left: 16rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* AI 解读（批 2）：一句话结论 + 行业定位。总结句稍加重以当导读，定位行弱化成一格说明。 */
+  &__verdict-summary {
+    font-size: 28rpx;
+    line-height: 1.6;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__verdict-row {
+    display: flex;
+    margin-top: 12rpx;
+  }
+
+  &__verdict-label {
+    flex-shrink: 0;
+    margin-right: 12rpx;
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  &__verdict-text {
+    flex: 1;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* 口碑两极 / 言行一致度（批 2）：在结论与定位之下，各是一个独立小节，用细线隔开。
+     正反标签刻意不染情绪色（同用灰色标签）—— 这是「客观评价」，不是站队。 */
+  &__reputation,
+  &__consistency {
+    margin-top: 12rpx;
+    padding-top: 12rpx;
+    border-top: 1rpx solid $line;
   }
 
   &__notes-badge {
@@ -478,6 +562,14 @@
   }
 
   /* ===== 时间线（圆点 + 竖线） ===== */
+  /* 年份小标题（2026-10-10）：把跨年的履历切成一段段脉络。品牌色、比事件条目更轻一档 */
+  &__timeline-year {
+    margin: 8rpx 0 6rpx;
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
   &__timeline-item {
     display: flex;
     gap: 20rpx;
@@ -520,6 +612,15 @@
     display: flex;
     flex-direction: column;
     gap: 4rpx;
+  }
+
+  /* 日期行：绝对刻度 + 相对时间并排。两者都是时间信息，故共用 __item-date 的灰与字号，
+     不另立一套；并排成两个 Text 而不是拼成一句，是为了将来想单独调其中一个观感时
+     不必去拆字符串（也让「相对时间是否存在」在结构上就是可判的） */
+  &__timeline-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 10rpx;
   }
 
   &__timeline-event {
@@ -907,9 +1008,17 @@
     }
   }
 
-  /* ===== 折叠目录（本轮） =====
+  /* ===== 折叠目录（2026-10-10 两改：收起只占一行 + 展开态两列胶囊格） =====
      报告页 18 节平铺，目录回答「后面还有什么、怎么直接过去」。
-     收起态只占一行：它是入口，不是内容，不能自己再占一屏。 */
+     收起态只占一行：它是入口，不是内容，不能自己再占一屏 ——
+     早先收起时还留了句「按节直达，不必一路滑到底」，为这句话又多占一行，已去掉：
+     一个写着「目录 · N 节」还带箭头开关的标题，本身就说清了用途。
+
+     展开态：批 10 做成竖向时间线（主轴 + 节点），视觉上成立但一次要占近两屏
+     （18 × 68rpx ≈ 1200rpx）—— 在一个「本来就嫌报告太长」的目录里这是自相矛盾。
+     改回两列胶囊格：每行两节，18 节 → 9 行（约 640rpx），缩掉一半。
+     胶囊沿用本页 __cloud-tag 那套线框语言（不引入新视觉），
+     两列而不是三列：最长的标签「争议与回应」5 字，三列会把字挤到贴边。 */
   &__toc-head {
     display: flex;
     align-items: center;
@@ -928,39 +1037,103 @@
     color: $brand;
   }
 
-  &__toc-hint {
+  /* 分组容器（2026-10-10 三改）：纵向堆叠每一组「组标签 + 组内胶囊格」。
+     横向排布的技巧（wrap + 每颗 50% 宽 + 负右外边距）原来挂在 __toc-list 上，
+     现在下移到 __toc-group-items —— 组才是胶囊的直接容器，负右外边距必须跟着它，
+     否则每组右侧会各窄 12rpx。 */
+  &__toc-list {
+    margin-top: 18rpx;
+  }
+
+  /* 组标签：它是「给几节归类」的行首小字，本身不是一节 —— 故不做胶囊、不可点，
+     字号比胶囊小一档（20rpx vs 24rpx）、颜色更淡，一眼能读出「这行是标题，下面是可点的节」 */
+  &__toc-group-label {
     display: block;
-    margin-top: 8rpx;
-    font-size: 22rpx;
+    margin-bottom: 10rpx;
+    font-size: 20rpx;
     line-height: 1.5;
     color: $text-3;
   }
 
-  &__toc-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12rpx;
-    margin-top: 18rpx;
+  /* 组间距：上一组最后一行胶囊的 12rpx 底边距 + 这 8rpx + 标签行 30rpx + 标签底距 10rpx
+     ≈ 60rpx，与组内的行距（胶囊高 60 + 12）相当 —— 分组的层次感交给标签本身去表达，
+     不靠「留一大片白」；真留大了，18 节的目录又会回到占两屏的老问题。 */
+  &__toc-group + &__toc-group {
+    margin-top: 8rpx;
   }
 
+  /* 组内两列胶囊格：wrap + 每颗 50% 宽，靠负的右外边距抵消右边多出来的那道空隙
+     （每颗自带 12rpx 右外边距，最后一列也会带上，不收掉右侧就会比左边窄 12rpx） */
+  &__toc-group-items {
+    display: flex;
+    flex-wrap: wrap;
+    margin-right: -12rpx;
+  }
+
+  /* 每节一颗胶囊：宽 = 一半 - 间距，行高固定，长标签省略号收尾（标签都是短词，不会真省） */
   &__toc-item {
-    padding: 8rpx 20rpx;
-    border: 1rpx solid $line;
-    border-radius: 999rpx;
+    box-sizing: border-box;
+    width: calc(50% - 12rpx);
+    margin: 0 12rpx 12rpx 0;
+    padding: 12rpx 16rpx;
     font-size: 24rpx;
     line-height: 1.4;
     color: $text-2;
+    background: $bg;
+    border: 1rpx solid $line;
+    border-radius: 999rpx;
+    text-align: center;
 
     /* 刚跳过的那一节：点完目录就收起，靠这个记号回答「我到了哪」 */
     &--active {
-      border-color: $brand;
       color: $brand;
-      background: $brand-weak;
+      border-color: $brand;
+      font-weight: 600;
     }
 
     &--tap {
       opacity: 0.6;
     }
+  }
+
+  /* 标签本体：文字必须包一层才能省略号（直接写在小程序 View 上不生效） */
+  &__toc-item-text {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* 免费用户的目录尾巴：这一档看不到的会员档节数（2026-10-10，需求「目录配成模板」）。
+     它不是装饰 —— 页面里那几节卡片对免费用户根本不渲染，这里是「还差什么」的唯一说明，
+     整行可点，落到会员中心。会员态整行不出（他自己看得见，不需要提示）。 */
+  &__toc-more {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8rpx;
+    padding-top: 18rpx;
+    border-top: 1rpx solid $line;
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  &__toc-more-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__toc-more-go {
+    flex-shrink: 0;
+    margin-left: 16rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $brand;
   }
 
   /* ===== 第二批：结构化事实条目（人物档案 / 关系图谱 / 后续关注 / 争议与回应 / 名词解释） =====
@@ -1025,6 +1198,21 @@
     border-radius: 999rpx;
     background: $brand-weak;
     color: $brand-dark;
+    font-size: 20rpx;
+    line-height: 1.6;
+  }
+
+  /* 「已过期」标（后续关注专用）：与 __entry-tag 同规格（同一行的胶囊），只换配色。
+     刻意用中性灰而不是警示色 —— 时间点过去是事实，不是风险，不该被读成红黄灯。
+     描一道 $line 细边：底色 $bg 有可能与卡片底色接近，靠边框保证「是个标」读得出来 */
+  &__entry-past {
+    flex-shrink: 0;
+    margin-bottom: 4rpx;
+    padding: 2rpx 14rpx;
+    border: 1rpx solid $line;
+    border-radius: 999rpx;
+    background: $bg;
+    color: $text-3;
     font-size: 20rpx;
     line-height: 1.6;
   }
@@ -1308,6 +1496,31 @@
     font-size: 22rpx;
     line-height: 1.5;
     color: $text-3;
+  }
+
+  /* ===== 点评导读（速览卡末行：模型的判断，不是素材统计） =====
+     它和上面几行不是一类东西 —— 上面是「原样统计、可当事实读」的画像，这一行是模型的判断
+     且整行可点。故只补两点：句子不该像数值那样加粗（28rpx/600 对一句 40 字的话太重），
+     以及整行的按压反馈。标签仍用 __info-label，与上面几行对齐成一列。 */
+  &__gist-text {
+    font-weight: 500;
+    line-height: 1.6;
+    /* 判断最长 80 字（见 report.ts 的 ANALYSIS_POINT_CHARS），三行封顶免得撑开速览卡 */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
+
+  &__gist--tap {
+    opacity: 0.6;
+  }
+
+  /* 空态速览卡里，导读行前面是一段说明文字（不是 __info 行，没有那条分隔线）——
+     补一条，免得被读成上一段的续行（老报告多半走这一支，正是最需要导读的那一批） */
+  &__empty + &__gist {
+    margin-top: 6rpx;
+    border-top: 1rpx solid $line;
   }
 
   /* 溯源摘要：一行小字放在免责声明上方，替代原来的素材清单卡 */

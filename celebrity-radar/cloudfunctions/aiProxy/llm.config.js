@@ -31,7 +31,7 @@
  */
 
 /**
- * 供应商表。键即配置里写的 id（LLM_PROVIDER=moonshot，或端上 llm.providers 里那家的 id）。
+ * 供应商表。键即配置里写的 id（LLM_PROVIDER=qwen，或端上 llm.providers 里那家的 id）。
  *
  * apiKeyEnv：该家的 key 放在哪个环境变量里。**不要**把 key 写进本文件 ——
  *   本文件随代码进 git，key 只活在云函数环境变量（控制台或 .env，两者都不进仓库）。
@@ -48,40 +48,34 @@
  *   会员的「深度模式」现在只体现在**素材加厚**（search 的 count 分档）与模型档位上。
  */
 const PROVIDERS = {
-  deepseek: {
-    label: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    apiKeyEnv: 'DEEPSEEK_API_KEY',
-    /* 三档：极速版 deepseek-v4-flash / 标准版 deepseek-v4 / 深度推理 deepseek-reasoner */
-    defaultModel: 'deepseek-v4-flash',
-    memberOnlyModels: ['deepseek-v4', 'deepseek-reasoner'],
-    chatMaxTokens: 8192
-  },
   qwen: {
     label: '通义千问',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    /*
+     * 专属部署端点（阿里云百炼 MaaS，北京区）：标准 dashscope.aliyuncs.com 上 flash 生成
+     * 1500 字报告 >60s 未返回（实测），故换到专属实例。base path 仍为 /compatible-mode/v1
+     * （该端点 /v1 与根路径都 404，已实测确认）。
+     */
+    baseUrl: 'https://llm-scqsvc912atw6h3o.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
     apiKeyEnv: 'QWEN_API_KEY',
-    /* 三档：极速版 qwen-turbo / 标准版 qwen-plus / 深度推理 qwen-max */
-    defaultModel: 'qwen-turbo',
-    memberOnlyModels: ['qwen-plus', 'qwen-max'],
-    chatMaxTokens: 8192
+    /* 三档：极速版 qwen3.8-flash / 标准版 qwen3.7-plus / 深度推理 qwen3.8-max */
+    defaultModel: 'qwen3.8-flash',
+    memberOnlyModels: ['qwen3.7-plus', 'qwen3.8-max'],
+    chatMaxTokens: 8192,
+    /*
+     * 关思考：这三档实测都返回 reasoning_content（连「只回复两个字」都先思考），报告长生成时
+     * 思考阶段就把上游 50s 空闲超时耗光。enable_thinking:false 是 DashScope Qwen3 官方开关，
+     * 关掉后同规模报告约 40~49s、reasoning 0 字。extraBody 由 handleChat / askLlm 合并进请求体
+     * （探针 probeModelTiers 刻意不带，它要测的就是「默认开不开思考」）。
+     */
+    extraBody: { enable_thinking: false }
   },
   zhipu: {
     label: '智谱 GLM',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     apiKeyEnv: 'ZHIPU_API_KEY',
-    /* 三档：极速版 glm-4-flash / 标准版 glm-4-air / 深度推理 glm-4-plus */
-    defaultModel: 'glm-4-flash',
-    memberOnlyModels: ['glm-4-air', 'glm-4-plus'],
-    chatMaxTokens: 8192
-  },
-  moonshot: {
-    label: 'Moonshot Kimi',
-    baseUrl: 'https://api.moonshot.cn/v1',
-    apiKeyEnv: 'MOONSHOT_API_KEY',
-    /* 三档：极速版 moonshot-v1-8k / 标准版 moonshot-v1-32k / 深度推理 moonshot-v1-128k */
-    defaultModel: 'moonshot-v1-8k',
-    memberOnlyModels: ['moonshot-v1-32k', 'moonshot-v1-128k'],
+    /* 三档：极速版 glm-4.7-flash / 标准版 glm-4.6 / 深度推理 glm-4.7（混合思考，默认非推理） */
+    defaultModel: 'glm-4.7-flash',
+    memberOnlyModels: ['glm-4.6', 'glm-4.7'],
     chatMaxTokens: 8192
   },
   /**
@@ -93,8 +87,8 @@ const PROVIDERS = {
     label: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     apiKeyEnv: 'OPENAI_API_KEY',
-    defaultModel: 'gpt-4o-mini',
-    memberOnlyModels: ['gpt-4o'],
+    defaultModel: 'gpt-5.6-luna',
+    memberOnlyModels: ['gpt-5.6-terra', 'gpt-5.6-sol'],
     chatMaxTokens: 8192
   },
   /**
@@ -112,7 +106,7 @@ const PROVIDERS = {
 }
 
 /** 表里没指定、环境变量也没指定时用哪家；须与端上 public.ts 的 llm.provider 一致 */
-const DEFAULT_PROVIDER = 'deepseek'
+const DEFAULT_PROVIDER = 'qwen'
 
 function readEnv(name) {
   const v = process.env[name]
@@ -176,6 +170,8 @@ function resolveLlm(event) {
      * 修法只有一处，但两处（本文件 + PROVIDERS）必须配对：任何一处改名 = 上限失效。
      */
     chatMaxTokens: conf.chatMaxTokens,
+    /* 该家的「关思考」等额外请求体字段（qwen=enable_thinking:false），由调用方合并进 payload */
+    extraBody: conf.extraBody || null,
     memberOnly: (conf.memberOnlyModels || []).includes(model)
   }
 }

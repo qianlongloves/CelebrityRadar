@@ -168,7 +168,12 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
       confirmColor: '#EF4444'
     })
     if (!res.confirm) return
-    await removeFavorite(id)
+    /* 删除失败时**不动本地列表**：否则卡片当场消失、下次进来又出现，用户只会以为删不掉 */
+    const ok = await removeFavorite(id)
+    if (!ok) {
+      void Taro.showToast({ title: '取消收藏失败，请重试', icon: 'none' })
+      return
+    }
     setFavorites((prev) => prev.filter((f) => f.id !== id))
   }
 

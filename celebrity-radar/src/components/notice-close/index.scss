@@ -1,0 +1,19 @@
+@import '../../styles/variables.scss';
+
+/*
+ * 提示条关闭键（2026-10-10）：所有「文字提示的框」右端统一的 ✕。
+ *
+ * color: inherit —— 深底（品牌紫）与浅底（警示黄、淡紫）上都跟着父级文字色走，不必逐处配色；
+ * opacity: 0.55 —— 把它压到「次要点」一档：它是「我不想看」，不该和提示正文抢注意力。
+ * margin-left: auto —— flex 行里自动贴右端，正文不加 flex:1 也能被推到底；
+ * 负外边距（左右各 10rpx）用来收回 padding 撑出的热区，避免 ✕ 看着离边太远。
+ */
+.notice-close {
+  flex-shrink: 0;
+  margin: -8rpx -10rpx -8rpx auto;
+  padding: 8rpx 10rpx;
+  color: inherit;
+  opacity: 0.55;
+  font-size: 24rpx;
+  line-height: 1;
+}

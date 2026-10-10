@@ -101,7 +101,12 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
       confirmColor: '#EF4444'
     })
     if (!res.confirm) return
-    await clearHistory()
+    /* 删除失败时**不清空本地列表、不报「已清空」**：否则下次进来记录原样回来 */
+    const ok = await clearHistory()
+    if (!ok) {
+      void Taro.showToast({ title: '清空失败，请重试', icon: 'none' })
+      return
+    }
     setHistory([])
     Taro.showToast({ title: '已清空', icon: 'none' })
   }

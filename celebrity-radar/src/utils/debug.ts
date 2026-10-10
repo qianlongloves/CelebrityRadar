@@ -47,19 +47,6 @@ export const COOLDOWN_DISABLED = publicConfig.debug.disableCooldown
 export const RAW_IO_LOG = publicConfig.debug.rawIoLog
 
 /**
- * 强制会员身份（**仅本地调试**）：'off' = 不覆写，按云端真实发货结果判定。
- *
- * 消费方只有一处 —— utils/member.ts#readMemberState 的最外层。这样端上「谁是会员」
- * 仍然只有一个判定入口，覆写跟着那个入口走，不会出现「配额认定是会员、
- * 报告页认定是免费」这种半生效状态（那比不覆写更难排查）。
- *
- * ⚠ 与上面四个 disable* 不同，它不是「松闸门」而是**换身份**：
- *   云端不认（aiProxy 的检索加厚与档位模型、quotaGuard 的免计费复核都按真实身份走），
- *   逐项说明见 `src/config/local.example.ts` 的 memberOverride。
- */
-export const MEMBER_OVERRIDE = publicConfig.debug.memberOverride
-
-/**
  * 打印上游原始报文。
  *
  * 传对象本身而不是 JSON.stringify 后的字符串：微信开发者工具的 Console 会把对象

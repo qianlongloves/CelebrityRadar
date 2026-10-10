@@ -441,6 +441,17 @@ describe('收藏 utils/favorites', () => {
     eq(db.__dump('favorites').length, 0)
   })
 
+  it('删除失败返回 false，且把错误记进诊断日志（不许静默吞掉）', async () => {
+    const { db, load } = fresh()
+    login()
+    db.__seed('favorites', [{ _id: 'fav-x', openid: 'u1', type: 'quote', person_key: '张三#tech' }])
+    const { removeFavorite } = load('utils/favorites')
+    db.__setFailing('favorites', true)
+
+    eq(await removeFavorite('fav-x'), false, '云端没删掉，调用方据此拒绝改本地列表、提示失败')
+    eq(db.__dump('favorites').length, 1, '真没删掉时行必须还在（本地状态不该被当成已删）')
+  })
+
   it('未登录时列表返回空数组而不是报错', async () => {
     const { load } = fresh()
     load('stores/auth')
@@ -633,6 +644,17 @@ describe('查询历史 utils/history', () => {
     await clearHistory()
     eq((await listHistory()).length, 0)
     eq(db.__dump('history').filter((r) => r.openid === '别人').length, 2, '不应误删他人记录')
+  })
+
+  it('清空失败返回 false（页面据此不改本地列表、提示失败）', async () => {
+    const { db, load } = fresh()
+    login('me')
+    const { clearHistory } = load('utils/history')
+    seedHistory(db, 3, 'me')
+    db.__setFailing('history', true)
+
+    eq(await clearHistory(), false)
+    eq(db.__dump('history').length, 3, '一段都没删掉时记录必须原样留着')
   })
 
   it('listHistory 时间倒序且最多 50 条', async () => {
@@ -943,5 +965,49 @@ describe('报告缓存版本号 utils/cache#reportSchemaVersion', () => {
     const { REPORT_SCHEMA_VERSION } = load('utils/report')
     eq(reportSchemaVersion({ schemaVersion: 2 }), 2)
     ok(REPORT_SCHEMA_VERSION >= 2, `当前应为 v2 及以上，实际 ${REPORT_SCHEMA_VERSION}`)
+  })
+})
+
+/* --------------------------------------------- 清空我的数据 utils/data-deletion */
+
+describe('清空我的数据 utils/data-deletion', () => {
+  it('连关键词订阅与名人监控一起删（都在 keyword_watches），且不动别人的行', async () => {
+    const { db, load } = fresh()
+    const me = login('u-me')
+    db.__seed('follows', [{ _id: 'f1', openid: me, person_key: '甲#tech' }])
+    db.__seed('favorites', [{ _id: 'v1', openid: me, person_key: '甲#tech' }])
+    db.__seed('history', [{ _id: 'h1', openid: me, person_key: '甲#tech' }])
+    db.__seed('keyword_watches', [
+      { _id: `${me}#雷军`, openid: me, keyword: '雷军', type: 'keyword', created_at: '2026-10-01T00:00:00.000Z', seen_at: '2026-10-01T00:00:00.000Z' },
+      { _id: `${me}#person#雷军#tech`, openid: me, keyword: '雷军', type: 'person', person_key: '雷军#tech', created_at: '2026-10-01T00:00:00.000Z', seen_at: '2026-10-01T00:00:00.000Z' },
+      { _id: 'other#雷军', openid: 'u-other', keyword: '雷军', type: 'keyword', created_at: '2026-10-01T00:00:00.000Z', seen_at: '2026-10-01T00:00:00.000Z' }
+    ])
+
+    const { clearAllMyData } = load('utils/data-deletion')
+    eq(await clearAllMyData(), true)
+
+    eq(db.__dump('follows').length, 0)
+    eq(db.__dump('favorites').length, 0)
+    eq(db.__dump('history').length, 0)
+    deepEq(
+      db.__dump('keyword_watches').map((r) => r.openid),
+      ['u-other'],
+      '关键词订阅与名人监控都属「我的数据」，必须一并删除；别人的原样保留'
+    )
+  })
+
+  it('未登录时无需动云、直接返回 true', async () => {
+    const { load } = fresh()
+    load('stores/auth')
+    const { clearAllMyData } = load('utils/data-deletion')
+    eq(await clearAllMyData(), true)
+  })
+
+  it('任一表删失败就返回 false（db 适配层只回 error 不抛错，别被外层 try/catch 骗过）', async () => {
+    const { db, load } = fresh()
+    login('u-me')
+    db.__setFailing('keyword_watches', true)
+    const { clearAllMyData } = load('utils/data-deletion')
+    eq(await clearAllMyData(), false, '云端没删掉就必须返回 false，调用方据此提示失败')
   })
 })

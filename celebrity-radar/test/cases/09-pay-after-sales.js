@@ -1010,7 +1010,7 @@ describe('P2-32 热榜构建锁', () => {
 
   it('锁被持有（新鲜的 building 行）：本轮直接让出，一次上游都不打', async () => {
     const { fn, calls } = loadTimerFnWithHttps('hotBoardRefresh', [], {
-      env: { BOCHA_API_KEY: 'bocha-test', DEEPSEEK_API_KEY: 'llm-test' }
+      env: { BOCHA_API_KEY: 'bocha-test', QWEN_API_KEY: 'llm-test' }
     })
     env.db.__seed('hot_board', [{ _id: 'building', at: new Date().toISOString() }])
 
@@ -1028,7 +1028,7 @@ describe('P2-32 热榜构建锁', () => {
       chatOk(JSON.stringify({ items: hotItems() }))
     ]
     const { fn } = loadTimerFnWithHttps('hotBoardRefresh', responses, {
-      env: { BOCHA_API_KEY: 'bocha-test', DEEPSEEK_API_KEY: 'llm-test' }
+      env: { BOCHA_API_KEY: 'bocha-test', QWEN_API_KEY: 'llm-test' }
     })
     env.db.__seed('hot_board', [{ _id: 'building', at: ago(10 * 60 * 1000) }])
 
@@ -1040,5 +1040,54 @@ describe('P2-32 热榜构建锁', () => {
     const board = rows.find((r) => r._id === 'latest')
     ok(board && board.items.length === 24, '榜单要落库')
     notOk(rows.some((r) => r._id === 'building'), '成功后放锁 —— 否则下一轮会一直撞在这把锁上')
+  })
+
+  it('模型把结构位写成全角（`，` `：` 连括号一起）：归一后照常出榜，值里的全角标点原样保留', async () => {
+    /* 端上 utils/llm.ts 的 repairJsonText 补第 ⑤ 条（结构位全角归一）时，这份手抄的副本漏了。
+       后果不吵不闹：extractJson 返回 null 或 normalizeItems 拿到空 items，整轮报「榜单不合格」，
+       热榜当天不更新而没人收到提示（对比：端上那条路径至少有用户会点重试）。
+       这里把括号也一起换成全角，顺手把「候选扫描认全角」那道门也钉住。 */
+    const items = hotItems()
+    items[0].name = '全角人物甲'
+    items[0].trend = '上升期，话题度高'
+    const raw = JSON.stringify({ items })
+      .replace(/,/g, '，')
+      .replace(/:/g, '：')
+      .replace(/\[/g, '［')
+      .replace(/\]/g, '］')
+      .replace(/\{/g, '｛')
+      .replace(/\}/g, '｝')
+
+    const { fn } = loadTimerFnWithHttps('hotBoardRefresh', [...Array.from({ length: 12 }, () => searchOk(3)), chatOk(raw)], {
+      env: { BOCHA_API_KEY: 'bocha-test', QWEN_API_KEY: 'llm-test' }
+    })
+    env.db.__seed('hot_board', [{ _id: 'building', at: ago(10 * 60 * 1000) }])
+
+    const res = await fn.main({ action: 'run' })
+
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.count, 24)
+    const board = env.db.__dump('hot_board').find((r) => r._id === 'latest')
+    const first = board && board.items.find((i) => i.name === '全角人物甲')
+    ok(first, '整段全角也要能出榜（连候选片段都取不出来的话，这里就是空的）')
+    eq(first.trend, '上升期，话题度高', '值里的全角逗号是内容，一个字符都不能被归一')
+  })
+
+  it('模型把整个对象多包一层数组：拆一层后照常出榜（内容一个字不差，只是多了对方括号）', async () => {
+    /* 提示词里刚排过 `"items": []` 这类数组字段，模型顺手就多包一层。语法完全合法、
+       内容一个字不差，但 normalizeItems 只认 parsed.items —— 不解包就是「榜单不合格」。 */
+    const items = hotItems()
+    items[0].name = '包裹人物乙'
+    const raw = JSON.stringify([{ items }])
+
+    const { fn } = loadTimerFnWithHttps('hotBoardRefresh', [...Array.from({ length: 12 }, () => searchOk(3)), chatOk(raw)], {
+      env: { BOCHA_API_KEY: 'bocha-test', QWEN_API_KEY: 'llm-test' }
+    })
+    env.db.__seed('hot_board', [{ _id: 'building', at: ago(10 * 60 * 1000) }])
+
+    const res = await fn.main({ action: 'run' })
+
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.count, 24)
   })
 })

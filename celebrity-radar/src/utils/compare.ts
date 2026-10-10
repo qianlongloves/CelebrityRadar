@@ -48,8 +48,11 @@ export interface CompareMetric {
   a: string
   b: string
   /**
-   * 谁更高：仅「曝光度」类指标给方向（热度 / 报道量），
-   * 条数类（动态 / 名言 / 履历）内容量取决于素材多少，多不代表好，一律为 null。
+   * 谁更高：**只有热度给方向**（唯一跨档可比较的量尺，见 utils/report.ts#HEAT_COUNT_CAP）。
+   *
+   * 报道量（news / recent）虽是「曝光度」读数，却是按**原样素材**统计的：深度档一次抓约 40 条、
+   * 免费档约 18 条，故它取决于「这份报告当初是谁生成的」，直接比大小等于把档位差异当成人气差异。
+   * 与动态 / 言论 / 履历一样，内容量多不代表更好，一律 null（hint 会说明数字仍按原样给出）。
    */
   higher: 'a' | 'b' | null
   /** 口径说明（表下小字，避免指标沦为玄学数字） */
@@ -110,10 +113,15 @@ function sideOf(report: Report): CompareSide {
 /**
  * 两个说法是否指同一件事：完全相等或互为子串（「手机」与「旗舰手机」不该算两个主题）。
  *
+ * **空串恒不匹配**：`'任意串'.includes('')` 为真，不挡的话「模型没给 topic」的立场会被算成
+ * 「命中任意主题」——主题页会把一条与主题无关的立场排进来，`stanceOnly` 计数也会虚高。
+ * 调用方（topic-digest 的 `stance.topic`）允许取到空串，故这道防护放在这里、全项目共用。
+ *
  * 导出给主题知识库（utils/topic-digest.ts）复用 —— 「谁和谁是同一个话题」这件事
  * 必须全项目一个口径，否则对比页说两人有共同话题、主题页却说没有。
  */
 export function sameTopic(x: string, y: string): boolean {
+  if (!x || !y) return false
   return x === y || x.includes(y) || y.includes(x)
 }
 
@@ -179,28 +187,16 @@ export function buildComparison(a: Report, b: Report): CompareResult {
       label: '近 30 天报道',
       a: num(sideA.newsCount),
       b: num(sideB.newsCount),
-      higher:
-        sideA.newsCount === null || sideB.newsCount === null || sideA.newsCount === sideB.newsCount
-          ? null
-          : sideA.newsCount > sideB.newsCount
-            ? 'a'
-            : 'b',
-      hint: '检索窗口内抓到的素材条数，即热度公式的输入本身'
+      higher: null,
+      hint: '检索窗口内抓到的素材条数（原样统计）。深度档会抓得更多，故与热度不同口径，只作参考、不判优劣'
     },
     {
       key: 'recent',
       label: '近 7 天报道',
       a: num(sideA.recentCount),
       b: num(sideB.recentCount),
-      higher:
-        sideA.recentCount === null ||
-        sideB.recentCount === null ||
-        sideA.recentCount === sideB.recentCount
-          ? null
-          : sideA.recentCount > sideB.recentCount
-            ? 'a'
-            : 'b',
-      hint: '近期活跃度，热度公式里占四成权重'
+      higher: null,
+      hint: '其中发布于最近 7 天的条数（原样统计）。热度只取前 20 条计算，故本行数值会大于等于热度口径'
     },
     { key: 'dynamics', label: '报告内动态', a: String(sideA.dynamics), b: String(sideB.dynamics), higher: null },
     { key: 'quotes', label: '收录言论', a: String(sideA.quotes), b: String(sideB.quotes), higher: null },
@@ -226,10 +222,9 @@ export function describeComparison(result: CompareResult): string {
   if (Math.abs(gap) < 5) parts.push(`热度接近（${a.heat} : ${b.heat}）`)
   else parts.push(`${gap > 0 ? a.name : b.name} 的热度更靠前（${a.heat} : ${b.heat}）`)
 
-  if (a.recentCount !== null && b.recentCount !== null && a.recentCount !== b.recentCount) {
-    const more = a.recentCount > b.recentCount ? a : b
-    parts.push(`近 7 天报道更密集的是 ${more.name}（${Math.max(a.recentCount, b.recentCount)} 篇）`)
-  }
+  /* 报道量不再进摘要：它是按原样素材统计的（深度档抓得更多），说「谁更密集」等于把生成档位
+     当成活跃度 —— 与 HEAT_COUNT_CAP「素材加厚不改变可比较数字」的口径冲突（见 CompareMetric.higher）。
+     两个数字在对照表里仍原样给出，读者可自行判断，摘要不做这件事。 */
 
   if (result.common.length > 0) {
     parts.push(`共同被提及：${result.common.slice(0, 3).map((c) => c.word).join('、')}`)

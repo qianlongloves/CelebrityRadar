@@ -5,17 +5,18 @@ import { AtButton } from 'taro-ui'
 import { DOMAIN_COVERAGE_TEXT, DOMAIN_META, DomainCode } from '@/config/domains'
 import { FOCUS_META, FocusCode, isFocusCode } from '@/config/filters'
 import EmptyState from '@/components/empty-state'
+import NoticeClose from '@/components/notice-close'
 import QuoteDetail from '@/components/quote-detail'
-import ReportLoading from '@/components/report-loading'
-import { getOrBuildReport, getCachedReports, refreshFailureNote, ReportOutcome } from '@/utils/cache'
+import ReportLoading, { ReportRefreshing } from '@/components/report-loading'
+import { getOrBuildReport, getCachedReports, isFreeRefreshCooling, refreshFailureNote, ReportOutcome } from '@/utils/cache'
+import { peekGenerateQuota } from '@/utils/quota'
+import type { GenerateQuotaSummary } from '@/utils/quota'
 import { hasSearchChannel } from '@/utils/search'
 import { hasLlmChannel } from '@/utils/llm'
-import { Report } from '@/utils/report'
-import { extractKeywords, extractQuoteThemes } from '@/utils/keywords'
+import { Report, backgroundGaps, reportGist } from '@/utils/report'
 import { buildComparison } from '@/utils/compare'
-import { buildHeatTrend, TrendPoint } from '@/utils/trend'
 import { buildRiskSignals, RISK_CATEGORIES, RISK_CATEGORY_LABEL, RISK_FROM_LABEL } from '@/utils/risk'
-import { buildReportToc } from '@/utils/report-toc'
+import { TEMPLATE_SIZE, buildReportToc, buildReportTocGroups, lockedReportToc } from '@/utils/report-toc'
 import { buildCommercialSummary, MIN_AXES } from '@/utils/commercial'
 import {
   favoriteQuote,
@@ -39,7 +40,7 @@ import {
 import { personShareTitle, reportSharePath } from '@/utils/share'
 import { openSourceLink } from '@/utils/source-link'
 import { useAuth } from '@/stores/auth'
-import { fromNow, formatDay, isStaleReport, reportAgeDays } from '@/utils/time'
+import { fromNow, formatDay, isStampPast, isStaleReport, reportAgeDays, stampAgo } from '@/utils/time'
 import './index.scss'
 
 /** 深度报告页（§2.3 六段渲染 + §2.4 全部边界态） */
@@ -67,6 +68,15 @@ const SENTIMENT_META: Record<string, { label: string; cls: string }> = {
 }
 
 /**
+ * 情绪条的最小样本量：低于它时那句「基于 N 条动态」必须把话说全（见卡片的 __stance-note）。
+ *
+ * 比例条是按条数铺开的，**1 条动态就能画出「100% 积极」的满格条**。统计口径本身没错
+ * （纯本地计数、不掺模型判断），错的是版面：满格条看起来像结论，而它的样本是 1。
+ * 故不足 3 条时不改图、只把口径说清 —— 渲染层不替用户改数据，只交代它有多可信。
+ */
+const SENTIMENT_MIN_SAMPLE = 3
+
+/**
  * 话题态度标签（M4-4）。措辞刻意区别于上面那组 —— 动态标的是单条报道的**情绪**，
  * 这里标的是话题上的**舆论态度**（认可 / 质疑 / 两极），两者不是同一件事。
  */
@@ -90,43 +100,6 @@ const RELATION_META: Record<string, string> = {
 }
 
 /* ===== 热度趋势折线（M4-6）：绘图区几何 ===== */
-
-/**
- * 绘图区尺寸（rpx）：750 - 卡片左右外边距 32×2 - 卡片内边距 28×2 = 630。
- * 宽高都取固定 rpx（而不是量测容器）是因为线段旋转角度依赖真实宽高比，
- * 而 rpx 是等比缩放 —— 用设计稿尺寸算出来的角度在任何机型上都成立。
- */
-const TREND_PLOT_W = 630
-const TREND_PLOT_H = 220
-/** 上下留白：峰值点的圆心落在顶边时，点本身会被裁掉一半 */
-const TREND_PAD_Y = 14
-
-/**
- * 把趋势点换算成绘图区内的 rpx 坐标与线段参数（View + transform 自绘，不用 canvas）。
- * 返回值直接进 style：点是中心坐标（CSS 里用负 margin 抵消半径），线段以左端为旋转原点。
- */
-function trendGeometry(points: TrendPoint[]) {
-  const usable = TREND_PLOT_H - TREND_PAD_Y * 2
-  const nodes = points.map((p) => ({
-    ...p,
-    cx: p.x * TREND_PLOT_W,
-    cy: TREND_PAD_Y + (1 - p.ratio) * usable
-  }))
-  const segs: Array<{ left: number; top: number; len: number; deg: number }> = []
-  for (let i = 0; i + 1 < nodes.length; i += 1) {
-    const a = nodes[i]
-    const b = nodes[i + 1]
-    const dx = b.cx - a.cx
-    const dy = b.cy - a.cy
-    segs.push({
-      left: a.cx,
-      top: a.cy,
-      len: Math.sqrt(dx * dx + dy * dy),
-      deg: (Math.atan2(dy, dx) * 180) / Math.PI
-    })
-  }
-  return { nodes, segs }
-}
 
 /**
  * 取链接的可读域名。
@@ -256,6 +229,20 @@ export default function ReportPage() {
    */
   const hasReportRef = useRef(false)
   /**
+   * 「刷新在途」锁（2026-10-10 新增）。
+   *
+   * 为什么需要：`load(true)` 有**两个**入口（顶部侧重条的「重新生成为…」与页脚「刷新最新」），
+   * 而 force 路径此前没有任何在途判断 —— 上一次还没回来时再点一次，就是一次真实的生成请求
+   * （免费版一天只有 3 次）。用户点第二次的原因恰恰是「第一次没反馈」，所以这把锁与顶部那条
+   * 刷新提示是同一件事的两半：**先让他看见在跑，再让重复点击无效**。
+   *
+   * 只拦 force：首次加载不加锁 —— personKey 变了必须能立刻换人（`load` 的依赖就是它），
+   * 若把非 force 也锁住，切人时新请求会被悄悄丢掉，屏上留着的却是上一位的报告。
+   *
+   * 用 ref 而不是 state：`load` 是 `useCallback([personKey, focus])`，闭包里读到的 state 是旧值。
+   */
+  const loadingRef = useRef(false)
+  /**
    * 正在「非破坏式刷新」：手上已有报告，本次 force 在后台跑（P1-8，2026-10-09）。
    * 与 `state.phase === 'loading'` 分开 —— 前者是「首次加载、屏上什么都没有」，
    * 后者是「内容还在，只是在下一次」。
@@ -264,6 +251,15 @@ export default function ReportPage() {
   /** 非破坏式刷新失败的说明；成功后立刻清空（见 refreshFailureNote） */
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [reportFaved, setReportFaved] = useState(false)
+  /**
+   * 折叠态（细节与延伸组，2026-10-10）：「后续关注」「名词解释」是按需内容、不占一屏，
+   * 默认收起，点标题行展开。与「刷新结果条」的关闭记忆不同 —— 那是「这次不看」，这是
+   * 「先收着、想看再点」；展开态只活在本次会话、不落库（报告是共享缓存，不该携带阅读姿势）。
+   */
+  const [detailOpen, setDetailOpen] = useState<{ watchlist: boolean; glossary: boolean }>({
+    watchlist: false,
+    glossary: false
+  })
   /** 已收藏的内容 id（名言 / 动态 / 履历节点三类共用；整份报告单独用 reportFaved） */
   const [favedIds, setFavedIds] = useState<Set<string>>(new Set())
   const [followed, setFollowed] = useState(false)
@@ -280,12 +276,49 @@ export default function ReportPage() {
    */
   const [keptMember, setKeptMember] = useState(false)
   /**
-   * 本次刷新被「免费档刷新冷却」拦下（批 2，2026-10-09）：这份报告是 12 小时内生成的，
-   * 免费档不重复买一遍（见 utils/cache.ts#isFreeRefreshCooling）。
-   * 同样是「点了刷新却没变」，故与 keptMember 共用同一个提示位、同样先回答「为什么刷不动」。
-   * 只有免费读者会看到它 —— 冷却只对非会员生效。
+   * 本次产物没达到最低交付要求（2026-10-10，判定见 utils/report.ts#reportShortfall）。
+   *
+   * 与 keptMember / refreshError 共用同一个提示位（同一套外观、同一个位置）—— 三者都是
+   * 「点了刷新，结果和预期不一样」；但这条的火候完全不同：它必须先说清**「这次没有消耗你的生成次数」**，
+   * 否则用户看着一份残缺的报告，只能自己猜是不是白花了一次额度。
+   * 注意「共用提示位」只指外观：关闭开关必须各记各的（见 closedNotices 注释）。
    */
-  const [refreshCooled, setRefreshCooled] = useState(false)
+  const [shortfall, setShortfall] = useState<string | null>(null)
+  /**
+   * 上面这条不达标「重试有没有意义」（P2，2026-10-10，判据见 utils/report.ts#shortfallVerdict）。
+   *
+   * 不达标的原因分两类，文案必须分开：上游抖动（重试通常就好）/ 素材本身就不够
+   * （长尾人物近期报道少，重试还是同一批素材）。一律劝重试，用户就会一直点、一直不达标，
+   * 白等一场还把「素材少」误解成「服务坏了」—— 与 bgGaps 那条是同一个坑。
+   */
+  const [shortfallRetryable, setShortfallRetryable] = useState(false)
+
+  /**
+   * 本页可关闭的提示条条目名。
+   *
+   * 用联合类型而不是裸字符串：key 打错一个字母，✕ 就把「已关」记到了别人头上，
+   * 而眼前这条永远关不掉 —— 这种错编译期必须拦下来。
+   */
+  type NoticeKey = 'error' | 'diff' | 'keptMember' | 'shortfall' | 'degraded' | 'bgGaps'
+  /*
+   * 提示条的「已关闭」记忆（2026-10-10，需求：「所有文字提示的框都要有关闭按钮」）。
+   *
+   * 一律只记在本机内存里、不落库 —— 提示条说的是「这一份报告 / 这一次操作」的当下状态，
+   * 关掉只代表「这次我不看」，换一份报告、或下一次刷新都应重新出现（见各 set* 的复位处）。
+   *
+   * 2026-10-10 二改（用户反馈「多个提示框点一个全关了」）：刷新结果条此前四条**共用一个布尔**，
+   * 点其中任意一条的 ✕，四条一起消失。可它们讲的是完全不同的四件事 —— 这次为什么没刷成 /
+   * 刷出了什么变化 / 为什么留着旧版 / 这次扣不扣次数 —— 用户常常只想关掉已经看懂的那一条。
+   * 现在按条目分记：**一个 key 一条提示，点哪个关哪个**。
+   *   · closedNotices 刷新结果条 + 降级警示条（error / diff / keptMember / shortfall / degraded）：
+   *     每次 load 整体复位 —— 新一轮的结果必须能被看到，不能被上一轮的「已关」吞掉；
+   *   · focusClosed 侧重条仍单独一个布尔，且**不随 load 复位**：它来自路由参数、不是这一次刷新的
+   *     结果，每次回到页面又弹一遍（用户得反复关同一条）比「点一个关一个」更烦人。
+   */
+  const [focusClosed, setFocusClosed] = useState(false)
+  const [closedNotices, setClosedNotices] = useState<Partial<Record<NoticeKey, boolean>>>({})
+  /** 关掉一条提示：只动它自己那一格，绝不牵连其余（见 closedNotices 注释） */
+  const closeNotice = useCallback((key: NoticeKey) => setClosedNotices((m) => ({ ...m, [key]: true })), [])
   /** 相关名人（O-16）：报告就绪后异步算，算不出来就是空数组（整卡不渲染） */
   const [related, setRelated] = useState<RelatedPerson[]>([])
   /**
@@ -329,6 +362,10 @@ export default function ReportPage() {
        * 那份报告一起消失（断网 / 上游抖动一次，就从「有一份能读的」变成「生成失败」空态）。
        * 首次加载（没有旧内容可留）仍走全屏骨架。
        */
+      /* 在途锁（只看 force，理由见 loadingRef 的注释）：返回前重复点刷新直接丢弃，不重复请求 */
+      if (force && loadingRef.current) return
+      if (force) loadingRef.current = true
+
       const keepCurrent = force && hasReportRef.current
       if (keepCurrent) {
         setRefreshing(true)
@@ -338,9 +375,25 @@ export default function ReportPage() {
       }
       setPrevReport(null)
       setKeptMember(false)
-      setRefreshCooled(false)
+      setShortfall(null)
+      setShortfallRetryable(false)
       setMemberLocked([])
-      const outcome: ReportOutcome = await getOrBuildReport(personKey, { force, focus })
+      /* 新一轮的刷新结果条要能被看到：把上一轮「已关」的记忆整体清掉（见 closedNotices 注释） */
+      setClosedNotices({})
+      /*
+        这里接住 reject 并折成 `kind: 'error'`：`getOrBuildReport` 内部大量 `await` 读库，
+        任何一次读抛错都会让这个 await 直接 reject —— 那样 `refreshing` 与在途锁都不会复位，
+        顶部刷新提示会永久停在那儿，页面看着「一直在生成」。折成 error 后走下面已有的分支：
+        有旧报告就只挂一条失败说明（P1-8 的原意），没有才落错误空态。
+      */
+      const outcome: ReportOutcome = await getOrBuildReport(personKey, { force, focus }).catch(
+        (err): ReportOutcome => ({
+          kind: 'error',
+          message: err instanceof Error ? err.message : String(err)
+        })
+      )
+      /* 先解锁再处理结果：下面 switch 里的 setState 是同步的，不会有等待窗口 */
+      loadingRef.current = false
       setRefreshing(false)
       /* 纯函数（utils/cache.ts），文案与「成功时不提示」都被单测钉着 */
       const failureNote = refreshFailureNote(outcome)
@@ -350,8 +403,10 @@ export default function ReportPage() {
           /* 交回的是失败时的既有版本（refreshFailed）时不算「变化对比」，否则会拿同一份跟自己比 */
           setPrevReport(outcome.refreshFailed ? null : (outcome.prev ?? null))
           setKeptMember(outcome.keptMember === true)
-          setRefreshCooled(outcome.refreshCooled === true)
+          setShortfall(outcome.shortfall ?? null)
+          setShortfallRetryable(outcome.shortfallRetryable === true)
           setMemberLocked(outcome.memberLocked ?? [])
+          /* 降级警示条若是这版才出的，已由上面 load 开头的整体复位放行（见 closedNotices 注释） */
           setRefreshError(failureNote)
           break
         case 'coldstart':
@@ -497,6 +552,78 @@ export default function ReportPage() {
    * 取消走二次确认（与预警页取消监测同一套交互）：监控是每天真金白银的检索，误触取消
    * 会让用户第二天收不到提醒却不知道发生了什么。
    */
+  /**
+   * 「重新生成」前的确认（2026-10-10）。
+   *
+   * 原先这套入口靠**前端禁用**防手滑：顶部状态行在 showFresh 时撤掉热区、底部按钮同时变灰
+   * 「已是最新」，免费档更狠 —— 12 小时内点刷新会被冷却静默拦下、直接交回旧版本。
+   * 同一个动作在页面上有三个答案，用户只能学会「怀疑这个按钮」。
+   *
+   * 现在把门开在明处：按钮永远可点，点下去先把代价讲清楚（消耗 1 次生成次数 + 今日剩余），
+   * 由用户自己决定花不花 —— 冷却原本想传达的「内容大概不会变」降级成这里的一句提醒。
+   * 真正的防滥用交给云函数日限（quotaGuard 的 ai_calls），不再由前端替用户做决定。
+   *
+   * 读配额 / 冷却失败都不拦人：这两条信息的价值是「让用户知情」，读不到就少说一句，
+   * 不该反过来变成新的「刷不动」理由。
+   */
+  const confirmRefresh = useCallback(async (): Promise<boolean> => {
+    const userId = useAuth.getState().userId
+    if (!userId) {
+      Taro.showToast({ title: '请先到「我的」页登录', icon: 'none' })
+      return false
+    }
+
+    let quota: GenerateQuotaSummary | null = null
+    try {
+      quota = await peekGenerateQuota(userId)
+    } catch {
+      quota = null
+    }
+
+    const current = state.phase === 'ready' ? state.report : null
+    const cooling = current && !member ? await isFreeRefreshCooling(current).catch(() => false) : false
+
+    /*
+     * 三句话按「用户此刻最想知道什么」排序：先说这份报告还新不新（冷却留下的最后一点价值），
+     * 再说这次要花多少（带上剩余次数，「值不值」才可判断），最后兜一句不达标不计数 ——
+     * 第三句是 2026-10-10 新给的承诺，也是用户敢按下「开始生成」的底气（见 utils/report.ts#reportShortfall）。
+     *
+     * ⚠ 第二句带条件：调试开关放开生成额度时（quota.unlimited）**只改写措辞、不改数字** ——
+     * 此时「今日剩余 N 次」已不成立（闸门一律放行），但 remaining 本身是真实的。
+     * 此前这里无条件念 remaining，而后端的 remaining 在开挂时被固定报成满额，于是本机
+     * 已生成多次仍显示「今日剩余 30/30」—— 假数字比少说一句糟得多（见 utils/quota.ts）。
+     */
+    const content = [
+      cooling ? '这份报告刚生成不久，素材时间窗内内容通常不会有实质变化。' : '',
+      quota && !quota.unlimited
+        ? `将消耗 1 次生成次数（今日剩余 ${quota.remaining}/${quota.limit} 次）。`
+        : '将消耗 1 次生成次数。',
+      '生成失败或内容不完整时不计数。'
+    ]
+      .filter(Boolean)
+      .join('\n')
+
+    const { confirm } = await Taro.showModal({
+      title: '重新生成',
+      content,
+      confirmText: '开始生成',
+      cancelText: '再想想'
+    })
+    return confirm
+  }, [member, state])
+
+  /**
+   * 页面上所有「重新生成」入口的唯一出口（顶部状态行 + 底部「刷新最新」）。
+   *
+   * 合并成一个函数是为了让两处**不可能再各说各话** —— 此前正是两处判据不一致，
+   * 才出现「顶上没热区、底下按钮变灰」这种同一动作两个答案的局面。
+   */
+  const requestRefresh = useCallback(async () => {
+    if (refreshing) return
+    if (!(await confirmRefresh())) return
+    void load(true)
+  }, [confirmRefresh, load, refreshing])
+
   const onToggleMonitor = async () => {
     if (monitorBusy) return
     if (monitored) {
@@ -592,7 +719,12 @@ export default function ReportPage() {
     const id = makeId(userId)
 
     if (favedIds.has(id)) {
-      await removeFavorite(id)
+      /* 失败就不改状态：不然星标当场变空心、用户以为取消成功，刷新后它又亮回来 */
+      const ok = await removeFavorite(id)
+      if (!ok) {
+        void Taro.showToast({ title: '取消收藏失败，请重试', icon: 'none' })
+        return
+      }
       setFavedIds((prev) => {
         const next = new Set(prev)
         next.delete(id)
@@ -624,7 +756,11 @@ export default function ReportPage() {
     const id = makeFavoriteId(userId, 'report', personKey)
 
     if (reportFaved) {
-      await removeFavorite(id)
+      const okRemove = await removeFavorite(id)
+      if (!okRemove) {
+        void Taro.showToast({ title: '取消收藏失败，请重试', icon: 'none' })
+        return
+      }
       setReportFaved(false)
       Taro.showToast({ title: '已取消收藏', icon: 'none' })
       return
@@ -661,6 +797,23 @@ export default function ReportPage() {
   /** 渲染顺序：动态最新在前、履历从早到晚（模型返回顺序不作保证） */
   const dynamicsView = report ? [...report.dynamics].sort((a, b) => byDateDesc(a.date, b.date)) : []
   const timelineView = report ? [...report.timeline].sort((a, b) => byDateAsc(a.date, b.date)) : []
+  /*
+   * 时间线按年份切块（2026-10-10）：履历是这份报告里唯一跨年的段落，平铺时「2021-05」和
+   * 「2024-03」混在一起，读者要自己对着每个日期算。年份小标题把它切成一段段脉络 ——
+   * 纯端上按 date 前 4 位切，不改数据结构、不重生成，存量报告立即受益。
+   * 解析不出 4 位年份的条目归入「无年份」组（不显示标题），不因此丢数据。
+   */
+  const timelineGroups = (() => {
+    const groups: Array<{ year: string; items: typeof timelineView }> = []
+    for (const t of timelineView) {
+      const year = (t.date || '').slice(0, 4)
+      const isYear = /^\d{4}$/.test(year)
+      const last = groups[groups.length - 1]
+      if (isYear && last && last.year === year) last.items.push(t)
+      else groups.push({ year: isYear ? year : '', items: [t] })
+    }
+    return groups
+  })()
 
   /**
    * 立场与舆情 = 情绪走向（本地聚合）+ 话题态度（模型判定），两层显式分开：
@@ -687,45 +840,17 @@ export default function ReportPage() {
   const stances = report?.stance ?? []
 
   /**
-   * 关键词云 + 高频观点（M4-5）：纯端上聚合，口径与取舍见 utils/keywords.ts 顶部注释。
+   * 背景类段落的缺口（P1，2026-10-10）：人物档案 / 关系图谱 / 时间线**本次为空**。
    *
-   * 不走模型新增字段，是为了让 2026-10-06 之前落库的老报告也立刻能看到词云 ——
-   * 报告是「一次生成、长期缓存」的资产，词云不该逼用户重新消耗一次生成额度。
-   */
-  const keywords = report ? extractKeywords(report) : []
-  /** 高频观点只取带佐证原文的前 3 条：没有出处的词不配叫「观点」，让它留在词云里 */
-  const keywordHighlights = keywords.filter((k) => k.refs.length > 0).slice(0, 3)
-
-  /**
-   * 语录主题：同一份语录的另一种读法 —— 词云回答「反复提了什么」，这里回答
-   * 「他常讲的话分成几类」。口径与门槛见 utils/keywords.ts 的 extractQuoteThemes，
-   * 同样是纯端上统计，存量报告立即生效。
-   */
-  const quoteThemes = report ? extractQuoteThemes(report) : []
-
-  /**
-   * 点词云里的词 → 主题速览（pages/topic）。
+   * 与 shortfall 是两件事，别看混了：shortfall 说的是「这次生成不完整，**没扣**你的次数」，
+   * 而这条说的是「扣了次数，但确实有几节没内容」—— 计费门槛刻意不把这几节算作失败，
+   * 因为它们的素材来自不限时间的背景线，空了多半是这位人物的公开资料本身就少
+   * （口径与理由见 utils/report.ts#backgroundGaps）。
    *
-   * 「这个话题还出现在谁的报告里、各自都怎么说」是读完词云后最自然的下一问，
-   * 而答案就在别处已缓存的报告里 —— 主题页只读缓存做编目，零模型调用、零上游请求、
-   * 不消耗生成额度（口径见 utils/topic-digest.ts 顶部注释）。
-   *
-   * 带上 personKey 作为锚点：候选名单会截断到 20 位，锚点排第一才能保证
-   * 用户从这份报告点进去时，手上这份一定是聚合进去的那一份。
+   * 所以文案不能套用 shortfall 那句「重试通常就好」—— 那句话在这里是错的，会让用户
+   * 一直重试、一直拿不到，还把「没内容」误解成「服务坏了」。
    */
-  const goTopic = (word: string) => {
-    void Taro.navigateTo({
-      url: `/pages/topic/index?topic=${encodeURIComponent(word)}&personKey=${encodeURIComponent(personKey)}`
-    })
-  }
-
-  /**
-   * 热度趋势（M4-6）：口径与取舍见 utils/trend.ts 顶部注释 —— 只聚合报告里带日期的
-   * 动态与时间线事件，因此存量报告不重新生成也能看到这张卡，不消耗生成额度。
-   * 几何换算（rpx 坐标 / 线段角度）见文件顶部的 trendGeometry，纯 View 自绘、不引图表库。
-   */
-  const trend = report ? buildHeatTrend(report) : null
-  const trendGeo = trend ? trendGeometry(trend.points) : null
+  const bgGaps = report ? backgroundGaps(report) : []
 
   /**
    * 风险雷达（第 0 期）：从报告已收录的四段素材里**字面**挑出司法 / 监管 / 商业合作 /
@@ -928,11 +1053,23 @@ export default function ReportPage() {
   const [tocOpen, setTocOpen] = useState(false)
   /** 刚跳过去的那一节：点完目录就收起，需要留个「我到了哪」的记号 */
   const [tocActive, setTocActive] = useState('')
-  const tocSections = buildReportToc(report, {
-    member,
-    /* 「人物速览」可见的充要条件：不是降级简版，或有覆盖数据（与卡片那两个分支的条件等价） */
-    hasOverview: !(!!report && report.degraded && !cov && coverageSpan === '')
-  })
+  /* 「人物速览」可见的充要条件：不是降级简版，或有覆盖数据（与卡片那两个分支的条件等价） */
+  const tocHasOverview = !(!!report && report.degraded && !cov && coverageSpan === '')
+  const tocSections = buildReportToc(report, { member, hasOverview: tocHasOverview })
+  /*
+   * 展开态按组渲染（2026-10-10 三改）：18 节平铺成一格格胶囊后，「人物速览」与「名词解释」
+   * 并排、「AI 点评」与「热度趋势」相邻，读起来是一堆没有线索的词。分组只加行首小标签，
+   * 不改任何一节的顺序（组必须连续，见 utils/report-toc.ts#TOC_GROUPS）。
+   * 与 tocSections 同源：两者都出自 report-toc 的 visibleSections，故标题上的节数与
+   * 下面胶囊的总数必然一致，不会出现「标题说 18 节、格子里只有 17 颗」。
+   */
+  const tocGroups = buildReportTocGroups(report, { member, hasOverview: tocHasOverview })
+  /*
+   * 免费用户看不到的会员档节（会员为空数组）：目录底部那行「会员另含 N 节」用它。
+   * 页面另外还判了一次 `member`（会员档的卡片），两处口径都来自 utils/report-toc.ts，
+   * 这里只负责把「差几节」说清楚 —— 免费用户不会在页面里遇到那些卡片，得让他知道有。
+   */
+  const tocLocked = lockedReportToc(report, { member, hasOverview: tocHasOverview })
 
   const jumpToSection = useCallback((id: string) => {
     setTocActive(id)
@@ -946,14 +1083,54 @@ export default function ReportPage() {
     Taro.pageScrollTo({ selector: `#${id}`, offsetTop: -12, duration: 260 }).catch(() => {})
   }, [])
 
+  /*
+   * 点评导读（2026-10-10）：速览卡末行那句「最值得先看到的判断」，整行可点、跳到点评卡。
+   *
+   * 首屏目前只有热度、条数、覆盖区间这类冷数据，而模型真正给出的判断（AI 点评）排在第 8 节 ——
+   * 用户得滑过七张卡才读到这份报告最有价值的一句话。这里把**模型已经写过**的那一句提到首屏
+   * （取法与理由见 utils/report.ts#reportGist），不新增任何说法，也不多调一次模型。
+   *
+   * 为什么不另起一张卡：新卡必须同时在目录里注册（「页面有卡、目录里找不到入口」是本项目明确
+   * 列出的缺陷），而这句导读的归宿本来就是「点评」那一节 —— 单列一节只会多一处需要同步的条件。
+   * 故它是速览卡的末行：上面几行是「原样统计、可当事实读」的素材画像，这一行是模型判断，
+   * 标签直接写「AI 点评」、行尾写明去哪，读的人不会把它误当成统计结论。
+   */
+  const gist = report ? reportGist(report) : ''
+  const gistRow = gist !== '' && (
+    <View
+      className='page-report__info page-report__gist'
+      hoverClass='page-report__gist--tap'
+      onClick={() => jumpToSection('sec-analysis')}
+    >
+      <Text className='page-report__info-label'>AI 点评</Text>
+      <View className='page-report__info-body'>
+        <Text className='page-report__info-value page-report__gist-text'>{gist}</Text>
+        <Text className='page-report__info-sub'>完整点评与依据 ›</Text>
+      </View>
+    </View>
+  )
+
   return (
     <View className='page-report glow-page safe-bottom'>
+      {/*
+        非破坏式刷新的全屏加载浮层（2026-10-10 新增 → 四改：真正浮在最顶层）。
+        它只在 refreshing 时出现；渲染位置必须留在页面根节点之下，因为浮层的层级由
+        app.scss 的 `.glow-page > .glow-overlay` 给死（见该处注释：不加这个类会被
+        `.glow-page > view` 覆盖成 relative + z-index:1，浮层就会被正文压住 —— 用户反馈的
+        「加载动画没浮在最顶层、也没覆盖页面」就是这个原因）。
+        没有它时这条路径**只有页脚那颗按钮转圈**，从顶部「重新生成为…」点进来的用户完全看不到反馈。
+      */}
+      {refreshing && <ReportRefreshing />}
 
-
-      {showFocusBar && (
+      {showFocusBar && !focusClosed && (
         <View className='page-report__focus'>
           <Text className='page-report__focus-tag'>{focus === 'all' ? '综合' : FOCUS_META[focus].short}</Text>
-          {state.phase === 'loading' ? (
+          {/*
+            refreshing 也算「正在生成」：刷新期间 phase 仍是 ready，若只判 phase，
+            这里会继续挂着「重新生成为深度报告」的链接 —— 用户刚点完它还提示再点一次，
+            正是「点了没反应 → 再点一次」的来源（而每次点击都会真实消耗一次生成额度）。
+          */}
+          {state.phase === 'loading' || refreshing ? (
             <Text className='page-report__focus-text'>正在按该侧重生成报告…</Text>
           ) : needRegen ? (
             <Text className='page-report__focus-text'>
@@ -967,6 +1144,7 @@ export default function ReportPage() {
           ) : (
             <Text className='page-report__focus-text'>本次侧重：{FOCUS_META[focus].desc}</Text>
           )}
+          <NoticeClose onClose={() => setFocusClosed(true)} />
         </View>
       )}
 
@@ -1012,13 +1190,14 @@ export default function ReportPage() {
           </View>
 
           {/* 状态行（全幅）：刚生成 → 这一版引用了多少实时素材（报告自证）；已有更新版本 → 刷新入口。
-              「查看最新」只在确实存在更新版本的可能时才是入口：刚生成完的那一版本身最新，
-              再留个热区只会让手滑白白烧掉一次生成配额。
-              P2-18（2026-10-09）：底部那个「刷新最新」也按同一判据禁用 —— 此前它永远可点，
-              等于给同一件事两个相反答案（会员不受 12h 冷却约束，刚生成完点一下就是再生成一次）。
+              这一行现在**永远可点**（2026-10-10）：原先 showFresh 时这里撤掉热区、底部按钮同时变灰
+              「已是最新」，而免费档即使点得动，12 小时内也会被冷却静默拦下、交回旧版本 ——
+              同一个动作在页面上有三个答案，用户只能学会怀疑按钮。
+              现在把门开在明处：点下去先确认代价（消耗 1 次生成次数 + 今日剩余，见 confirmRefresh），
+              由用户自己决定花不花；防滥用交给云函数日限，不再由前端替用户做决定。
               时间也归到这一行 —— 原先名字行里的「3 小时前」与这里的「33 天前生成」是同一件事，
               一行写完既省高度也不再自相矛盾（O-14 要的是「N 天前生成 · 建议刷新」这个完整因果）。 */}
-          <View className='page-report__meta' onClick={showFresh ? undefined : () => void load(true)}>
+          <View className='page-report__meta' onClick={() => void requestRefresh()}>
             {showFresh ? (
               <Text className='page-report__meta-text'>{`刚刚生成 · ${sourceNote}`}</Text>
             ) : (
@@ -1081,13 +1260,32 @@ export default function ReportPage() {
         </View>
       )}
 
-      {/* 刷新反馈：告诉用户这次「刷新最新」到底刷出了什么，此前点完毫无回音 */}
-      {diff && (
+      {/*
+        刷新失败（P1-8）：非破坏式刷新没拿到新版本时，缓存层会交回**原有那一版**报告，
+        并用 refreshFailed / refreshError 说明「这次为什么没刷成」（文案见 utils/cache.ts#refreshFailureNote）。
+        这一条此前一直没被渲染出来 —— state 设了、文案也有、单测也钉着，唯独页面上是空的，
+        用户点了「刷新最新」只看到内容一动不动，只能以为按钮坏了。补在这里，与其余刷新结果条同一套外观。
+      */}
+      {refreshError && !closedNotices.error && (
         <View className='page-report__diff'>
-          <Text className='page-report__diff-head'>已更新为最新版本</Text>
-          <Text className='page-report__diff-body'>
-            相比 {fromNow(diff.prevAt)} 的版本：{diffParts.join(' · ')}
-          </Text>
+          <View className='page-report__diff-main'>
+            <Text className='page-report__diff-head'>这次没能刷新成功</Text>
+            <Text className='page-report__diff-body'>{refreshError}</Text>
+          </View>
+          <NoticeClose onClose={() => closeNotice('error')} />
+        </View>
+      )}
+
+      {/* 刷新反馈：告诉用户这次「刷新最新」到底刷出了什么，此前点完毫无回音 */}
+      {diff && !closedNotices.diff && (
+        <View className='page-report__diff'>
+          <View className='page-report__diff-main'>
+            <Text className='page-report__diff-head'>已更新为最新版本</Text>
+            <Text className='page-report__diff-body'>
+              相比 {fromNow(diff.prevAt)} 的版本：{diffParts.join(' · ')}
+            </Text>
+          </View>
+          <NoticeClose onClose={() => closeNotice('diff')} />
         </View>
       )}
 
@@ -1100,30 +1298,55 @@ export default function ReportPage() {
         段名一律走 keptNames（P2-12，2026-10-09）：缓存那版可能只有其中一段，
         「有其一即算会员版」，写死三段就是一句当场兑现不了的承诺。
       */}
-      {keptMember && (
+      {keptMember && !closedNotices.keptMember && (
         <View className='page-report__diff'>
-          <Text className='page-report__diff-head'>已保留更完整的版本</Text>
-          <Text className='page-report__diff-body'>
-            {member
-              ? `这位人物的报告已含会员专属段落（${keptNames}），本次刷新生成的内容更基础，故未覆盖它。`
-              : `这位人物已有一份更完整的报告（含会员专属段落：${keptNames}），本次刷新生成的内容更基础，故未覆盖它。开通会员后即可查看。`}
-          </Text>
+          <View className='page-report__diff-main'>
+            <Text className='page-report__diff-head'>已保留更完整的版本</Text>
+            <Text className='page-report__diff-body'>
+              {member
+                ? `这位人物的报告已含会员专属段落（${keptNames}），本次刷新生成的内容更基础，故未覆盖它。`
+                : `这位人物已有一份更完整的报告（含会员专属段落：${keptNames}），本次刷新生成的内容更基础，故未覆盖它。开通会员后即可查看。`}
+            </Text>
+          </View>
+          <NoticeClose onClose={() => closeNotice('keptMember')} />
         </View>
       )}
 
       {/*
-        刷新被「免费档冷却」拦下（批 2）：这份报告是 12 小时内生成的，免费档不重复买一遍
-        （utils/cache.ts#isFreeRefreshCooling）。与上一条同为「点了刷新却没变」，故同一处提示位。
-        文案要先回答「那我现在看的是不是旧的」——否则「没重新生成」听着像降级；
-        再如实说明会员不受此限（对免费用户说，会员根本看不到这条）。
+        产物不达标（2026-10-10）：与上一条同为「点了刷新，结果和预期不一样」，故共用同一个提示位。
+        但重点完全不同 —— 上一条回答「为什么没变」，这一条要回答**「这次扣不扣次数」**：
+        用户手上是一份残缺的报告，不说清就会以为白花了一次额度（见 utils/report.ts#reportShortfall）。
       */}
-      {refreshCooled && (
+      {shortfall && !closedNotices.shortfall && (
         <View className='page-report__diff'>
-          <Text className='page-report__diff-head'>这份报告刚刚更新过</Text>
-          <Text className='page-report__diff-body'>
-            它生成于 12 小时内，内容不会有实质变化（素材时间窗为 30 天），所以本次直接交回现有的一版、没有重新生成
-            —— 你看到的就是最新的。会员可随时按自己的档位重新生成一份更厚的。
-          </Text>
+          <View className='page-report__diff-main'>
+            <Text className='page-report__diff-head'>这次生成不完整，没有消耗次数</Text>
+            <Text className='page-report__diff-body'>
+              本次没能拿到完整的一份报告（{shortfall}），所以没有扣减你的生成次数。
+              {shortfallRetryable
+                ? '可以直接再点一次「重新生成」，或稍后再试 —— 多为上游偶发抖动，重试通常就好。'
+                : '这次检索到的近期素材本身就偏少，重新生成通常也不会有变化 —— 建议过几天素材多些再来，或换一位人物试试。'}
+            </Text>
+          </View>
+          <NoticeClose onClose={() => closeNotice('shortfall')} />
+        </View>
+      )}
+
+      {/*
+        背景类段落为空（P1，2026-10-10）：与上一条共用外观，但**火候相反** ——
+        上一条劝「再试一次」，这一条要明确说「重试不会有变化」，省掉一场白等。
+        两者可能同时出现（生成不完整 + 档案为空），各自独立、各关各的（见 closedNotices 注释）。
+      */}
+      {bgGaps.length > 0 && !closedNotices.bgGaps && (
+        <View className='page-report__diff'>
+          <View className='page-report__diff-main'>
+            <Text className='page-report__diff-head'>这几节本次没有内容</Text>
+            <Text className='page-report__diff-body'>
+              {bgGaps.join(' / ')}：本次已单独检索过「人物背景」资料（不限时间），仍未拿到可溯源的内容
+              —— 多为这位人物的公开资料本身就少，重新生成通常不会有变化。
+            </Text>
+          </View>
+          <NoticeClose onClose={() => closeNotice('bgGaps')} />
         </View>
       )}
 
@@ -1171,8 +1394,15 @@ export default function ReportPage() {
       {state.phase === 'nonews' && (
         <EmptyState
           icon='📭'
-          title='暂未检索到近期公开信息'
-          desc='该名人近 30 天无公开新闻动态，换个时间再试'
+          title='暂未检索到公开信息'
+          /*
+            文案要点（2026-10-10 改）：
+            1. 说清「已经放宽到一年内」—— 检索侧确实做了降级阶梯（utils/search.ts#fetchNews），
+               不再是「近 30 天没有」就打发人；
+            2. **明说不消耗次数** —— 空手而归的多是付费用户，他最需要知道的就是「这次没花钱」；
+            3. 给可操作的下一步（带领域再查 / 换人），而不是「换个时间再试」这种没法照做的建议。
+          */
+          desc='该名人近期没有公开报道（已放宽到一年内仍无结果）。这次没有生成报告，也不消耗你的生成次数 —— 可以给名字带上领域再查一次（如「张三（演员）」），或换一位近期有报道的名人。'
           actionText='刷新重试'
           onAction={() => void load(true)}
         />
@@ -1195,14 +1425,33 @@ export default function ReportPage() {
       {report && (
         <View>
           {/*
-            折叠目录（本轮）：18 节卡片一屏一屏往下滑，读的人既不知道后面还有什么，
-            也不好回头对照。目录默认只占一行（它是入口，不是内容），展开后按节直达。
+            折叠目录（2026-10-10 两改：先是收起态只占标题一行，再是展开态瘦身）：
+            18 节卡片一屏一屏往下滑，读的人既不知道后面还有什么，也不好回头对照。
+            默认收起，收起态**只占标题那一行** —— 它是入口，不是内容，不该自己再占一屏
+            （早先收起时还留了句「按节直达」的说明，为这句话又多占一行，已去掉：
+            一个写着「目录 · N 节」还带箭头的标题，本身就说清了它是干什么的）。
+
+            展开态：批 10 曾把胶囊列表改成**竖向时间线**（主轴 + 每节一颗节点，与报告里的
+            履历 / 动态时间线同一套视觉语言），视觉上成立，但**展开一次要占近两屏**
+            （18 行 × 68rpx ≈ 1200rpx），在一个「本来就是嫌太长才做的目录」里这是自相矛盾。
+            故改回**两列胶囊格**：每行两节，行高不变，18 节从 18 行降到 9 行（约 640rpx），
+            缩掉一半；胶囊用报告页已有的 `__cloud-tag` 那套语言（线框 + 圆角），不引入新视觉。
 
             ⚠ 条目与下方卡片的对应关系由 utils/report-toc.ts 的可见性条件保证：
               这里渲染出的每一条，下面都真的有一张对应的卡；卡片上的 id 必须与条目 id
               一字不差（改 id 时两处一起改，否则点了没反应）。
               只有一节时不出目录 —— 这不是统计数据，是导航，套「不成立也出卡」没意义。
-          */}
+
+            ⚠ 分档（2026-10-10，需求「目录配成模板」）：`tocSections` 已按身份滤过档位 ——
+              免费用户只列免费档那几节，会员档那几节由 `tocLocked` 在底部收成一行提示。
+              免费用户**看不到**那几节的内容（页面里对应卡片也判 `member`），所以这一行
+              不是装饰，是「这份报告还差什么」的唯一说明，点它去会员中心。
+
+            ⚠ 分组（2026-10-10 三改）：展开态渲染的是 `tocGroups`（组标签 + 组内两列胶囊），
+              不再是平铺的 18 颗 —— 平铺时相邻两节之间没有任何线索，读起来像随机词表。
+              分组**不改顺序**：组内顺序 = 模板顺序 = 卡片顺序（见 report-toc.ts#TOC_GROUPS），
+              所以「点完上一节往下看」仍然顺次，只是多了 5 行归类小字。
+            */}
           {tocSections.length > 1 && (
             <View className='card page-report__toc'>
               <View
@@ -1213,21 +1462,39 @@ export default function ReportPage() {
                 <View className='card-title'>{`目录 · ${tocSections.length} 节`}</View>
                 <Text className='page-report__toc-toggle'>{tocOpen ? '收起' : '展开'}</Text>
               </View>
-              {tocOpen ? (
+              {tocOpen && (
                 <View className='page-report__toc-list'>
-                  {tocSections.map((s) => (
-                    <View
-                      key={s.id}
-                      className={`page-report__toc-item${tocActive === s.id ? ' page-report__toc-item--active' : ''}`}
-                      hoverClass='page-report__toc-item--tap'
-                      onClick={() => jumpToSection(s.id)}
-                    >
-                      {s.label}
+                  {tocGroups.map((g) => (
+                    <View key={g.key} className='page-report__toc-group'>
+                      {/* 组标签是「这几节归一类」，本身不是一节：不可点、也不是胶囊 */}
+                      <Text className='page-report__toc-group-label'>{g.label}</Text>
+                      <View className='page-report__toc-group-items'>
+                        {g.sections.map((s) => (
+                          <View
+                            key={s.id}
+                            className={`page-report__toc-item${tocActive === s.id ? ' page-report__toc-item--active' : ''}`}
+                            hoverClass='page-report__toc-item--tap'
+                            onClick={() => jumpToSection(s.id)}
+                          >
+                            <Text className='page-report__toc-item-text'>{s.label}</Text>
+                          </View>
+                        ))}
+                      </View>
                     </View>
                   ))}
                 </View>
-              ) : (
-                <Text className='page-report__toc-hint'>按节直达，不必一路滑到底。</Text>
+              )}
+              {tocOpen && tocLocked.length > 0 && (
+                <View
+                  className='page-report__toc-more'
+                  hoverClass='page-report__toc-more--tap'
+                  onClick={onPromoTap}
+                >
+                  <Text className='page-report__toc-more-text'>
+                    {`完整模板 ${TEMPLATE_SIZE} 节 · 会员另含 ${tocLocked.length} 节`}
+                  </Text>
+                  <Text className='page-report__toc-more-go'>开通会员 ›</Text>
+                </View>
               )}
             </View>
           )}
@@ -1247,6 +1514,7 @@ export default function ReportPage() {
               <Text className='page-report__empty'>
                 这份报告没有记录素材覆盖范围（多为较早生成的缓存报告），收录的动态也都没有可用日期，故算不出报道热度与覆盖区间。点右上角「查看最新」重新生成即可补上。
               </Text>
+              {gistRow}
             </View>
           )}
           {(cov || coverageSpan !== '') && (
@@ -1303,6 +1571,8 @@ export default function ReportPage() {
                   </View>
                 </View>
               )}
+
+              {gistRow}
             </View>
           )}
 
@@ -1320,6 +1590,62 @@ export default function ReportPage() {
             <View id='sec-intro' className='card'>
               <View className='card-title'>简介</View>
               <View className='page-report__text'>{report.intro}</View>
+            </View>
+          )}
+
+          {/* AI 解读（批 2）：本系统基于公开信息的客观评价。verdict / reputation / consistency
+              任一存在才出卡 —— 老报告没有这些字段，整卡不出。评价/判断类，允许归纳推断，底部配免责。 */}
+          {(report.verdict || report.reputation || report.consistency) && (
+            <View id='sec-verdict' className='card'>
+              <View className='card-title'>AI 解读</View>
+              {report.verdict?.summary && (
+                <View className='page-report__verdict-summary'>{report.verdict.summary}</View>
+              )}
+              {report.verdict?.positioning && (
+                <View className='page-report__verdict-row'>
+                  <Text className='page-report__verdict-label'>行业定位</Text>
+                  <Text className='page-report__verdict-text'>{report.verdict.positioning}</Text>
+                </View>
+              )}
+              {(report.reputation?.positive || report.reputation?.negative) && (
+                <View className='page-report__reputation'>
+                  {report.reputation?.positive && (
+                    <View className='page-report__verdict-row'>
+                      <Text className='page-report__verdict-label page-report__verdict-label--pos'>支持方</Text>
+                      <Text className='page-report__verdict-text'>{report.reputation.positive}</Text>
+                    </View>
+                  )}
+                  {report.reputation?.negative && (
+                    <View className='page-report__verdict-row'>
+                      <Text className='page-report__verdict-label page-report__verdict-label--neg'>反对方</Text>
+                      <Text className='page-report__verdict-text'>{report.reputation.negative}</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+              {(report.consistency?.claim || report.consistency?.act || report.consistency?.gap) && (
+                <View className='page-report__consistency'>
+                  {report.consistency?.claim && (
+                    <View className='page-report__verdict-row'>
+                      <Text className='page-report__verdict-label'>公开说</Text>
+                      <Text className='page-report__verdict-text'>{report.consistency.claim}</Text>
+                    </View>
+                  )}
+                  {report.consistency?.act && (
+                    <View className='page-report__verdict-row'>
+                      <Text className='page-report__verdict-label'>实际做</Text>
+                      <Text className='page-report__verdict-text'>{report.consistency.act}</Text>
+                    </View>
+                  )}
+                  {report.consistency?.gap && (
+                    <View className='page-report__verdict-row'>
+                      <Text className='page-report__verdict-label'>一致性</Text>
+                      <Text className='page-report__verdict-text'>{report.consistency.gap}</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+              <Text className='page-report__entry-foot'>以上为基于公开信息的客观评价，仅供参考，不代表本平台立场。</Text>
             </View>
           )}
 
@@ -1393,9 +1719,14 @@ export default function ReportPage() {
             门槛（成立的分项 < MIN_AXES）没过时仍出卡，改为逐条写明缺什么 —— 这一屏最怕的是
             「某一项不见了」被读成「这一项没问题」。降级简版没有结构化素材，整卡不出。
           */}
-          {commercial && !report.degraded && (
-            <View id='sec-commercial' className='card'>
-              <View className='card-title'>商业价值速览</View>
+          {/* 会员档（2026-10-10，需求「目录配成模板」）：商业速览 / 会员专享 / 关键词云 /
+              语录主题 / 热度趋势 五节只对会员渲染 —— 它们是「把免费素材换个角度汇总」的分析视图，
+              故免费档看到的是事实与判断，会员档多出这一层分析。档位口径在 utils/report-toc.ts
+              （REPORT_TEMPLATE 的 tier），这里的 `member &&` 是那套口径的页面侧落地，
+              两处必须一致：少了这里，目录里不列、页面却有卡；多了这里，目录列了却点不到。 */}
+          {member && commercial && !report.degraded && (
+            <View id='sec-commercial' className='card page-report__vip-card'>
+              <View className='card-title'>会员专享 · 商业价值速览</View>
               <Text className='page-report__cv-lead'>
                 把本报告已收录的素材换个角度汇总：有没有人在报道、媒体怎么写、有没有争议。
                 不新增检索与推断，每个数字的明细都能点回去核对。
@@ -1537,9 +1868,12 @@ export default function ReportPage() {
             </View>
           )}
 
-          {report.degraded && (
+          {report.degraded && !closedNotices.degraded && (
             <View className='warn-bar'>
-              结构化生成暂不可用，本次为纯文本简版：点评基于模型已有知识，未引用实时素材。
+              <Text className='warn-bar__text'>
+                结构化生成暂不可用，本次为纯文本简版：点评基于模型已有知识，未引用实时素材。
+              </Text>
+              <NoticeClose onClose={() => closeNotice('degraded')} />
             </View>
           )}
 
@@ -1840,7 +2174,9 @@ export default function ReportPage() {
                     <Text className='page-report__stance-legend-item'>消极 {sentimentStats.negative}</Text>
                   </View>
                   <Text className='page-report__stance-note'>
-                    基于本报告收录的 {sentimentStats.total} 条公开动态归类统计。
+                    {sentimentStats.total < SENTIMENT_MIN_SAMPLE
+                      ? `基于本报告收录的 ${sentimentStats.total} 条公开动态归类统计 —— 样本不足 ${SENTIMENT_MIN_SAMPLE} 条，上面的比例只作计数读，不足以代表情绪走向；逐条情绪标签见「近期动态」。`
+                      : `基于本报告收录的 ${sentimentStats.total} 条公开动态归类统计。`}
                   </Text>
                 </>
               )}
@@ -1879,194 +2215,6 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/*
-            关键词云 + 高频观点（M4-5）：纯端上统计（口径见 utils/keywords.ts），不消耗生成额度。
-
-            词数不足 4 个时**不整卡消失**：原先写的是「keywords.length >= 4 &&」，不够就整卡不出。
-            端上统计不消耗额度，卡片凭空不见只会被读成功能坏了 —— 照出卡片并写明为什么没出词云，
-            读的人才知道是「素材本来就只有这几条」，而不是坏了。
-            降级简版除外：那种报告整份没有结构化内容，只留上方那条警示条。
-          */}
-          {!report.degraded && (
-            <View id='sec-cloud' className='card'>
-              <View className='card-title'>关键词云</View>
-              {keywords.length < 4 && (
-                <Text className='page-report__empty'>
-                  {`本次生成时，本报告收录的 ${report.dynamics.length} 条动态与 ${report.quotes.length} 条语录里，反复出现的说法不足 4 个（少于 4 个词只会是一堆零散碎片），故不出词云。词云按「有多少条素材提到它」统计，素材太少时这个数没有意义。`}
-                </Text>
-              )}
-              {keywords.length >= 4 && (
-                <>
-                  {/* 标签墙：不引 canvas / 图表库，字号按词频分三档（设计方案 §3.3 定稿的降级方案） */}
-                  <View className='page-report__cloud'>
-                    {keywords.map((k) => (
-                      <Text
-                        key={k.word}
-                        className={`page-report__cloud-tag page-report__cloud-tag--t${k.tier}${
-                          k.from === 'topic' ? ' page-report__cloud-tag--topic' : ''
-                        }`}
-                        /* 每个词都可点：本页只回答「这份报告里反复提了什么」，
-                           点下去才回答「别人是不是也在讲」。 */
-                        onClick={() => goTopic(k.word)}
-                      >
-                        {k.word}
-                      </Text>
-                    ))}
-                  </View>
-                  <Text className='page-report__cloud-note'>
-                    {`按收录的 ${report.dynamics.length} 条动态与 ${report.quotes.length} 条语录统计，字号代表提及它的素材条数；中文无词典，仅作主题速览。点任一词语可看它在别的报告里怎么说 —— 其中话题词来自模型判定的热点话题（未必在素材正文里原样出现），聚合结果按正文里真写过这个词的报告算。`}
-                  </Text>
-
-                  {keywordHighlights.length > 0 && (
-                    <View className='page-report__highlights'>
-                      <View className='page-report__highlights-title'>高频观点</View>
-                      {keywordHighlights.map((k) => (
-                        <View key={k.word} className='page-report__highlight'>
-                          <View className='page-report__highlight-head'>
-                            <Text
-                              className='page-report__highlight-word'
-                              onClick={() => goTopic(k.word)}
-                            >
-                              {`${k.word} ›`}
-                            </Text>
-                            <Text className='page-report__highlight-count'>{k.count} 条素材提及</Text>
-                          </View>
-                          {/* 词云说「反复提到了什么」，这里给出「是在哪些素材里提到的」——
-                              每个词都摊开原文出处，读的人可以自己核对，不存在凭空生成的词 */}
-                          {k.refs.map((r, i) => (
-                            <Text key={i} className='page-report__highlight-ref'>
-                              {`· ${r.label}（${r.source}）`}
-                            </Text>
-                          ))}
-                        </View>
-                      ))}
-                      <Text className='page-report__cloud-note'>
-                        以上说法在本报告收录的素材中反复出现，逐条附原文出处，可自行核对。
-                      </Text>
-                    </View>
-                  )}
-                </>
-              )}
-            </View>
-          )}
-
-          {/*
-            语录主题：把平铺的语录按「他常讲的话」归成 2~3 组（口径与门槛见
-            utils/keywords.ts 的 extractQuoteThemes）。主题词取自语录原文，不是模型分类，
-            故每条语录都能在「经典语录」里逐一核对。
-
-            归不出一组时**不整卡消失**：原先写的是「quoteThemes.length >= 2 &&」，不够就整卡不出。
-            主题词是数语录原文里反复出现的说法，语录少自然数不出来 —— 卡片照出并说明，
-            免得被读成功能坏了。降级简版除外（整份只有警示条）。
-          */}
-          {!report.degraded && (
-            <View id='sec-qtheme' className='card'>
-              <View className='card-title'>语录主题</View>
-              {quoteThemes.length < 2 && (
-                <Text className='page-report__empty'>
-                  {`本次生成时，本报告收录的 ${report.quotes.length} 条语录里，反复出现的说法不足以归成 2 组以上主题（主题词取自语录原文，不做语义归类），故本卡只作说明。语录本身照旧全部列在「经典名言」里。`}
-                </Text>
-              )}
-              {quoteThemes.length >= 2 && (
-                <>
-                  {quoteThemes.map((t) => (
-                    <View key={t.topic} className='page-report__qtheme'>
-                      <View className='page-report__qtheme-head'>
-                        <Text className='page-report__qtheme-topic'>{t.topic}</Text>
-                        <Text className='page-report__qtheme-count'>{`${t.count} 条语录`}</Text>
-                      </View>
-                      {t.quotes.map((q, i) => (
-                        <Text key={i} className='page-report__qtheme-quote'>{`· ${q}`}</Text>
-                      ))}
-                    </View>
-                  ))}
-                  <Text className='page-report__cloud-note'>
-                    {`主题词取自语录原文里反复出现的说法（不做语义归类），每条语录只归入一个主题；本报告共 ${report.quotes.length} 条语录，未归入的照旧留在「经典语录」里。`}
-                  </Text>
-                </>
-              )}
-            </View>
-          )}
-
-          {/*
-            热度趋势（M4-6）：把报告里带日期的动态与时间线事件摊成折线（默认近 30 天，
-            材料稀疏时由 buildHeatTrend 放宽到 60/90/180 天，脚注据实标注窗口与格宽）。
-            点和线都是普通 View（几何在 trendGeometry 里算成 rpx），与词云、情绪条同一条
-            「不引图表库」的路线；纵轴是条数、横轴是时间，脚注交代口径，免得被读成全网报道量。
-
-            条件没过时**不整卡消失**：原先写的是「trend && trendGeo &&」，不成立就什么都不渲染。
-            这张卡是端上聚合、不消耗生成额度，「无声无息少一张图」只会被读成功能坏了 ——
-            照出卡片并写明为什么没画线，读的人才知道是素材稀疏，而不是坏了。
-            降级简版除外：那种报告整份没有结构化内容，只留上方那条警示条。
-          */}
-          {!report.degraded && (
-            <View id='sec-trend' className='card'>
-              <View className='card-title'>热度趋势</View>
-              {(trend == null || trendGeo == null) && (
-                <Text className='page-report__empty'>
-                  {trend == null
-                    ? '本次生成时，本报告收录的带日期条目不足 3 条（少于 3 个点连不成走势），故不画折线。可点开上方「近期动态」「时间线」逐条核对 —— 这张图的数据源就是它们。'
-                    : '这份报告的生成时间不可解析，横轴刻度无从对齐，故不画折线。'}
-                </Text>
-              )}
-              {trend && trendGeo && (
-                <>
-                  <View className='page-report__trend'>
-                    <View className='page-report__trend-plot'>
-                      {[25, 50, 75].map((top) => (
-                        <View key={top} className='page-report__trend-grid' style={{ top: `${top}%` }} />
-                      ))}
-                      {trendGeo.segs.map((s, i) => (
-                        <View
-                          key={`seg-${i}`}
-                          className='page-report__trend-seg'
-                          style={{
-                            left: `${s.left}rpx`,
-                            top: `${s.top}rpx`,
-                            width: `${s.len}rpx`,
-                            transform: `rotate(${s.deg}deg)`
-                          }}
-                        />
-                      ))}
-                      {trendGeo.nodes.map((n, i) => (
-                        <View
-                          key={`dot-${i}`}
-                          className={`page-report__trend-dot${n.ratio >= 1 ? ' page-report__trend-dot--peak' : ''}`}
-                          style={{ left: `${n.cx}rpx`, top: `${n.cy}rpx` }}
-                        />
-                      ))}
-                      {/* 只在有内容的桶上标数字：空桶标 0 会让这条线看起来像数据缺失 */}
-                      {trendGeo.nodes.map((n, i) =>
-                        n.count > 0 ? (
-                          <Text
-                            key={`val-${i}`}
-                            className='page-report__trend-value'
-                            style={{ left: `${n.cx}rpx`, top: `${n.cy - 34}rpx` }}
-                          >
-                            {n.count}
-                          </Text>
-                        ) : null
-                      )}
-                    </View>
-                    {/* 横轴标签用等宽 flex 均分，中心正好落在各桶中点，与折线上的点对齐 */}
-                    <View className='page-report__trend-axis'>
-                      {trend.points.map((p, i) => (
-                        <Text key={`axis-${i}`} className='page-report__trend-axis-label'>
-                          {p.label}
-                        </Text>
-                      ))}
-                    </View>
-                  </View>
-                  <Text className='page-report__trend-note'>
-                    {`按本报告收录的带日期条目聚合：${trend.from} ~ ${trend.to} 共 ${trend.total} 条动态与事件、覆盖 ${trend.spanDays} 天（每格 ${Math.round(
-                      trend.windowDays / trend.points.length
-                    )} 天，纵轴为条数，单格峰值 ${trend.peak}）。反映公开信息节奏，不等于全网报道量。`}
-                  </Text>
-                </>
-              )}
-            </View>
-          )}
-
           {!report.degraded && (
             <View id='sec-timeline' className='card'>
               <View className='card-title'>时间线</View>
@@ -2075,13 +2223,31 @@ export default function ReportPage() {
                   本次生成时，素材里没有可确认的关键事件。
                 </Text>
               )}
-              {timelineView.map((t, i) => (
-                <View key={i} className='page-report__timeline-item'>
-                  <View className='page-report__timeline-dot' />
-                  <View className='page-report__timeline-body'>
-                    <Text className='page-report__item-date'>{t.date}</Text>
-                    <Text className='page-report__timeline-event'>{t.event}</Text>
-                  </View>
+              {timelineGroups.map((g, gi) => (
+                <View key={gi}>
+                  {g.year !== '' && <View className='page-report__timeline-year'>{g.year}</View>}
+                  {g.items.map((t, i) => {
+                    /*
+                     * 刻度是绝对日期 ——「2021-05」离现在多远，用户得自己对着日历算。故日期后面
+                     * 补一句相对时间：绝对刻度回答「哪一天」，相对表述回答「多久之前」，两句都在
+                     * 才读得出新旧。口径见 utils/time.ts#stampAgo（与 watchlist 的「已过期」
+                     * 同一套解析与 UTC+8 基准）；解析不出绝对刻度时返回空串，这一句就不渲染 ——
+                     * 宁可不写，也不编一个数出来。
+                     */
+                    const ago = stampAgo(t.date)
+                    return (
+                      <View key={`${gi}-${i}`} className='page-report__timeline-item'>
+                        <View className='page-report__timeline-dot' />
+                        <View className='page-report__timeline-body'>
+                          <View className='page-report__timeline-meta'>
+                            <Text className='page-report__item-date'>{t.date}</Text>
+                            {ago !== '' && <Text className='page-report__item-date'>{ago}</Text>}
+                          </View>
+                          <Text className='page-report__timeline-event'>{t.event}</Text>
+                        </View>
+                      </View>
+                    )
+                  })}
                 </View>
               ))}
             </View>
@@ -2092,20 +2258,54 @@ export default function ReportPage() {
               这种刻度而不是精确日期；素材没公布就不写（猜档期是推断，不是信息）。 */}
           {report.watchlist && (
             <View id='sec-watchlist' className='card'>
-              <View className='card-title'>后续关注</View>
-              {report.watchlist.length === 0 && (
-                <Text className='page-report__empty'>
-                  本次生成时，素材里没有已公布的时间点（档期一类不作推测，未公布就留空）。
-                </Text>
+              <View
+                className='page-report__fold-head'
+                onClick={() => setDetailOpen((s) => ({ ...s, watchlist: !s.watchlist }))}
+              >
+                <View className='card-title'>后续关注</View>
+                <Text className='page-report__fold-arrow'>{detailOpen.watchlist ? '收起 ▲' : '展开 ▼'}</Text>
+              </View>
+              {detailOpen.watchlist && (
+                <>
+                  {report.watchlist.length === 0 && (
+                    <Text className='page-report__empty'>
+                      本次生成时，素材里没有已公布的时间点（档期一类不作推测，未公布就留空）。
+                    </Text>
+                  )}
+                  {report.watchlist.map((w, i) => {
+                /*
+                 * 报告是长期共享缓存，绝对刻度会以**两种成因完全不同**的方式变成过去，必须分开说：
+                 *   · 生成时就已过期（基准取 report.generatedAt）：模型把素材里**已经发生**的日期
+                 *     当成「未来值得跟踪」。素材只有 30 天窗口的新闻，而新闻里的日期天然带过去
+                 *     刻度（「已于 X 日上映」这类回顾写法），模型分不清相对"今天"是过去还是未来，
+                 *     于是这类条目结构上就会出现 —— 这才是真问题：那件事多半也已经在时间线里了，
+                 *     属于提示词第 8 / 11 条要治的对象；
+                 *   · 生成后才过期（基准取**现在**）：长缓存的必然老化，不是缺陷。
+                 * 此前一律用「现在」当基准，两类混成同一个「已过期」标 —— 结果是模型做错了看不出来，
+                 * 提示词改没改好也无从验证。故前者改用生成时刻判定、单独标一个词根相同的
+                 * 「生成时已过期」，读者对着卡尾那句口径就能分清哪个是老化、哪个是生成质量。
+                 * 一律只标、不删、不改写、不重排（报告是历史快照，动条目等于篡改生成结果）。
+                 * 保守口径见 utils/time.ts#isStampPast：老报告里的「下月」解析不出来，两种标都不打；
+                 * generatedAt 缺失 / 不可解析时基准退化成「现在」，即只可能多标一个「已过期」，
+                 * 不会把一个还没到的时间点误标成「生成时已过期」。
+                 */
+                const atBuild = isStampPast(w.when, report.generatedAt)
+                const past = isStampPast(w.when)
+                return (
+                  <View key={`${i}-${w.when}`} className='page-report__entry'>
+                    <View className='page-report__entry-head'>
+                      <Text className='page-report__entry-name'>{w.when}</Text>
+                      {atBuild && <Text className='page-report__entry-past'>生成时已过期</Text>}
+                      {!atBuild && past && <Text className='page-report__entry-past'>已过期</Text>}
+                    </View>
+                    <Text className='page-report__entry-text'>{w.what}</Text>
+                    <Text className='page-report__entry-basis'>依据：{w.basis}</Text>
+                  </View>
+                )
+              })}
+              <Text className='page-report__entry-foot'>只列素材中已公布的时间点，未公布的不作推测。「已过期」是报告生成之后才过去的；「生成时已过期」在生成那一刻就已经过去，那类更该看时间线。</Text>
+                </>
               )}
-              {report.watchlist.map((w, i) => (
-                <View key={`${i}-${w.when}`} className='page-report__entry'>
-                  <Text className='page-report__entry-name'>{w.when}</Text>
-                  <Text className='page-report__entry-text'>{w.what}</Text>
-                  <Text className='page-report__entry-basis'>依据：{w.basis}</Text>
-                </View>
-              ))}
-              <Text className='page-report__entry-foot'>只列素材中已公布的时间点，未公布的不作推测。</Text>
             </View>
           )}
 
@@ -2114,21 +2314,31 @@ export default function ReportPage() {
               （它答的是词义，不是关于本人的事实断言，理由见 utils/report.ts 的 Schema 注释）。 */}
           {report.glossary && (
             <View id='sec-glossary' className='card'>
-              <View className='card-title'>名词解释</View>
-              {report.glossary.length === 0 && (
-                <Text className='page-report__empty'>
-                  本次报告里没有需要额外解释的行话或背景词。
-                </Text>
+              <View
+                className='page-report__fold-head'
+                onClick={() => setDetailOpen((s) => ({ ...s, glossary: !s.glossary }))}
+              >
+                <View className='card-title'>名词解释</View>
+                <Text className='page-report__fold-arrow'>{detailOpen.glossary ? '收起 ▲' : '展开 ▼'}</Text>
+              </View>
+              {detailOpen.glossary && (
+                <>
+                  {report.glossary.length === 0 && (
+                    <Text className='page-report__empty'>
+                      本次报告里没有需要额外解释的行话或背景词。
+                    </Text>
+                  )}
+                  {report.glossary.map((g, i) => (
+                    <View key={`${i}-${g.term}`} className='page-report__entry'>
+                      <View className='page-report__entry-head'>
+                        <Text className='page-report__entry-label page-report__entry-label--term'>{g.term}</Text>
+                        <Text className='page-report__entry-value'>{g.explain}</Text>
+                      </View>
+                    </View>
+                  ))}
+                  <Text className='page-report__entry-foot'>只解释报告中出现过的行话与背景词，不涉及对本人事实的判断。</Text>
+                </>
               )}
-              {report.glossary.map((g, i) => (
-                <View key={`${i}-${g.term}`} className='page-report__entry'>
-                  <View className='page-report__entry-head'>
-                    <Text className='page-report__entry-label page-report__entry-label--term'>{g.term}</Text>
-                    <Text className='page-report__entry-value'>{g.explain}</Text>
-                  </View>
-                </View>
-              ))}
-              <Text className='page-report__entry-foot'>只解释报告中出现过的行话与背景词，不涉及对本人事实的判断。</Text>
             </View>
           )}
 
@@ -2187,19 +2397,18 @@ export default function ReportPage() {
             {/*
               refreshing 也转圈：非破坏式刷新时 phase 仍是 ready，不这样按钮会看着没反应。
 
-              P2-18（2026-10-09）：与顶部状态行用**同一个判据**。此前顶部刻意在「刚刚生成」
-              时撤掉热区（手滑即白烧一次生成配额），底部这个却永远可点 —— 同一件事给出相反
-              答案，用户只能学会怀疑按钮；会员更明显（不受 12h 免费刷新冷却约束），刚生成完
-              点一下就是实打实的第二次生成。showFresh 时禁用并改文案，两处口径一致。
+              P2-18 的禁用态已撤销（2026-10-10）：原先它与顶部状态行共用 showFresh 判据，
+              刚生成完就变灰「已是最新」，与「重新生成随时可用」直接冲突。现在两处入口都走
+              requestRefresh，按钮不再有禁用态、文案也不再随状态变化 ——
+              「要不要花这一次」统一由确认弹窗把门，不再由按钮替用户做决定。
             */}
             <AtButton
               type='primary'
               circle
-              disabled={showFresh}
               loading={state.phase === 'loading' || refreshing}
-              onClick={() => void load(true)}
+              onClick={() => void requestRefresh()}
             >
-              {showFresh ? '已是最新' : '刷新最新'}
+              刷新最新
             </AtButton>
           </View>
 

@@ -509,12 +509,9 @@
   }
 
   /* ===== 模型供应商（2026-10-08）：两列等宽 chips，一家一枚，选中项高亮 =====
-     早先的写法是「按内容宽度撑开 + flex-wrap」，四家的名字长短差得远
-     （Moonshot Kimi 比「智谱 GLM」宽近一倍），于是排出来是「三家挤一行、
-     第四家孤零零掉到下一行」，两行还右端参差 —— 这就是观感差的来源。
-     改法：每行**固定两家**（50% 减去半个 gap），宽度不再由文字决定。
+     每行**固定两家**（50% 减去半个 gap），宽度不随文字长度变；
      家数增删时只是行数增减（可能出现末行单枚，但始终与第一列对齐），
-     也不用再按最长的那家去调间距。 */
+     不用再按最长的那家去调间距。 */
   &__provider-options {
     display: flex;
     flex-wrap: wrap;
@@ -525,7 +522,7 @@
     /* box-sizing 必须显式给：flex-basis 按 border-box 解释，左右 padding 才不会顶破 50% */
     box-sizing: border-box;
     flex: 0 0 calc((100% - 12rpx) / 2);
-    /* 居中 + 定高：名字长的（Moonshot Kimi）与短的（智谱 GLM）占同等的视觉重量 */
+    /* 居中 + 定高：名字长短不一的各家占同等的视觉重量 */
     display: flex;
     align-items: center;
     justify-content: center;

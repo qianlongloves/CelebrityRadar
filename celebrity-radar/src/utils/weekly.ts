@@ -1,7 +1,7 @@
 import Taro from '@tarojs/taro'
 import { z } from 'zod'
 import { chatJSON } from './llm'
-import { getFeedDetail } from './cache'
+import { getFeedDetails } from './cache'
 import { listFollows } from './follows'
 import { NewsItem } from './search'
 import { DISCLAIMER, isRefusedResult } from './report'
@@ -11,7 +11,7 @@ import { quotaExhaustedMessage } from './member'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { diagLog } from './cloud-diagnostics'
-import { currentWeekKey, last7DayRange } from './time'
+import { currentWeekKey, dayKey8, last7DayRange } from './time'
 import { DomainCode, parsePersonKey } from '@/config/domains'
 
 /**
@@ -41,10 +41,20 @@ import { DomainCode, parsePersonKey } from '@/config/domains'
 export const WEEKLY_WINDOW_DAYS = 7
 /** 单份周报最多覆盖的人数（与关注流刷新的博查上限对齐） */
 export const WEEKLY_PERSON_LIMIT = 10
-/** 每人最多取几条素材进模型（控制提示词体积，超出部分仍会进真值清单） */
+/**
+ * 每人最多取几条素材进模型（只控制提示词体积）。
+ *
+ * **截断只发生在 buildWeeklyUserMessage 里**，`entries` 一律是全量 —— 这份清单同时是
+ * buildWeeklyDigest 的真值来源（时间线总数 / 来源分布 / 领域条数 / 「本周动态最多」），
+ * 在取素材时就截断会让上述数字系统性少算，且与「超出部分仍会进真值清单」的口径相悖。
+ */
 const PROMPT_ITEMS_PER_PERSON = 3
 /** 单条素材正文进模型的截断长度 */
 const PROMPT_CONTENT_MAX = 280
+/** 页面「本周时间线」最多列几条（全量清单仍在下方逐人卡片里，这里只做「一眼看节奏」） */
+const TIMELINE_MAX = 12
+/** 来源分布最多列几个来源 */
+const SOURCE_TOP = 6
 /** 本机缓存键前缀（按 ISO 周存，跨周自动作废） */
 const STORAGE_PREFIX = 'weekly:'
 
@@ -72,6 +82,14 @@ export interface WeeklyMaterial {
   entryCount: number
   /** 读取失败的关注人数：>0 说明结果不完整，界面需显式告知 */
   failedCount: number
+  /**
+   * 关注总人数（不限于本次进了模型的那些人）。
+   *
+   * 单独留着是为了让周报能自报**收录范围**：材料里只剩下「最近 7 天确实有动态」的人，
+   * 光看 `persons.length` 会把「10 位关注人里只有 3 位有动静」读成「你就关注了 3 个人」，
+   * 那是把一次正常的数据稀疏误报成产品算错。
+   */
+  followedCount: number
 }
 
 export type MaterialOutcome =
@@ -92,6 +110,10 @@ export const MATERIAL_FAIL_TEXT: Record<Exclude<MaterialOutcome['kind'], 'ok'>, 
  *
  * 素材带发布时间时按时间窗过滤；不带时间的做兜底：只有「本周抓过」的缓存才敢算进本周，
  * 否则会把三周前抓到的旧闻当成新鲜事写进周报（这是最容易让用户失去信任的失真）。
+ *
+ * **返回窗口内的全部条目，不在这里截断**：这个清单既是提示词的输入，也是
+ * buildWeeklyDigest 的真值来源，截断见 buildWeeklyUserMessage（那里才按
+ * PROMPT_ITEMS_PER_PERSON 收敛提示词体积）。
  */
 function pickWindowEntries(
   items: NewsItem[],
@@ -103,11 +125,11 @@ function pickWindowEntries(
     const t = Date.parse(it.publishedDate)
     return Number.isFinite(t) && t >= sinceMs
   })
-  if (dated.length > 0) return dated.slice(0, PROMPT_ITEMS_PER_PERSON)
+  if (dated.length > 0) return dated
 
   const fetchedMs = fetchedAt ? Date.parse(fetchedAt) : NaN
   if (!Number.isFinite(fetchedMs) || fetchedMs < sinceMs) return []
-  return items.filter((it) => !it.publishedDate).slice(0, PROMPT_ITEMS_PER_PERSON)
+  return items.filter((it) => !it.publishedDate)
 }
 
 /** 汇总关注人的周报材料（只读 feed_cache，不发任何网络请求） */
@@ -121,34 +143,40 @@ export async function collectWeeklyMaterial(): Promise<MaterialOutcome> {
   const range = last7DayRange(WEEKLY_WINDOW_DAYS)
   const sinceMs = Date.parse(range.since)
 
-  /* 并发读、按关注列表顺序回填：关注顺序即用户在意的顺序，不该被并发打乱 */
-  const picked = await Promise.all(
-    follows.slice(0, WEEKLY_PERSON_LIMIT).map(async (f) => {
-      const detail = await getFeedDetail(f.person_key)
-      if (!detail.ok) return { ok: false as const }
-      const domain = parsePersonKey(f.person_key)?.domain ?? 'other'
-      const entries: WeeklyEntry[] = pickWindowEntries(detail.items, detail.fetchedAt, sinceMs).map(
-        (it) => ({ ...it, personKey: f.person_key, personName: f.name, domain })
-      )
-      return { ok: true as const, person: { personKey: f.person_key, name: f.name, domain, entries } }
-    })
-  )
+  /*
+   * 一次批量取回全部人的动态缓存（见 cache.ts#getFeedDetails）：此前对每位关注人各读一行，
+   * 十位关注就是十路云数据库请求并行在飞。成批之后只多几次分页，
+   * 且遍历 follows 的顺序即关注顺序 —— 材料里人的先后不再取决于并发完成顺序。
+   */
+  const targets = follows.slice(0, WEEKLY_PERSON_LIMIT)
+  const details = await getFeedDetails(targets.map((f) => f.person_key))
 
   const persons: WeeklyPerson[] = []
   let failedCount = 0
   let entryCount = 0
-  for (const r of picked) {
-    if (!r.ok) {
+  for (const f of targets) {
+    const detail = details.get(f.person_key)
+    if (!detail || !detail.ok) {
       failedCount++
       continue
     }
-    if (r.person.entries.length === 0) continue
-    persons.push(r.person)
-    entryCount += r.person.entries.length
+    const domain = parsePersonKey(f.person_key)?.domain ?? 'other'
+    const entries: WeeklyEntry[] = pickWindowEntries(detail.items, detail.fetchedAt, sinceMs).map((it) => ({
+      ...it,
+      personKey: f.person_key,
+      personName: f.name,
+      domain
+    }))
+    if (entries.length === 0) continue
+    persons.push({ personKey: f.person_key, name: f.name, domain, entries })
+    entryCount += entries.length
   }
 
   if (persons.length === 0) return { kind: 'nomaterial' }
-  return { kind: 'ok', material: { persons, windowLabel: range.label, entryCount, failedCount } }
+  return {
+    kind: 'ok',
+    material: { persons, windowLabel: range.label, entryCount, failedCount, followedCount: follows.length }
+  }
 }
 
 /* ===== 生成 ===== */
@@ -169,6 +197,19 @@ export interface WeeklyReport {
   personCount: number
   entryCount: number
   overview: string
+  /**
+   * 本期要点（3~5 条「人 + 事实」的短句，模型产出）。
+   *
+   * **可选是刻意的**：本机缓存按周存，本周的旧缓存（2026-10-10 之前生成）没有这一段，
+   * 声明成必填会让「读旧缓存」在类型层被当成合法数据。界面按「本来就没有」处理，
+   * 并写明「点重新生成可补上」——不要 `?.` 一取到 undefined 就静默少一块。
+   */
+  highlights?: string[]
+  /**
+   * 收录范围（生成时定格：关注总人数 / 其中有动态的人数 / 读取失败人数）。
+   * 与 highlights 同样可选：旧缓存没有这一段。
+   */
+  coverage?: { followed: number; withEntries: number; failed: number }
   persons: WeeklyReportPerson[]
   topics: string[]
   disclaimer: string
@@ -181,6 +222,7 @@ const LlmWeeklySchema = z.union([
   z.object({
     refused: z.literal(false).optional(),
     overview: z.string().default(''),
+    highlights: z.array(z.string()).default([]),
     summaries: z.array(z.object({ name: z.string(), summary: z.string().default('') })).default([]),
     topics: z.array(z.string()).default([])
   })
@@ -195,26 +237,44 @@ const LlmWeeklySchema = z.union([
  */
 interface LlmWeeklyFields {
   overview?: string
+  highlights?: string[]
   summaries?: Array<{ name?: string; summary?: string }>
   topics?: string[]
 }
 
+/**
+ * 单条要点的长度区间。
+ *
+ * 上限：提示词里写的是 40 字，这里放宽到 60 —— 模型偶尔多写几个字就整条丢掉，
+ * 用户看到的是「要点少了一条」，宁可留着也不要因为超了 5 个字而消失。
+ *
+ * 下限 4 字：只用来挡「暂无」「无」「—」这类占位输出。曾写成 8 字，结果
+ * 「甲：发布新品」这种正常的中文要点（六个字）被整条误杀 —— 中文信息密度高，
+ * 一条六字要点是可以完整成立的，不能拿英文的长度直觉来卡。
+ */
+const HIGHLIGHT_MIN = 4
+const HIGHLIGHT_MAX = 60
+const HIGHLIGHT_LIMIT = 5
+
 const SYSTEM_WEEKLY = [
   '你是名人动态周报编辑。基于提供的「关注人近期动态素材」，写一份简洁的中文周报。',
   '硬约束：',
-  '1. 只依据素材内容，不编造事件、日期与来源；素材没提到的内容一律不写。',
+  '1. 只依据素材内容，不编造事件、日期与来源；素材没提到的内容一律不写，不做预测与推测。',
   '2. overview：不超过 200 字的整体观察，点出这些人本周的共同动向或值得注意的变化；措辞中性客观，不褒贬、不预测。',
-  '3. summaries：逐个覆盖素材中出现的每个人，summary 不超过 80 字，概括其本周公开动态要点。',
-  '4. topics：3~5 个本周高频话题关键词（每个 2~8 字的名词短语）。',
-  '5. 若素材涉及政治、军事类敏感人物，仅返回 {"refused": true}。',
-  '6. 只输出 JSON，格式：{"overview":string,"summaries":[{"name":string,"summary":string}],"topics":[string]}'
+  '3. highlights：3~5 条本周要点，每条不超过 40 字，写成「人名：发生了什么」的形式，且每条都要能对应到素材里的具体动态；素材不足以写出这么多条时宁可少写，不要凑数、不要把同一条换个说法写两遍。',
+  '4. summaries：逐个覆盖素材中出现的每个人，summary 不超过 80 字，概括其本周公开动态要点。',
+  '5. topics：3~5 个本周高频话题关键词（每个 2~8 字的名词短语）。',
+  '6. 若素材涉及政治、军事类敏感人物，仅返回 {"refused": true}。',
+  '7. 只输出 JSON，格式：{"overview":string,"highlights":[string],"summaries":[{"name":string,"summary":string}],"topics":[string]}'
 ].join('\n')
 
 function buildWeeklyUserMessage(material: WeeklyMaterial): string {
   const lines: string[] = [`统计窗口：${material.windowLabel}（最近 ${WEEKLY_WINDOW_DAYS} 天）`, '素材：']
   for (const p of material.persons) {
     lines.push(`【${p.name}】`)
-    for (const e of p.entries) {
+    /* 只在这里截断：提示词按每人 PROMPT_ITEMS_PER_PERSON 条收敛体积，而 p.entries 本身
+       是全量（供 buildWeeklyDigest 与落库的逐人卡片用）—— 两处口径刻意分开 */
+    for (const e of p.entries.slice(0, PROMPT_ITEMS_PER_PERSON)) {
       const date = e.publishedDate ? e.publishedDate.slice(0, 10) : '近期'
       const head = `- ${e.title}（${e.source || '未知来源'} · ${date}）`
       /* 兼容历史脏缓存：2026-10-07 前的 notifyFollowUpdates 只写标题 + 链接，content 为空，
@@ -230,7 +290,8 @@ function buildWeeklyUserMessage(material: WeeklyMaterial): string {
  * 代码层强制校验（不信任提示词，与 report.ts 同思路）：
  * 1. 人员清单以**材料为准**，模型只能补摘要，不能增删人；
  * 2. 摘要按人名对齐，模型给了不在清单里的名字直接丢弃；
- * 3. topics 去重、限长、限量。
+ * 3. topics 去重、限长、限量；
+ * 4. highlights 去重、限长、限量（拒答时一律清空，与 overview 同处理）。
  */
 export function sanitizeWeekly(material: WeeklyMaterial, llm: LlmWeeklyFields, refused = false): WeeklyReport {
   const summaryByName = new Map<string, string>()
@@ -248,6 +309,15 @@ export function sanitizeWeekly(material: WeeklyMaterial, llm: LlmWeeklyFields, r
     if (topics.length >= 6) break
   }
 
+  /* 要点：逐条独立取舍 —— 一条不合规只丢那一条，不牵连其余（丢掉整段会让用户以为功能坏了） */
+  const highlights: string[] = []
+  for (const raw of llm.highlights ?? []) {
+    const h = (raw ?? '').trim()
+    if (h.length < HIGHLIGHT_MIN || h.length > HIGHLIGHT_MAX || highlights.includes(h)) continue
+    highlights.push(h)
+    if (highlights.length >= HIGHLIGHT_LIMIT) break
+  }
+
   const persons: WeeklyReportPerson[] = material.persons.map((p) => ({
     personKey: p.personKey,
     name: p.name,
@@ -257,7 +327,8 @@ export function sanitizeWeekly(material: WeeklyMaterial, llm: LlmWeeklyFields, r
   }))
 
   const overview = refused ? '' : (llm.overview ?? '').trim()
-  const hasText = !!overview || persons.some((p) => p.summary)
+  /* 要点也算「模型给了文字」：只出了 highlights、没出 overview/summaries 时不该判降级 */
+  const hasText = !!overview || (!refused && highlights.length > 0) || persons.some((p) => p.summary)
   if (!hasText) {
     diagLog('warn', 'auth', '周报未产出任何文字，降级为素材清单')
   }
@@ -269,11 +340,132 @@ export function sanitizeWeekly(material: WeeklyMaterial, llm: LlmWeeklyFields, r
     personCount: persons.length,
     entryCount: material.entryCount,
     overview,
+    highlights: refused ? [] : highlights,
+    coverage: {
+      followed: material.followedCount,
+      withEntries: persons.length,
+      failed: material.failedCount
+    },
     persons,
     topics: refused ? [] : topics,
     disclaimer: DISCLAIMER
   }
   return hasText ? report : { ...report, degraded: true }
+}
+
+/* ===== 端上聚合：让周报不只有一段文字（零成本、确定性、不依赖模型） ===== */
+
+/** 时间线条目：跨人按日期倒序的一条动态（真值取自 feed_cache 素材，非模型输出） */
+export interface WeeklyTimelineItem {
+  personKey: string
+  personName: string
+  domain: DomainCode
+  /** yyyy-mm-dd（UTC+8）；素材没带日期时为空串，排在带日期的之后 */
+  date: string
+  title: string
+  source: string
+  url: string
+}
+
+export interface WeeklyDigest {
+  /** 跨人时间线，最多 TIMELINE_MAX 条 */
+  timeline: TimelineSlice
+  /** 收录动态的日期跨度（一条带日期的都没有时为 null） */
+  span: { first: string; last: string } | null
+  /** 来源分布（条数倒序，最多 SOURCE_TOP 个） */
+  sources: Array<{ name: string; count: number }>
+  /** 领域分布（条数倒序） */
+  domains: Array<{ domain: DomainCode; persons: number; entries: number }>
+  /** 本周动态最多的一位（并列时取材料里靠前者；无人有条目时为 null） */
+  mostActive: { name: string; count: number } | null
+}
+
+/** 时间线切片：连同「一共多少条」一起给界面，好写清「这里只列了最近 N 条」 */
+export interface TimelineSlice {
+  items: WeeklyTimelineItem[]
+  /** 收录动态总条数（含未进切片的） */
+  total: number
+  /** 其中带日期、能排进时间线的条数 */
+  dated: number
+}
+
+/**
+ * 把一份周报聚合成界面用的结构化片段。
+ *
+ * 为什么放在端上、为什么纯函数：
+ *   1. **零成本**：全部结论都从已经落进本机缓存的素材里算出来，不新增检索、不走模型、
+ *      不消耗额度，因此**存量缓存（含 2026-10-10 之前生成的旧周报）立刻就能用上**；
+ *   2. **确定性**：同一份周报任何时候打开都是同一份聚合结果（与逐日分布同一取舍）；
+ *   3. **只搬运不推断**：来源、领域、日期都是素材里本来就有的字段，聚合只是计数与排序，
+ *      不产生任何素材之外的判断 —— 这是本项目对「周报」的一贯口径（见文件头的取舍 2）。
+ *
+ * 日期统一走 `dayKey8`（UTC+8）：素材里的时间串来自云端与上游，用设备时区去衡量会错位。
+ */
+export function buildWeeklyDigest(report: WeeklyReport): WeeklyDigest {
+  const timeline: WeeklyTimelineItem[] = []
+  const sourceCount = new Map<string, number>()
+  const domainEntries = new Map<DomainCode, number>()
+  const domainPersons = new Map<DomainCode, number>()
+  let mostActive: { name: string; count: number } | null = null
+
+  for (const p of report.persons) {
+    if (p.entries.length > 0) {
+      domainPersons.set(p.domain, (domainPersons.get(p.domain) ?? 0) + 1)
+      if (!mostActive || p.entries.length > mostActive.count) {
+        mostActive = { name: p.name, count: p.entries.length }
+      }
+    }
+    for (const e of p.entries) {
+      domainEntries.set(p.domain, (domainEntries.get(p.domain) ?? 0) + 1)
+      const source = (e.source || '').trim()
+      if (source) sourceCount.set(source, (sourceCount.get(source) ?? 0) + 1)
+      timeline.push({
+        personKey: p.personKey,
+        personName: p.name,
+        domain: p.domain,
+        date: dayKey8(e.publishedDate ?? ''),
+        title: e.title,
+        source,
+        url: e.url
+      })
+    }
+  }
+
+  /*
+   * 排序：带日期的在前（新的在前），无日期的垫底保持素材顺序 ——
+   * 把「近期」这种没有日期的条目插进时间线中间，等于给时间线编了一个它并不知道的顺序。
+   */
+  timeline.sort((a, b) => {
+    if (!a.date !== !b.date) return a.date ? -1 : 1
+    if (a.date === b.date) return 0
+    return a.date < b.date ? 1 : -1
+  })
+
+  const dated = timeline.filter((t) => !!t.date)
+  const span =
+    dated.length > 0 ? { first: dated[dated.length - 1].date, last: dated[0].date } : null
+
+  const sources = [...sourceCount.entries()]
+    .map(([name, count]) => ({ name, count }))
+    /* 条数相同时按名称排序：否则会随素材顺序漂移，同一份周报两次打开可能换位置 */
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, SOURCE_TOP)
+
+  const domains = [...domainEntries.keys()]
+    .map((domain) => ({
+      domain,
+      persons: domainPersons.get(domain) ?? 0,
+      entries: domainEntries.get(domain) ?? 0
+    }))
+    .sort((a, b) => b.entries - a.entries || a.domain.localeCompare(b.domain))
+
+  return {
+    timeline: { items: timeline.slice(0, TIMELINE_MAX), total: timeline.length, dated: dated.length },
+    span,
+    sources,
+    domains,
+    mostActive
+  }
 }
 
 /* ===== 本机缓存（按 ISO 周） ===== */

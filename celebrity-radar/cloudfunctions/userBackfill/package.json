@@ -1,0 +1,9 @@
+{
+  "name": "userBackfill",
+  "version": "1.0.0",
+  "description": "一次性运维：把存量 users 行的 settings 补齐到真源默认值（dry-run 默认，只补缺失键）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

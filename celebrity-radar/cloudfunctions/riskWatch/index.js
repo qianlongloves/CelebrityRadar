@@ -95,6 +95,10 @@ const RISK_TERMS = [
   { word: '罚款', category: 'judicial' },
   { word: '律师函', category: 'judicial' },
   { word: '调查', category: 'judicial' },
+  { word: '查封', category: 'judicial' },
+  { word: '冻结', category: 'judicial' },
+  { word: '限制高消费', category: 'judicial' },
+  { word: '失信被执行人', category: 'judicial' },
   { word: '解约', category: 'contract' },
   { word: '终止合作', category: 'contract' },
   { word: '停止合作', category: 'contract' },
@@ -104,17 +108,34 @@ const RISK_TERMS = [
   { word: '下架', category: 'contract' },
   { word: '索赔', category: 'contract' },
   { word: '违约', category: 'contract' },
+  { word: '解聘', category: 'contract' },
+  { word: '辞退', category: 'contract' },
+  { word: '撤档', category: 'contract' },
   { word: '名誉权', category: 'rights' },
   { word: '肖像权', category: 'rights' },
   { word: '诽谤', category: 'rights' },
   { word: '造谣', category: 'rights' },
   { word: '侵权', category: 'rights' },
   { word: '维权', category: 'rights' },
+  { word: '盗用', category: 'rights' },
+  { word: '假冒', category: 'rights' },
   { word: '道歉', category: 'statement' },
   { word: '致歉', category: 'statement' },
   { word: '澄清', category: 'statement' },
   { word: '辟谣', category: 'statement' }
 ]
+
+/*
+ * 双向词方向判定（2026-10-10，**与 src/utils/risk.ts 同源，改动须两处同步**）：
+ * 「起诉 / 诉讼」原告被告都在用，命中后要看动词后面是否跟着维权对象 ——
+ * 「起诉造谣者」是名誉维权（本人是维权方），「被起诉」才是司法监管（本人是被诉方）。
+ * 默认按司法（保守），只有明确识别出维权宾语才改判维权。
+ */
+const BIDIRECTIONAL_TERMS = ['起诉', '诉讼']
+const RIGHTS_OBJECTS = [
+  '造谣', '诽谤', '侵权', '名誉', '肖像', '网暴', '黑粉', '抹黑', '诋毁', '抄袭', '盗用', '假冒', '维权'
+]
+const RIGHTS_AFTER_WINDOW = 8
 
 /** 类别 → 级别：只表示「命中词属于哪一类」，不是对事件的定性（取舍 5） */
 const LEVEL_OF = { judicial: 'high', tax: 'high', contract: 'mid', rights: 'mid', statement: 'low' }
@@ -230,6 +251,11 @@ function matchTerm(text) {
     if (at < 0) continue
     const before = text.slice(Math.max(0, at - NEG_WINDOW), at)
     if (NEG_WORDS.some((n) => before.includes(n))) continue
+    /* 双向词再看宾语方向：「起诉造谣者」是维权、「被起诉」才是司法监管 */
+    if (BIDIRECTIONAL_TERMS.indexOf(term.word) >= 0) {
+      const after = text.slice(at + term.word.length, at + term.word.length + RIGHTS_AFTER_WINDOW)
+      if (RIGHTS_OBJECTS.some((o) => after.includes(o))) return { word: term.word, category: 'rights' }
+    }
     return term
   }
   return null

@@ -69,35 +69,28 @@ export interface LocalDebugFlags {
   disableRefreshQuota: boolean
   disableCooldown: boolean
   rawIoLog: boolean
-  /**
-   * 强制会员身份（**仅本地调试**，2026-10-09 补）。
+  /*
+   * 这里**刻意没有**「强制会员身份」开关（曾名 memberOverride，2026-10-10 移除）。
    *
-   *   'off'      不覆写，按云端 users.membership 的真实发货结果判定（仓库默认）
-   *   'free'     强制按免费版（真实身份是会员时也能测免费档体验）
-   *   'monthly'  强制按月度会员 ┐
-   *   'quarterly' 强制按季度会员 ├ 三个 plan id 与云函数 payCreate 的 PLANS 同名
-   *   'annual'   强制按年度会员 ┘
+   * 它当时是用着很顺手：没接商户号也能让端上按会员走，看一眼专享段与会员档位。
+   * 但它是**本机配置**，而会员身份的真源在云端 `memberships`（aiProxy 的档位与检索
+   * 闸门、quotaGuard 的免计费复核都读它）—— 于是「端上按会员走、云端按免费算」
+   * 成了默认状态：切了会员档位没效果、加厚检索没效果，界面却一切正常，极难排查。
+   * 它同时让「谁是会员」在端上有了配置与数据库**两个来源**，本机把它留在 'monthly'
+   * 还会连带把测试套件里的会员 / 配额用例带红（用例只能用 setDebugFlags 逐个关掉）。
    *
-   * 为什么需要它：会员行为有一半只在**会员**身上出现（报告页三段专享内容、专享段剥离、
-   * 免费档刷新冷却是否被绕过、每日 30 次的上限文案与各处的会员卡），而 users.membership
-   * 只由微信支付回调云函数 payCallback 写入 —— 没接商户号就永远测不到会员态，
-   * 于是「付费功能无法自测」。开这个开关，改一行、重编译即可切换身份。
+   * 现在端上只有**一个**来源：数据库 `users.membership`（读口唯一，见
+   * utils/member.ts#readMemberState），它与权威表 memberships 由 payCallback **一次写入、
+   * 内容一致**（用例 06 钉住）。要联调会员态，就照 payCallback 的样子**两处都插**：
    *
-   * ⚠ 它只覆写**端上**的判定（utils/member.ts#readMemberState 的最外层），
-   *   不写数据库，**云端一概不认**。后果分两边，测试时别搞混：
+   *   users        行：`membership: { plan: 'monthly', expires_at: '<未来时间>' }` → 端上界面与配额
+   *   memberships  行：`{ _id: '<openid>', plan: 'monthly', expires_at: '<未来时间>' }` → 云端闸门
    *
-   *   · 强制为会员：端上按会员走（30 次上限、专享段可见、冷却绕过），
-   *     但云函数 aiProxy 仍按真实身份**钳制检索条数并回落极速版模型**，
-   *     quotaGuard 也仍按真实身份复核「会员补齐免计费」—— 所以
-   *     **「加厚检索」与「会员档位模型」这两件事测不出来**，
-   *     要看真实产物只能去改云端的 membership 字段。
-   *     另：此时**不要测支付** —— utils/pay.ts 靠「expires_at 是否变晚」确认发货，
-   *     覆写后它恒定不变，会一直等到超时。
-   *
-   *   · 强制为免费：端上按免费走，云端仍按真实身份计数（上限 30 也不会被端上拦），
-   *     测免费档体验时反而不容易误触上限。
+   * 两张表都写、值一致，端上与云端才会一致（到期判定都只认 `expires_at`）：
+   *   · 只写 users       ⇒ 端上显示会员、云端按免费算（档位与加厚检索静默失效，就是旧开关的老毛病）
+   *   · 只写 memberships ⇒ 云端会放行，但端上仍按免费显示（界面与权限对不上，更迷惑）
+   * ⚠ memberships 客户端完全不可读写，只能在控制台 / 云函数里写 —— 这正是它当权威的原因。
    */
-  memberOverride: 'off' | 'free' | 'monthly' | 'quarterly' | 'annual'
 }
 
 export interface LocalConfig {
@@ -154,8 +147,6 @@ export const localConfig: LocalConfig = {
     disableAskQuota: false,
     disableRefreshQuota: false,
     disableCooldown: false,
-    rawIoLog: false,
-    /* 会员身份覆写：仓库默认不覆写（按云端真实发货结果判定） */
-    memberOverride: 'off'
+    rawIoLog: false
   }
 }

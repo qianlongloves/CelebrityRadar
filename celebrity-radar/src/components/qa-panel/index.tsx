@@ -3,6 +3,7 @@ import { Input, ScrollView, Text, View } from '@tarojs/components'
 import Taro from '@tarojs/taro'
 import { AtButton } from 'taro-ui'
 import { MEMBER_DAILY_ASK_LIMIT } from '@/utils/member'
+import NoticeClose from '@/components/notice-close'
 import {
   QA_MAX_QUESTION,
   askReports,
@@ -102,6 +103,12 @@ export default function QaPanel({
   const [input, setInput] = useState('')
   const [asking, setAsking] = useState(false)
   const [notice, setNotice] = useState('')
+  /**
+   * 提示条是否被用户关掉（2026-10-10，需求：「所有文字提示的框都要有关闭按钮」）。
+   * 只对本条提示有效：notice 一变就复位（见下方 useEffect），这样「上一条关了」不会把
+   * 下一条闸门提示 / 语料提示一起吞掉；用户真正要忽略的只是眼前这一句。
+   */
+  const [noticeClosed, setNoticeClosed] = useState(false)
   /*
    * 今日提问用量（已用 / 还可问，见 utils/qa.ts#qaUsageToday）。
    * 存整个口径而不是只存「剩余次数」：升级提示要按 `unlimited` 判定（开挂态不弹，
@@ -163,6 +170,11 @@ export default function QaPanel({
       )
     }
   }, [corpusOk, multi])
+
+  /* 提示内容一变就重新可见：关闭只针对「眼前这一句」，不跨提示生效（见 noticeClosed 注释） */
+  useEffect(() => {
+    setNoticeClosed(false)
+  }, [notice])
 
   /*
    * 换名人就清空会话（底部菜单页可在同一屏切换提问对象）。
@@ -425,9 +437,10 @@ export default function QaPanel({
         <View className='qa-panel__end' id='qa-end' />
       </ScrollView>
 
-      {notice !== '' && (
+      {notice !== '' && !noticeClosed && (
         <View className='qa-panel__notice'>
-          <Text>{notice}</Text>
+          <Text className='qa-panel__notice-text'>{notice}</Text>
+          <NoticeClose onClose={() => setNoticeClosed(true)} />
         </View>
       )}
 

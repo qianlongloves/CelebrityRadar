@@ -1,7 +1,8 @@
 import Taro from '@tarojs/taro'
 import { readSelf } from './auth'
 import { diagLog } from './cloud-diagnostics'
-import { MEMBER_OVERRIDE } from './debug'
+import { FREE_TOC_COUNT, MEMBER_TOC_COUNT, TEMPLATE_SIZE, memberOnlyTocLabels } from './report-toc'
+import { MEMBER_BENEFITS } from '../config/benefits'
 
 /**
  * 会员权益层 —— **付费功能唯一的判定入口**。
@@ -21,34 +22,15 @@ import { MEMBER_OVERRIDE } from './debug'
  * 两处由 payCallback 一次写入、内容必须一致（用例 06 钉住）。
  * 镜像存在的唯一理由：端上所有界面都读它，于是这次搬迁对端上零改动。
  * 判定用本机时间，改设备时间最多影响「自己看到的界面」，不影响订单、发货与云端闸门。
- * 权益表数值与云端 quota.config.js 必须同值（用例 07 钉住），改这里要同步改那份。
+ * 权益数值的真源在 `config/benefits.ts` —— 在那里改一次，云端（aiProxy 的配额池、
+ * quotaGuard 的刷新额度、payCreate 的价格）由 `npm run config:sync` 生成副本，
+ * 端上就是下面这行 re-export。改额度 / 价格请改那一份，别再回来手抄：
+ * 手抄漏了不会有任何报错，只会静默错（会员页说 30 次、实际拦在第 3 次）。
+ * 本文件此后只负责**判定逻辑**（readMemberState / isMembershipActive）与展示文案。
  */
 
-/** 会员权益表：数值即策略本身，改这里即改策略（端上唯一事实源） */
-export const MEMBER_BENEFITS = {
-  /**
-   * 每日「主动生成报告 / 周报」次数上限（两者共用同一池计数）。
-   * 只管主动生成：缓存命中的报告不计数，浏览已生成报告两种版本都不限次。
-   */
-  generatePerDay: { free: 3, member: 30 },
-
-  /**
-   * 每日「AI 提问」次数上限（与生成**不同池**：提问不吃生成额度，见 utils/qa.ts）。
-   *
-   * 免费额度比生成给得大方（生成一次要等 30 秒，提问只是追问），但必须设上限：
-   * 每次提问都是一次真实的付费模型请求，同时这也是会员最有体感的一条权益。
-   */
-  askPerDay: { free: 5, member: 30 }
-
-  /*
-   * 2026-10-08 撤销：原 O-19 的 `hotBoardShown: { free: 6, member: 24 }` 已删除，热门榜
-   * **全员可见全部位数**。撤销理由：热门榜是全项目唯一「不需要等待」的内容（静态种子 +
-   * 每日 AI 榜，首屏零成本），它同时也是 FREE_FEATURES_NOTE 里那句「不买也能用」的样板；
-   * 在用户最先看到的位置先撞一次付费墙，换来的转化远不抵「这也要钱」的印象损耗。
-   * 若日后要恢复分档，须同时改三处：本表、`pages/index`（预览位数与底部那一行）、
-   * `pages/member` 的权益对比表 —— 少改一处就会出现「说不分档但其实只给 6 位」。
-   */
-} as const
+/** 会员权益表：数值即策略本身（真源见 config/benefits.ts，改那里即改策略） */
+export { MEMBER_BENEFITS }
 
 /** 免费版：每日主动生成次数 */
 export const FREE_DAILY_GENERATE_LIMIT = MEMBER_BENEFITS.generatePerDay.free
@@ -61,6 +43,29 @@ export const FREE_DAILY_ASK_LIMIT = MEMBER_BENEFITS.askPerDay.free
 
 /** 会员：每日 AI 提问次数 */
 export const MEMBER_DAILY_ASK_LIMIT = MEMBER_BENEFITS.askPerDay.member
+
+/**
+ * 每日「抓取关注动态」次数上限（2026-10-10 起按档位分叉：免费 10 / 会员 20）。
+ *
+ * 消费方是 utils/cache.ts（那里原先自带一份 `const DAILY_REFRESH_LIMIT = 10`）：
+ * 两个数字分开写迟早会漂，而漂了的表现是「会员页说 20 次、实际拦在 10 次」。
+ *
+ * ⚠ **判定权威在云函数 quotaGuard**（它读 memberships 后按档回报 `limit`）：
+ *   下面两个常量与 dailyRefreshLimit() 只在「云函数不可用 / 旧版云函数不回 limit」时兜底 ——
+ *   端上这份可被改包，拿它当闸门等于没有闸门。
+ */
+export const DAILY_REFRESH_LIMIT = MEMBER_BENEFITS.refreshPerDay.free
+
+/** 会员档的每日抓取次数（会员页对比表与权益列表展示用；判定仍以云端回报为准） */
+export const MEMBER_DAILY_REFRESH_LIMIT = MEMBER_BENEFITS.refreshPerDay.member
+
+/** 按身份取当日抓取上限：端上只在云函数不可用时用它兜底（见上面的 ⚠） */
+export function dailyRefreshLimit(isMember: boolean): number {
+  return isMember ? MEMBER_BENEFITS.refreshPerDay.member : MEMBER_BENEFITS.refreshPerDay.free
+}
+
+/** 免费档「刷新最新」冷却窗口（小时）；会员不受限 */
+export const FREE_REFRESH_COOLDOWN_HOURS = MEMBER_BENEFITS.freeRefreshCooldownHours
 
 /**
  * 权益说明（会员入口与配额卡展示）。
@@ -85,12 +90,32 @@ export const MEMBER_BENEFIT_POINTS: Array<{ title: string; note: string }> = [
     note: '会员生成时检索加厚（主线与社交支线各加一档），并多出「对比视角 / 风险提示 / 信源分歧」三段专享内容'
   },
   {
+    /*
+     * 2026-10-10 新增（需求「把生成的报告模板纳入会员文字权益」）：报告的**节数**也是权益 ——
+     * 免费档按模板只呈现 FREE_TOC_COUNT 节，会员是完整 TEMPLATE_SIZE 节。
+     * 节数与名单一律取自 utils/report-toc.ts（报告模板的唯一定义处），**不在这里写死**：
+     * 以后改模板档位（挪一节进/出会员档），这条文案与会员页对比表会跟着变，不会各说各话。
+     * 与上一条「深度模式」是两件事：那条讲**生成**多出三段专享文字，这条讲**呈现**多出几节。
+     */
+    title: `完整报告模板（${TEMPLATE_SIZE} 节）`,
+    note: `免费版按模板只呈现 ${FREE_TOC_COUNT} 节；会员是完整 ${TEMPLATE_SIZE} 节，多出「${memberOnlyTocLabels().join(' / ')}」共 ${MEMBER_TOC_COUNT} 节`
+  },
+  {
     title: `每日主动生成 ${MEMBER_DAILY_GENERATE_LIMIT} 次`,
     note: `免费版每日 ${FREE_DAILY_GENERATE_LIMIT} 次；生成失败与缓存命中都不计数，只有真拿到报告才 +1`
   },
   {
     title: `每日 AI 提问 ${MEMBER_DAILY_ASK_LIMIT} 次`,
     note: `就某位名人的报告继续追问，不消耗生成额度；免费版每日 ${FREE_DAILY_ASK_LIMIT} 次`
+  },
+  {
+    /*
+     * 2026-10-10 新增：抓取关注动态从「两版同额」改成按档位分叉（免费 10 / 会员 20），
+     * 它就从「成本闸门」变成了一条真实的权益差异，要在这里说出来 ——
+     * 数字取自本文件上方的 refreshPerDay，不写死（改档位时这条文案跟着变）。
+     */
+    title: `每日抓取动态 ${MEMBER_DAILY_REFRESH_LIMIT} 次`,
+    note: `免费版 ${DAILY_REFRESH_LIMIT} 次 / 日；单次刷新按「最久没更新」优先，覆盖你关注的一部分人`
   },
   {
     /*
@@ -150,42 +175,15 @@ function daysUntil(expiresAt: string | null): number {
   return left > 0 ? Math.ceil(left / 86400000) : -1
 }
 
-/** 调试覆写表：键与云函数 payCreate 的 PLANS id 同名（月度 / 季度 / 年度），值是套餐天数 */
-const OVERRIDE_PLAN_DAYS: Record<string, number> = { monthly: 30, quarterly: 90, annual: 365 }
-
-/**
- * 本地调试用的会员身份覆写（开关见 `config/local.ts` 的 `debug.memberOverride`）。
- * 返回 `null` = 不覆写，由调用方按云端真实发货结果判定。
- *
- * 为什么贴在这个入口做：端上「谁是会员」只有 readMemberState 一个读口（配额上限、
- * 专享段剥离、报告页促销条、会员中心都从它取数），覆写贴着它做就不会出现
- * 「配额认定是会员、报告页认定是免费」这种半生效状态 —— 那比不覆写更难排查。
- *
- * ⚠ 它**不写数据库**：`users.membership` 仍然只由 payCallback 写（见文件头），
- *   这里改的只是本机判定结果，**云端一概不认**；能测与不能测的清单见 local.example.ts。
- *   配错值（类型上不会，运行时兜一层）按「不覆写」处理 —— 宁可测不出会员，
- *   也不要把人卡在一个不存在的档位上。
- */
-export function forcedMemberState(): MemberState | null {
-  if (MEMBER_OVERRIDE === 'off') return null
-  if (MEMBER_OVERRIDE === 'free') return NOT_MEMBER
-  const days = OVERRIDE_PLAN_DAYS[MEMBER_OVERRIDE] ?? 0
-  if (days <= 0) return null
-  return {
-    member: true,
-    plan: MEMBER_OVERRIDE,
-    expiresAt: new Date(Date.now() + days * 86400000).toISOString(),
-    daysLeft: days
-  }
-}
-
 /** 读会员状态。读库失败按**非会员**处理（保守，不放大免费额度） */
 export async function readMemberState(): Promise<MemberState> {
-  /* 调试覆写必须**先于**真实判定（仅本地开关非 off 时命中，见上方）：
-     放在读库之前，既省一次库读，也让「强制免费」能盖住真实会员身份 —— 否则
-     真实是会员的账号测不出免费档。它不做任何 I/O，不会抛错。 */
-  const forced = forcedMemberState()
-  if (forced) return forced
+  /*
+   * 端上「谁是会员」**只有这一个进口**（2026-10-10 起）。这里曾贴过一个本地调试开关
+   * （`debug.memberOverride`）：它让端上按会员走、云端却按 memberships 权威表判免费 ——
+   * 表现是「切了会员档位没效果、加厚检索没效果」而界面毫无异常，原因与替代做法见
+   * `config/local.example.ts` 的说明。现在来源只有一个：users.membership 镜像行，
+   * 由 payCallback 与权威表 memberships 一次写入、内容一致（用例 06 钉住）。
+   */
   try {
     const m = (await readSelf())?.membership ?? null
     if (!isMembershipActive(m)) return NOT_MEMBER
@@ -381,7 +379,10 @@ export function dismissPromo(): void {
 }
 
 /**
- * 清掉关闭记忆（供 utils/settings.ts#clearLocalSettings 调用）。
+ * 清掉关闭记忆（由「清空我的数据」依次调用：utils/settings.ts#clearLocalSettings + 本函数）。
+ *
+ * 为什么不并进 ClearLocalSettings：本文件 import 了 auth.ts，而 auth.ts 要 import
+ * settings.ts（登录时灌入云端偏好），settings.ts 若反过来 import 本文件就成环。
  * 单独导出而不是在两处各写一遍键名 —— 键名散开，早晚有一处忘记改。
  */
 export function clearPromoDismiss(): void {

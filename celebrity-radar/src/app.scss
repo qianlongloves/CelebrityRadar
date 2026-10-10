@@ -39,6 +39,24 @@ page {
     position: relative;
     z-index: 1;
   }
+
+  /*
+   * 浮层出口（2026-10-10）。
+   *
+   * 上面那条 `> view` 的选择器特异性是 (0,1,1)，**会盖掉组件自己写的 `position: fixed` 与 z-index**：
+   * 于是「本该浮在最顶层的全屏遮罩」被按回文档流，且 z-index 被压成 1 —— 与后续兄弟块同层，
+   * 而兄弟块在 DOM 里更靠后，反而画在浮层之上。症状就是「加载动画没浮起来、挤在页面顶部，
+   * 还能被正文压住」（报告页「重新生成」的悬浮加载卡正是这样坏的）。
+   *
+   * 直接子级的浮层（fixed/absolute 遮罩、悬浮卡）挂上这个类即可放行 —— 这里 (0,2,0) 稳赢 (0,1,1)。
+   * z-index 必须在这里给死，不能只放开 position：否则组件自己的 z-index 仍会被 `> view` 压成 1。
+   * 1200 是明确的层栈顺序：要盖住 custom-tab-bar 的 999、share-poster 的 1000。
+   * 其余浮层若只求「在内容之上、在 tab 栏之下」，请自行声明，不要复用这个类。
+   */
+  > .glow-overlay {
+    position: fixed;
+    z-index: 1200;
+  }
 }
 
 /* ===== 通用卡片 ===== */
@@ -237,6 +255,12 @@ page {
   color: $knowledge-warn-text;
   font-size: 24rpx;
   line-height: 1.5;
+
+  /* 正文占满剩余宽度，右侧留给统一关闭键（components/notice-close）*/
+  &__text {
+    flex: 1;
+    min-width: 0;
+  }
 }
 
 /* ===== 文字工具类 ===== */

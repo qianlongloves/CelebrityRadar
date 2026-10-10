@@ -67,14 +67,43 @@ function matchDoc(doc, where) {
   return Object.entries(where).every(([field, c]) => matchVal(doc[field], c))
 }
 
+/**
+ * 按点路径读（`settings.llm_tier`）。
+ *
+ * 存在的理由：CloudBase 的 update 对形如 `a.b` 的键走**嵌套赋值**，而不是建一个
+ * 名叫 "a.b" 的扁平字段 —— 产品代码（云函数 userInit 的 set）正是靠这条避免
+ * 「读-改-写」整对象覆盖时丢掉并发改动，mock 必须同口径，否则那行代码测试里跑的是另一回事。
+ */
+function readPath(doc, path) {
+  return path.split('.').reduce((cur, k) => (cur == null ? undefined : cur[k]), doc)
+}
+
+function setPath(doc, path, v) {
+  const parts = path.split('.')
+  let cur = doc
+  for (let i = 0; i < parts.length - 1; i++) {
+    const k = parts[i]
+    if (!cur[k] || typeof cur[k] !== 'object' || Array.isArray(cur[k])) cur[k] = {}
+    cur = cur[k]
+  }
+  cur[parts[parts.length - 1]] = v
+}
+
+function deletePath(doc, path) {
+  const parts = path.split('.')
+  const parent = parts.length === 1 ? doc : readPath(doc, parts.slice(0, -1).join('.'))
+  if (parent && typeof parent === 'object') delete parent[parts[parts.length - 1]]
+}
+
 function applyUpdate(doc, data) {
   for (const [k, v] of Object.entries(data)) {
     if (isCmd(v) && v.op === 'inc') {
-      doc[k] = (typeof doc[k] === 'number' ? doc[k] : 0) + v.val
+      const cur = readPath(doc, k)
+      setPath(doc, k, (typeof cur === 'number' ? cur : 0) + v.val)
     } else if (isCmd(v) && v.op === 'remove') {
-      delete doc[k]
+      deletePath(doc, k)
     } else {
-      doc[k] = v
+      setPath(doc, k, v)
     }
   }
 }
@@ -248,6 +277,7 @@ function createDb(opts = {}) {
 
     async update({ data }) {
       guard(this.name)
+      stats.docUpdateCalls++
       const d = coll(this.name).get(this.id)
       if (!d) {
         /* 见文件顶部 V-1 说明：真实的「行不存在」行为未定，两种都复刻得出来 */

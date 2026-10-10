@@ -20,12 +20,6 @@ export interface NoticeItem {
 
 export const NOTICES: NoticeItem[] = [
   {
-    id: 'heat-trend',
-    date: '2026-10-06',
-    title: '报告新增「热度趋势」',
-    body: '报告页现在会把收录的近期动态与时间线事件摊成一条近 30 天折线，配合上方速览里的 N30 / N7 一起看，热度这个数字就有了可核对的来源。'
-  },
-  {
     id: 'ai-disclaimer',
     date: '2026-10-06',
     title: '报告内容说明',

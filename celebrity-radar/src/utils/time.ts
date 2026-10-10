@@ -125,6 +125,105 @@ export function isStaleReport(iso?: string | null, days = STALE_REPORT_DAYS): bo
 }
 
 /**
+ * 「后续关注」时间刻度的解析：只认**绝对刻度**，相对说法一律不认（返回 null）。
+ *
+ * 认的形式：2026-11-05 / 2026-11 / 2026/11 / 2026年11月5日 / 2026（只有年）。
+ * 不认的形式：「下月」「年底」「近期」—— 它们指的是**生成那一刻**的下月，报告长期复用后
+ * 端上无从折算（见 utils/report.ts 提示词第 11 条，那边已要求只写绝对时间）。
+ */
+function parseStamp(when: string): { year: number; month?: number; day?: number } | null {
+  const m = /(\d{4})\s*(?:[-/.年]\s*(\d{1,2}))?(?:\s*[-/.月]\s*(\d{1,2}))?/.exec(when || '')
+  if (!m) return null
+  const year = Number(m[1])
+  if (!Number.isFinite(year)) return null
+  const month = m[2] === undefined ? undefined : Number(m[2])
+  const day = m[3] === undefined ? undefined : Number(m[3])
+  if (month !== undefined && (month < 1 || month > 12)) return null
+  if (day !== undefined && (day < 1 || day > 31)) return null
+  return { year, ...(month !== undefined ? { month } : {}), ...(day !== undefined ? { day } : {}) }
+}
+
+/**
+ * 「后续关注」里这条已公布的时间点是否已经过去（用于给它标「已过期」）。
+ *
+ * 口径刻意保守，**只在自己那个粒度结束后才判过期**：
+ *   · 只到年（「2026」）→ 该年内不判（12 月 31 日之前都算还没过）；
+ *   · 只到月（「2026-11」）→ 当月的最后一天之前都算还没过；
+ *   · 到日 → 当天之前都算还没过。
+ * 宁可少标一次，也不要把还没发生的事标成「已过期」—— 后者是替用户下判断，与「不推断」相悖。
+ *
+ * 判定基准与全项目一致走 **UTC+8**（dayKey8）：云端产出的时间都是这个口径，
+ * 端上若跟随设备时区，跨时区用户会看到「同一份报告在两地过期状态不同」。
+ * 解析不出绝对刻度（老报告里的「下月」、空串）一律返回 false（未知不等于已过期）。
+ */
+export function isStampPast(when: string, now: string | number | Date = Date.now()): boolean {
+  const st = parseStamp(when)
+  if (!st) return false
+  const key = dayKey8(now)
+  if (!key) return false
+  const [ys, ms, ds] = key.split('-').map(Number)
+  if (st.year < ys) return true
+  if (st.year > ys) return false
+  if (st.month === undefined) return false
+  if (st.month < ms) return true
+  if (st.month > ms) return false
+  if (st.day === undefined) return false
+  return st.day < ds
+}
+
+/**
+ * 这条时间刻度**距今多久**（时间线用）；解析不出绝对刻度、或刻度还没到 → 空串。
+ *
+ * 与 `isStampPast` 共用同一套解析、同一个 UTC+8 基准、同一条「粒度内不算」的保守口径
+ * （`parseStamp` + `dayKey8`），两者合起来才把「这个时间点是什么时候」说全：
+ * 绝对刻度回答「哪一天」，这一句回答「多久之前」。
+ *
+ * 为什么要有这一句：报告是长期共享缓存，时间线的刻度会越读越旧，而「2021-05」到今天是多久
+ * 得用户自己对着日历算 —— 时间线恰恰是跨年的那一段（履历脉络），这个距离正是「事件新旧」
+ * 的关键信息。相对表述会随阅读时间自动更新，也就不存在「缓存旧了说法就错」的问题。
+ * 「近期动态」刻意不加：那边的日期都在最近几十天内，扫一眼就有数，而它每行右侧已被情绪标占住。
+ *
+ * 说法粗细跟着粒度和真实间隔走（与 isStampPast 的粒度口径一致，同一份数据两处不会各说各的）：
+ *   · 到日 → 今天 / 昨天 / N 天前（< 30）/ N 个月前（< 365）/ N 年前
+ *   · 到月 → 本月 / 上个月 / N 个月前（< 12）/ N 年前
+ *   · 只到年 → 今年 / 去年 / N 年前
+ * 刻度还没到（未来）返回空串：时间线讲的是「已经发生了什么」，对未来说「-3 个月前」没有意义，
+ * 「还没发生」该由「后续关注」那边表达（见 isStampPast / stampAgo 的调用点）。
+ */
+export function stampAgo(when: string, now: string | number | Date = Date.now()): string {
+  const st = parseStamp(when)
+  if (!st) return ''
+  const key = dayKey8(now)
+  if (!key) return ''
+  const [ys, ms, ds] = key.split('-').map(Number)
+  const years = ys - st.year
+  if (years < 0) return ''
+  /* 只到年：说「今年 / 去年 / N 年前」 */
+  if (st.month === undefined) {
+    if (years === 0) return '今年'
+    return years === 1 ? '去年' : `${years} 年前`
+  }
+  const months = years * 12 + (ms - st.month)
+  if (months < 0) return ''
+  /* 只到月：说「本月 / 上个月 / N 个月前 / N 年前」 */
+  if (st.day === undefined) {
+    if (months === 0) return '本月'
+    if (months === 1) return '上个月'
+    return months < 12 ? `${months} 个月前` : `${Math.floor(months / 12)} 年前`
+  }
+  /* 到日：先按自然日算间隔（两边都归一到 UTC+8 的日历日，跨月跨年由 UTC 时间戳自己处理） */
+  const days = Math.round(
+    (Date.UTC(ys, ms - 1, ds) - Date.UTC(st.year, st.month - 1, st.day)) / 86400000
+  )
+  if (days < 0) return ''
+  if (days === 0) return '今天'
+  if (days === 1) return '昨天'
+  if (days < 30) return `${days} 天前`
+  if (days < 365) return `${Math.floor(days / 30)} 个月前`
+  return `${Math.floor(days / 365)} 年前`
+}
+
+/**
  * 最近 7 天（含今天）的统计窗口。
  *
  * 刻意用「滚动 7 天」而不是「本周一至今」：自然周口径下每周一打开周报几乎必然没有素材，

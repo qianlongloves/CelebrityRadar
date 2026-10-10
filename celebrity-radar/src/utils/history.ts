@@ -103,8 +103,18 @@ export async function listRecentHistory(limit: number): Promise<HistoryRow[]> {
   return out
 }
 
-export async function clearHistory(): Promise<void> {
+/**
+ * 清空查询历史。**失败必须让调用方知道**（与 removeFavorite 同理）：吞掉 error 的话，
+ * 页面已经显示「已清空」并抹掉列表，下次进来记录又全在，用户只会以为「清空是假的」。
+ * 返回是否真的清掉（未登录视作无需清、返回 true）。
+ */
+export async function clearHistory(): Promise<boolean> {
   const userId = useAuth.getState().userId
-  if (!userId) return
-  await table('history').delete().eq('openid', userId)
+  if (!userId) return true
+  const { error } = await table('history').delete().eq('openid', userId)
+  if (error) {
+    diagLog('warn', 'db', `history 清空失败：${error.message ?? error}`)
+    return false
+  }
+  return true
 }

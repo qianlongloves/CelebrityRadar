@@ -2,7 +2,7 @@
 
 /**
  * 关注流刷新的成本口径与轮转（批 3，2026-10-09）
- * ＋ 本地调试的会员身份覆写（config/local.ts 的 debug.memberOverride）
+ * ＋ 会员身份的来源（2026-10-10：端上只剩数据库一个来源，本机开关已移除）
  *
  * 批 3 对付的是**全项目最大的一笔成本敞口**：关注流每次下拉刷新，会对每位关注对象
  * 各发一路检索，而 listFollows 按「最近关注」倒序 ⇒ 原来的 `follows.slice(0, 10)`
@@ -14,8 +14,9 @@
  *   轮转 —— 超上限时按「最久未刷新」优先，从没刷过的排最前。
  *   如实 —— 埋点与文案报**真正刷成**的人数（原先报的是关注总数，会系统性高估一倍）。
  *
- * 另有会员身份覆写：它必须**先于**真实判定生效（否则真实是会员的账号测不出免费档），
- * 且**不写库**（`users.membership` 只由 payCallback 写）。
+ * 另有会员档位：免费 10 次 / 会员 20 次（P2-30），身份一律来自数据库 `users.membership`
+ * —— 曾经的本机开关（debug.memberOverride）能「换身份」，于是端上按会员走、云端按
+ * memberships 判免费，切了会员档位也没效果；已移除，见文件末尾那条防回归用例。
  */
 
 const fs = require('fs')
@@ -51,7 +52,6 @@ function fresh({ cloud = true, flags = {} } = {}) {
     disableAskQuota: false,
     disableRefreshQuota: false,
     disableCooldown: false,
-    memberOverride: 'off',
     ...flags
   })
   if (cloud) configureCloud()
@@ -65,15 +65,21 @@ function login(id = 'me') {
 }
 
 /**
- * 记下每一次检索请求。`emptyFor` 给出某人的名字前缀时，那一路返回零条 ——
+ * 记下每一次检索请求。`emptyFor` 给出某人的**名字**时，那个人的每一路都返回零条 ——
  * 用来造「检索可用但这个人在主流媒体上就是没动静」这种真实结果。
+ *
+ * 判空按**名字**而不是整串 query：`fetchNews` 走降级阶梯（utils/search.ts），同一个人的
+ * 第一档是「P1 近期 新闻 动态 言论」、第二档是去掉后缀的「P1」—— 按 `startsWith('P1 ')`
+ * 判会漏掉第二档，于是「没动静的人」在第二档又捞出了内容，用例前提当场失效
+ * （这本身也是那条阶梯真实起作用的证据）。
  */
 function spySearch(emptyFor = null) {
   const calls = []
+  const person = emptyFor ? emptyFor.trim() : null
   env.registerCloudFn('aiProxy', (data) => {
     if (data.action !== 'search') return { ok: false }
     calls.push(data)
-    if (emptyFor && String(data.query).startsWith(emptyFor)) return { ok: true, pages: [] }
+    if (person && String(data.query).split(' ')[0] === person) return { ok: true, pages: [] }
     return { ok: true, pages: [{ name: '标题', url: 'https://news.example.com/a', snippet: '正文' }] }
   })
   return calls
@@ -89,6 +95,48 @@ const namesOf = (calls) => new Set(calls.map((c) => String(c.query).split(' ')[0
 /* ------------------------------------------------- 检索口径（省钱的那一刀） */
 
 describe('关注流刷新：只走主线（批 3）', () => {
+  /* ---------- 检索降级阶梯（2026-10-10，产品要求「付费的必须查得到」） ---------- */
+
+  it('第一档抓空就换句式再试，有内容即停（不白花后一档的钱）', async () => {
+    const { load } = fresh()
+    const calls = []
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action !== 'search') return { ok: false }
+      calls.push(data)
+      /* 带「近期」后缀那一档永远空 —— 模拟后缀词把排序拉向新闻体、反而挤掉一手内容 */
+      if (String(data.query).includes('近期')) return { ok: true, pages: [] }
+      return { ok: true, pages: [{ name: '标题', url: 'https://news.example.com/x', snippet: '正文' }] }
+    })
+    const { fetchNews } = load('utils/search')
+
+    const news = await fetchNews('张三', { socialCount: 0 })
+
+    eq(news.length, 1, '第二档（去掉后缀的纯人名）捞到了内容')
+    eq(calls.length, 2, '第一档空即降级；第二档有内容就停，不白花后面那一档')
+    ok(String(calls[0].query).includes('近期'), '第一档是原句式')
+    eq(calls[1].query, '张三', '第二档只留人名')
+    eq(calls[0].freshness, 'oneMonth', '第一档仍是 30 天口径')
+  })
+
+  it('阶梯全部抓空时返回空数组（不是 null）—— 判据是「通道可用但没内容」', async () => {
+    const { load } = fresh()
+    const queries = []
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action !== 'search') return { ok: false }
+      /* 记整个 data（下面还要断 freshness），不能只记 query */
+      queries.push(data)
+      return { ok: true, pages: [] }
+    })
+    const { SEARCH_COUNTS } = load('config/benefits')
+    const { fetchNews } = load('utils/search')
+
+    const news = await fetchNews('冷门人物', { socialCount: 0 })
+
+    deepEq(news, [], '空数组 = 抓到了但没内容（cache.ts 判 nonews）；null 才代表通道未就绪')
+    eq(queries.length, SEARCH_COUNTS.mainFreshnessLadderDays.length, '阶梯每一档都试过了')
+    eq(queries[queries.length - 1].freshness, 'oneYear', '最后一档放宽到一年，而不是 noLimit')
+  })
+
   it('批量刷新：每位关注只发一路，且不再带社交站点白名单', async () => {
     const { load } = fresh()
     login()
@@ -174,7 +222,28 @@ describe('关注流刷新：只走主线（批 3）', () => {
     env.registerCloudFn('quotaGuard', () => ({ ok: true, count: 2, allowed: true, limit: 10 }))
     const { consumeRefreshQuota } = load('utils/cache')
 
-    deepEq(await consumeRefreshQuota('me'), { allowed: true, remaining: 8 })
+    /* `limit` 一并回报：2026-10-10 起刷新上限按档位分叉，调用方（错误文案）要知道这一档是多少；
+       `unlimited` 是调试开关的独立信号（见 utils/cache.ts#consumeRefreshQuota），正常态恒为 false */
+    deepEq(await consumeRefreshQuota('me'), { allowed: true, remaining: 8, limit: 10, unlimited: false })
+  })
+
+  it('P2-30：调试开关只松闸门、不改数字（刷新侧的 remaining 也照实）', async () => {
+    /*
+     * 生成侧那个 bug 的镜像（本机反馈「弹窗次数不对」时顺带对齐的）：此前开关打开时
+     * 把 remaining 报成满额，而「剩余 N 次刷新」这句话会被直接写进提示文案给用户看。
+     * 现改为数字照实、措辞交给 unlimited —— 与 utils/quota.ts 同一套拆法。
+     */
+    const { load } = fresh({ flags: { disableRefreshQuota: true } })
+    login()
+    env.registerCloudFn('quotaGuard', () => ({ ok: true, count: 11, allowed: false, limit: 10 }))
+    const { consumeRefreshQuota } = load('utils/cache')
+
+    const res = await consumeRefreshQuota('me')
+
+    eq(res.allowed, true, '闸门被放开：云端判越界也放行')
+    eq(res.remaining, 0, '数字照实（夹到 0），不再为开挂圆场报满额')
+    eq(res.limit, 10)
+    eq(res.unlimited, true, '展示方据此少说那句「剩余 N 次刷新」')
   })
 
   it('P2-30：旧版云函数不返回 allowed/limit 时回落同源常量（行为与从前一致）', async () => {
@@ -189,6 +258,37 @@ describe('关注流刷新：只走主线（批 3）', () => {
     const over = await consumeRefreshQuota('me')
     eq(over.allowed, false, 'count=11 已越界')
     eq(over.remaining, 0, 'remaining 夹到 0，不出现负数')
+  })
+
+  /*
+   * 2026-10-10：刷新上限按档位分叉（免费 10 / 会员 20）。上面几条都是非会员态，
+   * 与免费档的取值一致所以照样通过 —— 这一条专门钉住「兜底也要按身份取」，
+   * 否则会员会拿到免费档的 10 次（云端不可用时静默缩水，用户只会觉得「会员买了没用」）。
+   */
+  it('P2-30：会员身份下兜底用会员档 20 次（免费档仍是 10）', async () => {
+    const { load } = fresh()
+    login()
+    /* 会员身份只能从数据库来（端上的本机开关已移除）：放一行未过期的 membership 即会员 */
+    env.db.__seed('users', [
+      {
+        _id: 'u1',
+        _openid: 'me',
+        membership: { plan: 'monthly', expires_at: new Date(Date.now() + 864e5).toISOString() }
+      }
+    ])
+    let count = 11
+    env.registerCloudFn('quotaGuard', () => ({ ok: true, count }))
+    const { consumeRefreshQuota } = load('utils/cache')
+
+    const member = await consumeRefreshQuota('me')
+    eq(member.limit, 20, '会员档兜底 20')
+    eq(member.allowed, true, 'count=11 在会员档（20）内 —— 免费档此时已经拦下')
+
+    count = 21
+    const over = await consumeRefreshQuota('me')
+    eq(over.allowed, false, 'count=21 越界')
+    eq(over.limit, 20)
+    eq(over.remaining, 0)
   })
 })
 
@@ -271,7 +371,16 @@ describe('关注流刷新：超上限时轮转（批 3）', () => {
     const out = await refreshAllFeeds(follows(3))
     await tick()
 
-    eq(calls.length, 3, '三个人都问过了')
+    /*
+     * P1 会试满降级阶梯（原句式 → 去掉后缀），另外两位第一档就有内容、各只 1 次。
+     * 阶梯长度从真源取，改阶梯配置时这条断言不用跟着改。
+     */
+    const { SEARCH_COUNTS } = load('config/benefits')
+    eq(
+      calls.length,
+      2 + SEARCH_COUNTS.mainFreshnessLadderDays.length,
+      '2 位第一档命中各 1 次，P1 试满阶梯'
+    )
     eq(out.refreshed, 2, '只有两个人有素材可落库')
     /* events 的落库结构是 { event, person_key, props } —— 自定义字段全在 props 里 */
     const ev = env.db.__dump('events').find((e) => e.event === 'refresh_feed')
@@ -293,16 +402,20 @@ describe('关注流刷新：超上限时轮转（批 3）', () => {
   })
 })
 
-/* ----------------------------------------------------- 会员身份覆写（调试） */
+/* ---------------------------------------- 会员身份的来源（无本机开关） */
 
-describe('会员身份覆写 config.debug.memberOverride', () => {
-  const memberRow = () => ({
+describe('会员身份只有一个来源：数据库 users.membership', () => {
+  /** 未过期（默认 +1 天）= 会员；传负数 = 已过期 */
+  const memberRow = (expiresInDays = 1) => ({
     _id: 'u1',
     _openid: 'me',
-    membership: { plan: 'month', expires_at: new Date(Date.now() + 864e5).toISOString() }
+    membership: {
+      plan: 'month',
+      expires_at: new Date(Date.now() + expiresInDays * 864e5).toISOString()
+    }
   })
 
-  it("'off'：不覆写，按云端真实发货结果判定", async () => {
+  it('库里有未过期的 membership ⇒ 会员，套餐名与剩余天数一并给出（会员中心要显示）', async () => {
     const { load } = fresh()
     login()
     env.db.__seed('users', [memberRow()])
@@ -311,73 +424,125 @@ describe('会员身份覆写 config.debug.memberOverride', () => {
 
     eq(st.member, true)
     eq(st.plan, 'month')
+    eq(st.daysLeft, 1, '剩余天数由 expires_at 现算（页面上的「xx 天后到期」靠它）')
   })
 
-  it("'monthly'：强制会员，档位与剩余天数一并给出（会员中心要显示套餐名）", async () => {
-    const { load } = fresh({ flags: { memberOverride: 'monthly' } })
+  it('membership 已过期 ⇒ 非会员（判定只认 expires_at，不看 plan）', async () => {
+    const { load } = fresh()
     login()
-    /* 刻意不放 users 行：覆写不该依赖库里的那一行 */
-    const st = await load('utils/member').readMemberState()
-
-    eq(st.member, true)
-    eq(st.plan, 'monthly')
-    eq(st.daysLeft, 30)
-    ok(st.expiresAt, '要有到期时间，否则页面的「xx 天后到期」没得算')
-  })
-
-  it("'free'：能盖住真实的会员身份 —— 否则真实是会员的账号测不出免费档", async () => {
-    const { load } = fresh({ flags: { memberOverride: 'free' } })
-    login()
-    env.db.__seed('users', [memberRow()]) // 真实身份是会员
+    env.db.__seed('users', [memberRow(-1)])
 
     const st = await load('utils/member').readMemberState()
 
-    eq(st.member, false, '覆写必须先于真实判定生效')
+    eq(st.member, false, '过期就该降级，哪怕行还在、plan 还写着 month')
     eq(st.plan, null)
   })
 
-  it('覆写不写库：users.membership 一个字段都不动', async () => {
-    const { load } = fresh({ flags: { memberOverride: 'annual' } })
+  it('读不到 users 行 ⇒ 非会员，且不抛错（保守，不放大免费额度）', async () => {
+    const { load } = fresh()
     login()
-    env.db.__seed('users', [memberRow()])
 
-    await load('utils/member').readMemberState()
+    const st = await load('utils/member').readMemberState()
 
-    eq(env.db.__dump('users')[0].membership.plan, 'month', 'membership 只能由 payCallback 写')
+    eq(st.member, false)
+    eq(st.plan, null)
   })
 
-  it('覆写贯通到业务闸门：强制免费时「刚生成过」的刷新冷却生效', async () => {
-    const { load } = fresh({ flags: { memberOverride: 'free' } })
+  it('身份贯通到业务闸门：非会员「刚生成过」的刷新提醒成立', async () => {
+    const { load } = fresh()
     login()
-    env.db.__seed('report_cache', [
-      {
-        _id: 'P#tech',
-        state: 'ready',
-        report: {
-          personKey: 'P#tech',
-          name: 'P',
-          generatedAt: new Date(Date.now() - 3600000).toISOString()
-        }
-      }
-    ])
+    const report = {
+      personKey: 'P#tech',
+      name: 'P',
+      generatedAt: new Date(Date.now() - 3600000).toISOString()
+    }
+    env.db.__seed('report_cache', [{ _id: 'P#tech', state: 'ready', report }])
 
-    const out = await load('utils/cache').getOrBuildReport('P#tech', { force: true })
+    const cooling = await load('utils/cache').isFreeRefreshCooling(report)
 
-    eq(out.refreshCooled, true, '说明覆写真的走到了 cache.ts 的闸门，不只是 member.ts 里的一个孤立函数')
+    eq(cooling, true, '说明身份真的走到了 cache.ts 的读取，不只是 member.ts 里的一个孤立函数')
   })
 
-  it('消费方只有 member.ts 一处（否则会出现半生效的会员身份）', () => {
+  it('端上不存在第二个身份来源：没有任何本地会员开关（防回归）', () => {
+    /*
+     * 曾有 `config/local.ts` 的 `debug.memberOverride`：本机把端上切成会员，而云端按
+     * memberships 权威表判 ⇒ 「切了会员档位没效果、加厚检索没效果」而界面毫无异常，
+     * 极易误判成档位功能坏了。它也让「谁是会员」在端上有了配置与数据库两个来源，
+     * 已于 2026-10-10 移除。
+     * 这里只查**真实声明**（字段名 / 常量名），注释里追述历史不算 —— 免得后人
+     * 为了写清「为什么没有它」反而把这条用例弄红。
+     */
     const files = fs.readdirSync(path.join(SRC, 'utils')).filter((f) => f.endsWith('.ts'))
-    const users = files.filter((f) => {
-      const src = read(path.join(SRC, 'utils', f))
-      return src.includes("from './debug'") && src.includes('MEMBER_OVERRIDE')
-    })
+    const offenders = files.filter((f) => /MEMBER_OVERRIDE/.test(read(path.join(SRC, 'utils', f))))
 
-    eq(users.length, 1, `只该有 member.ts 读这个开关，实际：${users.join(', ')}`)
-    eq(users[0], 'member.ts')
+    eq(offenders.length, 0, `不该再有会员覆写开关，实际：${offenders.join(', ')}`)
+
+    const tpl = read(path.join(SRC, 'config', 'local.example.ts'))
+    notOk(/^\s*memberOverride\s*:/m.test(tpl), '模板里不该再有这个字段（留着就会被配回来）')
     notOk(
       /membership\s*=\s*\{/.test(read(path.join(SRC, 'utils/member.ts'))),
-      '覆写也不能顺手把 membership 写回库里'
+      '身份判定也不能顺手把 membership 写回库里（那只能由 payCallback 写）'
     )
+  })
+})
+
+/* ------------------------------------ 检索拆路：人物背景线（P1，2026-10-10） */
+
+/*
+ * 「档案 / 履历 / 时间线」的资料**不进新闻流**（出生地、学历、生平节点），而生成时只发了一条
+ * 「近期 30 天新闻」的检索 —— 用错尺子，这就是这几节此前常年为空的原因。
+ * P1 给它单开一路：不限时间（noLimit）+ 明确的「找资料」语义，且**只在报告生成路径**启用
+ * （feed 刷新是每日 10 次的常态动作，多一路等于常态成本翻倍而用户几乎无感）。
+ */
+describe('人物背景线 fetchBackground（P1）', () => {
+  it('一路只管一件事：不限时间 + 「找资料」语义，且不带社交白名单', async () => {
+    const { load } = fresh()
+    const calls = spySearch()
+
+    await load('utils/search').fetchBackground('甲', 8)
+
+    eq(calls.length, 1, '背景线只发一路')
+    eq(calls[0].freshness, 'noLimit', '履历不随时间变：窗口越窄越搜不到')
+    ok(
+      String(calls[0].query).includes('出生地'),
+      `背景线要有明确的「找资料」语义，而不是又一条新闻查询：${calls[0].query}`
+    )
+    eq(calls[0].include, undefined, '背景线不要社交站点白名单')
+    eq(calls[0].count, 8)
+  })
+
+  it('count <= 0 = 完全不启用这一路（连请求都不发）', async () => {
+    const { load } = fresh()
+    const calls = spySearch()
+
+    const out = await load('utils/search').fetchBackground('甲', 0)
+
+    eq(calls.length, 0, '钱花在「发起了一次检索」上，只把条数降到 0 是省不下钱的')
+    deepEq(out, [], '返回空数组而不是 null：调用方要能直接拿来拼')
+  })
+
+  it('背景线失败一律吞掉返回 null —— 它是补充，主线才是判据', async () => {
+    const { load } = fresh()
+    env.registerCloudFn('aiProxy', () => ({ ok: false, kind: 'unconfigured' }))
+
+    eq(
+      await load('utils/search').fetchBackground('甲', 8),
+      null,
+      '不能因为它挂掉就让整次生成失败（与社交支线同一个取舍）'
+    )
+  })
+
+  it('报告生成并行取两路、档位跟着深度模式；feed 刷新一路都不多（源码级，防回归）', () => {
+    const src = read(path.join(SRC, 'utils/cache.ts'))
+
+    ok(
+      /Promise\.all\(\[[\s\S]*?fetchNews\([\s\S]*?fetchBackground\(/.test(src),
+      '两路必须并行：串行会把首次生成的等待拉长近一倍'
+    )
+    ok(src.includes('DEEP_BG_COUNT : BG_COUNT'), '档位跟着深度模式走：免费 8 条 / 会员 12 条')
+
+    const feedOpts = src.match(/const FEED_SEARCH_OPTS[^\n]*/)
+    ok(feedOpts, '前提：FEED_SEARCH_OPTS 仍在')
+    notOk(/background/i.test(feedOpts[0]), 'feed 刷新不该吃背景线的钱')
   })
 })

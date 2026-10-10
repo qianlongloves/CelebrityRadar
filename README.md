@@ -6,7 +6,7 @@
 [![Taro](https://img.shields.io/badge/Taro-3.6-07c160.svg)](https://taro-docs.jd.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-572%20passing-success.svg)](#开发与测试)
+[![Tests](https://img.shields.io/badge/tests-688%20passing-success.svg)](#开发与测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 > 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 人物档案 / 动态 / 语录 / 点评 / 争议与回应 / 时间线 / 名词解释…），再在端上聚合出词云、情绪走势与热度趋势。
@@ -84,7 +84,7 @@
 
 ### 会员（freemium）
 
-- **额度** —— 免费版每日 3 次主动生成、会员 30 次（缓存命中不计次）；AI 提问免费 5 次 / 会员 30 次；配额在「我的」页透明展示
+- **额度** —— 免费版每日 3 次主动生成、会员 30 次（缓存命中不计次；**周报与报告共用这一池**）；AI 提问免费 5 次 / 会员 30 次（与生成分开计数，回答成功才计数）；关注动态刷新两版**同为**每日 10 次；免费档另有「同一份报告生成后 12 小时内不重复生成」的冷却，会员不受限。这些既在「我的」页的配额卡上展示，也在会员中心的**「额度与次数一览」**里逐条列全（含关键词 5 个 / 监控 5 人 / 提问 120 字这类容量与输入上限）；所有数值的唯一来源是 `src/utils/member.ts#MEMBER_BENEFITS`，页面与闸门都引用它，不写死数字
 - **「质」权益** —— **模型供应商自选**（DeepSeek / 通义千问 / 智谱 GLM / Moonshot 任选，key 全在云函数，用户零配置）+ 模型档位（免费版锁定「极速版」，会员可用「标准版 / 深度推理」；换供应商时档位清单整组跟着换，用户选的那一档不变）+ 报告**深度模式**（检索加厚 + 对比视角 / 风险提示 / 信源分歧三段专享内容）
 - **定价** —— 月 ¥9.9 / 季 ¥25 / 年 ¥68；**价格源唯一**（云函数 `payCreate` 的 `PLANS`，端上拉取展示，改价无需发版）
 
@@ -266,6 +266,26 @@ npm run build:h5       # H5 端构建（调试用）
 - **`project.private.config.json`** —— 微信开发者工具的私有工程配置（你自己的 appid 与工具设置）。不配则开发者工具里每次都要重设 appid 等参数
 - **`.env`** —— 云函数部署密钥（`DEEPSEEK_API_KEY` / `BOCHA_API_KEY` …），由 `cloudbaserc.json` 以 `${env.XXX}` 引用。不配则云函数部署后上游 key 为空，检索与生成都失败
 
+### 权益与价格（改一个文件就够）
+
+会员额度、每日次数、冷却、防滥用上限、云端检索与字符上限、套餐价格与天数，
+以及报告的条数目标 / 裁剪上限 / 检索厚度，全部写在 **`src/config/benefits.ts`** —— 唯一真源。
+
+云函数各自独立打包上传、云环境里 require 不到端上的 TS，所以云端用的是**生成出来的副本**：
+
+```bash
+# 1. 改 src/config/benefits.ts
+npm run config:sync     # 2. 把副本刷进 cloudfunctions/{aiProxy,quotaGuard,payCreate}/
+npm test                # 3. 校验：漏了第 2 步会红（14-config-sync.js 比对真源与副本）
+npm run config:check    # 只读校验，CI 用（有差异则 exit 1）
+```
+
+副本（`cloudfunctions/*/benefits.config.js`）是**自动生成**的，文件头写着「请勿手改」；
+改完要**重新部署对应云函数**才生效，端上随下次发版。
+
+**仍为手工同步**：`aiProxy` 与 `hotBoardRefresh` 两份 `llm.config.js`（含 `resolveLlm` 函数与
+各家 Key 变量名，不是纯数值，供应商增删本身也需要人工验证）。
+
 ---
 
 ## 配置说明
@@ -306,7 +326,8 @@ npm run build:h5       # H5 端构建（调试用）
 - **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** —— 三个定时云函数各自的环境变量（**三者必须是不同模板**，否则互相吃掉一次性订阅授权）。❌ 不进包
 - **`WX_APPSECRET`** —— 仅 `dbInit` 的环境变量（换 access_token 建索引时用）。❌ 不进包
 - **`DB_ADMIN_TOKEN`** —— 仅 `dbInit` 的环境变量（自定义口令，写操作的闸门）。❌ 不进包
-- **`AI_PROXY_TEST_TOKEN`** —— 仅 `aiProxy` 的环境变量（`test` 付费探针的口令；**不配则该动作一律拒绝**，这是期望的默认状态）。为运维口令而非部署项，通常只在控制台排障时临时加。❌ 不进包
+- **`AI_PROXY_TEST_TOKEN`** —— 仅 `aiProxy` 的环境变量（`test` 付费探针的口令；**不配则该动作一律拒绝**，这是期望的默认状态）。为运维口令而非部署项，通常只在控制台排障时临时加。探针会一并报出**第二检索源的连通性与耗时** —— 两家都在境外，从境内云函数调用要绕国际出口，这是判断跨境链路能不能用的唯一入口。❌ 不进包
+- **`AI_PROXY_RAW_LOG`** —— 仅 `aiProxy` 的**可选**环境变量（云端原始报文打印，**写 `on` 才开**）。它补的是端上看不到的那一半：`local.ts` 的 `debug.rawIoLog` 只打**云函数的返回**，「上游到底回了什么」看不到，而大模型的问题多半出在那一半（上游 200 但结构异常、输出被 `max_tokens` 截断、检索只回 3 条）。开了之后 `chat:req` / `chat:upstream` / `chat:err` / `search:primary` / `search:backup` 会进云函数日志；**默认关闭，且一律截断、不打正文**（云函数日志有大小上限，几万字报告灌进去会挤掉同一次调用的计费日志）。⚠ **这些日志在「云开发控制台 → 云函数 → 日志」里，不在微信开发者工具的 Console** —— 后者是端上的 console，两处是两套东西，找错地方会以为「没打印」。❌ 不进包
 - **`WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID`** —— `payCreate` 的环境变量。❌ 不进包
 - **`PAY_ADMIN_TOKEN`** —— 仅 `payCallback` 的环境变量（退款 / 手动对账运营写口的口令；**不配则写口一律拒绝**）。❌ 不进包
 - **`PAY_CALLBACK_GUARD`** —— 仅 `payCallback` 的**可选**环境变量，灰度开关：`log`（默认，端上调用只记日志）/ `strict`（拒绝端上调用）/ `off`（不判）。真机日志确认过回调形态后再切 `strict`。❌ 不进包
@@ -369,6 +390,8 @@ npm run build:h5       # H5 端构建（调试用）
 
 ```
 BOCHA_API_KEY=...
+SERPER_API_KEY=...      # 可选：第二检索源（Google 索引；邮箱注册即送 2500 次，无需信用卡）
+TAVILY_API_KEY=...      # 可选：第二检索源备选（面向 LLM；1000 次/月，同样无需信用卡）
 DEEPSEEK_API_KEY=...
 QWEN_API_KEY=...
 ZHIPU_API_KEY=...
@@ -386,7 +409,7 @@ tcb fn deploy aiProxy       -e <your-env-id>
 
 `cloudbaserc.json` 已声明函数、环境变量与定时器，逐个 `tcb fn deploy <函数名>` 即可。
 
-- **`aiProxy`** —— 平台代付上游密钥（`search` / `chat`）+ **云端闸门**（会员身份读 `memberships`、每日上限按 `quota.config.js`、防滥用就地自增 `ai_calls`、素材加厚按 `count` 分档）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）+ **共享缓存写口**（`action:'report'`：`acquire` / `release` / `save` / `saveFeed`）；**供应商由端上请求指定**（用户自选），云端只兜底。触发：端上调用；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`）+ `OPENAI_API_KEY`（默认用不上）+ `AI_PROXY_TEST_TOKEN`（可选：`test` 探针口令，**不配则该动作一律拒绝**）
+- **`aiProxy`** —— 平台代付上游密钥（`search` / `chat`）+ **云端闸门**（会员身份读 `memberships`、每日上限按 `quota.config.js`、防滥用就地自增 `ai_calls`、素材加厚按 `count` 分档）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）+ **共享缓存写口**（`action:'report'`：`acquire` / `release` / `save` / `saveFeed`）；**供应商由端上请求指定**（用户自选），云端只兜底。触发：端上调用；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`）+ `SERPER_API_KEY` / `TAVILY_API_KEY`（可选：第二检索源，**任填其一**；都不填则只用博查）+ `OPENAI_API_KEY`（默认用不上）+ `AI_PROXY_TEST_TOKEN`（可选：`test` 探针口令，**不配则该动作一律拒绝**）+ `AI_PROXY_RAW_LOG`（可选：云端报文打印，**写 `on` 才开**；日志在云开发控制台看）
 - **`quotaGuard`** —— 配额计数权威（原子自增 + 服务端日期），`refresh` / `generate` / `ask` 三类。触发：端上调用；环境变量：—
 - **`contentCheck`** —— 内容安全机审（云调用 `security.msgSecCheck`），送检源 = AI 提问。触发：端上调用；环境变量：—
 - **`hotBoardRefresh`** —— 热门名人榜每日生产（写 `hot_board`）。触发：定时 06:30；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（定时任务没有端上偏好，取 `LLM_PROVIDER`，默认 DeepSeek，因此**这家必须配 Key**）
@@ -567,7 +590,7 @@ celebrity-radar/
 │   │   └── agreement/          # 隐私与免责
 │   ├── components/             # person-card / favorites-view / report-loading / share-poster / qa-panel 等
 │   ├── utils/                  # 业务与云访问层（48 个模块，见「核心模块」）
-│   ├── config/                 # public.ts（公共配置）/ local.ts（本地配置，不进库）/ domains / hot / filters / notices
+│   ├── config/                 # benefits.ts（权益与价格真源）/ public.ts（公共配置）/ local.ts（本地配置，不进库）/ domains / hot / filters / notices
 │   ├── stores/                 # zustand store
 │   ├── styles/                 # 主题变量、底栏图标
 │   └── custom-tab-bar/         # 自定义底部菜单
@@ -582,7 +605,8 @@ celebrity-radar/
 │   ├── riskWatch/              # 名人风险监控（定时 09:40，拒绝端上调用）
 │   ├── hotBoardRefresh/        # 热门名人榜每日生产（定时 06:30；端上仅 ensure，force 限运维）
 │   └── dbInit/                 # 运维工具（schema.js 是库结构单一事实源）
-├── test/                       # 本地单测（11 个用例文件 / 572 条用例）
+├── test/                       # 本地单测（14 个用例文件 / 688 条用例）
+├── scripts/                    # 仓库脚本（sync-config.js：权益真源 → 云函数副本）
 ├── config/                     # Taro 构建配置（dev / index / prod）
 ├── cloudbaserc.json            # CloudBase 部署描述（函数 + 环境变量 + 定时器）
 ├── .env.example                # 云函数部署密钥模板
@@ -641,20 +665,21 @@ celebrity-radar/
 ## 开发与测试
 
 ```bash
-npm test          # tsc 编译测试产物 + 跑全部用例（572 条，纯本地、不连云）
+npm test          # tsc 编译测试产物 + 跑全部用例（688 条，纯本地、不连云）
 npm run test:only # 跳过 tsc，直接跑
 ```
 
 测试特点：**零新增依赖**（自建内存版 CloudBase + Taro / `wx` 替身 + 极简断言库），断言对象是**编译后的产品代码本身**，
 运行不需要云环境、开发者工具或上游网络。不覆盖页面渲染、真机交互、云端函数执行、支付与推送。
 
-提交前请确认（5 条）：
+提交前请确认（6 条）：
 
-1. `npm test` 全绿（当前 572 / 572）
+1. `npm test` 全绿（当前 688 / 688）
 2. `npx tsc --noEmit` 无新增告警
 3. 检查小程序**主包体积**（硬上限 2MB，当前构建产物约 1.3MB）；新增依赖前先核对构建产物
 4. `src/config/local.ts` 与 `debug` 开关**不要**提交（已在 `.gitignore` 内）
 5. 改动涉及数据模型时，同步更新 `cloudfunctions/dbInit/schema.js`（库结构的单一事实源）
+6. 改了权益 / 价格时，跑过 `npm run config:sync`（真源与云端副本不一致会让 `npm test` 红）
 
 ---
 

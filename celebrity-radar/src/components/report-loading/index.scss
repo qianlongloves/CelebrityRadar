@@ -18,6 +18,12 @@
   100% { background-position: 0 50%; }
 }
 
+/* 刷新悬浮卡的入场：轻微放大 + 淡入，提醒「刚才那次点击确实生效了」 */
+@keyframes rr-pop {
+  from { transform: scale(0.92); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
 .report-loading {
   padding: 56rpx 32rpx 40rpx;
 
@@ -116,6 +122,8 @@
     margin-top: 18rpx;
     text-align: center;
     font-size: 22rpx;
+    /* 悬浮卡内宽只有 468rpx，长一点的小字会折行；给 1.5 行高，全屏态同样受益 */
+    line-height: 1.5;
     color: $text-3;
   }
 
@@ -124,6 +132,50 @@
     display: flex;
     flex-direction: column;
     gap: 20rpx;
+  }
+}
+
+/* ===== 重新生成 · 全屏加载浮层（非破坏式刷新专用，2026-10-10 四改） =====
+   铺满整屏、盖住页面，卡片垂直水平居中：从顶部「重新生成为…」点进来的用户一眼就能看到「确实在生成」。
+   卡内渲染的是与全屏等待态**同一个** LoadingBody（同尺寸、同结构、同动画），所以这里只写容器：
+   不缩放、不裁切、也**不复刻**任何 .report-loading__* 样式 —— 一旦复刻就会与全屏态走样（二次改版
+   的 scale(0.72) 就是这么走样的）。
+
+   position/z-index 由 app.scss 的 `.glow-page > .glow-overlay` 给死（1200，压过 tab 栏 999 与
+   share-poster 1000）：本组件是 .page-report 的直接子级，若只在这里写 fixed，会被
+   `.glow-page > view`（特异性 0,1,1）覆盖成 relative + z-index:1 —— 那正是「没浮在最顶层」的原因。
+   这里仍写上 position: fixed，是为了组件被复用到非 glow-page 容器时也能自证意图。 */
+.report-refreshing {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 540rpx 卡片 + 两侧留白：任何机型都留出边距，无需再算 calc */
+  padding: 0 48rpx;
+
+  /* 蒙层压在卡片之下；半透明，仍能看出底下是报告页，不至于像「跳到了另一个页面」 */
+  &__mask {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    background: rgba(20, 16, 40, 0.62);
+  }
+
+  &__card {
+    /* 定住层级压在 mask 之上；入场动画放在卡片上，避免与任何居中用的 transform 抢同一个属性 */
+    position: relative;
+    width: 540rpx;
+    padding: 24rpx 36rpx 32rpx;
+    border-radius: $radius-lg;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 20rpx 60rpx rgba(36, 37, 44, 0.2);
+    animation: rr-pop 0.28s ease-out;
   }
 }
 
