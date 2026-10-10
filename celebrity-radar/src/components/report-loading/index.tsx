@@ -9,7 +9,7 @@ import './index.scss'
 const STAGES: Array<{ at: number; label: string }> = [
   { at: 0, label: '正在检索公开网络信息…' },
   { at: 4, label: '正在阅读并筛选素材…' },
-  { at: 12, label: '正在生成六段深度报告…' },
+  { at: 12, label: '正在生成深度报告…' },
   { at: 28, label: '报告内容较长，仍在生成中…' }
 ]
 
