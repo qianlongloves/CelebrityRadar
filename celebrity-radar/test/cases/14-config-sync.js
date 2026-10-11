@@ -157,7 +157,7 @@ describe('权益配置真源 / 云端副本（config:sync 机制）', () => {
       '${REPORT_FIELD_LIMITS.analysisPointMax}',
       '${REPORT_FIELD_LIMITS.profileMax}',
       '${REPORT_FIELD_LIMITS.relationMax}',
-      '${REPORT_FIELD_LIMITS.watchMax}',
+      '${REPORT_FIELD_LIMITS.endorseMax}',
       '${REPORT_FIELD_LIMITS.conflictMax}'
     ]) {
       ok(src.includes(ref), `提示词缺少来自真源的插值：${ref}`)

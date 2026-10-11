@@ -188,10 +188,13 @@ const ready = (report: Report) => !report.degraded
  *     近期动态 / 经典名言 / AI 点评 / 争议与回应 / 风险雷达 / 时间线。
  *     这批是报告的主体，也是别处的下游：时间线被周报的「动态时间线」用，风险雷达与风险监控
  *     同源 —— 抽掉任何一节都不只是「报告页少张卡」，故一律留在免费档。
- *   · **会员档给「延伸与专享解析」** —— 商业速览 / 会员专享 / 同领域坐标 / 立场与舆情 /
- *     后续关注 / 名词解释。
- *     2026-10-12 把「立场与舆情 / 后续关注 / 名词解释」从免费档移入会员档（方案 A 轻量版）：
- *     这三节答的是「大众怎么看」「接下来盯什么」「这个词什么意思」，属延伸与解读而非核心事实。
+ *   · **会员档给「延伸与专享解析」** —— 商业速览 / 商业合作 / 会员专享 / 同领域坐标 /
+ *     立场与舆情 / 名词解释。
+ *     2026-10-12 把「立场与舆情 / 名词解释」从免费档移入会员档（方案 A 轻量版）：
+ *     它们答的是「大众怎么看」「这个词什么意思」，属延伸与解读而非核心事实。
+ *     2026-10-12 另有：原会员档的「后续关注」被「商业合作与代言」取代 —— 后者要求
+ *     「素材里已公布的未来时间点」，而素材窗口里几乎不含未来档期、实测多为空；
+ *     具名的商业合作 / 代言素材里真有，且对用户更有用（见 utils/report.ts 规则 11）。
  *     **注意它们仍在免费批次里生成**（见 utils/report.ts 的 BATCH_SPEC）—— 本次只改呈现档位，
  *     不动生成：立场与舆情仍是对比页 / 话题速览 / 问答的素材来源，砍掉生成会让那些免费功能变弱。
  *     2026-10-10 起，原「分析视图」里的三张工具视图（关键词云 / 语录主题 / 热度趋势）已删除
@@ -216,6 +219,9 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
   /* 商业价值速览（第 0 期，会员档）：非降级简版恒出卡 —— 门槛只决定卡里是速览还是
      「缺什么」的说明，两种形态都是一张可读的卡，故目录里始终列它 */
   { id: 'sec-commercial', label: '商业速览', tier: 'member', group: 'identity', visible: ready },
+  /* 商业合作与代言（2026-10-12，会员档）：取代原「后续关注」—— 具名品牌 / 合作方 + 类别 + 说明。
+     与「商业速览」同属商业面，故同组紧邻；字段在免费批次（identity）生成，此处只对会员出卡。 */
+  { id: 'sec-endorsement', label: '商业合作', tier: 'member', group: 'identity', visible: (r) => !!r.endorsements },
   /* ── 事实：素材原样统计出来的那两段（不掺模型判断），是下面「判断」的取材处 */
   { id: 'sec-dynamics', label: '近期动态', tier: 'free', group: 'facts', visible: ready },
   { id: 'sec-quotes', label: '经典名言', tier: 'free', group: 'facts', visible: ready },
@@ -250,10 +256,8 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
    * （它们回答的是「素材长什么样」而非「这个人怎么样」，见 CHANGELOG 批 25）。
    */
   { id: 'sec-stance', label: '立场与舆情', tier: 'member', group: 'judgement', visible: ready },
-  /* ── 细节与延伸：时间轴、还没发生的、看不懂的词（后两节 2026-10-12 起为会员档） */
+  /* ── 细节与延伸：时间轴、看不懂的词 */
   { id: 'sec-timeline', label: '时间线', tier: 'free', group: 'detail', visible: ready },
-  /* 后续关注（2026-10-12 移入会员档）：「接下来盯什么」是延伸服务；数据仍在免费批次生成 */
-  { id: 'sec-watchlist', label: '后续关注', tier: 'member', group: 'detail', visible: (r) => !!r.watchlist },
   /* 名词解释（2026-10-12 移入会员档）：纯阅读辅助；数据仍在免费批次生成 */
   { id: 'sec-glossary', label: '名词解释', tier: 'member', group: 'detail', visible: (r) => !!r.glossary }
 ]

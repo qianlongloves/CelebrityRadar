@@ -160,10 +160,10 @@ const PeerSchema = z.object({
   gap: looseStr()
 })
 
-/* ===== 第二批：结构化事实字段（人物档案 / 关系图谱 / 后续关注 / 名词解释 / 争议与回应） =====
+/* ===== 第二批：结构化事实字段（人物档案 / 关系图谱 / 商业合作 / 名词解释 / 争议与回应） =====
  *
  * 这一批的共同点是**事实**而不是**判断**：它们回答 who（档案）、跟谁（关系）、
- * 接下来（后续关注）、什么意思（名词解释）、吵了什么（争议与回应）。
+ * 商业面（商业合作与代言）、什么意思（名词解释）、吵了什么（争议与回应）。
  * 与 analysisPoints / stance 那类模型判断不同，事实字段**没有出处就是编造** ——
  * 故除名词解释外全部强制带 basis（素材 url），由 sanitize 里的 strictSourceOf 卡死：
  * 编一个 url 出来不会得到一条假依据，而是让**整条被丢掉**。
@@ -201,10 +201,23 @@ const RelationSchema = z.object({
   basis: looseStr()
 })
 
-/** 后续关注的一条：素材里**已公布**的时间点 + 事件 + 出处 */
-const WatchItemSchema = z.object({
-  when: looseStr(),
-  what: looseStr(),
+/**
+ * 商业合作与代言的一条（2026-10-12 取代「后续关注」）。
+ *
+ * 为什么取代 watchlist：它要求「素材里**已公布**的未来时间点」，而素材窗口只有约 30 天新闻、
+ * 里面几乎不含未来档期 —— 实测绝大多数报告为空或只有「2026-11」这类模糊刻度，对用户没有实际价值。
+ * 改为「商业合作与代言」：素材里真有**具名品牌 / 合作方**可抽，且是决策向的实体信息
+ * （与报告页「商业价值速览」同属商业面）。
+ *
+ * 事实字段：basis 指不出素材的条目不落库（同 profile / relations 那道闸门）。
+ */
+const EndorsementSchema = z.object({
+  /** 品牌 / 合作方 / 机构名（写清是谁） */
+  brand: looseStr(),
+  /** 类别：endorse 代言 / collab 联名或商务合作 / title 商业头衔或任职 / other；由 sanitize 归一 */
+  kind: looseStr(),
+  /** 一句说明：是什么合作、什么时候（说不清就空串） */
+  note: looseStr(),
   basis: looseStr()
 })
 
@@ -262,7 +275,7 @@ const REPORT_FIELDS = {
      不该让整份报告在校验这一步失败（.catch 同时兜住键缺失，故不必再叠 .default）。 */
   profile: z.array(ProfileItemSchema).catch([]),
   relations: z.array(RelationSchema).catch([]),
-  watchlist: z.array(WatchItemSchema).catch([]),
+  endorsements: z.array(EndorsementSchema).catch([]),
   glossary: z.array(GlossaryItemSchema).catch([]),
   controversies: z.array(ControversySchema).catch([]),
   /* 本系统的客观评价（批 2）：可选 —— 模型偶尔不给也不该让整份报告降级，故 .optional().catch */
@@ -391,7 +404,7 @@ export interface LlmReportFields {
   /* 第二批（免费可见）：宽松形态，字段可能缺失或非字符串，由 sanitize 内部归一 */
   profile?: Array<{ label?: string; value?: string; basis?: string }>
   relations?: Array<{ name?: string; relation?: string; note?: string; basis?: string }>
-  watchlist?: Array<{ when?: string; what?: string; basis?: string }>
+  endorsements?: Array<{ brand?: string; kind?: string; note?: string; basis?: string }>
   glossary?: Array<{ term?: string; explain?: string }>
   controversies?: Array<{ topic?: string; claim?: string; response?: string; basis?: string }>
   verdict?: { summary?: string; positioning?: string }
@@ -458,8 +471,11 @@ export interface Report {
    * 关系必须明确写在素材里，不得由「同框」「同公司」推测 —— 出处不是真素材的条目不会落库。
    */
   relations?: Array<z.infer<typeof RelationSchema>>
-  /** 第二批（免费可见）：后续关注 —— 素材里已公布的时间点 / 事件，把报告从「回顾」变成「可跟踪」 */
-  watchlist?: Array<z.infer<typeof WatchItemSchema>>
+  /**
+   * 商业合作与代言（2026-10-12，免费批次生成、会员档呈现）：具名品牌 / 合作方 + 类别 + 说明。
+   * 与「商业价值速览」同属商业面；每条带 basis（素材出处），指不出出处的条目不落库。
+   */
+  endorsements?: Array<z.infer<typeof EndorsementSchema>>
   /** 第二批（免费可见）：名词解释 —— 报告里出现的行话与背景词（唯一不带出处的字段，理由见 Schema 注释） */
   glossary?: Array<z.infer<typeof GlossaryItemSchema>>
   /**
@@ -592,7 +608,7 @@ const SYSTEM_SHARED_REALTIME = [
  * 各条字段要求池：**就是原来那份 SYSTEM_REALTIME 的正文，逐字未动**。
  * 分批时按条号取用（见 BATCH_SPEC.ruleIds 与 ruleLines()），共用条（1、14）已提到上面。
  * 为什么按条号取、而不是手抄成四份：这些条文里有大量互相引用与成段的取舍说明
- * （例如「见第 16 条」「口径同第 16 条」、watchlist 那条里对 timeline 边界的解释），
+ * （例如「见第 16 条」「口径同第 16 条」这样的互相引用），
  * 抄成四份之后它们会各自漂移 —— 而提示词措辞漂移**不报错**，只会让模型少写一块内容。
  */
 /**
@@ -629,7 +645,7 @@ const REPORT_RULES_REALTIME = [
    */
   `6. analysisPoints：${REPORT_QUOTAS.analysisPointsMin}~${REPORT_FIELD_LIMITS.analysisPointMax} 条**各自独立、就具体事件或说法给出的判断**，每条字段：point(一句完整的判断，40 字内，以句号结尾)、basis(这条判断依据的素材 url，原样复制；素材里找不到出处的写「据公开资料」)。判断必须具体到人、事、时间或具体说法，禁止「风格独特」「备受关注」「引发讨论」这类换个人名也成立的套话；各条之间不要互相重复。**整体结论不写在这里**——那是 verdict.summary 的职责（见第 16 条），这里的每一条都是「某件事怎么看」，不是「TA 这个人整体怎么样」。`,
   `7. stance：${REPORT_QUOTAS.stanceMin}~${REPORT_QUOTAS.stanceMax} 个近期热点话题上的舆论态度，每条字段：topic(话题名，12 字内)、attitude(只能是 positive/neutral/negative/mixed)、note(一句话依据，须出自素材)；素材里确实没有任何可判断的舆论态度才留空数组。`,
-  `8. timeline：素材中可确认的**已经发生**的关键事件(date + event)，给 ${REPORT_QUOTAS.timelineMin}~${REPORT_QUOTAS.timelineMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.timelineTarget} 条），同一件事只写一条；素材里确实没有可确认的事件才留空数组。**尚未发生**的未来节点（已公布的档期一类）不写在这里，写进 watchlist。`,
+  `8. timeline：素材中可确认的**已经发生**的关键事件(date + event)，给 ${REPORT_QUOTAS.timelineMin}~${REPORT_QUOTAS.timelineMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.timelineTarget} 条），同一件事只写一条；素材里确实没有可确认的事件才留空数组。**尚未发生**的未来节点（已公布的档期一类）不写在这里。`,
   /*
    * profile 的 label 收敛成「优先选常用字段」：此前完全自由发挥，于是同一个人的档案里
    * 出现「简介」「特点」「影响力」这类无信息量的字段名，且不同人物的档案彼此不可比
@@ -639,20 +655,15 @@ const REPORT_RULES_REALTIME = [
   `9. profile：结构化人物档案 ${REPORT_QUOTAS.profileMin}~${REPORT_FIELD_LIMITS.profileMax} 条（尽量给到 ${REPORT_QUOTAS.profileTarget} 条），用来让人一眼看清「是谁」，每条字段：label(字段名，8 字内；优先从这几个常用字段里选：职业、出生年份、出生地、代表作、主要成就、所属机构、活跃领域 —— 都不合适才自拟)、value(40 字内)、basis(这条事实出自的素材，写法见开头「出处（basis）写法」)。**每条都必须能在素材里找到依据，找不到的整条不要写**；不要用常识去补全素材里没有的信息（那是编造，不是补充）。`,
   `10. relations：与本人有公开关系的人，最多 ${REPORT_FIELD_LIMITS.relationMax} 条，每条字段：name(对方姓名)、relation(只能是 cooperate/mentor/rival/other，依次表示合作、师承、对手、其他)、note(一句话说明这段关系，说不清就填空串)、basis(关系出自的素材，写法见开头)。关系必须是素材里**明确写到**的（同台合作、师徒、公开竞争等），不得由「同框」「同公司」「同时出现」推测；只有单方提及也不写。`,
   /*
-   * watchlist 的 when 禁掉相对时间表述（「下月」「年底」）：报告是**长期共享缓存**，
-   * 一份三个月前的报告里写「下月」，端上既不知道该折算成哪个月（它相对的是生成那一刻），
-   * 也就无法做过期判定 —— 只能原样摆着，与页面顶部「N 天前生成」自相矛盾。
-   * 只收绝对刻度后，端上才能标出「已过期」（见 utils/time.ts#isStampPast）。
+   * 商业合作与代言（2026-10-12 取代原「后续关注」）：素材里**具名**的商业关系才是信息 ——
+   * 「与某品牌有合作」这类不指名的不写。它与 profile / relations 是同一类事实字段：
+   * 出处指不出素材的条目落不了库，故提示词必须要求 basis 来自素材。
    *
-   * 同一条注释里把 timeline / watchlist 的边界也写死（本条第 2 句 + 第 8 条）：
-   * **已经发生的进 timeline，尚未发生的进 watchlist**。此前只说了 watchlist 收"未来值得跟踪的"，
-   * 没说"已经过去的不要写" —— 而素材是 30 天窗口的新闻，里面的日期天然带过去刻度
-   * （「已于 X 日上映」这类回顾写法），模型分不清它相对"今天"是过去还是未来，于是把已经发生的
-   * 事写进了「后续关注」，一份报告里两段互相打架（同一件事既是历史又是"未来"）。
-   * 存量报告的数据已经落库，端上救不了（只能把两类过期分开标，见 pages/report/index.tsx）；
-   * 这条边界的作用是让**新报告**不再产生这类条目。
+   * 为什么取代 watchlist（原第 11 条）：那条要求「素材里已公布的**未来**时间点」，
+   * 而素材只有约 30 天新闻窗口、里面几乎不含未来档期 —— 实测多为空，是模板里唯一
+   * 「写了也几乎看不到东西」的一节。新报告不再有这一节，规则 8 也不再提它。
    */
-  `11. watchlist：未来值得跟踪的时间点或事件，只写素材里**已公布**的，最多 ${REPORT_FIELD_LIMITS.watchMax} 条，每条字段：when(已公布的时间刻度，只写**绝对时间**：能确定到日就写 YYYY-MM-DD、只到月就写 YYYY-MM（如 2026-11），**不要写「下月」「年底」这类相对说法**——报告会被长期复用，相对说法过一阵就连自己指哪个月都说不清，12 字内)、what(事件，40 字内)、basis(素材，写法见开头)。**只写尚未发生的**：素材里已公布、但时间已经过去的（已上映、已开播、已结束等）属于 timeline，不要写进这里。素材里确实没有已公布且尚未发生的时间点才留空数组（不得推测档期）。`,
+  `11. endorsements：本人公开的**商业合作与代言**，最多 ${REPORT_FIELD_LIMITS.endorseMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.endorseTarget} 条），每条字段：brand(品牌 / 合作方 / 机构名，写清是谁)、kind(只能是 endorse/collab/title/other，依次表示品牌代言、联名或商务合作、商业头衔或任职、其他)、note(一句话说明是什么合作、什么时候，40 字内；说不清就填空串)、basis(素材，写法见开头)。只写素材里**明确写到**的商业关系，不得由「出现在同一张照片 / 同一场活动」推测；只写本人这一方，不列对方的其他合作方。`,
   `12. glossary：本报告或素材里出现、普通读者可能不懂的行话或背景词（如文娱「番位」、财经「对赌」），最多 ${REPORT_FIELD_LIMITS.glossaryMax} 条，每条字段：term(词，10 字内)、explain(一句话解释，50 字内)。只解释确实出现过的词（确实没有这类词才留空数组）；解释用该词的通行含义即可（这一条答的是词义，不是关于本人的事实），不做褒贬评价。`,
   `13. controversies：近期公开争议与各方的回应，最多 ${REPORT_FIELD_LIMITS.controversyMax} 条，每条字段：topic(争议点，12 字内)、claim(争议内容，60 字内，**须写明发生时间**，时间要出自素材)、response(当事方或相关方的公开回应，40 字内；素材里没有公开回应就填空串)、basis(素材，写法见开头)。只写素材里确实存在的争议，只陈述、不评价、不裁决。`,
   /*
@@ -723,13 +734,13 @@ const sectionIdsOf = (key: TocGroupKey): string[] =>
   REPORT_TEMPLATE.filter((section) => section.group === key).map((section) => section.id)
 
 const BATCH_SPEC: Record<ReportPartKey, BatchSpec> = {
-  /* 基本档案：简介 + 三维评价 + 档案 + 关系。这一组的判断字段（16/17）需要一个全局视角，
-     故与简介、档案放在同一批里，让模型在同一段上下文里把「身份」与「评价」对齐。 */
+  /* 基本档案：简介 + 三维评价 + 档案 + 关系 + 商业合作与代言。这一组的判断字段（16/17）需要一个
+     全局视角，故与简介、档案放在同一批里，让模型在同一段上下文里把「身份」「评价」与「商业面」对齐。 */
   identity: {
-    fields: ['intro', 'verdict', 'reputation', 'consistency', 'profile', 'relations'],
-    ruleIds: [2, 9, 10, 16, 17],
+    fields: ['intro', 'verdict', 'reputation', 'consistency', 'profile', 'relations', 'endorsements'],
+    ruleIds: [2, 9, 10, 11, 16, 17],
     format:
-      '18. 只输出 JSON，格式：{"intro":string,"verdict":{"summary":string,"positioning":string},"reputation":{"positive":string,"negative":string},"consistency":{"claim":string,"act":string,"gap":string},"profile":[],"relations":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
+      '18. 只输出 JSON，格式：{"intro":string,"verdict":{"summary":string,"positioning":string},"reputation":{"positive":string,"negative":string},"consistency":{"claim":string,"act":string,"gap":string},"profile":[],"relations":[],"endorsements":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
     memberFields: false
   },
   /* 事实：动态 + 语录。**不带背景段** —— BACKGROUND_HEAD 明确要求背景
@@ -755,12 +766,12 @@ const BATCH_SPEC: Record<ReportPartKey, BatchSpec> = {
       '18. 只输出 JSON，格式：{"analysisPoints":[],"stance":[],"controversies":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
     memberFields: true
   },
-  /* 细节与延伸：时间线 + 后续关注 + 行话。时间线要靠背景段补早期经历（模板的 detail.search 含 profile 路）。 */
+  /* 细节与延伸：时间线 + 行话。时间线要靠背景段补早期经历（模板的 detail.search 含 profile 路）。 */
   detail: {
-    fields: ['timeline', 'watchlist', 'glossary'],
-    ruleIds: [8, 11, 12],
+    fields: ['timeline', 'glossary'],
+    ruleIds: [8, 12],
     format:
-      '18. 只输出 JSON，格式：{"timeline":[],"watchlist":[],"glossary":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
+      '18. 只输出 JSON，格式：{"timeline":[],"glossary":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
     memberFields: false
   }
 }
@@ -861,6 +872,15 @@ export const FIELD_OUTPUT_ESTIMATE: Record<string, { count: number; chars: numbe
       REPORT_FIELD_LIMITS.relationNoteChars +
       OUTPUT_EST_BASIS_CHARS
   },
+  endorsements: {
+    // 第 11 条：最多 endorseMax 条，每条品牌名 + 类别词（「联名」）+ 说明 + 出处
+    count: REPORT_FIELD_LIMITS.endorseMax,
+    chars:
+      REPORT_FIELD_LIMITS.endorseBrandChars +
+      8 /* 类别词（「代言」「联名」）*/ +
+      REPORT_FIELD_LIMITS.endorseNoteChars +
+      OUTPUT_EST_BASIS_CHARS
+  },
   /* 事实（facts）—— 见 BATCH_SPEC.facts 的注释：最大的一批，且是达标判定的单点 */
   dynamics: {
     // 第 3 条：3~6 条，每条 date 10 + title 40 + summary 60 + source 12 + url + sentiment 8
@@ -910,14 +930,6 @@ export const FIELD_OUTPUT_ESTIMATE: Record<string, { count: number; chars: numbe
     // 第 8 条：3~8 条（裁剪线 8，提示词目标 5 → 取大），每条日期 + 事件
     count: REPORT_FIELD_LIMITS.timelineMax,
     chars: REPORT_FIELD_LIMITS.timelineDateChars + REPORT_FIELD_LIMITS.timelineEventChars
-  },
-  watchlist: {
-    // 第 11 条：最多 4 条，每条时点 + 关注点 + 出处
-    count: REPORT_FIELD_LIMITS.watchMax,
-    chars:
-      REPORT_FIELD_LIMITS.watchWhenChars +
-      REPORT_FIELD_LIMITS.watchWhatChars +
-      OUTPUT_EST_BASIS_CHARS
   },
   glossary: {
     // 第 12 条：最多 5 条，每条词 + 解释
@@ -1224,16 +1236,18 @@ const RELATION_MAX = REPORT_FIELD_LIMITS.relationMax
 const RELATION_NAME_CHARS = REPORT_FIELD_LIMITS.relationNameChars
 const RELATION_NOTE_CHARS = REPORT_FIELD_LIMITS.relationNoteChars
 
-/* 时间线（P1，2026-10-11）：与 watchlist / glossary 同批产出（REPORT_BATCHES.detail），
+/* 时间线（P1，2026-10-11）：与 glossary 同批产出（REPORT_BATCHES.detail），
  * 但落库口径单独一组 —— 它的 date 是端上「按年分块」的输入，夹进控制符会让年份判错，
  * 见 sanitizeReport 里 timeline 处的注释。 */
 const TIMELINE_MAX = REPORT_FIELD_LIMITS.timelineMax
 const TIMELINE_DATE_CHARS = REPORT_FIELD_LIMITS.timelineDateChars
 const TIMELINE_EVENT_CHARS = REPORT_FIELD_LIMITS.timelineEventChars
 
-const WATCH_MAX = REPORT_FIELD_LIMITS.watchMax
-const WATCH_WHEN_CHARS = REPORT_FIELD_LIMITS.watchWhenChars
-const WATCH_WHAT_CHARS = REPORT_FIELD_LIMITS.watchWhatChars
+/* 商业合作与代言（2026-10-12 取代「后续关注」）：与 profile / relations 同批（identity），
+   事实字段，basis 指不出素材的条目不落库。 */
+const ENDORSE_MAX = REPORT_FIELD_LIMITS.endorseMax
+const ENDORSE_BRAND_CHARS = REPORT_FIELD_LIMITS.endorseBrandChars
+const ENDORSE_NOTE_CHARS = REPORT_FIELD_LIMITS.endorseNoteChars
 
 const GLOSSARY_MAX = REPORT_FIELD_LIMITS.glossaryMax
 const GLOSSARY_TERM_CHARS = REPORT_FIELD_LIMITS.glossaryTermChars
@@ -1868,7 +1882,7 @@ export async function buildReport(
  * 为什么需要这一层，而不是一句 `urlSet.has(u)`：模型抄 URL 的走形率相当高 —— 末尾带上中文句号、
  * 被引号或书名号包住、多一个 / 少一个尾斜杠、http 与 https 混用、丢了 # 之后那段、写成 &amp;。
  * 原先是**逐字符全等**，上面任何一处走形都让这条彻底消失：页面上的表现不是「依据不准」，而是
- * **整条档案 / 关系 / 后续关注 / 争议凭空少一条，甚至整段卡片不出**，日志里只有一句
+ * **整条档案 / 关系 / 商业合作 / 争议凭空少一条，甚至整段卡片不出**，日志里只有一句
  * 「事实字段无有效出处，剔除 N 条」。素材明明是有的，只是那串字符没抄准 ——
  * 「不确定就不呈现」这条规矩不该被用在「明明确定、只是写法不同」上。
  *
@@ -1965,10 +1979,10 @@ function sourceNameOf(
 }
 
 /**
- * 事实字段（档案 / 关系 / 后续关注 / 争议）的 basis → 媒体名，**指不出出处时返回空串**
+ * 事实字段（档案 / 关系 / 商业合作 / 争议）的 basis → 媒体名，**指不出出处时返回空串**
  * （调用方据此整条剔除）。
  *
- * 与 sourceNameOf 只差这一步，这一差分在两个字段的体裁上：档案 / 关系 / 后续关注 / 争议全是
+ * 与 sourceNameOf 只差这一步，这一差分在两个字段的体裁上：档案 / 关系 / 商业合作 / 争议全是
  * **关于本人的事实**，没有出处就等于编造 —— 退化成「据公开资料」会让一条凭空生成的事实
  * 看起来像一条有据可查的事实。故这里不给兜底出口：模型编一个出处不会换来一条假来源，
  * 只会让这条被丢掉。顺带把「媒体名为空」也当作无出处（无名来源对读者等于没有依据）。
@@ -1995,7 +2009,7 @@ function strictSourceOf(
  * 6. conflicts 是会员专享段落，缺任一侧的条目剔除（只有一方在说话不叫分歧）
  * 6b. peers（同领域坐标，会员专享，2026-10-12）：name 或 gap 为空即整条剔除
  *     （具名对象与具体差异缺一不可，避免「行业新锐」这类无锚点条目落库）；空数组则不落键
- * 7. 第二批（profile / relations / watchlist / controversies）：basis 必须是**真素材**，
+ * 7. 第二批（profile / relations / endorsements / controversies）：basis 必须是**真素材**，
  *    指不出出处就整条剔除（事实字段没有「据公开资料」这个出口，理由见 strictSourceOf）；
  *    各段另有条数与长度上限；**空数组也落库**（区别于「键不存在」= 这份报告没要过这段，
  *    见返回值处的注释）。glossary 是唯一的例外（它是词义，不是事实断言）
@@ -2044,6 +2058,10 @@ export function sanitizeReport(
   /* 关系类别归一：四档之外（含模型自造的词）一律 other —— 不硬把「亦师亦友」猜进某一档 */
   const normRelation = (r?: string): 'cooperate' | 'mentor' | 'rival' | 'other' =>
     r === 'cooperate' || r === 'mentor' || r === 'rival' ? r : 'other'
+
+  /* 商业合作类别归一：四档之外（含模型自造的词）一律 other —— 与 normRelation 同一写法 */
+  const normEndorseKind = (k?: string): 'endorse' | 'collab' | 'title' | 'other' =>
+    k === 'endorse' || k === 'collab' || k === 'title' ? k : 'other'
 
   /* 事实类出处：无素材兜底时收敛成「据公开资料」保留（无素材可点回），否则走严格校验（无出处整条剔除） */
   const factSourceOf = (basis: string | undefined): string =>
@@ -2214,14 +2232,20 @@ export function sanitizeReport(
     .filter((r) => r.name !== '' && r.basis !== '')
     .slice(0, RELATION_MAX)
 
-  const watchlist = (llm.watchlist ?? [])
-    .map((w) => ({
-      when: clipText(w.when, WATCH_WHEN_CHARS),
-      what: clipText(w.what, WATCH_WHAT_CHARS),
-      basis: factSourceOf(w.basis)
+  /*
+   * 商业合作与代言（2026-10-12，取代「后续关注」）：事实字段 —— basis 指不出素材的条目整条剔除
+   * （同 profile / relations 那道闸门）。brand 必须有；note 可空（有些合作只有品牌名，
+   * 说不清说明就不写，不编一句）。
+   */
+  const endorsements = (llm.endorsements ?? [])
+    .map((e) => ({
+      brand: clipText(e.brand, ENDORSE_BRAND_CHARS),
+      kind: normEndorseKind(e.kind),
+      note: clipText(e.note, ENDORSE_NOTE_CHARS),
+      basis: factSourceOf(e.basis)
     }))
-    .filter((w) => w.when !== '' && w.what !== '' && w.basis !== '')
-    .slice(0, WATCH_MAX)
+    .filter((e) => e.brand !== '' && e.basis !== '')
+    .slice(0, ENDORSE_MAX)
 
   /*
    * 名词解释：全项目**唯一不带出处**的模型段落（理由见 Schema 注释 —— 它答的是词义而不是
@@ -2257,7 +2281,7 @@ export function sanitizeReport(
    * 命中的列出。于是「引用 N 篇」变成端上可核对的真值（模型说它用了哪几条，不算数）——
    * 而且每条都保证能点开（命中的是素材自身的 URL）。
    *
-   * 引用位的收集已**融进上面各段循环**（动态 / 语录 / 点评 / 档案 / 关系 / 后续关注 / 争议在
+   * 引用位的收集已**融进上面各段循环**（动态 / 语录 / 点评 / 档案 / 关系 / 商业合作 / 争议在
    * matchNewsOf 命中时顺手把素材 URL 填进 citedUrl），这里只按素材自身顺序反查列举 ——
    * 不再单独跑一遍匹配，否则同一批 basis 会被 matchNewsOf 白算两遍。
    *
@@ -2310,7 +2334,7 @@ export function sanitizeReport(
     (llm.profile?.length ?? 0) -
     profile.length +
     ((llm.relations?.length ?? 0) - relations.length) +
-    ((llm.watchlist?.length ?? 0) - watchlist.length) +
+    ((llm.endorsements?.length ?? 0) - endorsements.length) +
     ((llm.controversies?.length ?? 0) - controversies.length)
   if (factDropped > 0) {
     diagLog('warn', 'db', `事实字段无有效出处，剔除 ${factDropped} 条（${personKey}）`)
@@ -2340,7 +2364,7 @@ export function sanitizeReport(
     analysisPoints: analysisPoints.length,
     profile: profile.length,
     relations: relations.length,
-    watchlist: watchlist.length,
+    endorsements: endorsements.length,
     glossary: glossary.length,
     controversies: controversies.length,
     conflicts: conflicts.length,
@@ -2384,7 +2408,7 @@ export function sanitizeReport(
      */
     profile,
     relations,
-    watchlist,
+    endorsements,
     glossary,
     controversies,
     ...(verdict ? { verdict } : {}),

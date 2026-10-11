@@ -110,57 +110,11 @@ describe('时间工具 utils/time', () => {
     )
   })
 
-  it('「后续关注」时间刻度 isStampPast：只认绝对刻度，且粒度内不算过期', () => {
-    /*
-     * 报告是长期共享缓存，watchlist 里的时间点会自然过期（「2026-11」到了 12 月就是过去），
-     * 页面据此给条目盖「已过期」标。判定方向刻意保守：只到月的刻度当月内不算过期、
-     * 只到年的刻度年内不算过期 —— 宁可少标一次，也不要把还没发生的事标成已过去。
-     */
-    const now = '2026-10-10T09:00:00+08:00'
-    /* 到日：当天不算过期（UTC+8 口径） */
-    eq(time.isStampPast('2026-10-10', now), false, '当天还没过')
-    eq(time.isStampPast('2026-10-09', now), true)
-    /* 到月：当月内不算过期 */
-    eq(time.isStampPast('2026-10', now), false)
-    eq(time.isStampPast('2026-09', now), true)
-    /* 只到年：年内不算过期 */
-    eq(time.isStampPast('2026', now), false)
-    eq(time.isStampPast('2025', now), true)
-    /* 其它绝对写法一并归一 */
-    eq(time.isStampPast('2026年9月30日', now), true)
-    eq(time.isStampPast('2027-01-01', now), false, '还没到的刻度不该被标成已过期')
-    /* 相对说法 / 空值 = 未知，一律不当作已过期（老报告里的 when 就是这类） */
-    eq(time.isStampPast('下月', now), false)
-    eq(time.isStampPast('年底', now), false)
-    eq(time.isStampPast('', now), false, '空串不是已过期')
-
-    /*
-     * 第二参（基准时刻）就是给 watchlist 用的：报告页拿它传 report.generatedAt，
-     * 问的是「这个刻度在**生成那一刻**是不是就已经过去了」。同一个刻度在生成时与今天读，
-     * 答案可以不同 —— 这正是两种标的分界线：「生成时已过期」= 模型把已发生的事写成了
-     * 未来待跟踪（缺陷），「已过期」= 长缓存自然老化（不是缺陷）。
-     */
-    const built = '2026-09-01T09:00:00+08:00'
-    eq(time.isStampPast('2026-08-20', built), true, '生成前就已过去 → 模型把已发生的事当成了未来')
-    eq(time.isStampPast('2026-09-20', built), false, '生成时还没到 → 是正常的后续关注')
-    eq(time.isStampPast('2026-09-20', now), true, '同一刻度今天读已过期（老化，不是生成缺陷）')
-    /* 基准取 ISO 串（generatedAt 的真实形态，带 T/Z）也要按 UTC+8 归一到同一天 */
-    eq(time.isStampPast('2026-09-01', '2026-09-01T20:00:00.000Z'), true, 'UTC 20:00 = UTC+8 次日 04:00')
-    /* 单调性：基准越晚越容易判过期，故「生成时已过期」必然也「已过期」——两种标不会互相打架 */
-    for (const when of ['2026-01', '2026-08-20', '2025']) {
-      ok(time.isStampPast(when, built), `${when} 在生成时已过去（用例前提）`)
-      eq(time.isStampPast(when, now), true, `${when} 生成时已过期，今天必然也过期`)
-    }
-    /* 基准不可解析（generatedAt 缺失 / 脏数据）→ 一律不判，绝不把还没到的刻度误标成「生成时已过期」 */
-    eq(time.isStampPast('2026-08-20', ''), false, '基准为空时退化成不标')
-    eq(time.isStampPast('2026-08-20', '坏时间'), false)
-  })
-
   it('时间线相对时间 stampAgo：粒度决定说法，未到的刻度与相对说法一律为空', () => {
     /*
      * 时间线的刻度是绝对日期（「2021-05」），离现在多远用户得自己对着日历算 —— 故页面在日期后
-     * 补一句「5 年前」。它与 isStampPast 共用解析与 UTC+8 基准，口径也必须同源：
-     * 刻度还没到时 isStampPast=false，stampAgo 就该是空串（时间线讲的是已经发生了什么）。
+     * 补一句「5 年前」。解析与 UTC+8 基准与全项目一致：
+     * 刻度还没到时该是空串（时间线讲的是已经发生了什么）。
      */
     const now = '2026-10-10T09:00:00+08:00'
     /* 到日：天 → 月 → 年逐级换档 */
@@ -188,12 +142,11 @@ describe('时间工具 utils/time', () => {
     eq(time.stampAgo('下月', now), '')
     eq(time.stampAgo('年底', now), '')
     eq(time.stampAgo('', now), '')
-    /* 与 isStampPast 同口径：已过去的刻度一定有说法；未过去 / 未知的两个函数都不认 */
+    /* 已过去的刻度一定有说法；未过去 / 未知一律空串 */
     for (const when of ['2026-10-10', '2026-10', '2026', '2025', '2021-05-20']) {
       ok(time.stampAgo(when, now) !== '', `${when} 已经过去，相对时间不该为空`)
     }
     for (const when of ['2026-11', '2027', '下月', '']) {
-      eq(time.isStampPast(when, now), false)
       eq(time.stampAgo(when, now), '', `${when} 未过去或不可解析，相对时间不该有值`)
     }
   })
@@ -1418,6 +1371,7 @@ describe('报告目录 utils/report-toc', () => {
     'sec-profile',
     'sec-relations',
     'sec-commercial',
+    'sec-endorsement',
     'sec-dynamics',
     'sec-quotes',
     'sec-analysis',
@@ -1427,7 +1381,6 @@ describe('报告目录 utils/report-toc', () => {
     'sec-peers',
     'sec-stance',
     'sec-timeline',
-    'sec-watchlist',
     'sec-glossary'
   ]
 
@@ -1436,7 +1389,7 @@ describe('报告目录 utils/report-toc', () => {
       profile: [{ label: '职业', value: '演员', basis: 'b' }],
       relations: [{ name: '某某', relation: '合作', note: 'n', basis: 'b' }],
       controversies: [{ topic: 't', claim: 'c', response: 'r', basis: 'b' }],
-      watchlist: [{ item: 'i', why: 'w', basis: 'b' }],
+      endorsements: [{ brand: '某品牌', kind: 'endorse', note: 'n', basis: 'b' }],
       glossary: [{ term: 't', explain: 'e', basis: 'b' }],
       verdict: { summary: 's', positioning: 'p' }
     })
@@ -1456,10 +1409,10 @@ describe('报告目录 utils/report-toc', () => {
    */
   const MEMBER_ONLY_ORDER = [
     'sec-commercial',
+    'sec-endorsement',
     'sec-member',
     'sec-peers',
     'sec-stance',
-    'sec-watchlist',
     'sec-glossary'
   ]
   const FREE_ORDER = FULL_ORDER.filter((id) => !MEMBER_ONLY_ORDER.includes(id))
@@ -1479,7 +1432,7 @@ describe('报告目录 utils/report-toc', () => {
     deepEq(REPORT_TEMPLATE.map((s) => s.id), FULL_ORDER)
     eq(FREE_TOC_COUNT + MEMBER_TOC_COUNT, TEMPLATE_SIZE)
     eq(MEMBER_TOC_COUNT, MEMBER_ONLY_ORDER.length)
-    deepEq(memberOnlyTocLabels(), ['商业速览', '会员专享', '同领域坐标', '立场与舆情', '后续关注', '名词解释'])
+    deepEq(memberOnlyTocLabels(), ['商业速览', '商业合作', '会员专享', '同领域坐标', '立场与舆情', '名词解释'])
     for (const s of REPORT_TEMPLATE) ok(s.tier === 'free' || s.tier === 'member', `档位异常：${s.id}`)
     for (const s of REPORT_TEMPLATE) eq(typeof s.visible, 'function', `${s.id} 缺可见性条件`)
   })
@@ -1568,10 +1521,10 @@ describe('报告目录 utils/report-toc', () => {
   })
 
   it('老报告（缺第二批字段）不列这些节 —— 键不存在与键为空数组是两回事', () => {
-    /* 用会员档读：watchlist / glossary 现在属会员档，拿免费档测会「测了个空」（免费本来就不列），
+    /* 用会员档读：endorsement / glossary 现在属会员档，拿免费档测会「测了个空」（免费本来就不列），
        测不出「老报告缺这个键」这件事 */
     const toc = buildReportToc(mkReport(), { member: true, hasOverview: true })
-    for (const id of ['sec-profile', 'sec-relations', 'sec-watchlist', 'sec-glossary']) {
+    for (const id of ['sec-profile', 'sec-relations', 'sec-endorsement', 'sec-glossary']) {
       notOk(toc.some((s) => s.id === id), `老报告不该出现 ${id}`)
     }
   })
@@ -1680,12 +1633,15 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
      */
     ok(src.includes('{member && commercial && !report.degraded && ('), '商业速览属会员档')
     ok(src.includes('{member && !report.degraded && ('), '会员专享（深度解析）卡也要 member 门槛')
-    /* 2026-10-12：立场与舆情 / 后续关注 / 名词解释 已移入会员档（同领域坐标也是会员档），
-       页面必须同步加 member 门槛；反之 timeline 仍在免费档（周报依赖），前面不该出现 member。
-       两侧一错开的症状是「目录里不列、页面却有卡」或「目录列了却点不到」，且只在免费账号上出现。 */
-    for (const id of ['sec-peers', 'sec-stance', 'sec-watchlist', 'sec-glossary']) {
+    /* 2026-10-12：立场与舆情 / 名词解释 已移入会员档（同一时间新增的商业合作与代言、
+       同领域坐标也是会员档），页面必须同步加 member 门槛；反之 timeline 仍在免费档（周报依赖），
+       前面不该出现 member。两侧一错开的症状是「目录里不列、页面却有卡」或「目录列了却点不到」，
+       且只在免费账号上出现。 */
+    for (const id of ['sec-peers', 'sec-stance', 'sec-endorsement', 'sec-glossary']) {
       ok(
-        new RegExp(`member && [\\s\\S]{0,60}id='${id}'`).test(src),
+        /* 窗口 100：商业合作与代言的卡前面是「member && report.endorsements && !report.degraded &&」，
+           比别的卡多一个字段判空，60 字窗口不够（它仍要求门槛与 id 同处一段表达式，不会误命中别处） */
+        new RegExp(`member && [\\s\\S]{0,100}id='${id}'`).test(src),
         `${id} 属会员档，卡前面必须有 member 门槛`
       )
     }
@@ -1798,19 +1754,6 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
 
     const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
     ok(scss.includes('&__gist-text'), '导读句缺样式：会照数值那样加粗，且长句子不封顶')
-  })
-
-  it('「后续关注」的两种过期标各用各的基准（生成时刻 vs 现在），卡尾把口径说全', () => {
-    /*
-     * 只有「现在」一个基准时，能看出「这条现在过期了」，却看不出它是**生成时**就已经过期 ——
-     * 后者才是缺陷（模型把已经发生的事写成了未来待跟踪，同一件事因此既在时间线又在后续关注），
-     * 而且提示词那一侧改没改好，也只有它会说出来。故钉住三条：两支各传什么基准、文案不同、
-     * 卡尾对读者解释了这两个标分别是什么。
-     */
-    ok(src.includes('isStampPast(w.when, report.generatedAt)'), '「生成时已过期」要用报告生成时刻做基准')
-    ok(src.includes('isStampPast(w.when)'), '「已过期」仍以「现在」为基准')
-    ok(src.includes('生成时已过期'), '两种过期要有不同文案，否则读者分不出哪个是生成质量的问题')
-    ok(src.includes('「已过期」是报告生成之后才过去的'), '卡尾要解释两个标各是什么，不能只改标签')
   })
 
   it('「重新生成」弹窗在开挂态不念剩余次数（调试开关只松闸门、不改数字）', () => {
@@ -1951,10 +1894,14 @@ describe('商业价值速览 utils/commercial', () => {
     mkReport({
       coverage: { items: 12, recent: 4, firstAt: '2026-09-10T00:00:00.000Z', latestAt: '2026-10-05T00:00:00.000Z' },
       dynamics: [dyn({ sentiment: 'positive' }), dyn({ sentiment: 'negative' }), dyn({ sentiment: 'neutral' })],
-      controversies: [{ topic: 't', claim: 'c', response: '', basis: 'b' }]
+      controversies: [{ topic: 't', claim: 'c', response: '', basis: 'b' }],
+      endorsements: [
+        { brand: '品牌A', kind: 'endorse', note: '代言人', basis: 'b' },
+        { brand: '品牌B', kind: 'collab', note: '', basis: 'b' }
+      ]
     })
 
-  it('三段齐全：顺序固定、每段一句结论 + 一条口径，可跳明细', () => {
+  it('分项齐全：顺序固定、每项一句结论 + 一条口径，可跳明细', () => {
     const s = buildCommercialSummary(richReport())
     eq(s.ready, true)
     deepEq(
@@ -1967,6 +1914,10 @@ describe('商业价值速览 utils/commercial', () => {
     ok(s.axes[0].note.includes('不是平台热度指数'), '热度必须标明不是平台指数')
     eq(s.axes[1].value, '积极 1 · 中性 1 · 消极 1')
     eq(s.axes[2].value, '收录 1 条，其中 1 条未见公开回应')
+    eq(s.axes[3].value, '2 项：品牌A、品牌B')
+    ok(s.headline.includes('近 30 天 12 条报道'), '结论句要并上报道热度')
+    ok(s.headline.includes('商业合作 2 项'), '结论句要并上商业合作数')
+    ok(s.headline.includes('争议 1 条'), '结论句要并上争议数')
   })
 
   it('锚点都指向本页真实存在的节（否则点了没反应）', () => {
@@ -1993,7 +1944,7 @@ describe('商业价值速览 utils/commercial', () => {
     const s = buildCommercialSummary(
       mkReport({ coverage: { items: 5, recent: 1 }, controversies: [] })
     )
-    eq(s.gaps.map((g) => g.label).join(','), '报道倾向')
+    eq(s.gaps.map((g) => g.label).join(','), '报道倾向,商业合作')
     ok(s.gaps[0].reason.includes('0 条'))
   })
 
@@ -2011,7 +1962,7 @@ describe('商业价值速览 utils/commercial', () => {
     const s = buildCommercialSummary(mkReport({ heat: 0 }))
     eq(s.axes.length, 0)
     eq(s.ready, false)
-    eq(s.gaps.length, 3, '三个分项都要说明为什么没有')
+    eq(s.gaps.length, 4, '四个分项都要说明为什么没有')
   })
 
   it('数字与数据 Tab、风险雷达同源（不另算一套）', () => {

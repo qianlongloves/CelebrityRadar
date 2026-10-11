@@ -341,15 +341,20 @@ export const REPORT_FIELD_LIMITS = {
   /** 日期：只该是 YYYY-MM-DD / YYYY-MM 这类刻度（10 字已满格）。它与 timelineMax 同值于
    *  REPORT_QUOTAS.timelineMax 的「条数上限」—— 提示词里给的是目标条数，这里是裁剪线 */
   timelineDateChars: 10,
-  /** 事件：一句话说清「什么时候发生了什么」，与 watch.what 同档 */
+  /** 事件：一句话说清「什么时候发生了什么」，与 endorse.note 同档 */
   timelineEventChars: 60,
 
-  /** 后续关注条数 */
-  watchMax: 4,
-  /** 时间点（「2026-11」这类已公布的**绝对刻度**，不是日期格式 —— 绝对刻度是端上判定过期的前提） */
-  watchWhenChars: 12,
-  /** 事件 */
-  watchWhatChars: 40,
+  /**
+   * 商业合作与代言（2026-10-12 取代原「后续关注」）：条目数上限。
+   * 为什么取代 watchlist：它要求「素材里已公布的未来时间点」，而素材窗口只有约 30 天新闻、
+   * 里面几乎不含未来档期 —— 实测多为空，对用户没有价值。商业合作与代言的品牌 / 合作方
+   * 素材里真有，且是决策向的实体信息（与「商业价值速览」同一面）。
+   */
+  endorseMax: 3,
+  /** 品牌 / 合作方名称（可能带子品牌或组合名，留出余量） */
+  endorseBrandChars: 20,
+  /** 一句说明（是什么合作、什么时候） */
+  endorseNoteChars: 40,
 
   /** 名词解释：行话注解只是阅读辅助，摆满一屏就成了词典 */
   glossaryMax: 5,
@@ -374,7 +379,7 @@ export const REPORT_FIELD_LIMITS = {
  *
  * ⚠ 与 REPORT_FIELD_LIMITS 的关系：条数的**上限**就是那边的裁剪上限（模型多给会被裁掉 ——
  *   白给），所以本表不重复写上限，需要上限的地方直接引用 REPORT_FIELD_LIMITS 的同名项
- *   （见 utils/report.ts 提示词里的 analysisPoints / profile / relations / watchlist /
+ *   （见 utils/report.ts 提示词里的 analysisPoints / profile / relations / endorsements /
  *   glossary / controversies / conflicts 七处）。
  *
  * ⚠ 与提示词里**字数上限**（「40 字内」这类）的关系：两者**不是同一个刻度**，刻意不共用 ——
@@ -412,7 +417,10 @@ export const REPORT_QUOTAS = {
 
   /** profile 条数（上限 = REPORT_FIELD_LIMITS.profileMax） */
   profileMin: 3,
-  profileTarget: 5
+  profileTarget: 5,
+
+  /** endorsements 条数目标（上限 = REPORT_FIELD_LIMITS.endorseMax）；素材充足时尽量给到 */
+  endorseTarget: 2
 } as const
 
 /**

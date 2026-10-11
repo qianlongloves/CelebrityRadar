@@ -23,7 +23,7 @@ import { hasSearchChannel } from '@/utils/search'
 import { hasLlmChannel } from '@/utils/llm'
 import { Report, backgroundGaps, reportGist } from '@/utils/report'
 import { buildComparison } from '@/utils/compare'
-import { buildRiskSignals, RISK_CATEGORIES, RISK_CATEGORY_LABEL, RISK_FROM_LABEL } from '@/utils/risk'
+import { buildRiskSignals, riskHeadline, riskScope, RISK_CATEGORIES, RISK_CATEGORY_LABEL, RISK_FROM_LABEL } from '@/utils/risk'
 import { TEMPLATE_SIZE, buildReportToc, buildReportTocGroups, lockedReportToc } from '@/utils/report-toc'
 import { buildCommercialSummary, MIN_AXES } from '@/utils/commercial'
 import {
@@ -48,7 +48,7 @@ import {
 import { personShareTitle, reportSharePath } from '@/utils/share'
 import { openSourceLink } from '@/utils/source-link'
 import { useAuth } from '@/stores/auth'
-import { fromNow, formatDay, isStampPast, isStaleReport, reportAgeDays, stampAgo } from '@/utils/time'
+import { fromNow, formatDay, isStaleReport, reportAgeDays, stampAgo } from '@/utils/time'
 import './index.scss'
 
 /** 深度报告页（§2.3 六段渲染 + §2.4 全部边界态） */
@@ -106,6 +106,18 @@ const RELATION_META: Record<string, string> = {
   cooperate: '合作',
   mentor: '师承',
   rival: '对手',
+  other: '其他'
+}
+
+/**
+ * 商业合作与代言的类别标签（2026-10-12，取代原「后续关注」）。枚举在 utils/report.ts 的
+ * sanitize 里归一（normEndorseKind）—— 认不出的值在那里折成 other，故这里兜底也写「其他」。
+ * 四档一律中性样式：报告只陈列素材里写到的商业关系，不对合作本身作评价。
+ */
+const ENDORSE_META: Record<string, string> = {
+  endorse: '品牌代言',
+  collab: '联名 / 合作',
+  title: '商业头衔',
   other: '其他'
 }
 
@@ -274,12 +286,11 @@ export default function ReportPage() {
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [reportFaved, setReportFaved] = useState(false)
   /**
-   * 折叠态（细节与延伸组，2026-10-10）：「后续关注」「名词解释」是按需内容、不占一屏，
+   * 折叠态（细节与延伸组，2026-10-10）：「名词解释」是按需内容、不占一屏，
    * 默认收起，点标题行展开。与「刷新结果条」的关闭记忆不同 —— 那是「这次不看」，这是
    * 「先收着、想看再点」；展开态只活在本次会话、不落库（报告是共享缓存，不该携带阅读姿势）。
    */
-  const [detailOpen, setDetailOpen] = useState<{ watchlist: boolean; glossary: boolean }>({
-    watchlist: false,
+  const [detailOpen, setDetailOpen] = useState<{ glossary: boolean }>({
     glossary: false
   })
   /** 已收藏的内容 id（名言 / 动态 / 履历节点三类共用；整份报告单独用 reportFaved） */
@@ -1720,8 +1731,13 @@ export default function ReportPage() {
           {member && commercial && !report.degraded && (
             <View id='sec-commercial' className='card page-report__vip-card'>
               <View className='card-title'>会员专享 · 商业价值速览</View>
+              {/* 商业面结论句（2026-10-12）：把关键数字并成一句读数（近 30 天 N 条报道 · 商业合作 M 项 · 争议 K 条），
+                  只并数字、不作评价 —— 与各分项是两个层次（口径见 utils/commercial.ts#CommercialSummary.headline） */}
+              {commercial.headline !== '' && (
+                <Text className='page-report__cv-headline'>{commercial.headline}</Text>
+              )}
               <Text className='page-report__cv-lead'>
-                把本报告已收录的素材换个角度汇总：有没有人在报道、媒体怎么写、有没有争议。
+                把本报告已收录的素材换个角度汇总：有没有人在报道、媒体怎么写、有没有争议、有哪些具名合作。
                 不新增检索与推断，每个数字的明细都能点回去核对。
               </Text>
 
@@ -1769,6 +1785,36 @@ export default function ReportPage() {
 
               <Text className='page-report__entry-foot'>
                 只汇总本报告已收录的素材，不含评分、预测或结论；明细见各节的原始条目与出处。
+              </Text>
+            </View>
+          )}
+
+          {/*
+            商业合作与代言（2026-10-12，会员档，取代原「后续关注」）：
+            它回答「这个人的商业面是什么样」，紧挨「商业价值速览」（同为商业面）。
+            字段在免费批次里生成（utils/report.ts 的 BATCH_SPEC.identity），此处只对会员出卡；
+            每条都带出处（指不出素材的条目不落库），故这里可以像档案 / 关系那样给出 basis。
+          */}
+          {member && report.endorsements && !report.degraded && (
+            <View id='sec-endorsement' className='card page-report__vip-card'>
+              <View className='card-title'>商业合作与代言</View>
+              {report.endorsements.length === 0 && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有可确认的具名商业合作或代言（只写素材明确写到的，不作推测）。
+                </Text>
+              )}
+              {report.endorsements.map((e, i) => (
+                <View key={`${i}-${e.brand}`} className='page-report__entry'>
+                  <View className='page-report__entry-head'>
+                    <Text className='page-report__entry-name'>{e.brand}</Text>
+                    <Text className='page-report__entry-tag'>{ENDORSE_META[e.kind] ?? '其他'}</Text>
+                  </View>
+                  {e.note !== '' && <Text className='page-report__entry-text'>{e.note}</Text>}
+                  <Text className='page-report__entry-basis'>依据：{e.basis}</Text>
+                </View>
+              ))}
+              <Text className='page-report__entry-foot'>
+                只写素材中明确提到的商业合作与代言，不由「同框 / 同场活动」推测。
               </Text>
             </View>
           )}
@@ -1949,28 +1995,28 @@ export default function ReportPage() {
           {risk && !report.degraded && (
             <View id='sec-risk' className='card'>
               <View className='card-title'>风险雷达</View>
-              <Text className='page-report__risk-lead'>
-                从本报告收录的 {risk.scanned} 条素材里，挑出涉及司法监管、商业合作、名誉维权的字面表述，
-                逐条给出处。平台只陈列素材写法，不作判定，也不作预测。
-              </Text>
-
-              {/* 类别分布：给条数、不给分档 —— 「3 条」是事实，「高风险」是结论 */}
-              {risk.signals.length > 0 && (
+              {/* 结论句（2026-10-12 用户反馈「能不能给出结论」）：只报「有没有命中」，不评级。
+                  分类计数与「未见回应」数拆到下面那排数字胶囊 —— 一句话塞进全部数字，正是上一版读不动的原因。 */}
+              <Text className='page-report__risk-headline'>{riskHeadline(risk)}</Text>
+              {/* 数字胶囊：类别分布（给条数、不给分档）+ 未见公开回应数 —— 每个数字都能在卡内逐条核对 */}
+              {(risk.signals.length > 0 || risk.unanswered > 0) && (
                 <View className='page-report__risk-tags'>
                   {RISK_CATEGORIES.filter((c) => risk.byCategory[c] > 0).map((c) => (
                     <Text key={c} className={`page-report__risk-tag page-report__risk-tag--${c}`}>
                       {RISK_CATEGORY_LABEL[c]} {risk.byCategory[c]}
                     </Text>
                   ))}
+                  {risk.unanswered > 0 && (
+                    <Text className='page-report__risk-tag page-report__risk-tag--statement'>
+                      未见回应 {risk.unanswered}
+                    </Text>
+                  )}
                 </View>
               )}
-
-              {/* 空态照出卡说明（2026-10-08 约定：端上聚合不成立也要写明为什么没内容） */}
-              {risk.signals.length === 0 && (
-                <Text className='page-report__empty'>
-                  {risk.scanned > 0
-                    ? `本次收录的 ${risk.scanned} 条素材里没有出现上述类型的表述。只按字面统计，没出现过的不会被推测出来。`
-                    : '本报告没有可扫描的结构化素材（纯文本简版），这一块无法统计。'}
+              <Text className='page-report__risk-lead'>{riskScope(risk)}</Text>
+              {risk.scanned > 0 && (
+                <Text className='page-report__risk-lead'>
+                  逐条挑出涉及司法监管 / 税务 / 商业合作 / 名誉维权的字面表述并给出处；平台只陈列素材写法，不作判定，也不作预测。
                 </Text>
               )}
 
@@ -2226,9 +2272,8 @@ export default function ReportPage() {
                     /*
                      * 刻度是绝对日期 ——「2021-05」离现在多远，用户得自己对着日历算。故日期后面
                      * 补一句相对时间：绝对刻度回答「哪一天」，相对表述回答「多久之前」，两句都在
-                     * 才读得出新旧。口径见 utils/time.ts#stampAgo（与 watchlist 的「已过期」
-                     * 同一套解析与 UTC+8 基准）；解析不出绝对刻度时返回空串，这一句就不渲染 ——
-                     * 宁可不写，也不编一个数出来。
+                     * 才读得出新旧。口径见 utils/time.ts#stampAgo（解析与基准同为 UTC+8）；
+                     * 解析不出绝对刻度时返回空串，这一句就不渲染 —— 宁可不写，也不编一个数出来。
                      */
                     const ago = stampAgo(t.date)
                     return (
@@ -2246,63 +2291,6 @@ export default function ReportPage() {
                   })}
                 </View>
               ))}
-            </View>
-          )}
-
-          {/* 后续关注（第二批；2026-10-12 起为会员档）：时间线是往回看，这张卡是往前看 ——
-              报告因此从「一份回顾」变成「一份可以跟踪的东西」。只收素材里已公布的时间点，
-              故 when 常是「2026-11」这种刻度而不是精确日期；素材没公布就不写（猜档期是推断，
-              不是信息）。数据仍在免费批次生成，此处只对会员出卡。 */}
-          {member && report.watchlist && (
-            <View id='sec-watchlist' className='card'>
-              <View
-                className='page-report__fold-head'
-                onClick={() => setDetailOpen((s) => ({ ...s, watchlist: !s.watchlist }))}
-              >
-                <View className='card-title'>后续关注</View>
-                <Text className='page-report__fold-arrow'>{detailOpen.watchlist ? '收起 ▲' : '展开 ▼'}</Text>
-              </View>
-              {detailOpen.watchlist && (
-                <>
-                  {report.watchlist.length === 0 && (
-                    <Text className='page-report__empty'>
-                      本次生成时，素材里没有已公布的时间点（档期一类不作推测，未公布就留空）。
-                    </Text>
-                  )}
-                  {report.watchlist.map((w, i) => {
-                /*
-                 * 报告是长期共享缓存，绝对刻度会以**两种成因完全不同**的方式变成过去，必须分开说：
-                 *   · 生成时就已过期（基准取 report.generatedAt）：模型把素材里**已经发生**的日期
-                 *     当成「未来值得跟踪」。素材只有 30 天窗口的新闻，而新闻里的日期天然带过去
-                 *     刻度（「已于 X 日上映」这类回顾写法），模型分不清相对"今天"是过去还是未来，
-                 *     于是这类条目结构上就会出现 —— 这才是真问题：那件事多半也已经在时间线里了，
-                 *     属于提示词第 8 / 11 条要治的对象；
-                 *   · 生成后才过期（基准取**现在**）：长缓存的必然老化，不是缺陷。
-                 * 此前一律用「现在」当基准，两类混成同一个「已过期」标 —— 结果是模型做错了看不出来，
-                 * 提示词改没改好也无从验证。故前者改用生成时刻判定、单独标一个词根相同的
-                 * 「生成时已过期」，读者对着卡尾那句口径就能分清哪个是老化、哪个是生成质量。
-                 * 一律只标、不删、不改写、不重排（报告是历史快照，动条目等于篡改生成结果）。
-                 * 保守口径见 utils/time.ts#isStampPast：老报告里的「下月」解析不出来，两种标都不打；
-                 * generatedAt 缺失 / 不可解析时基准退化成「现在」，即只可能多标一个「已过期」，
-                 * 不会把一个还没到的时间点误标成「生成时已过期」。
-                 */
-                const atBuild = isStampPast(w.when, report.generatedAt)
-                const past = isStampPast(w.when)
-                return (
-                  <View key={`${i}-${w.when}`} className='page-report__entry'>
-                    <View className='page-report__entry-head'>
-                      <Text className='page-report__entry-name'>{w.when}</Text>
-                      {atBuild && <Text className='page-report__entry-past'>生成时已过期</Text>}
-                      {!atBuild && past && <Text className='page-report__entry-past'>已过期</Text>}
-                    </View>
-                    <Text className='page-report__entry-text'>{w.what}</Text>
-                    <Text className='page-report__entry-basis'>依据：{w.basis}</Text>
-                  </View>
-                )
-              })}
-              <Text className='page-report__entry-foot'>只列素材中已公布的时间点，未公布的不作推测。「已过期」是报告生成之后才过去的；「生成时已过期」在生成那一刻就已经过去，那类更该看时间线。</Text>
-                </>
-              )}
             </View>
           )}
 

@@ -8,18 +8,20 @@ import type { RiskScan } from './risk'
  * 商业价值速览（第 0 期，端上聚合）—— 报告页新卡的数据层。
  *
  * 这张卡回答的是「读完这份报告，值不值得进一步接触」，把已经有的事实换成一个
- * **面向商业决策的读法**：报道热度、报道倾向、争议状况，一屏三段。
+ * **面向商业决策的读法**：报道热度、报道倾向、争议状况、商业合作。
  *
- * 三处刻意的设计，改动前先读：
+ * 四处刻意的设计，改动前先读：
  *
- *   1. **一个数字都不新算**。三段全部取自 utils/stats.ts 的 buildProfileStats 与
- *      utils/risk.ts 的 buildRiskSignals —— 这两处是「数据 Tab」「风险雷达」的口径来源。
- *      本文件只做「挑出与商业相关的那三项 + 换成一句结论」的措辞工作。
- *      为什么宁可多跑一遍聚合也不另写一套：同一份报告出现两处对不上的数字，
- *      是最难向用户解释的故障（同 utils/stats.ts 顶部的教训）。
- *   2. **不评分、不给结论**。没有「商业价值指数」「适配度星级」这类东西 ——
+ *   1. **一个数字都不新算**。报道热度 / 报道倾向 / 争议状况取自 utils/stats.ts 的
+ *      buildProfileStats 与 utils/risk.ts 的 buildRiskSignals（「数据 Tab」「风险雷达」的口径来源），
+ *      商业合作取自 utils/report.ts 的 endorsements 字段 —— 本文件只做「挑出与商业相关的几项 +
+ *      拼一句读数」的措辞工作。为什么宁可多跑一遍聚合也不另写一套：同一份报告出现两处对不上的
+ *      数字，是最难向用户解释的故障（同 utils/stats.ts 顶部的教训）。
+ *   2. **不评分、不下判断**。没有「商业价值指数」「适配度星级」这类东西 ——
  *      它们都需要推断（受众规模、品牌调性、转化率），而本项目只基于素材说话。
- *      三段给的分别是「多少条报道」「三种倾向各多少条」「几条争议、几条有回应」。
+ *      headline 只是把几个数字并成一句**读数**（近 30 天 N 条报道 · 商业合作 M 项 · 争议 K 条），
+ *      不含任何评价；各分项给的是「多少条报道」「三种倾向各多少条」「几条争议、几条有回应」
+ *      「有哪些具名合作」。
  *   3. **不成立也要说清**。某一段的素材不足以成立时，进 gaps 并写明原因，
  *      由卡片照出、逐条解释，而不是让这一行凭空消失（2026-10-08 的呈现约定）。
  *
@@ -31,9 +33,9 @@ import type { RiskScan } from './risk'
  */
 
 /** 分项键：界面按这个顺序渲染（避免每个页面各排一份） */
-export type CommercialAxisKey = 'heat' | 'tilt' | 'controversy'
+export type CommercialAxisKey = 'heat' | 'tilt' | 'controversy' | 'collab'
 
-export const COMMERCIAL_AXES: CommercialAxisKey[] = ['heat', 'tilt', 'controversy']
+export const COMMERCIAL_AXES: CommercialAxisKey[] = ['heat', 'tilt', 'controversy', 'collab']
 
 export interface CommercialAxis {
   key: CommercialAxisKey
@@ -58,6 +60,15 @@ export interface CommercialGap {
 export interface CommercialSummary {
   axes: CommercialAxis[]
   gaps: CommercialGap[]
+  /**
+   * 商业面**结论句**（2026-10-12 新增）：把几个关键数字串成一句可扫读的读数，如
+   * 「近 30 天 12 条报道 · 商业合作 3 项 · 争议 2 条」。
+   *
+   * 与各分项的 value 是**两个层次**：分项逐条讲口径与明细，结论句给「一眼看商业面」。
+   * 它只并数字、不作评价（与 utils/risk.ts#riskHeadline 同一条底线：本卡不给商业价值打分）。
+   * 数据缺失的那一块直接不出现在句子里，不用「—」占位（缺字段与「确认没有」是两回事）。
+   */
+  headline: string
   /**
    * 是否够格出「速览」。
    *
@@ -164,5 +175,38 @@ export function buildCommercialSummary(report: Report, pre: CommercialInputs = {
     })
   }
 
-  return { axes, gaps, ready: axes.length >= MIN_AXES }
+  /* ---- 4. 商业合作：回答「有哪些具名品牌 / 合作方」 ----（2026-10-12 新增，数据来自 utils/report.ts 的 endorsements） */
+  const endorsements = report.endorsements
+  if (endorsements) {
+    const brands = endorsements.map((e) => e.brand).filter(Boolean).slice(0, 3)
+    axes.push({
+      key: 'collab',
+      label: '商业合作',
+      value:
+        endorsements.length === 0
+          ? '素材中未见具名合作'
+          : `${endorsements.length} 项${brands.length > 0 ? `：${brands.join('、')}${endorsements.length > brands.length ? ' 等' : ''}` : ''}`,
+      note: '只列素材里明确写到的具名品牌 / 合作方（代言、联名、商务合作、商业头衔），不由「同框 / 同场活动」推测。明细见「商业合作与代言」一节。',
+      anchor: 'sec-endorsement',
+      anchorLabel: '商业合作与代言'
+    })
+  } else {
+    gaps.push({
+      label: '商业合作',
+      reason: '本报告生成于「商业合作与代言」段上线前，没有这一段的数据（与「本次确认没有具名合作」不是一回事）。'
+    })
+  }
+
+  /* 结论句：只并已成立分项里的关键数字，缺的块不占位（口径见 CommercialSummary.headline） */
+  const head: string[] = []
+  if (items !== null && items > 0) head.push(`近 30 天 ${items} 条报道`)
+  else if (ex.heat > 0) head.push(`热度 ${ex.heat}/100`)
+  if (endorsements) {
+    head.push(endorsements.length > 0 ? `商业合作 ${endorsements.length} 项` : '商业合作未见收录')
+  }
+  if (controversies) {
+    head.push(controversies.length > 0 ? `争议 ${controversies.length} 条` : '争议未见收录')
+  }
+
+  return { axes, gaps, ready: axes.length >= MIN_AXES, headline: head.join(' · ') }
 }

@@ -2286,7 +2286,7 @@ describe('报告质量（素材分级保留 / 点评拆条 / 信源分歧）', (
   })
 })
 
-/* ------------------------- 报告第二批：人物档案 / 关系图谱 / 后续关注 / 名词解释 / 争议与回应 */
+/* ------------------------- 报告第二批：人物档案 / 关系图谱 / 商业合作 / 名词解释 / 争议与回应 */
 
 /**
  * 第二批的共同点是「关于本人的**事实**」（不是判断），故用例的判定依据集中在两条：
@@ -2294,7 +2294,7 @@ describe('报告质量（素材分级保留 / 点评拆条 / 信源分歧）', (
  *   2. 指不出真出处就**整条剔除** —— 事实字段不存在「据公开资料」这个兜底出口。
  * 另外单独立一条边界：名词解释（glossary）是唯一豁免出处的段落，它答的是词义而不是事实。
  */
-describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词解释 / 争议与回应）', () => {
+describe('报告第二批（人物档案 / 关系图谱 / 商业合作 / 名词解释 / 争议与回应）', () => {
   const newsItem = (over = {}) =>
     Object.assign(
       {
@@ -2341,7 +2341,7 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
     const paid = await buildMessages(news, true)
 
     /* 分批生成：每个字段归某一批，「进没进提示词」的判据是**某一批**的 system 里有它 */
-    for (const key of ['profile', 'relations', 'watchlist', 'glossary', 'controversies', 'verdict', 'reputation', 'consistency']) {
+    for (const key of ['profile', 'relations', 'endorsements', 'glossary', 'controversies', 'verdict', 'reputation', 'consistency']) {
       ok(free.systems.some((s) => s.includes(key)), `免费提示词应要求输出 ${key}（它对免费用户同样是核心信息）`)
       ok(paid.systems.some((s) => s.includes(key)), `会员提示词 = 免费 + 追加，故同样要它：${key}`)
     }
@@ -2351,7 +2351,7 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
     }
   })
 
-  it('档案/关系/后续关注/争议：指不出真出处就整条剔除，不退化成「据公开资料」', () => {
+  it('档案/关系/商业合作/争议：指不出真出处就整条剔除，不退化成「据公开资料」', () => {
     const news = distinct(2)
     const r = sanitize(
       {
@@ -2364,9 +2364,9 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
           { name: '乙', relation: 'cooperate', note: '同片主演', basis: news[1].url },
           { name: '丙', relation: 'rival', note: '', basis: '' }
         ],
-        watchlist: [
-          { when: '2026-11', what: '新片上映', basis: news[0].url },
-          { when: '2027', what: '凭印象猜的档期', basis: '据公开资料' }
+        endorsements: [
+          { brand: '某品牌', kind: 'endorse', note: '品牌代言人', basis: news[0].url },
+          { brand: '编造品牌', kind: 'collab', note: '凭印象猜的合作', basis: '据公开资料' }
         ],
         controversies: [
           { topic: '番位', claim: '被指抢番', response: '工作室否认', basis: news[1].url },
@@ -2382,7 +2382,7 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
       '编造出处的事实整条丢掉 —— 不能退化成一条看起来「有据可查」的「据公开资料」'
     )
     deepEq(r.relations.map((x) => x.name), ['乙'], '无出处的条目剔除（缺名字同此）')
-    deepEq(r.watchlist.map((x) => x.when), ['2026-11'], '事实字段不接受「据公开资料」这个出处')
+    deepEq(r.endorsements.map((x) => x.brand), ['某品牌'], '事实字段不接受「据公开资料」这个出处')
     deepEq(r.controversies.map((x) => x.topic), ['番位'], '争议同样必须有真出处')
   })
 
@@ -2410,7 +2410,7 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
       {
         profile: Array.from({ length: 9 }, (_, i) => ({ label: `字段${i}`, value: '值'.repeat(60), basis: news[0].url })),
         relations: Array.from({ length: 8 }, (_, i) => ({ name: `人${i}`, relation: 'other', note: '说明'.repeat(40), basis: news[0].url })),
-        watchlist: Array.from({ length: 7 }, (_, i) => ({ when: '2026-11-30T00:00', what: '事件'.repeat(40), basis: news[0].url })),
+        endorsements: Array.from({ length: 8 }, (_, i) => ({ brand: `品牌${i}`, kind: 'endorse', note: '说明'.repeat(40), basis: news[0].url })),
         glossary: Array.from({ length: 8 }, (_, i) => ({ term: `词${i}`, explain: '解释'.repeat(40) })),
         controversies: Array.from({ length: 6 }, (_, i) => ({ topic: `争议${i}`, claim: '内容'.repeat(60), basis: news[0].url }))
       },
@@ -2421,8 +2421,8 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
     eq(many.profile[0].value.length, 40, '档案值收敛长度')
     eq(many.relations.length, 5, '关系条数上限')
     eq(many.relations[0].note.length, 40, '关系说明收敛长度')
-    eq(many.watchlist.length, 4, '后续关注条数上限')
-    eq(many.watchlist[0].what.length, 40, '事件收敛长度')
+    eq(many.endorsements.length, 3, '商业合作条数上限')
+    eq(many.endorsements[0].note.length, 40, '说明收敛长度')
     eq(many.glossary.length, 5, '名词解释条数上限')
     eq(many.glossary[0].explain.length, 50, '释义收敛长度')
     eq(many.controversies.length, 3, '争议条数上限')
@@ -2432,7 +2432,7 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
        出现两种空」，但那两种空本来就是两件事：键不存在 = 这份报告生成时没要过这一段（老报告），
        键在但为空 = 本次生成确认素材里没有。都存成「没有键」时 UI 只能整卡不出，用户看到某一块
        凭空消失，分不清是没内容还是坏了（详见 utils/report.ts 里 sanitizeReport 的注释）。 */
-    const empty = sanitize({ profile: [], relations: [], watchlist: [], glossary: [], controversies: [] }, news)
+    const empty = sanitize({ profile: [], relations: [], endorsements: [], glossary: [], controversies: [] }, news)
     deepEq(empty.profile, [], '空数组也落库：它表示「本次确实没有」，UI 据此出卡并写明原因')
     deepEq(empty.glossary, [])
     deepEq(empty.controversies, [])
@@ -2450,7 +2450,7 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
 
   it('老报告（键不存在）与新报告（键在、可能为空数组）是两种「空」，不可混为一谈', () => {
     const news = distinct(1)
-    const keys = ['profile', 'relations', 'watchlist', 'glossary', 'controversies']
+    const keys = ['profile', 'relations', 'endorsements', 'glossary', 'controversies']
 
     /* 新报告：sanitize 恒定产出这五段。空数组的含义是「本次生成确认素材里没有」，
        报告页据此**照常出卡**并写明原因（而不是整卡消失）。 */
@@ -2844,7 +2844,8 @@ describe('报告分批生成（P0-B：按模板分组多次调用 + 逐批落库
     if (system.includes('"intro"')) {
       return {
         intro: '某演员，代表作是若干电影，近期在拍新片。',
-        profile: [{ label: '职业', value: '演员', basis: url }]
+        profile: [{ label: '职业', value: '演员', basis: url }],
+        endorsements: [{ brand: '某品牌', kind: 'endorse', note: '品牌代言人', basis: url }]
       }
     }
     if (system.includes('"dynamics"')) {
@@ -2859,7 +2860,7 @@ describe('报告分批生成（P0-B：按模板分组多次调用 + 逐批落库
     if (system.includes('"analysisPoints"')) {
       return { analysisPoints: [{ point: '新片开机是一次事业推进。', basis: url }], stance: [], controversies: [] }
     }
-    return { timeline: [], watchlist: [], glossary: [] }
+    return { timeline: [], glossary: [] }
   }
 
   it('批次与模板分组一一对应：顺序一致、节的归属由模板派生、合起来恰好是全部节', () => {
@@ -2969,9 +2970,10 @@ describe('报告分批生成（P0-B：按模板分组多次调用 + 逐批落库
     notOk(res.data.degraded, '四批都成功时不该降级')
     eq(res.data.profile.length, 1, 'identity 批的字段进了报告')
     eq(res.data.profile[0].value, '演员')
+    eq(res.data.endorsements.length, 1, 'identity 批的商业合作与代言也进了报告')
     eq(res.data.dynamics.length, 1, 'facts 批的字段进了报告')
     eq(res.data.analysisPoints.length, 1, 'judgement 批的字段进了报告')
-    deepEq(res.data.watchlist, [], 'detail 批的字段进了报告（空数组同样是合并的结果）')
+    deepEq(res.data.glossary, [], 'detail 批的字段进了报告（空数组同样是合并的结果）')
   })
 
   it('某一批失败只丢那一组：其余批照常合并，且每批成功都回调一次（中间结果落库的挂点）', async () => {

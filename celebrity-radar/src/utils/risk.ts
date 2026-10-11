@@ -11,6 +11,9 @@ import type { Report } from './report'
  *   1. **只做字面命中，不做语义判定**。命中即陈列，不判「这条算不算负面」，
  *      更不输出「风险等级 / 塌房概率」这类结论。平台的立场是：把素材里的表述指出来，
  *      是否构成问题由读者判断，并给出原文链接让读者自己核对。
+ *      ⚠ 2026-10-12 补充：用户要「一句话结论」后，本文件加了 riskHeadline() / riskScope() ——
+ *      它们给的是**事实汇总**（发现几条、扫描了多少条、几条未见回应），**不是**风险评级。
+ *      这条边界仍然成立：结论句与胶囊里的每个数字都能在卡内逐条核对，不含任何推断或定性。
  *   2. **宁可漏报，不可误报**。命中词前若紧邻否定词（「未被起诉」「否认解约」），
  *      整条不计入 —— 误报一条「起诉」，比漏掉十条更伤（同 utils/stats.ts 的
  *      「一条报道代表不了一家媒体的倾向」是同一个取舍）。
@@ -309,4 +312,25 @@ export function buildRiskSignals(report: Report): RiskScan {
     negativeShare: negative !== null && total > 0 ? negative / total : null,
     scanned: items.length
   }
+}
+
+/**
+ * 风险雷达的**结论句**（主句，2026-10-12 用户反馈「能不能给出结论」）。
+ *
+ * 只陈述「有没有命中」，**不评级**：发现有 N 条 / 未发现 / 无可扫描素材。
+ * 分类计数与「几条未见回应」拆到卡内的数字胶囊里（页面按 byCategory / unanswered 渲染），
+ * 故本句保持短、可一眼扫读 —— 一句话里塞进全部数字正是上一版读不动的原因。
+ * 刻意不写「风险高 / 低」这类判断：那需要推断，且是本文件边界 1 明确禁止的（平台替人定性）。
+ */
+export function riskHeadline(scan: RiskScan): string {
+  if (scan.scanned === 0) return '本次没有可扫描的结构化素材'
+  if (scan.total === 0) return '未发现司法监管 / 税务 / 商业合作 / 名誉维权类表述'
+  return `发现 ${scan.total} 条相关表述`
+}
+
+/** 结论句下面的**口径行**：扫描了多少条、几条争议未见公开回应（只报事实，不评价） */
+export function riskScope(scan: RiskScan): string {
+  if (scan.scanned === 0) return '本报告没有可扫描的结构化条目，这一块无法统计'
+  const base = `本次共扫描 ${scan.scanned} 条素材`
+  return scan.unanswered > 0 ? `${base}；其中争议记录有 ${scan.unanswered} 条未见公开回应` : base
 }

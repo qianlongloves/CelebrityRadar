@@ -99,9 +99,9 @@ module.exports = {
     "timelineMax": 8,
     "timelineDateChars": 10,
     "timelineEventChars": 60,
-    "watchMax": 4,
-    "watchWhenChars": 12,
-    "watchWhatChars": 40,
+    "endorseMax": 3,
+    "endorseBrandChars": 20,
+    "endorseNoteChars": 40,
     "glossaryMax": 5,
     "glossaryTermChars": 10,
     "glossaryExplainChars": 50,
@@ -124,7 +124,8 @@ module.exports = {
     "timelineMax": 8,
     "timelineTarget": 5,
     "profileMin": 3,
-    "profileTarget": 5
+    "profileTarget": 5,
+    "endorseTarget": 2
   },
   "REPORT_OUTPUT_BUDGET": {
     "chatMaxTokens": 8192,
