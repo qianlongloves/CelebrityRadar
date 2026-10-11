@@ -1,8 +1,9 @@
 'use strict'
 
 /**
- * 报告提示词构造：大模型请求参数不再携带博查素材（知识模式改造，2026-10-11）
- * 验证 buildUserMessage 已不把检索素材（标题/正文/url/来源）与背景资料拼进 user 消息。
+ * 报告提示词构造：大模型请求**携带博查素材**（素材驱动），且按模板分组**分批注入**（2026-10-12）。
+ * 验证 buildUserMessage 把检索素材（标题/正文/来源/url）拼进 user 消息、system 声明「基于素材」，
+ * 以及背景素材只喂拿 profile 检索路的那几批（batch.background 由模板派生）。
  * 全程 mock aiProxy，不真正调用大模型。
  */
 
@@ -28,7 +29,7 @@ function fresh() {
   return { load: env.load }
 }
 
-/** 带明显标识的博查素材：一旦漏进提示词，这些串会被断言立刻抓到 */
+/** 带明显标识的博查素材：素材若没进提示词，这些串会被断言立刻抓到 */
 const newsItem = (i) => ({
   title: `素材标题${i}某影星新片开机`,
   content: `素材正文${i}该片由某影星主演并将于明年上映`,
@@ -45,8 +46,8 @@ function mockAiProxy(calls) {
   })
 }
 
-describe('报告提示词构造：大模型请求不再携带博查素材', () => {
-  it('打印每次请求参数，并断言 user / system 均不含任何素材', async () => {
+describe('报告提示词构造：大模型请求携带博查素材（按模板分组分批）', () => {
+  it('每批恰好一次调用，且 user 携带素材、system 声明基于素材', async () => {
     const { load } = fresh()
     const report = load('utils/report')
     const calls = []
@@ -71,32 +72,35 @@ describe('报告提示词构造：大模型请求不再携带博查素材', () =
       console.log(user)
     })
 
-    /* 断言：任何素材都不该出现在请求参数里 */
     for (const c of calls) {
       const sys = String(c.messages[0].content)
       const user = String(c.messages[1].content)
       ok(user.includes('测试人物'), 'user 消息应点名这位名人')
-      notOk(/https?:\/\//.test(user), 'user 消息不该含任何 url')
-      notOk(/素材标题|素材正文|博查媒体/.test(user), 'user 消息不该含素材标题 / 正文 / 来源')
-      notOk(/bocha\.example\.com|素材标题|素材正文/.test(sys), 'system 消息同样不该含素材')
+      ok(user.includes('素材（按用途分组）：'), 'user 消息应带「素材（按用途分组）」段头')
+      ok(/素材标题0|素材正文0/.test(user), 'user 消息应含检索素材标题 / 正文')
+      ok(user.includes('bocha.example.com/article/0'), 'user 消息应含素材 url（出处）')
+      ok(sys.includes('基于提供的真实新闻素材'), 'system 应声明基于素材作答')
     }
   })
 
-  it('user 消息精确等于「名人 + 关注侧重」两行，且不随素材数量变化', async () => {
+  it('背景素材只注入拿 profile 检索路的那几批，其余批不带背景段', async () => {
     const { load } = fresh()
     const report = load('utils/report')
     const calls = []
     mockAiProxy(calls)
 
-    const many = Array.from({ length: 20 }, (_, i) => newsItem(i))
-    await report.buildReport('甲#tech', '甲', many, 'all', {})
+    await report.buildReport('丙#tech', '丙', [newsItem(0)], 'all', { background: [newsItem(99)] })
 
-    for (const c of calls) {
-      eq(String(c.messages[1].content), '名人：甲\n关注侧重：综合', 'user 消息固定两行，与素材条数无关')
-    }
+    const withProfile = report.REPORT_BATCHES.filter((b) => b.background)
+    ok(withProfile.length > 0, '至少有若干批拿 profile 检索路（否则背景段无处可去）')
+    report.REPORT_BATCHES.forEach((b, i) => {
+      const user = String(calls[i].messages[1].content)
+      if (b.background) ok(user.includes('人物背景资料'), `批 ${b.key} 应带背景段`)
+      else notOk(user.includes('人物背景资料'), `批 ${b.key} 不该带背景段`)
+    })
   })
 
-  it('关注侧重随 focus 变化，但依旧不携带素材', async () => {
+  it('关注侧重随 focus 变化，但仍携带素材', async () => {
     const { load } = fresh()
     const report = load('utils/report')
     const calls = []
@@ -104,7 +108,8 @@ describe('报告提示词构造：大模型请求不再携带博查素材', () =
 
     await report.buildReport('乙#tech', '乙', [newsItem(0)], 'dynamics', {})
 
-    eq(String(calls[0].messages[1].content), '名人：乙\n关注侧重：近期动态', 'focus=dynamics 时侧重应写「近期动态」')
-    notOk(/素材|https?:\/\//.test(String(calls[0].messages[1].content)), '带 focus 的请求同样不携带素材')
+    const user = String(calls[0].messages[1].content)
+    ok(user.includes('关注侧重：近期动态'), 'focus=dynamics 时侧重应写「近期动态」')
+    ok(/素材标题0|素材正文0/.test(user), '带 focus 的请求同样携带素材')
   })
 })
