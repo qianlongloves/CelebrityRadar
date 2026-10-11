@@ -1576,11 +1576,11 @@ describe('提问流程 utils/qa#askReport', () => {
 describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）', () => {
   const cfg = (load) => load('config/public').publicConfig
 
-  /** 会员专属档位：档位标识取自公共配置（写死会在运营调整清单时变成假失败） */
-  const memberOnlyTier = (load) => {
-    const m = cfg(load).llm.models.find((x) => x.memberOnly)
-    ok(m, '前提：公共配置里应有 memberOnly 档位，否则本组用例失去意义')
-    return m
+  /** 会员专属质量档：取公共配置里第一个 memberOnly（=standard；写死会在运营调整清单时变成假失败） */
+  const memberQuality = (load) => {
+    const q = cfg(load).llm.qualities.find((x) => x.memberOnly)
+    ok(q, '前提：公共配置里应有 memberOnly 质量档，否则本组用例失去意义')
+    return q
   }
 
   const seedMember = (db) =>
@@ -1601,30 +1601,84 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
       publishedDate: new Date(Date.now() - i * 3600 * 1000).toISOString()
     }))
 
-  it('模型闸门：非会员即使本机选了会员档也回落默认（设置页显示哪档 = 实际用哪档）', () => {
+  it('模型闸门：非会员即使本机选了会员档也回落基础版（设置页显示哪档 = 实际用哪档）', () => {
     const { load } = fresh()
-    const preferred = memberOnlyTier(load).tier
-    /* 本机存的是**档位标识**（fast / standard / reason），不是模型名 —— 见 utils/settings.ts */
+    const preferred = memberQuality(load).key
+    /* 本机存的是**质量档标识**（basic / standard / premium），不是模型名 —— 见 utils/settings.ts */
     load('utils/settings').setPreferredTier(preferred)
 
-    eq(load('utils/llm').resolveChatSelection(true).tier, preferred, '会员应能用该档')
+    eq(load('utils/llm').resolveChatSelection(true).quality, preferred, '会员应能用该档')
     eq(
-      load('utils/llm').resolveChatSelection(false).tier,
-      cfg(load).llm.tier,
-      '非会员必须回落默认档（设备上残留的旧选择也要被忽略）'
+      load('utils/llm').resolveChatSelection(false).quality,
+      cfg(load).llm.defaultQuality,
+      '非会员必须回落基础版（设备上残留的旧选择也要被忽略）'
     )
   })
 
   it('模型闸门：偏好已从清单移除时回落默认（旧选择不能稳定生成失败）', () => {
     const { load } = fresh()
     load('utils/settings').setPreferredTier('已下架的档位')
-    /* 供应商键位仍留在 storage 里（历史遗留，见 utils/settings.ts），但端上已不再读它 —— 塞脏值也不该影响档位裁决 */
-    load('utils/settings').setPreferredProvider('已下线的供应商')
-    eq(load('utils/llm').resolveChatSelection(true).tier, cfg(load).llm.tier)
-    eq(load('utils/llm').resolveChatSelection(false).tier, cfg(load).llm.tier)
+    /* 厂商偏好塞脏值也不该影响裁决：不认就回落默认厂（键位见 utils/settings.ts） */
+    load('utils/settings').setPreferredProvider('已下线的厂商')
+    const llm = load('utils/llm')
+    eq(llm.resolveChatSelection(true).vendor, cfg(load).llm.defaultVendor)
+    eq(llm.resolveChatSelection(true).quality, cfg(load).llm.defaultQuality)
+    eq(llm.resolveChatSelection(false).vendor, cfg(load).llm.defaultVendor)
+    eq(llm.resolveChatSelection(false).quality, cfg(load).llm.defaultQuality)
   })
 
-  it('档位随请求带给云函数：端上不再上报模型名/供应商，会员档仍按会员放行', async () => {
+  it('能力槽只由用途决定：generate/aux 走 structured、ask 走 reasoning；aux 任何人钳基础版', () => {
+    const { load } = fresh()
+    const qualities = cfg(load).llm.qualities
+    ok(qualities.some((x) => x.key === 'premium' && x.memberOnly), '前提：高级档存在且为会员档（否则本用例失去意义）')
+    ok(qualities.some((x) => x.key === 'standard'), '前提：标准版存在（会员档）')
+    ok(qualities.some((x) => x.key === 'basic' && !x.memberOnly), '前提：基础版存在且免费')
+    load('utils/settings').setPreferredTier('premium')
+
+    const llm = load('utils/llm')
+    /* 会员 + 报告生成：高级档 structured 槽（输出型；绝不发给纯推理模型） */
+    eq(llm.resolveChatSelection(true, 'generate').quality, 'premium')
+    eq(llm.resolveChatSelection(true, 'generate').capability, 'structured', '报告生成只走结构化输出槽')
+    /* 会员 + AI 提问：高级档 reasoning 槽（先思考再回答）—— 同档不同模型，能力分槽而不是分供应商 */
+    eq(llm.resolveChatSelection(true, 'ask').quality, 'premium')
+    eq(llm.resolveChatSelection(true, 'ask').capability, 'reasoning', 'AI 提问必须走推理槽')
+    /* 会员 + 辅助小请求：质量档钳到 basic（20s 时限必须快，不烧高档的钱），能力槽仍是 structured */
+    eq(llm.resolveChatSelection(true, 'aux').quality, 'basic', '辅助小请求必须钳到基础版')
+    eq(llm.resolveChatSelection(true, 'aux').capability, 'structured')
+    /* 会员 + 缺省（设置页展示走这一路）：仍显示用户选的档，展示按 structured 槽渲染 */
+    eq(llm.resolveChatSelection(true).quality, 'premium', '设置页展示不受用途钳档影响')
+    eq(llm.resolveChatSelection(true).capability, 'structured')
+    /* 非会员：任何用途质量档都钳 basic；报告/辅助 structured、问答 reasoning（基础版也有自己的推理槽） */
+    eq(llm.resolveChatSelection(false, 'generate').quality, 'basic')
+    eq(llm.resolveChatSelection(false, 'generate').capability, 'structured')
+    eq(llm.resolveChatSelection(false, 'ask').quality, 'basic', '非会员 AI 提问走基础版推理槽（不再有隐藏内部档）')
+    eq(llm.resolveChatSelection(false, 'ask').capability, 'reasoning')
+    eq(llm.resolveChatSelection(false, 'aux').quality, 'basic')
+    eq(llm.resolveChatSelection(false, 'aux').capability, 'structured')
+  })
+
+  it('质量档清单只有基础/标准/高级三档（无隐藏内部档）；非会员问答也是基础版推理槽', () => {
+    const { load } = fresh()
+    const qualities = cfg(load).llm.qualities
+    eq(qualities.length, 3, '用户可切换的质量档就是三档')
+    deepEq(
+      qualities.map((x) => x.key),
+      ['basic', 'standard', 'premium']
+    )
+    eq(qualities[0].memberOnly, false, '基础版必须免费（它是非会员的回落档）')
+    ok(qualities.slice(1).every((x) => x.memberOnly), '标准版 / 高级版必须是会员档')
+
+    const llm = load('utils/llm')
+    const ask = llm.resolveChatSelection(false, 'ask')
+    eq(ask.quality, 'basic')
+    eq(ask.capability, 'reasoning', '问答必须是推理槽：基础版也配自己的推理模型')
+    eq(ask.memberOnly, false)
+    eq(llm.resolveChatSelection(false, 'generate').capability, 'structured', '报告仍是结构化输出槽')
+    /* 缺省（设置页展示）不冒出任何内部档，免费用户看到的就是基础版 */
+    eq(llm.resolveChatSelection(false).quality, cfg(load).llm.defaultQuality)
+  })
+
+  it('厂商+质量档随请求带给云函数：端上不再上报模型名；切厂与会员档都生效', async () => {
     const { db, load } = fresh()
     let seen = null
     env.registerCloudFn('aiProxy', (data) => {
@@ -1634,19 +1688,25 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
     const settings = load('utils/settings')
     const llm = load('utils/llm')
 
-    /* 免费用户：请求只带档位，不含 model / provider（端上不再知道模型名，供应商维度已移除） */
+    /* 免费用户默认：请求带 vendor / quality / purpose，不带 model（模型名只在云端注册表里） */
     await llm.chatText('S', 'U')
-    eq(seen.tier, cfg(load).llm.tier, '默认档位要随请求带给云函数')
-    notOk(Object.prototype.hasOwnProperty.call(seen, 'model'), '端上不再上报模型名（模型名由云端按档位决定）')
-    notOk(Object.prototype.hasOwnProperty.call(seen, 'provider'), '端上不再上报供应商（供应商维度已移除）')
+    eq(seen.vendor, cfg(load).llm.defaultVendor, '默认厂商要随请求带给云函数')
+    eq(seen.quality, cfg(load).llm.defaultQuality, '默认质量档要随请求带给云函数')
+    eq(seen.purpose, 'generate', '用途决定云端能力槽与额度池')
+    notOk(Object.prototype.hasOwnProperty.call(seen, 'model'), '端上不上报模型名（模型名由云端按厂商×档×槽决定）')
+    notOk(Object.prototype.hasOwnProperty.call(seen, 'tier'), '旧字段 tier 已下线')
+    notOk(Object.prototype.hasOwnProperty.call(seen, 'provider'), '旧字段 provider 已下线')
 
-    /* 会员选了会员档：请求带的是用户选的那一档标识，且设置页展示与实际请求同源 */
+    /* 会员选了高级档 + DeepSeek 厂：两个偏好都随请求走，设置页展示与实际请求同源 */
     seedMember(db)
-    const preferred = memberOnlyTier(load).tier
-    settings.setPreferredTier(preferred)
+    settings.setPreferredTier('premium')
+    settings.setPreferredProvider('deepseek')
     await llm.chatText('S', 'U')
-    eq(seen.tier, preferred, '会员选的档位要随请求带给云函数')
-    eq(llm.resolveChatSelection(true).tier, preferred, '设置页展示与实际请求必须同源')
+    eq(seen.vendor, 'deepseek', '用户切厂要随请求生效（厂商可随时切换）')
+    eq(seen.quality, 'premium', '会员选的质量档要随请求带给云函数')
+    const sel = llm.resolveChatSelection(true)
+    eq(sel.vendor, 'deepseek', '设置页展示与实际请求必须同源')
+    eq(sel.quality, 'premium')
   })
 
   it('输出上限：请求体里不再出现 deep（上限对所有请求一样，不再是会员权益）', async () => {
@@ -1659,16 +1719,16 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
 
     await load('utils/llm').chatText('S', 'U')
     notOk(Object.prototype.hasOwnProperty.call(seen, 'deep'), '免费版不该带 deep')
-    eq(seen.tier, cfg(load).llm.tier)
+    eq(seen.quality, cfg(load).llm.defaultQuality)
 
     seedMember(db)
-    load('utils/settings').setPreferredTier(memberOnlyTier(load).tier)
+    load('utils/settings').setPreferredTier(memberQuality(load).key)
     await load('utils/llm').chatText('S', 'U')
     notOk(
       Object.prototype.hasOwnProperty.call(seen, 'deep'),
-      '会员也不再带 deep：输出上限是「这轮要写多长」的客观需求，截断会让整份报告降级（见 aiProxy 的 chatMaxTokens）'
+      '会员也不再带 deep：输出上限是「这轮要写多长」的客观需求，截断会让整份报告降级（见 aiProxy 的 CHAT_MAX_TOKENS）'
     )
-    eq(seen.tier, memberOnlyTier(load).tier, '会员闸门照旧：模型档位仍按会员放行')
+    eq(seen.quality, memberQuality(load).key, '会员闸门照旧：质量档仍按会员放行')
   })
 
   it('会员段落的提示词只往会员的 system 末尾追加，免费提示词逐字节不变', async () => {

@@ -44,8 +44,14 @@ const cfgSrc = read(QUOTA_CONFIG)
 const schemaSrc = read(SCHEMA)
 
 const cfg = require(QUOTA_CONFIG)
-/** 云端档位表（模型名 / memberOnly 的真源）：断言一律按它取，不写死模型名 */
-const TIERS = require(LLM_CONFIG).TIERS
+/**
+ * 云端大模型注册表（2026-10-12 v3：厂商 × 质量档 × 能力槽）。
+ * 模型名 / memberOnly 的真源：断言一律按 resolveLlm 取，不写死模型名。
+ */
+const llmCfg = require(LLM_CONFIG)
+const { VENDORS, QUALITIES, DEFAULT_VENDOR, DEFAULT_QUALITY } = llmCfg
+/** 按厂商 + 质量档 + 用途取生效模型（缺槽会同厂商向下降档，取的就是回执里的真实值） */
+const slotModel = (vendor, quality, purpose) => llmCfg.resolveLlm({ vendor, quality, purpose }).model
 
 const DAY_MS = 86400000
 const quotaKey = () => `u1#${cfg.todayKey()}`
@@ -112,11 +118,12 @@ describe('A3 test 探针要口令', () => {
     notOk(/'test'\s*（默认）/.test(proxySrc))
   })
 
-  it('逐档实测：把「极速版」的思考字数报出来（档位标签只描述期望，不描述行为）', async () => {
+  it('逐槽实测：把当前厂商 3 档 × 2 能力槽的思考字数报出来（槽位标签只描述期望，不描述行为）', async () => {
     /*
-     * 桩：第一档（免费档 fast）返回 120 字 reasoning_content 且正文为空 ——
+     * 桩：第 1 个槽（basic/structured）返回 120 字 reasoning_content 且正文为空 ——
      * 这正是线上那份报错的形状（思考把 max_tokens 吃光、正文一个字都没轮到）；
-     * 后两档正常回正文、无 reasoning。
+     * 其余 5 个槽正常回正文、无 reasoning。默认厂商 cloudbase 三档模型同名，
+     * 但每条结果仍带独立的 quality / capability 标识。
      */
     const thinkOnly = {
       status: 200,
@@ -124,26 +131,99 @@ describe('A3 test 探针要口令', () => {
         choices: [{ finish_reason: 'length', message: { content: '', reasoning_content: 'x'.repeat(120) } }]
       }
     }
-    const h = fakeHttps([searchOk(3), chatOk('正常'), thinkOnly, chatOk('正常'), chatOk('正常')])
+    const h = fakeHttps([
+      searchOk(3), // 博查
+      chatOk('正常'), // 当前生效路由（默认 cloudbase/basic/generate）
+      thinkOnly, // ① basic / structured
+      chatOk('正常'), // ② basic / reasoning
+      chatOk('正常'), // ③ standard / structured
+      chatOk('正常'), // ④ standard / reasoning
+      chatOk('正常'), // ⑤ premium / structured
+      chatOk('正常') // ⑥ premium / reasoning
+    ])
     const { fn, calls } = loadProxy({ https: h })
 
     process.env.AI_PROXY_TEST_TOKEN = 'secret'
     try {
       const res = await fn.main({ action: 'test', token: 'secret', models: true })
 
-      eq(calls.length, 5, '博查 + 当前档 + 三档逐测')
-      eq(res.models.length, 3, '三档都要测到（驱动源是云端 TIERS，不是写死的名单）')
-      eq(res.models[0].model, TIERS.fast.model)
-      eq(res.models[0].tier, 'fast', '档位标识原样回报（就是端上请求里带的那个 tier）')
+      eq(calls.length, 8, '博查 1 + 当前档 1 + 当前厂商 3 档×2 槽 6 = 8 次')
+      eq(res.models.length, 6, '6 个槽都要测到（驱动源是云端 QUALITIES × 两能力槽，不是写死的名单）')
+      eq(res.models[0].model, slotModel('cloudbase', 'basic', 'generate'))
+      eq(res.models[0].vendor, 'cloudbase')
+      eq(res.models[0].quality, 'basic', '质量档标识原样回报（就是端上请求里带的那个 quality）')
+      eq(res.models[0].capability, 'structured', '能力槽标识原样回报')
       eq(res.models[0].reasoningChars, 120)
       eq(res.models[0].chars, 0)
       ok(/思考模型/.test(res.models[0].verdict), `结论要直接可读：${res.models[0].verdict}`)
+      eq(res.models[1].quality, 'basic')
+      eq(res.models[1].capability, 'reasoning')
+      eq(res.models[1].model, slotModel('cloudbase', 'basic', 'ask'))
       eq(res.models[1].reasoningChars, 0)
-      ok(/无思考/.test(res.models[1].verdict), `不带思考的档要认出来：${res.models[1].verdict}`)
-      eq(res.models[2].model, TIERS.reason.model)
-      eq(res.models[2].tier, 'reason')
+      ok(/无思考/.test(res.models[1].verdict), `不带思考的槽要认出来：${res.models[1].verdict}`)
+      eq(res.models[2].quality, 'standard')
+      eq(res.models[2].capability, 'structured')
+      eq(res.models[3].quality, 'standard')
+      eq(res.models[3].capability, 'reasoning')
+      eq(res.models[5].quality, 'premium', '槽序：basic×2、standard×2、premium×2')
+      eq(res.models[5].capability, 'reasoning')
+      eq(res.models[5].model, slotModel('cloudbase', 'premium', 'ask'))
     } finally {
       delete process.env.AI_PROXY_TEST_TOKEN
+    }
+  })
+
+  it('bench: true 把逐档实测升级为「facts 批体量的长 JSON 耗时基准」（换模型前的实测）', async () => {
+    /*
+     * bench 模式：负载从「连通性两句」换成模拟 facts 批的长 JSON（BENCH_SYSTEM）、
+     * 输出上限从 1024 换成真实 8192，撞同一道时限墙 —— 回答「换这个模型生成 facts 批
+     * 要几秒、会不会超时」。钉三件事：负载真换了、上限真换到 8192、超时给「不可用」结论。
+     * ⚠ 时限是模块加载时读的常量，环境变量必须在 loadProxy() 之前设好（见下方时限用例）。
+     */
+    process.env.AI_PROXY_CHAT_DEADLINE_MS = '300'
+    try {
+      const h = fakeHttps([
+        searchOk(3), // 博查
+        chatOk('正常'), // 当前档 llm 探针（仍走连通性负载，不受 bench 影响）
+        chatOk('{"bench":"ok"}'), // ① basic/structured bench：正常出正文
+        chatOk('{"bench":"ok"}'), // ② basic/reasoning
+        HANG(), // ③ standard/structured：挂着不回 → 撞 300ms 时限
+        chatOk('{"bench":"ok"}'), // ④ standard/reasoning
+        chatOk('{"bench":"ok"}'), // ⑤ premium/structured
+        chatOk('{"bench":"ok"}') // ⑥ premium/reasoning
+      ])
+      const { fn, calls } = loadProxy({ https: h })
+
+      process.env.AI_PROXY_TEST_TOKEN = 'secret'
+      try {
+        const res = await fn.main({ action: 'test', token: 'secret', models: true, bench: true })
+
+        eq(calls.length, 8, '博查 + 当前档 + 6 槽 bench 各一次')
+        const benchCalls = calls.slice(2)
+        eq(benchCalls.length, 6, '逐槽实测是 6 个槽，只是负载升级成 bench')
+        ok(
+          benchCalls.every((c) => c.path === 'cloud.ai' && c.body && c.body.max_tokens === 8192),
+          'bench 要按真实上限 8192 出正文（不是连通性探针的 1024）'
+        )
+        ok(
+          benchCalls.every((c) => c.body.messages && /性能基准测试/.test(c.body.messages[0].content)),
+          'bench 负载必须是模拟 facts 批的长 JSON，不是「只回复两个字」'
+        )
+        eq(res.models.length, 6)
+        eq(res.models[0].ok, true)
+        eq(res.models[0].quality, 'basic')
+        ok(/字 \/ \d+ms/.test(res.models[0].verdict), `bench 结论要报「多少字 / 多少毫秒」：${res.models[0].verdict}`)
+        eq(res.models[2].ok, false, '挂死的 standard/structured 槽应判失败')
+        eq(res.models[2].quality, 'standard')
+        eq(res.models[2].capability, 'structured')
+        ok(/生成超时/.test(res.models[2].verdict), `超时的槽要直接说「不可用」：${res.models[2].verdict}`)
+        eq(res.models[1].ok, true)
+        eq(res.models[1].capability, 'reasoning')
+      } finally {
+        delete process.env.AI_PROXY_TEST_TOKEN
+      }
+    } finally {
+      delete process.env.AI_PROXY_CHAT_DEADLINE_MS
     }
   })
 
@@ -194,7 +274,8 @@ describe('A3 test 探针要口令', () => {
       eq(calls.length, 5, '博查 + 当前档 + 三个候选各一次')
       eq(res.models.length, 3, '给几个就探几个')
       eq(res.models[0].model, 'cand-ok')
-      eq(res.models[0].tier, 'other', '表里没登记的名字标成 other，不与档位混淆')
+      eq(res.models[0].quality, 'other', '表里没登记的名字质量档标成 other，不与真实档位混淆')
+      eq(res.models[0].capability, 'other', '能力槽同样标成 other')
       ok(/无思考/.test(res.models[0].verdict), res.models[0].verdict)
       eq(res.models[1].reasoningChars, 9)
       ok(/思考模型/.test(res.models[1].verdict), res.models[1].verdict)
@@ -205,7 +286,7 @@ describe('A3 test 探针要口令', () => {
     }
   })
 
-  it('listModels：退化为列出云端档位表（云开发 AI 没有 /models 端点，故不再触达上游）', async () => {
+  it('listModels：列出注册表里全部厂商×档×槽（云开发 AI 没有 /models 端点，故不触达上游）', async () => {
     const h = fakeHttps([searchOk(3), chatOk('正常')])
     const { fn, calls } = loadProxy({ https: h })
 
@@ -213,17 +294,86 @@ describe('A3 test 探针要口令', () => {
     try {
       const res = await fn.main({ action: 'test', token: 'secret', listModels: true })
 
-      eq(calls.length, 2, '默认两条（博查 + 当前档）；清单是本地档位表，不产生第三次请求')
+      eq(calls.length, 2, '默认两条（博查 + 当前档）；清单是本地注册表，不产生第三次请求')
       ok(
         !calls.some((c) => String(c.path).endsWith('/models')),
         '云开发 AI 不走 OpenAI 兼容端点，不该再有 /models 请求'
       )
       eq(res.modelList.ok, true)
-      deepEq(res.modelList.models, [TIERS.fast.model, TIERS.standard.model, TIERS.reason.model])
-      eq(res.modelList.tiers.length, 3, '每档的 tier / model / memberOnly 都要回报（这就是「换档」的对照表）')
-      eq(res.models, null, '没要求逐档就不探（两个开关互不牵连）')
+      const vendorCount = Object.keys(VENDORS).length
+      eq(res.modelList.count, vendorCount * QUALITIES.length * 2, '厂商数 × 3 档 × 2 能力槽')
+      eq(res.modelList.count, 30, '当前注册表：5 家 × 3 档 × 2 槽 = 30 条路由')
+      eq(res.modelList.slots.length, 30)
+      ok(
+        res.modelList.models.every((m) => typeof m === 'string' && m),
+        'models 是与 slots 对齐的模型名数组（同名模型在不同槽里会重复出现）'
+      )
+      /* 每行带齐路由身份字段（这就是「换档 / 换厂」的对照表） */
+      const row0 = res.modelList.slots[0]
+      eq(row0.vendor, DEFAULT_VENDOR)
+      eq(row0.vendorLabel, VENDORS[DEFAULT_VENDOR].label)
+      eq(row0.quality, 'basic')
+      eq(row0.qualityRequested, 'basic')
+      eq(row0.capability, 'structured')
+      eq(row0.channel, 'cloudai')
+      eq(row0.memberOnly, false)
+      /* Kimi 高级档没有非思考旗舰：报告槽同厂商向下降到标准版 k2.6，并标 qualityDowngraded */
+      const kimiPremiumStructured = res.modelList.slots.find(
+        (s) => s.vendor === 'moonshot' && s.quality === 'premium' && s.capability === 'structured'
+      )
+      ok(kimiPremiumStructured, '清单里要能找到 moonshot/premium/structured 这一行')
+      eq(kimiPremiumStructured.model, 'kimi-k2.6', '缺槽向下降档后的生效模型')
+      eq(kimiPremiumStructured.qualityDowngraded, true, '降档必须显式标出来')
+      /* 高级档推理槽不降：仍是 k3 满强度 */
+      const kimiPremiumReasoning = res.modelList.slots.find(
+        (s) => s.vendor === 'moonshot' && s.quality === 'premium' && s.capability === 'reasoning'
+      )
+      eq(kimiPremiumReasoning.model, 'kimi-k3')
+      eq(kimiPremiumReasoning.qualityDowngraded, false)
+      eq(res.models, null, '没要求逐槽实测就不探（两个开关互不牵连）')
     } finally {
       delete process.env.AI_PROXY_TEST_TOKEN
+    }
+  })
+
+  it('vendors：免口令免登录的只读就绪清单（不触达上游、不回 key 内容）', async () => {
+    const h = fakeHttps([])
+    /* openid=null：这个动作在登录闸门之前（选择器打开页面就要拉），不能要求登录 */
+    const { fn, calls } = loadProxy({ https: h, openid: null })
+
+    const res = await fn.main({ action: 'vendors' })
+
+    eq(res.ok, true)
+    eq(res.vendors.length, Object.keys(VENDORS).length, '注册几家就回几家')
+    eq(res.vendors.length, 5, '当前：云开发 AI / DeepSeek / 智谱 / Kimi / 通义千问')
+    eq(calls.length, 0, '只读注册表 + 读环境变量，一次上游都不许触达')
+    ok(!JSON.stringify(res).includes('sk-'), '只回布尔 ready，绝不回 key 内容')
+
+    const byKey = Object.fromEntries(res.vendors.map((v) => [v.key, v]))
+    eq(byKey.cloudbase.channel, 'cloudai')
+    eq(byKey.cloudbase.ready, true, '云开发 AI 恒就绪（零 key 兜底厂）')
+    for (const k of ['deepseek', 'zhipu', 'moonshot', 'qwen']) {
+      eq(byKey[k].channel, 'http', `${k} 是 http 厂`)
+      eq(byKey[k].ready, false, `${k}：没配 key 就是未就绪`)
+      /* 三档槽位有无也要公开（UI 可据此提示「该厂商高级档报告会降档」） */
+      const qs = Object.fromEntries(byKey[k].qualities.map((q) => [q.key, q]))
+      eq(qs.basic.structured, true, `${k}：基础版两槽必须齐全`)
+      eq(qs.basic.reasoning, true, `${k}：基础版两槽必须齐全`)
+    }
+    /* Kimi 高级档结构化槽的事实要如实回 false（与 resolveLlm 降档规则互为表里） */
+    const kimiQs = Object.fromEntries(byKey.moonshot.qualities.map((q) => [q.key, q]))
+    eq(kimiQs.premium.structured, false, 'Kimi 高级档无输出型旗舰：UI 应提示报告会降到标准版')
+    eq(kimiQs.premium.reasoning, true)
+
+    /* 配上 key 后立即就绪：vendorCatalog 现读环境变量，无需重新部署 / 重载模块 */
+    process.env.DEEPSEEK_API_KEY = 'sk-test'
+    try {
+      const res2 = await fn.main({ action: 'vendors' })
+      const ds2 = res2.vendors.find((v) => v.key === 'deepseek')
+      eq(ds2.ready, true, 'key 进了环境变量就该翻成就绪')
+      eq(calls.length, 0, '仍然不触达上游')
+    } finally {
+      delete process.env.DEEPSEEK_API_KEY
     }
   })
 })
@@ -236,9 +386,13 @@ describe('B8 云端闸门与端上同源', () => {
   it('闸门在真正付费的调用之前', () => {
     ok(proxySrc.includes('const gate = await quotaGate(openid, purpose, isMember)'))
     ok(proxySrc.includes('if (gate) return gate'))
-    /* purpose 先归一化再喂闸门：额度池、报文日志、本次时限三处必须取同一个值（见 handleChat） */
+    /*
+     * purpose 先归一化再喂闸门：会员降级重路由、额度池、报文日志、本次时限四处必须取同一个值。
+     * 2026-10-12 v3 起归一化在 resolveLlm 内完成（handleChat 只取 llm.purpose），
+     * 且声明点在会员闸门之前（降级路由也要 purpose 选能力槽），故只钉「purpose 取值在 quotaGate 之前」。
+     */
     ok(
-      /const purpose = event\.purpose \|\| DEFAULT_PURPOSE[\s\S]{0,200}const gate = await quotaGate/.test(
+      /const purpose = llm\.purpose \|\| DEFAULT_PURPOSE[\s\S]*const gate = await quotaGate/.test(
         proxySrc
       ),
       '归一化必须发生在闸门之前，否则闸门按未归一化的值选池、时限按归一化的值选档'
@@ -446,17 +600,26 @@ const searchOk = (n = 3) => ({
   }
 })
 
-/** 清掉一切可能干扰的档位覆写与探针开关，只留检索 key（大模型已统一走云开发 AI，无 key 可配） */
+/** 清掉一切可能干扰的厂商 / 质量档 / 槽位覆写与探针开关，只留检索 key */
 function clearLlmEnv() {
   for (const k of [
+    /* v3 路由变量（2026-10-12） */
+    'LLM_VENDOR',
     'LLM_TIER',
-    'CLOUD_AI_MODEL_FAST',
-    'CLOUD_AI_MODEL_STANDARD',
-    'CLOUD_AI_MODEL_REASON',
+    'LLM_HTTP_ENDPOINT_DEEPSEEK',
+    'LLM_HTTP_ENDPOINT_ZHIPU',
+    'LLM_HTTP_ENDPOINT_MOONSHOT',
+    'DEEPSEEK_API_KEY',
+    'ZHIPU_API_KEY',
+    'MOONSHOT_API_KEY',
     'AI_PROXY_TEST_TOKEN',
     cfg.QUOTA_GUARD_ENV
   ]) {
     delete process.env[k]
+  }
+  /* 槽位模型覆盖是开放式命名（LLM_MODEL_<VENDOR>_<QUALITY>_<CAP>），按前缀清扫 */
+  for (const k of Object.keys(process.env)) {
+    if (/^LLM_MODEL_/.test(k)) delete process.env[k]
   }
   process.env.BOCHA_API_KEY = 'bocha-test'
 }
@@ -513,8 +676,9 @@ function loadGuard({ openid = 'u1' } = {}) {
 }
 
 const CHAT = {
-  action: 'chat',
-  tier: 'fast',
+  action: 'generate',
+  vendor: 'cloudbase',
+  quality: 'basic',
   purpose: 'generate',
   messages: [
     { role: 'system', content: 'S' },
@@ -609,46 +773,64 @@ describe('aiProxy 单次调用时限（-504003 的修法）', () => {
   })
 })
 
-describe('aiProxy 模型档位（会员闸门）', () => {
-  it('非会员请求会员专属档位：静默降级，且发给上游的就是免费档', async () => {
+describe('aiProxy 厂商×质量档（会员闸门）', () => {
+  /*
+   * 测「档真的换了模型」必须走 DeepSeek：基础档 v4-flash 与标准/高级档 v4-pro 模型名不同；
+   * cloudbase 三档是同一个官方模型，切了档名字也不变，证明不了闸门生效。
+   * ⚠ loadProxy 内部 clearLlmEnv 会清 key，故 DEEPSEEK_API_KEY 必须在 loadProxy() 之后设；
+   *    vendorCatalog 现读 process.env，无需重新 require 模块。
+   */
+  const DS_STD = { vendor: 'deepseek', quality: 'standard', purpose: 'generate' }
+  const dsModel = (quality, purpose = 'generate') => slotModel('deepseek', quality, purpose)
+
+  it('非会员请求会员专属质量档：同厂商静默降级到基础版，且发给上游的就是基础版模型', async () => {
     const h = fakeHttps([chatOk()])
     const { fn, calls } = loadProxy({ https: h })
+    process.env.DEEPSEEK_API_KEY = 'sk-test'
 
-    const res = await chat(fn, { tier: 'standard' })
+    const res = await chat(fn, DS_STD)
 
     eq(res.ok, true, '降级而不是报错：不因一次残留偏好打断生成')
     eq(res.downgraded, true)
-    eq(res.model, TIERS.fast.model)
+    eq(res.vendor, 'deepseek', '降级只降质量档，绝不跨厂商（用户选了 DeepSeek 就留在 DeepSeek）')
+    eq(res.model, dsModel('basic'))
     eq(calls.length, 1)
-    eq(calls[0].body.model, TIERS.fast.model, '代价最高的那一档不能被白用')
+    eq(calls[0].body.model, dsModel('basic'), '代价最高的那一档不能被白用')
+    eq(calls[0].path, '/v1/chat/completions',
+      `降级后仍走 DeepSeek 自有 HTTPS 端点，不能回落到云开发 AI：${calls[0].path}`)
+    ok(calls[0].path !== 'cloud.ai')
   })
 
-  it('memberships 里有未过期的会员：档位放行', async () => {
+  it('memberships 里有未过期的会员：质量档放行', async () => {
     const h = fakeHttps([chatOk()])
     const { fn, calls } = loadProxy({ https: h })
+    process.env.DEEPSEEK_API_KEY = 'sk-test'
     env.db.__seed('memberships', [memberRow()])
 
-    const res = await chat(fn, { tier: 'standard' })
+    const res = await chat(fn, DS_STD)
 
     eq(res.ok, true)
     eq(res.downgraded, false)
-    eq(res.model, TIERS.standard.model)
-    eq(calls[0].body.model, TIERS.standard.model)
+    eq(res.model, dsModel('standard'))
+    eq(calls[0].body.model, dsModel('standard'))
   })
 
   it('memberships 过期的会员：按非会员降级', async () => {
     const h = fakeHttps([chatOk()])
     const { fn } = loadProxy({ https: h })
+    process.env.DEEPSEEK_API_KEY = 'sk-test'
     env.db.__seed('memberships', [memberRow({ expires_at: new Date(Date.now() - DAY_MS).toISOString() })])
 
-    const res = await chat(fn, { tier: 'standard' })
+    const res = await chat(fn, DS_STD)
 
     eq(res.downgraded, true, '只认 expires_at，过期即非会员')
+    eq(res.model, dsModel('basic'))
   })
 
-  it('改 users.membership（端上可写的镜像）骗不到会员档位', async () => {
+  it('改 users.membership（端上可写的镜像）骗不到会员质量档', async () => {
     const h = fakeHttps([chatOk()])
     const { fn } = loadProxy({ https: h })
+    process.env.DEEPSEEK_API_KEY = 'sk-test'
     env.db.__seed('users', [
       {
         _id: 'row-u1',
@@ -657,10 +839,10 @@ describe('aiProxy 模型档位（会员闸门）', () => {
       }
     ])
 
-    const res = await chat(fn, { tier: 'standard' })
+    const res = await chat(fn, DS_STD)
 
     eq(res.downgraded, true, '若这里是 false，说明云端又回去读端上可写的镜像了')
-    eq(res.model, TIERS.fast.model)
+    eq(res.model, dsModel('basic'))
   })
 
   it('端上传来的会员标记一律不作数（改包者最容易走的一步）', async () => {
@@ -669,55 +851,58 @@ describe('aiProxy 模型档位（会员闸门）', () => {
      * 权威表 ⇒ 判为非会员 ⇒ 降级。这时候最顺手的"修法"就是让云端认端上传来的会员标记
      * —— 那等于把计费闸门交给端上（小程序包可解包改掉），与「权威在云端」互斥。
      * 这条用例把正确的那一半钉死：不管端上用哪个字段名自称会员，云端都不看。
-     * （这也正是本地联调唯一会踩的坑：端上按会员显示、云端按免费算，见 local.example.ts。）
      */
     const h = fakeHttps([chatOk()])
     const { fn } = loadProxy({ https: h })
+    process.env.DEEPSEEK_API_KEY = 'sk-test'
 
-    const res = await chat(fn, {
-      tier: 'standard',
+    const res = await chat(fn, Object.assign({}, DS_STD, {
       member: true,
       isMember: true,
       memberOverride: 'monthly',
       debugMember: true
-    })
+    }))
 
     eq(res.downgraded, true, '只有 memberships 里有未过期行才算会员')
-    eq(res.model, TIERS.fast.model)
+    eq(res.model, dsModel('basic'))
   })
 
-  it('档位表里的每一档各走一遍：会员放行，非会员降级到免费档', async () => {
+  it('质量表里的每一档各走一遍：会员放行，非会员同厂降级到基础版', async () => {
     /*
      * 只测标准档会漏掉两类漂移，而它们都要用户切过去才暴露：
      *   · 云端某档漏配 memberOnly ⇒ 那一档对所有人免费开放（唯一会白花钱的方向）；
-     *   · 免费档自己标了 memberOnly ⇒ 降级落到一个会员档上，非会员每次请求都失败。
-     * 故驱动源取**端上档位清单**（用户真能切到的那些档），并顺带核对两端 memberOnly 同值。
+     *   · 基础版自己标了 memberOnly ⇒ 降级落到一个会员档上，非会员每次请求都失败。
+     * 故驱动源取**端上质量档清单**（用户真能切到的那三档），并顺带核对两端 memberOnly 同值。
+     * 模型对拍一律走 DeepSeek（三档模型名不同），云端真源用 resolveLlm 取，不写死。
      */
-    const cloud = require(LLM_CONFIG).TIERS
-    const listed = env.load('config/public').publicConfig.llm.models
-    ok(listed.length > 1, '端上应列出多档，否则本用例覆盖不到「切档」这一半')
+    const listed = env.load('config/public').publicConfig.llm.qualities
+    eq(listed.length, 3)
 
     for (const t of listed) {
-      const conf = cloud[t.tier]
-      ok(conf, `端上列了 ${t.tier}，云函数档位表里却没有它 —— 用户切过去会落到默认档去`)
-      eq(conf.memberOnly, t.memberOnly, `${t.tier}：端上与云端的会员闸门口径必须同值`)
-      ok(conf.model, `${t.tier} 缺 model：云端不知道这一档该发哪个模型名`)
+      const cloudConf = llmCfg.QUALITY_MAP[t.key]
+      ok(cloudConf, `端上列了 ${t.key}，云端质量表里却没有它 —— 用户切过去会落到默认档去`)
+      eq(cloudConf.memberOnly, t.memberOnly, `${t.key}：端上与云端的会员闸门口径必须同值`)
+      const paidModel = dsModel(t.key)
+      ok(paidModel, `${t.key} 缺槽位模型：云端不知道这一档该发哪个模型名`)
 
-      /* ① 会员：请求哪一档就发哪一档 —— 「切换档位」真正生效的那一半 */
+      /* ① 会员：请求哪一档就发哪一档 —— 「切换质量档」真正生效的那一半 */
       const paidProxy = loadProxy({ https: fakeHttps([chatOk()]) })
+      process.env.DEEPSEEK_API_KEY = 'sk-test'
       env.db.__seed('memberships', [memberRow()])
-      const paidRes = await chat(paidProxy.fn, { tier: t.tier })
+      const paidRes = await chat(paidProxy.fn, { vendor: 'deepseek', quality: t.key, purpose: 'generate' })
 
-      eq(paidRes.downgraded, false, `${t.tier} 的会员档对会员必须放行（显示哪档 = 实际用哪档）`)
-      eq(paidRes.model, conf.model, `${t.tier}：回执里的模型名要是这一档配的`)
-      eq(paidProxy.calls[0].body.model, conf.model, `${t.tier}：发给上游的也要是这一档`)
+      eq(paidRes.downgraded, false, `${t.key} 的会员档对会员必须放行（显示哪档 = 实际用哪档）`)
+      eq(paidRes.model, paidModel, `${t.key}：回执里的模型名要是这一档配的`)
+      eq(paidProxy.calls[0].body.model, paidModel, `${t.key}：发给上游的也要是这一档`)
 
-      /* ② 非会员：免费档自己必须放行；会员档必须降级回落 fast 档 */
+      /* ② 非会员：基础版自己必须放行；会员档必须同厂降级回落到 basic */
       const freeProxy = loadProxy({ https: fakeHttps([chatOk()]) })
-      const freeRes = await chat(freeProxy.fn, { tier: t.tier })
+      process.env.DEEPSEEK_API_KEY = 'sk-test'
+      const freeRes = await chat(freeProxy.fn, { vendor: 'deepseek', quality: t.key, purpose: 'generate' })
 
-      eq(freeRes.downgraded, !!conf.memberOnly, `${t.tier}：非会员请求会员档才降级，免费档不该降级`)
-      eq(freeRes.model, t.memberOnly ? TIERS.fast.model : conf.model, '非会员只能落到免费档')
+      eq(freeRes.downgraded, !!cloudConf.memberOnly, `${t.key}：非会员请求会员档才降级，基础版不该降级`)
+      eq(freeRes.vendor, 'deepseek', `${t.key}：降级不许换厂`)
+      eq(freeRes.model, t.memberOnly ? dsModel('basic') : paidModel, '非会员只能落到同厂基础版')
       eq(freeProxy.calls[0].body.model, freeRes.model, '代价最高的那一档不能被白用')
     }
   })
@@ -973,21 +1158,27 @@ describe('aiProxy 云端报文打印（AI_PROXY_RAW_LOG）', () => {
 
   it('会员档被降级时同时报「请求的」与「实际用的」（档位没生效的唯一线索）', async () => {
     /*
-     * 本机反馈：「切到深度推理，发出去的还是极速版的模型」—— 看不出为什么。
+     * 本机反馈：「切到高级版，发出去的还是基础版的模型」—— 看不出为什么。
      * 根因是 handleChat 的会员闸门：端上按 users.membership 镜像放行，而云端读 memberships
-     * 权威表 ⇒ 判为非会员 ⇒ model 换成兜底的 fast 档。
-     * 只打最终 model 的话，这条日志反而让人以为「档位切换没接上」，故三个字段必须一起报。
+     * 权威表 ⇒ 判为非会员 ⇒ 质量档换回落 basic（同厂商，模型跟着变）。
+     * 只打最终 model 的话，这条日志反而让人以为「档位切换没接上」，故 requested/model/downgraded 必须一起报。
+     * 用 DeepSeek 验证：premium ask 应要 v4-pro，实际发 v4-flash，名字不同才证得出来。
      */
     process.env.AI_PROXY_RAW_LOG = 'on'
     try {
       const h = fakeHttps([chatOk('正文')])
       const { fn } = loadProxy({ https: h })
+      process.env.DEEPSEEK_API_KEY = 'sk-test'
+      const requested = llmCfg.resolveLlm({ vendor: 'deepseek', quality: 'premium', purpose: 'ask' }).model
+      eq(requested, 'deepseek-v4-pro', '前提：DeepSeek 高级档推理槽应解析为 pro（对拍真源，不写死业务断言）')
 
       const lines = await withGuardOff(() =>
         capture(() =>
           fn.main({
             action: 'chat',
-            tier: 'reason',
+            vendor: 'deepseek',
+            quality: 'premium',
+            purpose: 'ask',
             messages: [{ role: 'user', content: 'hi' }]
           })
         )
@@ -995,7 +1186,7 @@ describe('aiProxy 云端报文打印（AI_PROXY_RAW_LOG）', () => {
 
       const req = rawLines(lines).find((l) => l.includes('[raw:chat:req]'))
       ok(req, '要有请求日志')
-      ok(req.includes(`"requested":"${TIERS.reason.model}"`), `要报出端上要的那一档：${req}`)
+      ok(req.includes(`"requested":"${requested}"`), `要报出端上要的那一档：${req}`)
       ok(req.includes('"downgraded":true'), `要报出发生了降级：${req}`)
     } finally {
       delete process.env.AI_PROXY_RAW_LOG
@@ -1729,6 +1920,9 @@ describe('端上把 purpose 带上去、并按 kind 决定要不要重试', () =
 
     eq(box[0].purpose, 'generate', '漏传时按最严的一池算（云端 DEFAULT_PURPOSE 同值）')
     eq(box[1].purpose, 'ask')
+    /* action 不再笼统叫 chat：报告生成是 generate，只有 AI 问答才叫 chat（见端上 PROXY_ACTION） */
+    eq(box[0].action, 'generate', '报告生成/漏传用途的请求不该叫 chat')
+    eq(box[1].action, 'chat', 'AI 问答才走 chat action')
   })
 
   it('chatText 上游 200 但正文为空：判可重试（进而进问答冷却），不得当成「成功」', async () => {
@@ -1805,7 +1999,7 @@ describe('端上把 purpose 带上去、并按 kind 决定要不要重试', () =
   it('无素材兜底：交回带 knowledgeOnly 的报告，且只给简介、画像为零', async () => {
     const load = freshClient()
     env.registerCloudFn('aiProxy', (data) => {
-      if (data.action !== 'chat') return { ok: false }
+      if (data.action !== 'generate') return { ok: false }
       return { ok: true, content: JSON.stringify({ intro: '张三，演员，代表作《甲》。' }) }
     })
     const { buildKnowledgeFallback, reportShortfall, reportShortfallRetryable } = load('utils/report')
@@ -1830,7 +2024,7 @@ describe('端上把 purpose 带上去、并按 kind 决定要不要重试', () =
   it('无素材兜底：模型对该人物没把握（intro 为空）时交回失败，不留空壳报告', async () => {
     const load = freshClient()
     env.registerCloudFn('aiProxy', (data) => {
-      if (data.action !== 'chat') return { ok: false }
+      if (data.action !== 'generate') return { ok: false }
       return { ok: true, content: JSON.stringify({ intro: '' }) }
     })
     const { buildKnowledgeFallback } = load('utils/report')
@@ -2070,42 +2264,123 @@ describe('模型档位：三处口径不许漂（端上清单 / 云函数档位�
     )
   })
 
-  it('端上每一档，云端档位表里都认得出来（认得出来，计费闸门才拦得住）', () => {
+  it('端上厂商/质量档清单与云端注册表同源（认得出来，计费闸门才拦得住）', () => {
     env.resetAll()
-    const tiers = env.load('config/public').publicConfig.llm.models
-    const cloud = require(LLM_CONFIG).TIERS
-    ok(
-      Array.isArray(tiers) && tiers.length > 1,
-      `端上清单读不到（拿到的是 ${JSON.stringify(tiers)}），先确认 publicConfig.llm.models 的结构`
-    )
-
-    for (const t of tiers) {
-      const conf = cloud[t.tier]
-      ok(conf, `端上有 ${t.tier}，云端表里却没有它 —— 用户切过去会落到默认档去`)
-      eq(conf.memberOnly, t.memberOnly, `${t.tier}：端上与云端的会员闸门口径必须同值（云端那份才是闸门）`)
-      ok(conf.model, `${t.tier}：云端这一档没有模型名，生成时发不出请求`)
+    const client = env.load('config/public').publicConfig.llm
+    const cloud = require(LLM_CONFIG)
+    /* ① 质量档：恰好三档，key 与 memberOnly 逐一相同（云端那份才是闸门） */
+    ok(Array.isArray(client.qualities) && client.qualities.length === 3,
+      `端上质量档应恰好三项（拿到 ${JSON.stringify((client.qualities || []).map((x) => x.key))}）`)
+    for (const q of client.qualities) {
+      const conf = cloud.QUALITY_MAP[q.key]
+      ok(conf, `端上有 ${q.key}，云端质量表里却没有它 —— 用户切过去会落到默认档去`)
+      eq(conf.memberOnly, q.memberOnly, `${q.key}：端上与云端的会员闸门口径必须同值`)
     }
     /* 兜底档必须是免费档：非会员每次请求都落它，标成会员档会让非会员「一片都降级」 */
-    eq(cloud.fast.memberOnly, false, 'fast 是兜底档，不能算会员档')
-    eq(
-      require(LLM_CONFIG).DEFAULT_TIER,
-      env.load('config/public').publicConfig.llm.tier,
-      '端上默认档要与云端 DEFAULT_TIER 同值（端上没带档位时云端按它兜底）'
-    )
+    eq(cloud.QUALITY_MAP.basic.memberOnly, false, 'basic 是兜底档，不能算会员档')
+    /* ② 厂商：端上列的每家云端都注册了；默认值端云一致 */
+    ok(Array.isArray(client.vendors) && client.vendors.length === Object.keys(cloud.VENDORS).length,
+      '端上厂商数要与云端 VENDORS 一致')
+    for (const v of client.vendors) {
+      ok(cloud.VENDORS[v.key], `端上列了厂商 ${v.key}，云端 VENDORS 里却没有它`)
+    }
+    eq(cloud.DEFAULT_VENDOR, client.defaultVendor, '默认厂商端云同值')
+    eq(cloud.DEFAULT_QUALITY, client.defaultQuality, '默认质量档端云同值（端上没带档位时云端按它兜底）')
+
+    /* ③ 4 厂 × 3 档 × 2 槽全矩阵：每条路由都能裁决出模型（缺槽靠同厂商向下降档补齐），不允许 configError */
+    for (const vendorKey of Object.keys(cloud.VENDORS)) {
+      for (const q of cloud.QUALITIES) {
+        for (const [purpose, capability] of [
+          ['generate', 'structured'],
+          ['ask', 'reasoning']
+        ]) {
+          const r = cloud.resolveLlm({ vendor: vendorKey, quality: q.key, purpose })
+          notOk(r.configError, `${vendorKey}/${q.key}/${purpose}：${r.configError || ''}`)
+          eq(r.capability, capability, `${vendorKey}/${q.key}：能力槽必须由用途决定，不许串槽`)
+          eq(r.channel, cloud.VENDORS[vendorKey].channel)
+          ok(r.model, `${vendorKey}/${q.key}/${capability}：裁决后必须有模型名`)
+          /* 落档不能高于请求档（只允许同厂向下降档），更不能换厂 */
+          ok(cloud.QUALITIES.findIndex((x) => x.key === r.quality) <= cloud.QUALITIES.findIndex((x) => x.key === q.key),
+            `${vendorKey}/${q.key}：降档只能向下，落档 ${r.quality} 比请求档还高`)
+          eq(r.vendor, vendorKey, `${vendorKey}/${q.key}：缺槽也不许跨厂商`)
+        }
+      }
+    }
+    /* 降档事实钉死：Kimi 高级档没有结构化旗舰，报告槽降到标准版 k2.6；问答槽不降 */
+    const kimiReport = cloud.resolveLlm({ vendor: 'moonshot', quality: 'premium', purpose: 'generate' })
+    eq(kimiReport.model, 'kimi-k2.6')
+    eq(kimiReport.quality, 'standard')
+    eq(kimiReport.qualityRequested, 'premium')
+    eq(kimiReport.qualityDowngraded, true)
+    const kimiAsk = cloud.resolveLlm({ vendor: 'moonshot', quality: 'premium', purpose: 'ask' })
+    eq(kimiAsk.model, 'kimi-k3')
+    eq(kimiAsk.qualityDowngraded, false)
   })
 
-  it('cloudbaserc.json 不再注入任何厂商 key（换成云开发 AI 后 key 由云开发环境承担）', () => {
+  it('cloudbaserc.json 只注入 key 的 {{env.*}} 占位，绝不固化任何密钥字面值（4 厂商变量体系）', () => {
     const rc = JSON.parse(read(path.join(ROOT, 'cloudbaserc.json')))
     for (const name of ['aiProxy', 'hotBoardRefresh']) {
       const fn = (rc.functions || []).filter((f) => f.name === name)[0]
       ok(fn, `cloudbaserc.json 里找不到 ${name}`)
       const vars = fn.envVariables || {}
-      for (const k of ['QWEN_API_KEY', 'ZHIPU_API_KEY', 'OPENAI_API_KEY', 'LLM_PROVIDER']) {
-        notOk(k in vars, `${name} 不该再有 ${k}：大模型已统一走云开发 AI，key 由云开发环境承担`)
+      /* 旧架构的死变量不许复活（双通道旧档变量 + 更老的通义 / provider 变量名） */
+      for (const k of [
+        'QWEN_API_KEY',
+        'OPENAI_API_KEY',
+        'LLM_PROVIDER',
+        'LLM_VENDOR_FAST',
+        'LLM_VENDOR_STANDARD',
+        'LLM_VENDOR_REASONLITE',
+        'LLM_VENDOR_REASON'
+      ]) {
+        notOk(k in vars, `${name} 不该再有已废弃的 ${k}`)
+      }
+      /* v3 路由变量必须在，且值只能是 {{env.*}} 占位 */
+      for (const k of ['LLM_VENDOR', 'LLM_TIER']) {
+        ok(/^\{\{\s*env\.[A-Z0-9_]+\s*\}\}$/.test(vars[k]), `${name} 的 ${k} 必须从部署环境注入（拿到 ${vars[k]}）`)
+      }
+      /* 所有 *_KEY / *_TOKEN 只允许 {{env.XXX}} 占位或空值：真实密钥只能来自部署机 .env / 控制台 */
+      for (const [k, v] of Object.entries(vars)) {
+        if (/_(KEY|TOKEN|SECRET)$/.test(k)) {
+          ok(
+            v === '' || /^\{\{\s*env\.[A-Z0-9_]+\s*\}\}$/.test(v),
+            `${name} 的 ${k} 必须是 {{env.*}} 占位而不是字面值（拿到 ${String(v).slice(0, 8)}）`
+          )
+        }
       }
     }
-    /* 检索 key 仍在（那部分没改） */
+    /* 四家 http 厂 key + 检索 key 都在（只在 aiProxy 一侧也没关系，hotBoardRefresh 用到的在其各自 vars 里） */
     const ai = (rc.functions || []).filter((f) => f.name === 'aiProxy')[0]
-    ok((ai.envVariables || {}).BOCHA_API_KEY, '检索 key 照旧从部署环境注入')
+    const aiVars = ai.envVariables || {}
+    for (const k of ['BOCHA_API_KEY', 'DEEPSEEK_API_KEY', 'ZHIPU_API_KEY', 'MOONSHOT_API_KEY', 'DASHSCOPE_API_KEY']) {
+      ok(/^\{\{\s*env\./.test(aiVars[k]), `${k} 照旧从部署环境注入`)
+    }
+  })
+
+  it('llm.config.js：默认零参落 cloudbase/basic 零 key；VENDORS 注册表里只有 key 的变量名、没有任何字面值', () => {
+    const cloud = require(LLM_CONFIG)
+    /* 零参（端上什么都没带、环境变量也没配）：默认厂商 + 基础版 + 结构化，cloudai 通道零 key */
+    const r = cloud.resolveLlm()
+    eq(r.channel, 'cloudai', '默认通道必须是 cloudai（不配置时零 key 可用）')
+    eq(r.vendor, 'cloudbase')
+    eq(r.quality, 'basic')
+    eq(r.capability, 'structured')
+    eq(r.purpose, 'generate')
+    notOk(r.configError)
+    notOk(r.apiKeyEnv, '默认路由不该要求厂商 key')
+    ok(r.model, '默认路由必须有模型名')
+    /* 每家注册项：cloudai 无 keyEnv；http 厂 keyEnv 是大写字变量名、endpoint 是公开 https、无密钥字面值 */
+    for (const [name, v] of Object.entries(cloud.VENDORS)) {
+      if (v.channel === 'cloudai') {
+        notOk(v.apiKeyEnv, `${name}：cloudai 通道不该登记 keyEnv`)
+      } else {
+        ok(/^[A-Z0-9_]+$/.test(v.keyEnv), `${name}：keyEnv 必须是环境变量名`)
+        ok(v.endpoint && /^https:\/\//.test(v.endpoint), `${name}：endpoint 必须是 https 公开端点`)
+        ok(!/sk-|Bearer\s+\w/i.test(JSON.stringify(v)), `${name}：注册表里不许出现密钥字面值`)
+      }
+      /* 每家的基础版两槽必须齐全：它是免费用户的全部能力，也是降档链的最后一级 */
+      ok(v.tiers.basic.structured && v.tiers.basic.structured.model, `${name}：基础版缺 structured 槽`)
+      ok(v.tiers.basic.reasoning && v.tiers.basic.reasoning.model, `${name}：基础版缺 reasoning 槽`)
+    }
   })
 })

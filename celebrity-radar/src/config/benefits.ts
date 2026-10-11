@@ -309,6 +309,16 @@ export const REPORT_FIELD_LIMITS = {
   /** 分歧条数：只摆最关键的几处，摆满一屏反而没了重点 */
   conflictMax: 3,
 
+  /**
+   * 同领域坐标（会员段，2026-10-12）。只有**具名 + 具体差异**才算数（写不出就整条剔除），
+   * 故条数刻意少：3 条足够给出坐标感，摆满就是排行榜，反而丢了「看这个人」的主线。
+   */
+  peerMax: 3,
+  /** 对象姓名（与 relationNameChars 同档：中文姓名 2~4 字，留艺名 / 组合名的余量） */
+  peerNameChars: 20,
+  /** 具体差异：1~2 句，必须落到可核对的事实（作品 / 奖项 / 数据 / 路径），与 quoteNoteChars 同档 */
+  peerGapChars: 120,
+
   /** 人物档案：超过 6 条就不再是「一眼看清 who」 */
   profileMax: 6,
   /** 字段名（「出生年份」四个字，够用且能左右对齐成一列） */
@@ -417,11 +427,11 @@ export const REPORT_QUOTAS = {
  *     推理模型的思考（reasoning_content）同样计入 max_tokens（见 aiProxy 的 reasoningChars 日志）。
  *
  * ⚠ chatMaxTokens 的**真源在云端**（cloudfunctions/{aiProxy,hotBoardRefresh}/llm.config.js 的
- *   TIERS[].chatMaxTokens），本值是它的副本，由 test/cases/20 读那份文件核对 ——
+ *   CHAT_MAX_TOKENS），本值是它的副本，由 test/cases/20 读那份文件核对 ——
  *   两边漂移的话，这里的「余量」就是假的（端上以为还有一半，云端其实只给一半）。
  */
 export const REPORT_OUTPUT_BUDGET = {
-  /** 与云端 TIERS[].chatMaxTokens 一致（用例 20 校验） */
+  /** 与云端 CHAT_MAX_TOKENS 一致（用例 20 校验） */
   chatMaxTokens: 8192,
   /**
    * 推理「思考」可能吃掉的份额：报告是长 JSON，思考一旦吃掉大半限额，正文就会被截断，

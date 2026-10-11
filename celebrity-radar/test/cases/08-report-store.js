@@ -344,6 +344,21 @@ describe('P0-2 写口：落库校验', () => {
     eq(res.result, 'saved', '口径若与端上不一致，免费档会被误判成「伪造会员段」而整条写不进去')
   })
 
+  it('同领域坐标（peers）也算会员段：非会员提交带 peers 的报告被拒（四个口径必须一致）', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow()])
+    const res = await callStore(fn, {
+      op: 'save',
+      personKey: 'A#tech',
+      report: report({ peers: [{ name: '某同行', gap: '主演作品更多，且拿了同档奖项' }] })
+    })
+    eq(
+      res.kind,
+      'auth',
+      'peers 是 2026-10-12 新增的会员段：端上 hasMemberContent / 写口 / quotaGuard 必须同口径'
+    )
+  })
+
   it('report.personKey 与目标行不一致：拒绝', async () => {
     const fn = loadProxy()
     env.db.__seed('report_cache', [lockRow()])

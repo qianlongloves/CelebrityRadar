@@ -132,6 +132,18 @@ const RELATED_CANDIDATES = 3
 /** 展示上限 */
 const RELATED_MAX = 3
 
+/**
+ * 分批生成失败的组名 → 中文（与 report-toc.ts#TOC_GROUPS 的 label 一致）。
+ * 报告分 4 批生成，某一批连续几次失败时那一组段落整块缺失（见 utils/report.ts#Report.missingGroups），
+ * 提示条用它把「缺的是哪几组」说成人话，而不是甩一串 identity / facts 给用户。
+ */
+const MISSING_GROUP_LABELS: Record<string, string> = {
+  identity: '基本档案',
+  facts: '事实（动态/语录）',
+  judgement: '判断与风险（点评/争议）',
+  detail: '细节与延伸（时间线）'
+}
+
 interface RelatedPerson {
   personKey: string
   name: string
@@ -309,7 +321,7 @@ export default function ReportPage() {
    * 用联合类型而不是裸字符串：key 打错一个字母，✕ 就把「已关」记到了别人头上，
    * 而眼前这条永远关不掉 —— 这种错编译期必须拦下来。
    */
-  type NoticeKey = 'error' | 'diff' | 'keptMember' | 'shortfall' | 'degraded' | 'bgGaps'
+  type NoticeKey = 'error' | 'diff' | 'keptMember' | 'shortfall' | 'degraded' | 'bgGaps' | 'missingGroups'
   /*
    * 提示条的「已关闭」记忆（2026-10-10，需求：「所有文字提示的框都要有关闭按钮」）。
    *
@@ -1377,6 +1389,26 @@ export default function ReportPage() {
       )}
 
       {/*
+        部分批生成失败（2026-10-11）：报告分 4 批生成，某一批两三次尝试都失败时那一组段落整块缺失，
+        但报告仍可能通过达标判定落库（见 utils/report.ts#Report.missingGroups）。这里告诉读者
+        「是数据缺失、不是页面坏了」，并指一条能补全的路（重新生成）—— 与 shortfall 不同：shortfall
+        是「这次没扣次数」，这条是「已扣次数、但确实少了几组」，两者不会同时出现（shortfall 不落库）。
+      */}
+      {report?.missingGroups && report.missingGroups.length > 0 && !closedNotices.missingGroups && (
+        <View className='page-report__diff'>
+          <View className='page-report__diff-main'>
+            <Text className='page-report__diff-head'>这份报告缺了几个部分</Text>
+            <Text className='page-report__diff-body'>
+              生成时有 {report.missingGroups.length} 组段落没能成功产出（
+              {report.missingGroups.map((g) => MISSING_GROUP_LABELS[g] ?? g).join(' / ')}
+              ），下面相应卡片可能缺失 —— 不是显示问题。点右上角「查看最新」重新生成，通常可以补全。
+            </Text>
+          </View>
+          <NoticeClose onClose={() => closeNotice('missingGroups')} />
+        </View>
+      )}
+
+      {/*
         AI 问答入口（M4-8）：原先放在页面最底部（读完报告才看得到），用户反馈「找不到」，
         故提到首屏 —— 紧跟人物横幅与会员促销条之后，仍在首屏之内，是第一眼能看到的动作之一。
         问答只读已缓存报告、不消耗生成次数（见 utils/qa.ts 三条硬口径），文案里明说，
@@ -1450,34 +1482,6 @@ export default function ReportPage() {
 
       {report && (
         <View>
-          {/*
-            折叠目录（2026-10-10 两改：先是收起态只占标题一行，再是展开态瘦身）：
-            18 节卡片一屏一屏往下滑，读的人既不知道后面还有什么，也不好回头对照。
-            默认收起，收起态**只占标题那一行** —— 它是入口，不是内容，不该自己再占一屏
-            （早先收起时还留了句「按节直达」的说明，为这句话又多占一行，已去掉：
-            一个写着「目录 · N 节」还带箭头的标题，本身就说清了它是干什么的）。
-
-            展开态：批 10 曾把胶囊列表改成**竖向时间线**（主轴 + 每节一颗节点，与报告里的
-            履历 / 动态时间线同一套视觉语言），视觉上成立，但**展开一次要占近两屏**
-            （18 行 × 68rpx ≈ 1200rpx），在一个「本来就是嫌太长才做的目录」里这是自相矛盾。
-            故改回**两列胶囊格**：每行两节，行高不变，18 节从 18 行降到 9 行（约 640rpx），
-            缩掉一半；胶囊用报告页已有的 `__cloud-tag` 那套语言（线框 + 圆角），不引入新视觉。
-
-            ⚠ 条目与下方卡片的对应关系由 utils/report-toc.ts 的可见性条件保证：
-              这里渲染出的每一条，下面都真的有一张对应的卡；卡片上的 id 必须与条目 id
-              一字不差（改 id 时两处一起改，否则点了没反应）。
-              只有一节时不出目录 —— 这不是统计数据，是导航，套「不成立也出卡」没意义。
-
-            ⚠ 分档（2026-10-10，需求「目录配成模板」）：`tocSections` 已按身份滤过档位 ——
-              免费用户只列免费档那几节，会员档那几节由 `tocLocked` 在底部收成一行提示。
-              免费用户**看不到**那几节的内容（页面里对应卡片也判 `member`），所以这一行
-              不是装饰，是「这份报告还差什么」的唯一说明，点它去会员中心。
-
-            ⚠ 分组（2026-10-10 三改）：展开态渲染的是 `tocGroups`（组标签 + 组内两列胶囊），
-              不再是平铺的 18 颗 —— 平铺时相邻两节之间没有任何线索，读起来像随机词表。
-              分组**不改顺序**：组内顺序 = 模板顺序 = 卡片顺序（见 report-toc.ts#TOC_GROUPS），
-              所以「点完上一节往下看」仍然顺次，只是多了 5 行归类小字。
-            */}
           {tocSections.length > 1 && (
             <View className='card page-report__toc'>
               <View
@@ -1525,15 +1529,6 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/*
-            人物速览：把博查返回的素材聚合成「本人近来的公开信息覆盖」，全部字段原样统计、
-            不经模型改写，因此可以当作事实读。三行分别回答三个此前没人回答的问题：
-            热度怎么来的（近 30 天 / 近 7 天报道量）、最近一次公开动态是什么时候、
-            这份报告的素材覆盖了哪段时间。原先这个位置放的是「同领域名人」——
-            读一份关于 A 的报告，却被推荐 B、C、D，与「我在看谁」是脱节的。
-          */}
-          {/* 端上算得出覆盖范围就出真卡；算不出时也出一张卡说明（原先 `(cov || coverageSpan !== '') &&`
-              不成立就整卡消失，用户只看到「卡片不见了」）。降级简版除外：整份只留上方警示条，不堆空卡。 */}
           {!report.degraded && !cov && coverageSpan === '' && (
             <View id='sec-overview' className='card'>
               <View className='card-title'>人物速览</View>
@@ -1675,21 +1670,7 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/*
-            人物档案（第二批）：把散在简介那段散文里的身份锚点提成「字段名 : 值」。
-            与简介不是重复关系 —— 简介回答「他最近怎么样」，档案回答「他是谁」，
-            后者要能一眼扫完，所以左边字段名对齐成一列、值一行一条。
-
-            profile 是可选字段，这里有**两种空**要分开：
-              · 键不存在 → 改动前落库的老报告，整卡降级（那时根本没要过这一段，
-                不能替它断言「素材里没有」）；
-              · 键存在但为空数组 → 本次生成确认「素材里确实没有」，此时**卡片照出**，
-                卡里写明为什么是空的。
-            后者是 2026-10-08 改的：此前空数组不落库，两种「空」在页面上长得一样，
-            用户看到的是卡片凭空消失，只能怀疑是坏了（见 utils/report.ts 的 sanitizeReport）。
-            条目的 basis 在 utils/report.ts 里已强制为「真素材」，
-            指不出出处的条目在落库前就被剔除了 —— 所以这里的每条依据都点得回去。
-          */}
+          
           {report.profile && (
             <View id='sec-profile' className='card'>
               <View className='card-title'>人物档案</View>
@@ -1735,21 +1716,7 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/*
-            商业价值速览（第 0 期，端上聚合）：把报告已有素材换成「一屏看结论」的商业读法。
-
-            它与数据 Tab 的关系是「同一批数字的两种读法」：那边是核对用的面板（分布 / 交叉 /
-            走势），这边是决策用的入口（一句话结论 + 点回明细）。所以这张卡**刻意不画图、
-            不铺明细**，否则报告页会出现第二份统计面板。三段的口径与取舍见 utils/commercial.ts。
-
-            门槛（成立的分项 < MIN_AXES）没过时仍出卡，改为逐条写明缺什么 —— 这一屏最怕的是
-            「某一项不见了」被读成「这一项没问题」。降级简版没有结构化素材，整卡不出。
-          */}
-          {/* 会员档（2026-10-10，需求「目录配成模板」）：商业速览 / 会员专享 / 关键词云 /
-              语录主题 / 热度趋势 五节只对会员渲染 —— 它们是「把免费素材换个角度汇总」的分析视图，
-              故免费档看到的是事实与判断，会员档多出这一层分析。档位口径在 utils/report-toc.ts
-              （REPORT_TEMPLATE 的 tier），这里的 `member &&` 是那套口径的页面侧落地，
-              两处必须一致：少了这里，目录里不列、页面却有卡；多了这里，目录列了却点不到。 */}
+          
           {member && commercial && !report.degraded && (
             <View id='sec-commercial' className='card page-report__vip-card'>
               <View className='card-title'>会员专享 · 商业价值速览</View>
@@ -1952,21 +1919,6 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/*
-            近期争议与回应（第二批）：**免费段**，刻意摆在会员卡之前。
-            它回答的是「最近吵过什么、当事人怎么答的」，与会员专享的 memberNotes.risk
-            （面向未来的风险提示）是两件事 —— 边界写在提示词里：已发生的争议归 free，
-            前瞻判断归会员。二者共读时是「事实 + 判断」的两层，不是同一条的两种说法。
-
-            response 允许为空（素材里当事方没公开回应过是常态），此时不出「回应」那一行，
-            而不是补一句「暂无回应」——「暂无」是我们替素材下的结论，素材本身没这么说。
-
-            P2-13（2026-10-09）：本卡此前以 `report.controversies &&` 为渲染条件，于是**缺键**
-            （这一段上线前落库的存量报告恒缺它）时整卡不出现 —— 读者的结论是「此人没有争议」，
-            而这恰恰是我们最不该替他下的判断（合规相关段落被静默隐藏）。现在缺键也出卡、并说明
-            「这一段缺数据 ≠ 确认没有争议」；`length === 0`（真的查过、素材里没有）才是那句
-            「不把没看到争议写成没有争议」的说明。降级简版仍整卡不出（无结构化素材）。
-          */}
           {!report.degraded && (
             <View id='sec-controversies' className='card'>
               <View className='card-title'>近期争议与回应</View>
@@ -1993,18 +1945,7 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/*
-            风险雷达（第 0 期）：与上面「近期争议与回应」的分工 —— 争议卡是**叙述**
-            （模型整理过的争议与回应），本卡是**索引**（从全篇素材里字面挑出的表述），
-            因此能覆盖「不构成争议、但有出处」的动作（例如「起诉造谣者」这类维权表态）。
-
-            与下面会员段 memberNotes.risk 的分工：本卡是**已发生**的表述（事实，免费），
-            会员段是**面向未来**的判断 —— 与 controversies / risk 是同一套边界口径，禁止互相搬运。
-
-            ⚠ 整卡不出现「风险等级 / 高危 / 疑似」，也不给排序评分：平台只指出素材里写了什么，
-              是否构成问题由读者拿着原文判断（口径见 utils/risk.ts 顶部注释）。
-              降级简版（degraded）没有结构化素材，整卡不出。
-          */}
+         
           {risk && !report.degraded && (
             <View id='sec-risk' className='card'>
               <View className='card-title'>风险雷达</View>
@@ -2160,9 +2101,38 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/* 立场与舆情：两块内容（本地统计的情绪走向 + 模型判定的话题态度）都可能为空，
-              但卡片本身照出 —— 空的那块写明口径，别让整卡消失。降级简版除外。 */}
-          {!report.degraded && (
+          {/*
+            同领域坐标（2026-10-12 新增，会员专享）：具名同行 + 具体差异，结构化条目。
+            与上方「对比视角」的分工：那段是散文式判断（「与 X 相比更偏 Y」），这一节把它拆成
+            可逐条核对的坐标 —— 每条一个具名对象 + 一条落到事实的差异；找不到具名对象或只有
+            笼统评价的条目，在数据层（utils/report.ts#sanitizeReport）就已经被整条剔除了。
+            与 sec-member 同一套闸门（会员 + 非降级简版），故读到的 report 里通常没有这个键时
+            要出「为什么没有」的说明卡，而不是让整卡消失。
+          */}
+          {member && !report.degraded && (
+            <View id='sec-peers' className='card page-report__notes'>
+              <View className='card-title'>会员专享 · 同领域坐标</View>
+              {(!report.peers || report.peers.length === 0) && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有可具名的同领域对象，或模型给不出落到事实的具体差异（只有笼统评价的条目不收录）。
+                </Text>
+              )}
+              {(report.peers ?? []).map((p, i) => (
+                <View key={`${i}-${p.name}`} className='page-report__entry'>
+                  <View className='page-report__entry-head'>
+                    <Text className='page-report__entry-name'>{p.name}</Text>
+                  </View>
+                  <Text className='page-report__entry-text'>{p.gap}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* 立场与舆情（2026-10-12 起为会员档）：两块内容（本地统计的情绪走向 + 模型判定的话题
+              态度）都可能为空，但卡片本身照出 —— 空的那块写明口径，别让整卡消失。降级简版除外。
+              ⚠ 数据仍在**免费批次**里生成（对比页 / 话题速览 / 问答要拿它当上下文，见
+                 utils/report-toc.ts 顶部的分档口径），这里只是不再给免费用户出这张卡。 */}
+          {member && !report.degraded && (
             <View id='sec-stance' className='card'>
               <View className='card-title'>立场与舆情</View>
               {!sentimentStats && (
@@ -2279,10 +2249,11 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/* 后续关注（第二批）：时间线是往回看，这张卡是往前看 —— 报告因此从「一份回顾」
-              变成「一份可以跟踪的东西」。只收素材里已公布的时间点，故 when 常是「2026-11」
-              这种刻度而不是精确日期；素材没公布就不写（猜档期是推断，不是信息）。 */}
-          {report.watchlist && (
+          {/* 后续关注（第二批；2026-10-12 起为会员档）：时间线是往回看，这张卡是往前看 ——
+              报告因此从「一份回顾」变成「一份可以跟踪的东西」。只收素材里已公布的时间点，
+              故 when 常是「2026-11」这种刻度而不是精确日期；素材没公布就不写（猜档期是推断，
+              不是信息）。数据仍在免费批次生成，此处只对会员出卡。 */}
+          {member && report.watchlist && (
             <View id='sec-watchlist' className='card'>
               <View
                 className='page-report__fold-head'
@@ -2335,10 +2306,11 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/* 名词解释（第二批）：报告里出现的行话与背景词。摆在这个位置是当「页脚工具」用 ——
-              读到这里遇到没看懂的词，往回翻不如就地查。也是全项目唯一不带出处的模型段落
-              （它答的是词义，不是关于本人的事实断言，理由见 utils/report.ts 的 Schema 注释）。 */}
-          {report.glossary && (
+          {/* 名词解释（第二批；2026-10-12 起为会员档）：报告里出现的行话与背景词。摆在这个位置
+              是当「页脚工具」用 —— 读到这里遇到没看懂的词，往回翻不如就地查。也是全项目唯一
+              不带出处的模型段落（它答的是词义，不是关于本人的事实断言，理由见 utils/report.ts
+              的 Schema 注释）。数据仍在免费批次生成，此处只对会员出卡。 */}
+          {member && report.glossary && (
             <View id='sec-glossary' className='card'>
               <View
                 className='page-report__fold-head'

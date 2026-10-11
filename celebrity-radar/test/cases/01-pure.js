@@ -1424,6 +1424,7 @@ describe('报告目录 utils/report-toc', () => {
     'sec-controversies',
     'sec-risk',
     'sec-member',
+    'sec-peers',
     'sec-stance',
     'sec-timeline',
     'sec-watchlist',
@@ -1440,26 +1441,35 @@ describe('报告目录 utils/report-toc', () => {
       verdict: { summary: 's', positioning: 'p' }
     })
 
-  it('完整报告 + 会员：15 节齐、顺序与卡片一致', () => {
+  it('完整报告 + 会员：17 节齐、顺序与卡片一致', () => {
     const toc = buildReportToc(fullReport(), { member: true, hasOverview: true })
     deepEq(toc.map((s) => s.id), FULL_ORDER)
   })
 
   /*
    * 2026-10-10 分档（需求「目录配成模板」）：免费档 = 事实与判断，会员档 = 商业速览 + 会员专享。
+   * 2026-10-12 调整（方案 A 轻量版）：把「立场与舆情 / 后续关注 / 名词解释」移入会员档，并新增
+   * 「同领域坐标」。这三节仍在**免费批次**里生成（对比页 / 话题速览 / 问答要用），只是免费不列卡。
    * 名单在这里也写一份，是为了**钉住边界** —— 挪一节进出会员档，这两组常量与权益文案
    * （utils/member.ts#MEMBER_BENEFIT_POINTS，03-quota-qa.js 已钉住同源）必须一起改。
    * 2026-10-10 二改：三张工具视图（关键词云 / 语录主题 / 热度趋势）已删除，会员档从 5 节缩到 2 节。
    */
-  const MEMBER_ONLY_ORDER = ['sec-commercial', 'sec-member']
+  const MEMBER_ONLY_ORDER = [
+    'sec-commercial',
+    'sec-member',
+    'sec-peers',
+    'sec-stance',
+    'sec-watchlist',
+    'sec-glossary'
+  ]
   const FREE_ORDER = FULL_ORDER.filter((id) => !MEMBER_ONLY_ORDER.includes(id))
 
-  it('免费用户只列免费档那几节：会员档 2 节一个都不进目录', () => {
+  it('免费用户只列免费档那几节：会员档 6 节一个都不进目录', () => {
     const toc = buildReportToc(fullReport(), { member: false, hasOverview: true })
     deepEq(toc.map((s) => s.id), FREE_ORDER)
     for (const id of MEMBER_ONLY_ORDER) notOk(toc.some((s) => s.id === id), `免费目录不该有 ${id}`)
-    /* 反向：免费档的节不能被顺手滤掉（尤其 stance / timeline 有下游消费者） */
-    for (const id of ['sec-stance', 'sec-timeline', 'sec-risk']) {
+    /* 反向：免费档的节不能被顺手滤掉（timeline 被周报复用，risk 与风险监控同源） */
+    for (const id of ['sec-timeline', 'sec-risk']) {
       ok(toc.some((s) => s.id === id), `免费目录丢了 ${id}`)
     }
   })
@@ -1469,7 +1479,7 @@ describe('报告目录 utils/report-toc', () => {
     deepEq(REPORT_TEMPLATE.map((s) => s.id), FULL_ORDER)
     eq(FREE_TOC_COUNT + MEMBER_TOC_COUNT, TEMPLATE_SIZE)
     eq(MEMBER_TOC_COUNT, MEMBER_ONLY_ORDER.length)
-    deepEq(memberOnlyTocLabels(), ['商业速览', '会员专享'])
+    deepEq(memberOnlyTocLabels(), ['商业速览', '会员专享', '同领域坐标', '立场与舆情', '后续关注', '名词解释'])
     for (const s of REPORT_TEMPLATE) ok(s.tier === 'free' || s.tier === 'member', `档位异常：${s.id}`)
     for (const s of REPORT_TEMPLATE) eq(typeof s.visible, 'function', `${s.id} 缺可见性条件`)
   })
@@ -1558,7 +1568,9 @@ describe('报告目录 utils/report-toc', () => {
   })
 
   it('老报告（缺第二批字段）不列这些节 —— 键不存在与键为空数组是两回事', () => {
-    const toc = buildReportToc(mkReport(), { member: false, hasOverview: true })
+    /* 用会员档读：watchlist / glossary 现在属会员档，拿免费档测会「测了个空」（免费本来就不列），
+       测不出「老报告缺这个键」这件事 */
+    const toc = buildReportToc(mkReport(), { member: true, hasOverview: true })
     for (const id of ['sec-profile', 'sec-relations', 'sec-watchlist', 'sec-glossary']) {
       notOk(toc.some((s) => s.id === id), `老报告不该出现 ${id}`)
     }
@@ -1664,17 +1676,23 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
      * 档位口径只写在 utils/report-toc.ts（REPORT_TEMPLATE 的 tier），但**页面得自己再判一次**
      * `member` —— 这两处一错开，症状是「目录里不列、页面却有卡」或「目录列了却点不到」，
      * 而且只在免费账号上出现（开发时多是会员态，测不到）。故分档必须两侧一起钉住。
-     * 允许中间夹注释 / 换行（`[\s\S]{0,60}`），但条件本身必须是那一句。
+     * 允许中间夹注释 / 换行（`[\s\S]{0,60}`，源码是 CRLF，窗口要留够），但条件本身必须是那一句。
      */
     ok(src.includes('{member && commercial && !report.degraded && ('), '商业速览属会员档')
     ok(src.includes('{member && !report.degraded && ('), '会员专享（深度解析）卡也要 member 门槛')
-    /* 免费档的节不能被顺手加门槛：stance 被对比页 / 话题页 / 问答当上下文，timeline 被周报复用 */
-    for (const id of ['sec-stance', 'sec-timeline']) {
-      notOk(
-        new RegExp(`member && [\\s\\S]{0,40}id='${id}'`).test(src),
-        `${id} 属免费档，卡前面不该出现 member 门槛`
+    /* 2026-10-12：立场与舆情 / 后续关注 / 名词解释 已移入会员档（同领域坐标也是会员档），
+       页面必须同步加 member 门槛；反之 timeline 仍在免费档（周报依赖），前面不该出现 member。
+       两侧一错开的症状是「目录里不列、页面却有卡」或「目录列了却点不到」，且只在免费账号上出现。 */
+    for (const id of ['sec-peers', 'sec-stance', 'sec-watchlist', 'sec-glossary']) {
+      ok(
+        new RegExp(`member && [\\s\\S]{0,60}id='${id}'`).test(src),
+        `${id} 属会员档，卡前面必须有 member 门槛`
       )
     }
+    notOk(
+      new RegExp(`member && [\\s\\S]{0,60}id='sec-timeline'`).test(src),
+      'sec-timeline 属免费档，卡前面不该出现 member 门槛'
+    )
     ok(src.includes('lockedReportToc(report,'), '目录底部的「会员另含 N 节」要用模板口径，不另写一套')
   })
 
@@ -1897,7 +1915,7 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     )
 
     const keys = [...src.matchAll(/closeNotice\('(\w+)'\)/g)].map((m) => m[1])
-    deepEq(keys.sort(), ['bgGaps', 'degraded', 'diff', 'error', 'keptMember', 'shortfall'])
+    deepEq(keys.sort(), ['bgGaps', 'degraded', 'diff', 'error', 'keptMember', 'missingGroups', 'shortfall'])
     for (const k of keys) ok(src.includes(`!closedNotices.${k} &&`), `key ${k} 必须真的接在渲染条件上，否则 ✕ 点了没反应`)
 
     notOk(/refreshNoticeClosed|warnClosed/.test(src), '旧的「多条共用一个开关」必须彻底拆掉')

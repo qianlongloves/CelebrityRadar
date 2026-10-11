@@ -30,6 +30,13 @@ export type TrackEvent =
    * 免费档冷却从硬拦截降级为弹窗里的一句提醒，不再产生该事件。
    */
   | 'report_generate_shortfall'
+  /**
+   * 本次生成不达标但可重试、由系统自动重跑一次（P2，2026-10-11，见 utils/cache.ts 的 shortfall 分支）。
+   * 与 report_generate_shortfall 的关系：先打 retry（尝试补救），补救仍不达标才打 shortfall（最终放弃）。
+   * 单列出来是为了盯「自动重跑」的触发率与成功率：触发率过高说明上游抖动频繁、该修通道；补救后仍大量
+   * 打 shortfall 说明抖动是持续性的，光重跑一次不够。
+   */
+  | 'report_generate_retry'
   | 'follow'
   | 'unfollow'
   | 'favorite'

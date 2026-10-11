@@ -44,15 +44,14 @@ const LEGACY_KEYS = [
 ]
 
 /**
- * 历史键位：模型供应商偏好（2026-10-08）。2026-10-11 起大模型统一走微信云开发 AI、
- * 供应商维度整体移除，端上**已不再读它**（utils/llm.ts 只读档位）—— 键位与读写函数保留，
- * 只为不动存量用户的配置结构（云端 SETTINGS_KEYS 也照旧含它，免去一次迁移）。
+ * 厂商偏好键位（2026-10-08 引入；2026-10-11 曾随供应商维度整体移除而下线；
+ * 2026-10-12 v3 厂商维度回归后重新启用）。存厂商标识（cloudbase / deepseek / zhipu / moonshot / qwen）。
  */
 const PROVIDER_KEY = 'settings:llm_provider'
 
 /**
- * 档位偏好键位（2026-10-08）。存的是**档位标识**（fast / standard / reason），不是模型名 ——
- * 这是刻意的：具体模型名只有云端知道（llm.config.js 的 TIERS），端上既不持有也不上报它，
+ * 质量档偏好键位（2026-10-08）。存的是**质量档标识**（basic / standard / premium），不是模型名 ——
+ * 这是刻意的：具体模型名只有云端知道（llm.config.js 的厂商×档×能力槽矩阵），端上既不持有也不上报它，
  * 所以「换任何部署配置都不必让用户重选档位」。合法性只在使用点裁决一次（utils/llm.ts）。
  */
 const TIER_KEY = 'settings:llm_tier'
@@ -91,25 +90,25 @@ function localKeyOf(key: string): string {
   return local
 }
 
-/** 读取历史「模型供应商」偏好（2026-10-11 起端上不再据此裁决档位，仅为保留键位与联调） */
+/** 读取用户选择的厂商标识（cloudbase / deepseek / zhipu / moonshot / qwen，见 publicConfig.llm.vendors）；未选过返回 null */
 export function getPreferredProvider(): string | null {
   const v = Taro.getStorageSync<string>(PROVIDER_KEY)
   return typeof v === 'string' && v ? v : null
 }
 
-/** 写历史「模型供应商」偏好；传 null / 空串表示清除（同上：保留键位，端上不再读） */
+/** 记住用户选择的厂商标识；传 null / 空串表示清除（回落默认厂商云开发 AI） */
 export function setPreferredProvider(provider: string | null): void {
   applyLocal(PROVIDER_KEY, provider)
   pushUserSetting('llm_provider', provider || null)
 }
 
-/** 读取用户选择的档位标识（fast / standard / reason）；未选过返回 null */
+/** 读取用户选择的质量档标识（basic / standard / premium）；未选过返回 null */
 export function getPreferredTier(): string | null {
   const v = Taro.getStorageSync<string>(TIER_KEY)
   return typeof v === 'string' && v ? v : null
 }
 
-/** 记住用户选择的档位标识；传 null / 空串表示清除该偏好（回落该家的极速版） */
+/** 记住用户选择的质量档标识；传 null / 空串表示清除该偏好（回落基础版） */
 export function setPreferredTier(tier: string | null): void {
   applyLocal(TIER_KEY, tier)
   pushUserSetting('llm_tier', tier || null)

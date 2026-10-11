@@ -183,22 +183,24 @@ const ready = (report: Report) => !report.degraded
 /**
  * 报告模板（顺序 = pages/report/index.tsx 里卡片的渲染顺序）。
  *
- * 分档口径（2026-10-10 定，改档位要同时跑报告页与会员页的用例）：
- *   · **免费档给「事实与判断」** —— 人物速览 / 简介 / 人物档案 / 关系图谱 / 近期动态 /
- *     经典名言 / AI 点评 / 争议与回应 / 风险雷达 / 立场与舆情 / 时间线 / 后续关注 / 名词解释。
- *     这批是报告的主体，也是别处的下游：立场与舆情被对比页 / 话题速览 / 问答当上下文用，
- *     时间线被周报的「动态时间线」用，风险雷达与风险监控同源 —— 抽掉任何一节都不只是
- *     「报告页少张卡」，故一律留在免费档。
- *   · **会员档给「商业速览 + 专享解析」** —— 商业价值速览 ＋ 会员专享卡
- *     （对比视角 / 风险提示 / 信源分歧，其内容由 MEMBER_HINT_REALTIME 单独请求，免费档
- *     的报告里根本不存在这几段）。2026-10-10 起，原「分析视图」里的三张工具视图
- *     （关键词云 / 语录主题 / 热度趋势）已删除 —— 它们回答的是「素材长什么样」而非
- *     「这个人怎么样」，与用户诉求不符。
+ * 分档口径（2026-10-12 调整；改档位要同时跑报告页、会员页与 01-pure 的用例）：
+ *   · **免费档给「事实与主线判断」** —— 人物速览 / 简介 / AI 解读 / 人物档案 / 关系图谱 /
+ *     近期动态 / 经典名言 / AI 点评 / 争议与回应 / 风险雷达 / 时间线。
+ *     这批是报告的主体，也是别处的下游：时间线被周报的「动态时间线」用，风险雷达与风险监控
+ *     同源 —— 抽掉任何一节都不只是「报告页少张卡」，故一律留在免费档。
+ *   · **会员档给「延伸与专享解析」** —— 商业速览 / 会员专享 / 同领域坐标 / 立场与舆情 /
+ *     后续关注 / 名词解释。
+ *     2026-10-12 把「立场与舆情 / 后续关注 / 名词解释」从免费档移入会员档（方案 A 轻量版）：
+ *     这三节答的是「大众怎么看」「接下来盯什么」「这个词什么意思」，属延伸与解读而非核心事实。
+ *     **注意它们仍在免费批次里生成**（见 utils/report.ts 的 BATCH_SPEC）—— 本次只改呈现档位，
+ *     不动生成：立场与舆情仍是对比页 / 话题速览 / 问答的素材来源，砍掉生成会让那些免费功能变弱。
+ *     2026-10-10 起，原「分析视图」里的三张工具视图（关键词云 / 语录主题 / 热度趋势）已删除
+ *     —— 它们回答的是「素材长什么样」而非「这个人怎么样」，与用户诉求不符。
  *
- * ⚠ 与提示词的关系：模板只决定**渲染哪几节**，不改变报告的生成本身 —— 报告仍是全局共享缓存
- *   （personKey 唯一键，免费/会员同读一份）。会员档里唯一「数据上真的没有」的是
- *   memberNotes / conflicts 这三段文字段（见 utils/member.ts#stripMemberSections）与
- *   提示词的关系记在 utils/report.ts 的 MEMBER_HINT_REALTIME 上。
+ * ⚠ 与提示词的关系：模板只决定**渲染哪几节**（以及免费读者看到哪些，见 pages/report 的
+ *   `member` 门槛），不改变报告的生成本身 —— 报告仍是全局共享缓存（personKey 唯一键，
+ *   免费/会员同读一份）。数据上**只对会员生成**的是 memberNotes / conflicts / peers
+ *   三段（见 utils/member.ts#stripMemberSections 与 utils/report.ts 的 MEMBER_HINT_REALTIME）。
  */
 export const REPORT_TEMPLATE: ReportTemplateSection[] = [
   /* ── 基本档案：先回答「是谁」。
@@ -232,16 +234,28 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
   { id: 'sec-risk', label: '风险雷达', tier: 'free', group: 'judgement', visible: ready },
   { id: 'sec-member', label: '会员专享', tier: 'member', group: 'judgement', visible: ready },
   /*
-   * ── 立场与舆情（免费档）：「大众怎么看 TA」本是判断类，故归入上面的判断组。
-   * 2026-10-10 起撤销「深度视图」组：关键词云 / 语录主题 / 热度趋势三张工具视图已删除
-   * （它们回答的是「素材长什么样」而非「这个人怎么样」，见 CHANGELOG 批 25），
-   * 本组随之取消，这一节是唯一剩下的，被对比页 / 话题速览 / 问答当上下文用。
+   * 同领域坐标（会员档，2026-10-12 新增）：具名同行 + 具体差异。
+   *
+   * 与 sec-member 里的「对比视角」（memberNotes.compare）是**互补而非重复**：那一段是散文式
+   * 判断，这一节是**结构化条目**（每条一个具名对象 + 一条可核对的差异），可扫读、可逐条核对。
+   * 它与 sec-member 同组、紧邻，构成连续的 judgement 会员段；字段 peers 只在会员提示词里出现。
    */
-  { id: 'sec-stance', label: '立场与舆情', tier: 'free', group: 'judgement', visible: ready },
-  /* ── 细节与延伸：时间轴、还没发生的、看不懂的词 */
+  { id: 'sec-peers', label: '同领域坐标', tier: 'member', group: 'judgement', visible: ready },
+  /*
+   * ── 立场与舆情（2026-10-12 起为会员档）：「大众怎么看 TA」本是判断类，故留在判断组。
+   * 移入会员档只是**呈现**上不再给免费用户出卡；数据仍在免费批次里生成 ——
+   * 它是对比页 / 话题速览 / 问答的上下文来源，砍掉生成会让那几个免费功能变弱
+   * （见本文件顶部的分档口径说明）。
+   * 2026-10-10 起撤销「深度视图」组：关键词云 / 语录主题 / 热度趋势三张工具视图已删除
+   * （它们回答的是「素材长什么样」而非「这个人怎么样」，见 CHANGELOG 批 25）。
+   */
+  { id: 'sec-stance', label: '立场与舆情', tier: 'member', group: 'judgement', visible: ready },
+  /* ── 细节与延伸：时间轴、还没发生的、看不懂的词（后两节 2026-10-12 起为会员档） */
   { id: 'sec-timeline', label: '时间线', tier: 'free', group: 'detail', visible: ready },
-  { id: 'sec-watchlist', label: '后续关注', tier: 'free', group: 'detail', visible: (r) => !!r.watchlist },
-  { id: 'sec-glossary', label: '名词解释', tier: 'free', group: 'detail', visible: (r) => !!r.glossary }
+  /* 后续关注（2026-10-12 移入会员档）：「接下来盯什么」是延伸服务；数据仍在免费批次生成 */
+  { id: 'sec-watchlist', label: '后续关注', tier: 'member', group: 'detail', visible: (r) => !!r.watchlist },
+  /* 名词解释（2026-10-12 移入会员档）：纯阅读辅助；数据仍在免费批次生成 */
+  { id: 'sec-glossary', label: '名词解释', tier: 'member', group: 'detail', visible: (r) => !!r.glossary }
 ]
 
 /** 模板总节数（**名义值**：不随某一份报告降级 / 缺字段而变，权益文案与目录提示取它） */

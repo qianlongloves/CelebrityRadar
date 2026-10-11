@@ -4,8 +4,10 @@
  * 触发：定时触发器（cloudbaserc.json 的 triggers，默认每天 06:30）。
  * 环境变量（控制台 → 云函数 → hotBoardRefresh → 配置 → 环境变量）：
  *   BOCHA_API_KEY   博查检索 key（与 aiProxy / notifyFollowUpdates 共用同一枚）
- *   大模型：**无 key** —— 2026-10-11 起统一走微信云开发 AI（cloud.ai，需 wx-server-sdk ≥ 4.0.1），
- *   用哪一档、哪个模型由同目录 llm.config.js 的档位表决定（与 aiProxy 用同一张表、同一份副本）。
+ *   大模型：默认走微信云开发 AI（cloud.ai，需 wx-server-sdk ≥ 4.0.1，零 key）；
+ *   也可用 LLM_VENDOR=<厂商键> 切到外部厂商直连（此时需配对应 <VENDOR>_API_KEY）。
+ *   系统任务固定 structured 能力槽 + 基础档，厂商/质量档/槽位模型全部由同目录 llm.config.js 裁决
+ *   （与 aiProxy 同一份注册表副本）。
  *
  * 为什么必须放在云端而不是端上生成：
  * 1. 榜单是**全局运营位**，一天一份、所有人看同一份。端上生成 = 每个用户各生成一次，
@@ -29,7 +31,7 @@
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
-/* 档位表 + 解析（换模型改它，不改本文件）。⚠ 与 aiProxy 目录下的副本逐字一致 */
+/* 厂商 × 质量档 × 能力槽注册表 + 解析（换模型改它，不改本文件）。⚠ 与 aiProxy 目录下的副本逐字一致 */
 const { resolveLlm } = require('./llm.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
@@ -169,34 +171,36 @@ async function searchDomain(domain, key) {
  * 2. 「必须基于给定报道」—— 模型对名人的印象会过期，榜单要的是**本周**的公开信息。
  * 3. 「只输出 JSON」—— 云函数侧手写解析，容忍 markdown 栅栏，但不容忍夹带解释文字。
  */
-function buildPrompt(digests, today) {
-  const total = PER_DOMAIN * DOMAINS.length
+function buildPrompt(digests, today, rand) {
+  // rand: 可选随机因子(0~1)，不传则自动用 Math.random()，让每次抽取结果不同
+  const r = (typeof rand === 'number') ? rand : Math.random()
+  const rPct = Math.floor(r * 1000) / 10 // 0.0 ~ 99.9，用于打乱抽取
+
   const system = [
-    '你是「名人雷达」的热门榜编辑，负责每天从公开报道里挑出当下最值得关注的公众人物。',
-    '',
+    '你是「名人雷达」的编辑，负责从随机抽取一位**公众人物，作为当天的「每日名人」。',
     '硬性规则：',
-    `1. 领域只能从这 ${DOMAINS.length} 个里选：${DOMAIN_LIST}，每个领域给 ${PER_DOMAIN} 位，共 ${total} 位。`,
-    '2. 只选真实存在、且在给定报道里能找到依据的公众人物；不要政治、军事人物，不要虚构人物，不要把机构名或公司名当人名。',
-    '3. 榜单位次 = 关注度从高到低，数组顺序即排名（第 1 位最热）。',
-    '4. 同一个人只出现一次；外籍人物用通行中文译名（如「马斯克」，不要写「Elon Musk」）。',
+    `1. 候选范围：仅限给定报道中真实出现、且能找到依据的人物；领域可来自 ${DOMAIN_LIST}。`,
+    '2. 不要选政治、军事人物；不要虚构人物；不要把机构名或公司名当人名。',
+    '3. 随机抽取：在符合依据的人物中**等概率随机**抽一位，不要只挑最热门/头部的，也不要每次都选同一位。',
+    `4. 随机因子为 ${rPct}%，仅用于打乱你的抽取顺序——请据此在候选名单里换着抽，确保不同批次抽到不同人物。`,
     '5. tag 是这位人物近期的动态关键词，2~6 个字（如「新品发布」「巡演」「复出」）。',
     '6. trend 是一句话（不超过 40 字）说明 TA 近期在做什么、为什么被讨论，必须基于给定报道，不要编造具体数字或结论。',
     '7. 只输出 JSON，不要任何解释文字，不要 markdown 代码块。',
-    '',
-    '输出格式：',
-    '{"items":[{"name":"雷军","domain":"tech","tag":"新品发布","trend":"新品发布节奏与年度目标表态持续被讨论"}]}'
+    '输出格式（只返回一个 item，不是数组）：',
+    '{"item":{"name":"雷军","domain":"tech","tag":"新品发布","trend":"新品发布节奏与年度目标表态持续被讨论"}}'
   ].join('\n')
 
   const user = [
-    `今天是 ${today}。以下是各领域近一周的公开报道标题与摘要：`,
+    `今天是 ${today}。以下是近一周的公开报道标题与摘要：`,
     '',
     digests.join('\n\n'),
     '',
-    `请据此给出今天的 ${total} 位热门名人榜。`
+    '请从中**随机抽取一位**公众人物，给出今天的「每日名人」。'
   ].join('\n')
 
   return { system, user }
 }
+
 
 /**
  * 从模型输出里取 JSON：字符串感知配对扫描 + 畸形修复（2026-10-10 重写，
@@ -399,25 +403,67 @@ function halfPunct(ch) {
 }
 
 /**
- * 调云开发 AI（cloud.ai）取一次完整正文（定时任务侧）。
+ * 调大模型取一次完整正文（定时任务侧）。通道由 llm.config.js 的 resolveLlm 裁决：
+ *   channel='http'    → OpenAI 兼容直连外部厂商（POST /chat/completions）；
+ *   channel='cloudai' → 云开发 AI（cloud.ai）。
  *
- * ⚠ 与 aiProxy 的 callCloudAi 是**各自独立的两份**（两个云函数各自打包，不跨目录 require），
- * 改一处别忘了另一处。差别只在：这边不需要 finish_reason（cron 失败只静默保留旧榜单、
- * 没有端上那套重试放大），故用更简单的 generateText —— 少一层流的处理，也少一个实测点。
+ * ⚠ 与 aiProxy 的 callVendorHttp / callCloudAi 是**各自独立的两份**（两个云函数各自打包，
+ * 不跨目录 require），改一处别忘了另一处。差别只在：这边不需要 finish_reason（cron 失败只
+ * 静默保留旧榜单、没有端上那套重试放大），cloudai 用更简单的 generateText，http 用非流式 POST。
  * 已知遗留（与改造前一致）：这里没做「空正文 + finish_reason='length'」的确定性分流，
  * 只统一抛「大模型返回为空」（见文件头的遗留说明）。
  */
 async function askLlm(llm, system, user) {
+  const messages = [
+    { role: 'system', content: system },
+    { role: 'user', content: user }
+  ]
+
+  if (llm.channel === 'http') {
+    const key = readEnv(llm.apiKeyEnv)
+    if (!key) throw new Error(`大模型厂商 ${llm.vendor} 的 key 未配置：请设置环境变量 ${llm.apiKeyEnv}`)
+    /* 与 aiProxy#callVendorHttp 同口径：思考开启（thinking.enabled / reasoning_effort / enable_thinking）时不下发 temperature */
+    const thinkingOn = !!(
+      llm.extraBody &&
+      ((llm.extraBody.thinking && llm.extraBody.thinking.type === 'enabled') ||
+        llm.extraBody.enable_thinking === true ||
+        Object.prototype.hasOwnProperty.call(llm.extraBody, 'reasoning_effort'))
+    )
+    const res = await postJson(
+      `${llm.endpoint.replace(/\/+$/, '')}/chat/completions`,
+      { Authorization: `Bearer ${key}` },
+      Object.assign(
+        {
+          model: llm.model,
+          messages,
+          max_tokens: llm.chatMaxTokens,
+          stream: false,
+          ...(thinkingOn ? {} : { temperature: 0.7 })
+        },
+        llm.extraBody || {}
+      ),
+      LLM_TIMEOUT_MS
+    )
+    if (res.status !== 200) {
+      const body = res.data || {}
+      const detail =
+        (body.error && (body.error.message || body.error.code)) || (typeof body === 'string' ? body : '') ||
+        `HTTP ${res.status}`
+      throw new Error(`厂商 ${llm.vendor} 报错：${String(detail).slice(0, 200)}`)
+    }
+    const choice = (res.data && res.data.choices && res.data.choices[0]) || {}
+    const content = choice.message && typeof choice.message.content === 'string' ? choice.message.content : ''
+    if (!content.trim()) throw new Error('大模型返回为空')
+    return content
+  }
+
   const res = await cloud
     .ai()
     .createModel(llm.modelGroup)
     .generateText(
       {
         model: llm.model,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user }
-        ],
+        messages,
         /* max_tokens 不在 SDK 文档定义里，会随请求体透传（理由见 llm.config.js 的 chatMaxTokens 段） */
         max_tokens: llm.chatMaxTokens,
         ...(llm.extraBody || {})
@@ -582,19 +628,40 @@ exports.main = async (event) => {
   }
 
   const bochaKey = readEnv('BOCHA_API_KEY')
-  /* 档位 / 模型由 llm.config.js 统一裁决（与 aiProxy 同一张表、同一份副本） */
-  const llm = resolveLlm(event)
-  /* 大模型侧不再有 key 可检，改为检 SDK 能力（cloud.ai 是否就位）—— 与 aiProxy 的同类判断同源 */
-  const llmReady = typeof cloud.ai === 'function'
+  /*
+   * 厂商 / 质量档 / 能力槽 / 模型由 llm.config.js 统一裁决（与 aiProxy 同一份副本）。
+   * 这是**无用户上下文的系统任务**（榜单结构化输出），路由只认 structured 槽：
+   *   · 定时器 / 控制台调用（getWXContext 无 OPENID）：允许 event.vendor / event.quality 指定，
+   *     便于运维 dry-run 试某一家；
+   *   · 端上冷启动补跑（action:'ensure'，带 OPENID）：**忽略端上的 vendor / quality**，
+   *     只走环境变量 LLM_VENDOR 或默认厂商的基础档 —— 否则任何用户都能借 ensure
+   *     把系统任务指到高级档 / 外部厂商，平台按它烧自己的 key（每日幂等闸门挡不住「指定高档」）。
+   */
+  const systemContext = !((cloud.getWXContext() || {}).OPENID)
+  const routeEvent = systemContext
+    ? { vendor: event && event.vendor, quality: event && event.quality, purpose: 'generate' }
+    : { purpose: 'generate' }
+  const llm = resolveLlm(routeEvent)
+  /*
+   * 通道就位检查与 aiProxy#handleChat 同源：http 通道检厂商 key 环境变量，
+   * cloudai 通道检 SDK 能力（cloud.ai 是否就位）；配置表本身有错（厂商名拼错）也算未就位。
+   */
+  const llmReady = llm.configError
+    ? false
+    : llm.channel === 'http'
+      ? !!readEnv(llm.apiKeyEnv)
+      : typeof cloud.ai === 'function'
+  const llmMissing = llm.configError
+    ? llm.configError
+    : llm.channel === 'http'
+      ? `${llm.apiKeyEnv}（厂商 ${llm.vendor}）`
+      : '云开发 AI（wx-server-sdk ≥ 4.0.1）'
   if (!bochaKey || !llmReady) {
     /* 未配置不是错误：函数可能先于依赖上线部署，静默跳过即可（不产生失败告警） */
     return {
       ok: false,
       skipped:
-        '缺少前置条件：' +
-        [!bochaKey && 'BOCHA_API_KEY', !llmReady && '云开发 AI（wx-server-sdk ≥ 4.0.1）']
-          .filter(Boolean)
-          .join(' / ')
+        '缺少前置条件：' + [!bochaKey && 'BOCHA_API_KEY', !llmReady && llmMissing].filter(Boolean).join(' / ')
     }
   }
 

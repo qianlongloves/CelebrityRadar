@@ -16,9 +16,7 @@ import {
   readMemberState
 } from '@/utils/member'
 import type { MemberState } from '@/utils/member'
-import { loadMemberSample } from '@/utils/member-sample'
-import type { MemberSample } from '@/utils/member-sample'
-import { dayKey8, fromNow } from '@/utils/time'
+import { dayKey8 } from '@/utils/time'
 /* 额度一览里「容量上限」一组的数字，各自取实现处的常量：这些上限分散在四个模块里，
    页面不复制数值，只引用 —— 改上游一处，这一页跟着变 */
 import { HISTORY_LIMIT } from '@/utils/history'
@@ -44,9 +42,8 @@ import './index.scss'
  * 一张卡片里，三档一铺就把页面撑长，且**说不出「买了到底多得到什么」** ——
  * 权益只能写两行小字，用户在信息不足的情况下被要求付钱。拆出来后：
  *   ① 先讲清「免费版 vs 会员」的差异（对比表，一眼可读）；
- *   ② 紧接着给一段**真实示例**（O-22）：对比表那一格只能写「专享内容」四个字，
- *      而用户真正想问的是「那到底长什么样」—— 示例取自平台真实报告，原文未改写；
- *   ③ 再让用户选时长档位（这里就是各档「等级」的价格与时长）；
+ *   ② 再把会被拦下来的额度与次数逐条列清（额度一览，数字与线上闸门同源）；
+ *   ③ 然后让用户选时长档位（这里就是各档「等级」的价格与时长）；
  *   ④ 最后才出现唯一的支付按钮（吸底，不随滚动丢失）。
  *
  * 三条与全项目一致的口径（改动前先读）：
@@ -59,22 +56,21 @@ import './index.scss'
  */
 
 /**
- * 模型档位名从 config/public.ts 的 `memberOnly` 列推导，不在页面里写死：
+ * 质量档名从 config/public.ts 的 `qualities[].memberOnly` 推导，不在页面里写死：
  * 运营增删档位只改那份清单，这一页与「我的」页的文案自动跟上。
  *
- * 取的是 llm.models（默认供应商的档位）：各家供应商的档位标签是同一套
- * （极速版 / 标准版 / 深度推理，见 llm.providers），所以「免费版能用到什么、会员能用到什么」
- * 与用户切到哪一家无关，这一页不必按供应商分叉。
+ * 质量档是跨厂商同一套（基础版 / 标准版 / 高级版），所以「免费版能用到什么、会员能用到什么」
+ * 与用户切到哪一家厂商无关，这一页不必按厂商分叉；具体模型由云端厂商注册表决定。
  */
 const FREE_MODEL_LABELS =
-  publicConfig.llm.models
-    .filter((m) => !m.memberOnly)
-    .map((m) => m.label)
+  publicConfig.llm.qualities
+    .filter((q) => !q.memberOnly)
+    .map((q) => q.label)
     .join(' / ') || '默认档'
 const MEMBER_MODEL_LABELS =
-  publicConfig.llm.models
-    .filter((m) => m.memberOnly)
-    .map((m) => m.label)
+  publicConfig.llm.qualities
+    .filter((q) => q.memberOnly)
+    .map((q) => q.label)
     .join(' / ') || '—'
 
 /**
@@ -105,8 +101,8 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
     /*
      * 2026-10-08 改口径：原来写「加厚素材 + 对比 / 风险两段」，而专享内容其实早有第三段
      * （信源分歧，与对比 / 风险同在报告页那张卡里）。表格这一列窄，写不下三个名字，
-     * 故收成「专享内容」，具体是什么由下方示例卡用真实原文回答（O-22）——
-     * 名字与数量写在表格里会随实现漂移，写在示例里不会（示例就是当前实现的产物）。
+     * 故收成「专享内容」—— 三段具体内容由报告页那张「会员专享 · 深度解析」卡承载，
+     * 名字与数量写在表格里只会随实现漂移。
      */
     member: '加厚素材 + 专享内容'
   },
@@ -271,25 +267,18 @@ export default function MemberPage() {
   const [buying, setBuying] = useState(false)
   /** 登录在途：未登录时点开通会先补登录 */
   const [logging, setLogging] = useState(false)
-  /**
-   * 真实示例（O-22）：null = 没有可展示的真实样本（读库失败，或库里还没有带专享段的报告）。
-   * 刻意不做「加载中骨架」：示例卡是补充说明而非页面骨架，先摆一张会跳动的空卡比晚半秒出现更打扰。
-   */
-  const [sample, setSample] = useState<MemberSample | null>(null)
 
   useEffect(() => {
     let alive = true
     void (async () => {
-      /* 三件互不依赖的事并行取：任一失败都不该让整页空着（各自有保守兜底） */
-      const [m, p, s] = await Promise.all([
+      /* 两件互不依赖的事并行取：任一失败都不该让整页空着（各自有保守兜底） */
+      const [m, p] = await Promise.all([
         readMemberState().catch(() => null),
-        fetchMembershipPlans().catch(() => FALLBACK_MEMBERSHIP_PLANS),
-        loadMemberSample().catch(() => null)
+        fetchMembershipPlans().catch(() => FALLBACK_MEMBERSHIP_PLANS)
       ])
       if (!alive) return
       setMember(m)
       setPlans(p)
-      setSample(s)
       setSelectedId((prev) => prev || pickDefault(p))
       setLoading(false)
     })()
@@ -300,17 +289,6 @@ export default function MemberPage() {
 
   const selected = plans.find((p) => p.id === selectedId) ?? plans[0] ?? null
   const isMember = !!member?.member
-
-  /**
-   * 示例来源行：哪一位的报告、什么时候生成的。
-   * 这一行是示例卡「真实」二字的凭据 —— 没有它，卡上的文字与营销文案无从分辨。
-   * 生成时间读不到（脏数据）时只写报告名，绝不编一个时间。
-   */
-  const sampleSource = sample
-    ? Number.isFinite(Date.parse(sample.generatedAt))
-      ? `示例取自《${sample.name}》${fromNow(sample.generatedAt)}生成的报告 · 原文未改写`
-      : `示例取自《${sample.name}》的真实报告 · 原文未改写`
-    : ''
 
   /**
    * 开通 / 续费：登录（如需）→ 下单 → 收银台 → 确认生效。
@@ -426,42 +404,9 @@ export default function MemberPage() {
           </View>
 
           {/*
-            真实示例（O-22）：紧接对比表。
-            为什么必须相邻：它回答的正是对比表「深度模式」那一格留下的疑问（「专享内容」是什么），
-            两张卡隔开就读不通了；挪到档位下面更糟 —— 用户已经开始付钱了才看到买的是什么。
-            整卡只在真取到样本时渲染（口径见 utils/member-sample.ts：不做假示例），
-            取不到时这一页与改动前完全一致：宁可少一张卡，也不摆一条编出来的内容。
-          */}
-          {sample && (
-            <View className='card page-member__sample'>
-              <Text className='page-member__section'>深度解析 · 真实示例</Text>
-              <Text className='page-member__section-note'>{sampleSource}</Text>
-              {sample.blocks.map((b) => (
-                <View key={b.label} className='page-member__sample-block'>
-                  {/* 风险提示换暖色：与报告页那张专享卡同一套语义色，跨页看得出是同一段东西 */}
-                  <Text
-                    className={`page-member__sample-label${
-                      b.label === '风险提示' ? ' page-member__sample-label--risk' : ''
-                    }`}
-                  >
-                    {b.label}
-                  </Text>
-                  <Text className='page-member__sample-text'>{b.text}</Text>
-                </View>
-              ))}
-              <Text className='page-member__sample-foot'>
-                {isMember
-                  ? '这三段随每次生成出现在报告页的「会员专享 · 深度解析」卡里'
-                  : '开通后你生成的报告会带上这几段；示例为节选，完整内容见对应的报告页'}
-              </Text>
-            </View>
-          )}
-
-          {/*
             额度与次数一览（2026-10-10 新增）。
-            位置：真实示例之后、选档位之前 —— 顺序是「买到的质（对比表）→ 亲眼看看（示例）
-            → 会被拦在哪（本卡）→ 该付多少钱（档位）」。刻意不插在对比表与示例之间：
-            那两张卡是因果相连的（示例回答对比表里「专享内容」是什么），拆开就读不通了。
+            位置：对比表之后、选档位之前 —— 顺序是「买到的质（对比表）→ 会被拦在哪（本卡）
+            → 该付多少钱（档位）」。
           */}
           <View className='card page-member__quota'>
             <Text className='page-member__section'>额度与次数一览</Text>

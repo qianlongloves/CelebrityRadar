@@ -6,8 +6,7 @@ import {
   buildKnowledgeFallback,
   isRefusedResult,
   REPORT_SCHEMA_VERSION,
-  reportShortfall,
-  reportShortfallRetryable,
+  shortfallVerdict,
   REPORT_BATCHES
 } from './report'
 import { FocusCode } from '@/config/filters'
@@ -32,6 +31,7 @@ import { peekGenerateQuota, consumeGenerateQuota, beginGenerateInflight } from '
 import {
   quotaExhaustedMessage,
   presentSections,
+  hasMemberContent,
   readMemberState,
   stripMemberSections,
   DAILY_REFRESH_LIMIT,
@@ -64,10 +64,12 @@ const POLL_INTERVAL_MS = 2000
 /**
  * 构建耗时上界（P0，2026-10-11）。**必须按「分批生成」重算，不能沿用单次调用的口径。**
  *
- * 现在的构建 = 4 批顺序调用（utils/report.ts#REPORT_BATCHES），且每批 chatJSON 内部最多 2 次
- * 尝试（utils/llm.ts#chatJSON 的 attempts = 1 + retries(1)），单次上界为云函数侧给每次调用掐的
- * 时限 CHAT_DEADLINE_MS = 45s（注意它**不是**「上游超时」：平台 60 秒是天花板，见 aiProxy/index.js
- * 顶部那段）。故最坏 ≈ 4 × 2 × 45s = 360s，再加重合检索（15s）与余量（30s）。
+ * 现在的构建 = 4 批顺序调用（utils/report.ts#REPORT_BATCHES），且每批 chatJSON 内部最多 3 次
+ * 尝试（utils/llm.ts#chatJSON 的 attempts = 1 + retries(2)，retries 由 buildReport 显式传 2），
+ * 单次上界为云函数侧给每次调用掐的时限 CHAT_DEADLINE_MS = 45s（注意它**不是**「上游超时」：平台
+ * 60 秒是天花板，见 aiProxy/index.js 顶部那段）。此外不达标且可重试的产物会**自动重跑一次**完整
+ * 生成（最多 REPORT_GENERATE_ATTEMPTS = 2 次，见 getOrBuildReport 的 shortfall 自动重跑）。
+ * 故最坏 ≈ 4 × 3 × 2 × 45s = 1080s，再加重合检索（15s）与余量（30s）。
  *
  * 为什么必须够长：这个常量是「构建者失联判定」——短于真实构建耗时的后果**不是**「多等一会被拒绝」，
  * 而是**正常构建跑到一半就被他人判为失联并抢锁**：两边各白烧一遍 token，后落库的一方还会因
@@ -79,12 +81,18 @@ const POLL_INTERVAL_MS = 2000
  * （减少真实耗时），而**不是**把这个值调回小于构建时长 —— 那等于重新引入抢锁。
  */
 const CHAT_SINGLE_DEADLINE_MS = 45 * 1000
-const REPORT_BATCH_ATTEMPTS = 2
+/* 每批 chatJSON 内部最多 3 次尝试（attempts = 1 + retries(2)，retries 由 buildReport 显式传 2） */
+const REPORT_BATCH_ATTEMPTS = 3
+/* 不达标且可重试时最多完整生成几次（含第一次；见 getOrBuildReport 的 shortfall 自动重跑） */
+const REPORT_GENERATE_ATTEMPTS = 2
 const SEARCH_BUDGET_MS = 15 * 1000
 const BUILD_SLACK_MS = 30 * 1000
 
 export const BUILDING_TIMEOUT_MS =
-  REPORT_BATCHES.length * REPORT_BATCH_ATTEMPTS * CHAT_SINGLE_DEADLINE_MS +
+  REPORT_BATCHES.length *
+    REPORT_BATCH_ATTEMPTS *
+    REPORT_GENERATE_ATTEMPTS *
+    CHAT_SINGLE_DEADLINE_MS +
   SEARCH_BUDGET_MS +
   BUILD_SLACK_MS
 
@@ -214,18 +222,19 @@ export function reportSchemaVersion(row: ReportCacheRow | null): number {
 }
 
 /**
- * 这份报告是否带着**会员专属段落**（对比视角 / 风险提示 / 信源分歧）。
+ * 这份报告是否带着**会员专属内容**（对比视角 / 风险提示 / 信源分歧 / 同领域坐标）。
  *
  * 判据只能落在字段上，不能落在「谁生成的」：报告是全局共享缓存，两种产物混在
  * 同一张表、同一把键（personKey）上，谁先来谁的版本就在那儿。
- * memberNotes 与 conflicts 都只在会员提示词里请求，故「有其一」即算会员版。
+ * 这些字段都只在会员提示词里请求，故「有其一」即算会员版。
  */
 export function hasMemberBlocks(report: Report | null | undefined): boolean {
-  /* 直接复用会员权益层的「实际存在的专享段落」判定：
+  /* 直接复用会员权益层的判定（utils/member.ts#hasMemberContent）：
      它把空串与空数组都按「不存在」处理，正是我们这里要的口径 ——
      有字段但一段内容都没有，不算会员版（那种报告覆盖掉它也不损失什么）。
-     两处若各写一套，迟早会出现「UI 说没有、守卫说有」的分歧。 */
-  return presentSections(report).length > 0
+     口径必须与剥除（stripMemberSections）和云端两处（report-store / quotaGuard）一致，
+     否则会出现「UI 说没有、守卫说有」的分歧。 */
+  return hasMemberContent(report)
 }
 
 /**
@@ -888,7 +897,8 @@ export async function getOrBuildReport(
       await release(personKey, userId)
       return { kind: 'refused' }
     }
-    const report = res.data
+    /* let：shortfall 可重试时会自动重跑一次，重跑仍不达标则交回**最新那份**残版（更诚实） */
+    let report = res.data
 
     /*
      * 落库前的两道判定共用同一份行快照（P0 / P1 修复，2026-10-09）：
@@ -963,15 +973,52 @@ export async function getOrBuildReport(
      * ⚠ 判定仍排在「只升不降」守卫**之后**（见上方那条 if）：本次产物较简略、而缓存里已有
      * 含会员段的完整版时，keep 掉旧版是严格更优的结果，不该被 shortfall 分支抢先。
      */
-    const shortfall = reportShortfall(report, memberDeep)
     /*
-     * 不达标还要再分一次「值不值得重试」（P2，2026-10-10）：页面按它选文案。
-     * 判据在 utils/report.ts#shortfallVerdict（素材够不够，取 coverage.items），
-     * 这里只管把它带给页面与埋点 —— 埋点带上这个字段，才能从数据上看出
-     * 「不达标里有多少是素材本来就少」（那部分不该按故障去追）。
+     * 达标判定 + 「值不值得重试」一次算齐（P2，2026-10-10）：shortfallVerdict 本来就返回
+     * { reason, retryable } 二元组，拆成 reportShortfall / reportShortfallRetryable 两次调用会把
+     * 同一份判定（遍历 dynamics/quotes/timeline 与会员段）白算两遍 —— 这里一次拿齐。
      */
-    const retryable = shortfall !== null && reportShortfallRetryable(report, memberDeep)
+    const verdict = shortfallVerdict(report, memberDeep)
+    /* let：可重试时自动重跑一次，重跑仍不达标则交回最新那份（覆盖掉旧的 shortfall/retryable） */
+    let shortfall = verdict?.reason ?? null
+    let retryable = verdict?.retryable === true
     if (shortfall) {
+      /*
+       * 可重试时由系统自己重跑一次（P2，2026-10-11），而不是把残版推给用户再让他点「再试」。
+       * retryable=true 的口径正是「这次是上游/网络抖动、重跑通常就好」（见 shortfallVerdict）——
+       * 那正好是系统能自己兑现的：素材是刚抓到的，直接复用、**不重新检索**。只重跑这一次：
+       * 重跑达标就走正常落库，仍不达标才落到下方的 shortfall 交回（非循环，不会有第二次重跑）。
+       */
+      if (retryable) {
+        diagLog('info', 'db', `本次产物未达最低要求但可重试，自动重跑一次生成：${shortfall}`)
+        track('report_generate_retry', { personKey, reason: shortfall, retryable: true })
+        const retryRes = await buildReport(personKey, name, news, focus, {
+          member: memberDeep,
+          background: background ?? [],
+          onPart: async (parts) => {
+            emitProgress('generate', parts.length)
+            await saveReportParts(personKey, parts, userId)
+          }
+        })
+        if (retryRes.ok && !isRefusedResult(retryRes.data)) {
+          const retryReport = retryRes.data
+          /* 「只升不降」对重跑产物同样要守：重跑产物较简略、而缓存里已有会员完整版时，keep 旧版 */
+          const retryBefore = await getRow(personKey)
+          if (!hasMemberBlocks(retryReport) && shouldKeepMemberVersion(retryReport, retryBefore)) {
+            const kept = await keptReport(retryBefore)
+            if (kept) return kept
+          }
+          const retryVerdict = shortfallVerdict(retryReport, memberDeep)
+          if (!retryVerdict) {
+            /* 重跑达标：走正常落库 + 计数（finalizeAndReturn 是函数声明，见下方落库处） */
+            return finalizeAndReturn(retryReport, news.length)
+          }
+          /* 重跑仍不达标：交回更诚实的最新那份残版，并带上新的判定理由 */
+          report = retryReport
+          shortfall = retryVerdict.reason
+          retryable = retryVerdict.retryable === true
+        }
+      }
       /* tag 取 'db'：诊断标签只有 http/storage/auth/db/llm 五档，配额类日志一律归 db（同 utils/quota.ts） */
       diagLog('info', 'db', `本次产物未达最低要求：不写缓存、不消耗次数：${shortfall}（可重试：${retryable}）`)
       track('report_generate_shortfall', { personKey, reason: shortfall, retryable })
@@ -1003,46 +1050,54 @@ export async function getOrBuildReport(
       }
     }
 
-    /* 免计费申请：必须在 upsert 之前，理由见上方 ② */
-    if (memberUpgrade) {
-      void consumeGenerateQuota(userId, { waiveIf: 'member_upgrade', target: personKey })
-    }
-
-    const saved = await saveReady(personKey, report, news.length, userId)
-
     /*
-     * saveReady 内部仍独立判一次同一份守卫（兜底）：正常路径下走不到这里 —— 上面已提前
-     * 交回既有版本；真落到这里说明「快照」与「落库」之间那一行被换过（构建超时被他人抢占）。
-     * 那种情况同样以「保住会员版」为准，交回缓存里的那一版。
+     * 达标落库 + 计数 + 返回。提取成**函数声明**（会提升）：shortfall 自动重跑达标时也要走这同一条
+     * 落库/计费路径，避免重跑分支把下面 40 行再抄一遍（两处漏一处就是静默多扣或少扣次数）。
+     * 参数 report 覆盖外层那个 `let report`（重跑达标时传的是 retryReport），函数体内只用参数。
      */
-    if (saved === 'kept') {
-      const kept = await keptReport(await getRow(personKey))
-      if (kept) return kept
-    }
+    async function finalizeAndReturn(report: Report, materialCount: number): Promise<ReportOutcome> {
+      /* 免计费申请：必须在 upsert 之前，理由见上方 ② */
+      if (memberUpgrade) {
+        void consumeGenerateQuota(userId, { waiveIf: 'member_upgrade', target: personKey })
+      }
 
-    track('report_generate', { personKey, mode: 'realtime' })
-    /*
-     * 配额只在「用户真的拿到一份合格报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
-     *   上方的 refused / error / coldstart / nonews / shortfall 分支均已提前 return，不计数；
-     *   缓存命中（第 0 步 / 抢锁失败等待他人构建）与上面的 kept 分支同样不计数；
-     *   落库失败会抛到下面的 catch，此时用户拿不到报告 → 不计数（release 会把上一版交还）。
-     * 2026-10-10 加严：**产物不达标同样不计数**（判定见 utils/report.ts#reportShortfall）——
-     *   上游把模型调用搞挂了、或者只吐回一段降级文本，用户买的是报告而不是一次失败的尝试。
-     *   best-effort：计数写失败不影响本次返回，少量丢失可接受（宁可少算不多算）。
-     *   memberUpgrade 的那一次已在落库前申请（见上方 ②），此处不再重复申请。
-     */
-    if (!memberUpgrade) {
-      void consumeGenerateQuota(userId)
+      const saved = await saveReady(personKey, report, materialCount, userId)
+
+      /*
+       * saveReady 内部仍独立判一次同一份守卫（兜底）：正常路径下走不到这里 —— 上面已提前
+       * 交回既有版本；真落到这里说明「快照」与「落库」之间那一行被换过（构建超时被他人抢占）。
+       * 那种情况同样以「保住会员版」为准，交回缓存里的那一版。
+       */
+      if (saved === 'kept') {
+        const kept = await keptReport(await getRow(personKey))
+        if (kept) return kept
+      }
+
+      track('report_generate', { personKey, mode: 'realtime' })
+      /*
+       * 配额只在「用户真的拿到一份合格报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
+       *   上方的 refused / error / coldstart / nonews / shortfall 分支均已提前 return，不计数；
+       *   缓存命中（第 0 步 / 抢锁失败等待他人构建）与上面的 kept 分支同样不计数；
+       *   落库失败会抛到下面的 catch，此时用户拿不到报告 → 不计数（release 会把上一版交还）。
+       * 2026-10-10 加严：**产物不达标同样不计数**（判定见 utils/report.ts#reportShortfall）——
+       *   上游把模型调用搞挂了、或者只吐回一段降级文本，用户买的是报告而不是一次失败的尝试。
+       *   best-effort：计数写失败不影响本次返回，少量丢失可接受（宁可少算不多算）。
+       *   memberUpgrade 的那一次已在落库前申请（见上方 ②），此处不再重复申请。
+       */
+      if (!memberUpgrade) {
+        void consumeGenerateQuota(userId)
+      }
+      /* 本次产物按**本次身份**过滤（批 1）：非会员生成的报告本就不含会员段 → 快路径直出、零额外读 */
+      const shown = await exposeReport(report, memberDeep)
+      return {
+        kind: 'report',
+        report: shown.report,
+        fromCache: false,
+        prev: prevReport,
+        memberLocked: shown.locked
+      }
     }
-    /* 本次产物按**本次身份**过滤（批 1）：非会员生成的报告本就不含会员段 → 快路径直出、零额外读 */
-    const shown = await exposeReport(report, memberDeep)
-    return {
-      kind: 'report',
-      report: shown.report,
-      fromCache: false,
-      prev: prevReport,
-      memberLocked: shown.locked
-    }
+    return finalizeAndReturn(report, news.length)
   } catch (err) {
     await release(personKey, userId).catch(() => undefined)
     const message = err instanceof Error ? err.message : String(err)

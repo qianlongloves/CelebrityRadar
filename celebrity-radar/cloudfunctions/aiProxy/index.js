@@ -2,14 +2,20 @@
  * aiProxy —— 平台代付模式的额度闸门。
  *
  * 小程序包可解包、前端一切可见，平台自有 key 一旦下发到客户端即等同公开
- * （见 src/config/public.ts）。**大模型侧已不再需要任何 key**：2026-10-11 起统一走
- * 微信云开发 AI（`cloud.ai`，需 wx-server-sdk ≥ 4.0.1），鉴权由云开发环境承担。
+ * （见 src/config/public.ts）。大模型选型是「厂商 × 质量档 × 能力槽」，
+ * 全部在同目录 llm.config.js 一处裁决，通道有两条：
+ *   ① cloudai（默认厂商 cloudbase）：微信云开发 AI（`cloud.ai`，需 wx-server-sdk ≥ 4.0.1），零 key；
+ *   ② http：OpenAI 兼容直连外部厂商（DeepSeek / 智谱 GLM / Kimi），key 只放云函数环境变量。
+ * 用户在端上选「厂商 + 质量档（基础/标准/高级）」，用途决定能力槽：
+ * 报告/辅助 → structured（输出型），问答 → reasoning（推理型）；免费用户卡在基础档。
  *   控制台 → 云函数 → aiProxy → 配置 → 环境变量：
  *     BOCHA_API_KEY                     博查搜索 key（检索源仍要 key，这条路没变）
  *     SERPER_API_KEY / TAVILY_API_KEY   第二检索源（可选，注册哪家填哪个）
- *     大模型：**无 key** —— 用哪一档、哪个模型由同目录 llm.config.js 的档位表决定；
- *     模型名可用 CLOUD_AI_MODEL_* 环境变量覆盖（实测回填用，见 llm.config.js 文件头）。
- * 严禁把任何 key 写进本文件或任何提交进 git 的文件。
+ *     LLM_VENDOR                        可选：定时任务 / 端上没带厂商时的默认厂商
+ *     LLM_TIER                          可选：默认质量档（basic / standard / premium）
+ *     <VENDOR>_API_KEY                  可选：外部厂商 key（DEEPSEEK / ZHIPU / MOONSHOT）
+ *     LLM_MODEL_<VENDOR>_<QUALITY>_<CAP> 可选：覆盖任一槽位模型名
+ * 详见 llm.config.js 文件头。严禁把任何 key 写进本文件或任何提交进 git 的文件。
  *
  * action：
  *   'test'   运维探针：用云开发 AI 真实各打一次，验证「SDK 就位 + 模型名确已开通 + 能出正文」。
@@ -17,16 +23,25 @@
  *            每次调用都真花钱，而 action 是客户端可构造的字段：把缺省值绑在付费探针上，
  *            等于给任何调用者留一个「一次调用烧两笔上游钱」的开关（2026-10-09 修，见 exports.main）。
  *            端上「我的 → 测试连通性」入口已于 2026-10-07 移除（改为只保留「生成档位」选择），
- *            此动作现在只供控制台 / 云调用人工排障使用，业务链路只走 search / chat。
+ *            此动作现在只供控制台 / 云调用人工排障使用，业务链路只走 search / chat / generate / aux。
  *            三个**可选**字段各自独立收费，都必须显式传（缺省一律不发，见 exports.main）：
- *              models: true        逐档实测表内三档是否产 reasoning（probeModelTiers）
- *              probeModels: [...]  改探给定的候选模型名，回答「该换成哪一档」（同上，最多 MAX_PROBE_MODELS 个）
- *              listModels: true    列当前环境可用的模型清单，回答「有哪些名字可用」（probeModelList）
+ *              models: true        逐槽实测当前厂商 3 档 × 2 能力槽是否产 reasoning（probeModelTiers）
+ *              probeModels: [...]  改探给定的候选模型名，回答「该换成哪个模型」（同上，最多 MAX_PROBE_MODELS 个）
+ *              listModels: true    列注册表全部厂商×档×槽的模型清单（probeModelList）
+ *            models / probeModels 之上可再叠加 bench: true：把探针负载从「连通性两句」换成
+ *            「模拟 facts 批体量的长 JSON」（BENCH_* 常量），按真实 8192 上限出正文、撞同一道 45s 墙 ——
+ *            回答「这个模型生成 facts 批要几秒 / 会不会超时」，才是换模型前真正的耗时基准。
  *   'search' 业务转发：代理一次博查检索，供端上 search.ts 在用户未自配 key 时使用
- *   'chat'   业务转发：代理一次大模型对话，供端上 llm.ts 在用户未自配 key 时使用
+ *   'chat' / 'generate' / 'aux'
+ *             业务转发：代理一次大模型对话，供端上 llm.ts 使用（端上不再自配 key）。
+ *             三者都进 handleChat、只语义不同：'chat'=AI 问答（ask）、'generate'=报告/周报长生成、
+ *             'aux'=消歧/选题/检索规划等辅助小请求；实际额度池与时限按 event.purpose 分档。
+ *             端上携带 event.vendor + event.quality，能力槽由 purpose 在云端裁决。
+ *   'vendors' 免口令只读：返回注册表厂商清单与各家 key 是否已配（布尔），
+ *             供「我的」页厂商选择器只展示就绪厂商；不触达上游、不回任何 key 内容。
  *
- * ⚠ 本函数同时是**付费闸门**（2026-10-07 起）：chat 的模型档位按会员身份放行，
- * search 的 count 上限同样分档（见 llm.config.js 的 TIERS[...].memberOnly / FREE_SEARCH_MAX 的注释）。
+ * ⚠ 本函数同时是**付费闸门**（2026-10-07 起）：chat 的质量档按会员身份放行（标准/高级仅会员），
+ * search 的 count 上限同样分档（见 llm.config.js 的 QUALITIES[...].memberOnly / FREE_SEARCH_MAX 的注释）。
  * 「深度模式」（O-11）也只在这一层放行 —— 它现在只剩**素材加厚**（search 的 count 分档）：
  * chat 的输出上限（chatMaxTokens）自 2026-10-08 起对所有请求下发，不再按会员分档，
  * 理由是它是「这一轮要写多长」的客观需求而不是权益（截断会让整份报告降级，见下方注释）。
@@ -51,11 +66,11 @@
 const cloud = require('wx-server-sdk')
 const https = require('https')
 /*
- * 档位表 + 解析（换模型改它，不改本文件）。⚠ 与 hotBoardRefresh 目录下的副本逐字一致。
- * TIERS / MODEL_GROUP 本身也要导入：模型探针要按档位列出**所有档位**的模型名与模型组，
- * 而 resolveLlm 只回当前生效的那一档（它回的是裁决结果，不是清单）。
+ * 厂商 × 质量档 × 能力槽注册表 + 解析（换模型改它，不改本文件）。⚠ 与 hotBoardRefresh 目录下的副本逐字一致。
+ * VENDORS / QUALITIES / vendorCatalog 本身也要导入：模型探针要列出**全部槽位**的模型名，
+ * 而 resolveLlm 只回当前生效的那一条路由（它回的是裁决结果，不是清单）。
  */
-const { TIERS, resolveLlm } = require('./llm.config')
+const { VENDORS, QUALITIES, vendorCatalog, resolveLlm } = require('./llm.config')
 /* 服务端配额与限速（B8）：上限数值由 benefits.config.js 提供，本文件只管判定 */
 const {
   QUOTA_POOLS,
@@ -122,10 +137,28 @@ const MAX_PROBE_MODELS = 12
 const PROBE_MAX_TOKENS = 1024
 
 /*
- * 档位闸门（「质」权益，2026-10-07）：档位表在 llm.config.js 的 TIERS（每档一个 memberOnly），
- * resolveLlm 返回的 memberOnly 即「本次这一档要不要卡会员」。
- * ⚠ 端上 src/config/public.ts 的 llm.models 决定 UI 与请求值，**云函数这份才是计费闸门** ——
- * 小程序包可解包，端上判定改包即可绕过，只有这里拦得住「非会员用最贵的那一档」。
+ * 长生成基准负载（bench 探针）：上面的 PROBE_MAX_TOKENS 只够「连通性」探测，测不出
+ * 「生成 facts 批（6 动态 + 5 语录 ≈ 3000 字）要几秒」—— 而报告超时的痛恰恰在这个量级。
+ * 故探针支持 `bench: true`：改用下面这套模拟 facts 批体量的负载、并按真实上限 8192 出正文，
+ * 撞的是同一道 45s 墙（probeModelTiers 调 callCloudAi 不传 purpose，deadlineOf 落到 CHAT_DEADLINE_MS），
+ * 于是 elapsedMs 与「ok=false + 超时」就能直接回答「这个模型换上去会不会还超时」。
+ * 内容刻意允许虚构 —— 它只测速、不落库，不必背上报告「不编造事实」的契约。
+ */
+const BENCH_MAX_TOKENS = 8192
+const BENCH_SYSTEM = [
+  '你是性能基准测试助手。请输出一个 JSON 对象（仅用于测速，内容可虚构）：',
+  '{"dynamics":[{"date":"YYYY-MM","title":"","summary":"","source":"","url":"","sentiment":""}],',
+  '"quotes":[{"text":"","context":"","background":"","note":"","source":""}]}',
+  'dynamics 给 6 条、quotes 给 5 条，每条字段都要写满，体量对齐真实报告。'
+].join('\n')
+const BENCH_USER = '人物：雷军'
+
+/*
+ * 质量档闸门（「质」权益，2026-10-07；2026-10-12 改为厂商×质量档模型）：
+ * 质量档在 llm.config.js 的 QUALITIES（每档一个 memberOnly），
+ * resolveLlm 返回的 memberOnly 即「本次落档要不要卡会员」。
+ * ⚠ 端上 src/config/public.ts 的 llm.qualities 决定 UI 与请求值，**云函数这份才是计费闸门** ——
+ * 小程序包可解包，端上判定改包即可绕过，只有这里拦得住「非会员用标准 / 高级档」。
  */
 
 /*
@@ -205,7 +238,7 @@ function deadlineError(ms, purpose) {
   const err = new Error(
     `上游流式响应超过本次调用时限 ${human}（${purpose}）：` +
       '已在平台 60 秒强制中止之前主动断开，以免任务被直接掐死（那样连原因都留不下）。' +
-      '若反复出现，请改用「极速版」档位后重试 —— 深度推理档会先花大量时间思考，' +
+      '若反复出现，请改用基础档或非推理模型后重试 —— 推理槽模型会先花大量时间思考，' +
       '单次很容易撞上这个时限。'
   )
   err.isDeadline = true
@@ -514,132 +547,215 @@ async function probeBocha(key) {
   return { ok: false, detail: `HTTP ${res.status} / code ${code}：${snippet(body) || '无响应体'}` }
 }
 
-/** 探测云开发 AI 当前生效档位是否可用：模型组 / 模型名都取自 resolveLlm（换档位后测的就是换过去的那档） */
+/** 探测当前生效档位是否可用：通道 / 厂商 / 模型名都取自 resolveLlm（换档位或换厂商后测的就是换过去的那条路） */
 async function probeLlm(llm) {
   try {
-    const out = await callCloudAi({ ...llm, chatMaxTokens: PROBE_MAX_TOKENS }, llm.model, [
+    const out = await callLlm({ ...llm, chatMaxTokens: PROBE_MAX_TOKENS }, llm.model, [
       { role: 'system', content: '你是连通性测试助手，只回复两个字：正常' },
       { role: 'user', content: '连通性测试' }
     ])
     if (out.content && out.content.trim()) {
-      return { ok: true, detail: `可用（${llm.model} 返回「${out.content.trim().slice(0, 12)}」）` }
+      return {
+        ok: true,
+        detail: `可用（${llm.channel === 'http' ? llm.vendor : '云开发 AI'}/${llm.model} 返回「${out.content
+          .trim()
+          .slice(0, 12)}」）`
+      }
     }
     return {
       ok: false,
       detail: `无正文（finish_reason=${out.finishReason || '缺失'}，reasoning=${out.reasoningChars}字）`
     }
   } catch (err) {
-    /* 这条通道最常见的失败是「这个名字没在当前环境开通」—— 文案直接给出可照做的下一步 */
-    return { ok: false, detail: `${failDetail(err)}（请核对模型名「${llm.model}」是否已在云开发 AI 中开通）` }
+    /* 配置类错误（缺 key / 厂商名拼错）原话已含「该配哪个变量」，直接透传，别再追加云开发 AI 专属指引 */
+    if (err && err.isConfig) return { ok: false, detail: failDetail(err) }
+    /* cloudai 通道最常见的失败是「这个名字没在当前环境开通」—— 文案直接给出可照做的下一步 */
+    const hint = llm.channel === 'http' ? '请核对厂商 key / 端点与模型名' : '请核对模型名是否已在云开发 AI 中开通'
+    return { ok: false, detail: `${failDetail(err)}（${hint}：${llm.model}）` }
   }
 }
 
 /**
- * 逐档模型探针：把**档位表里配置的每一档**各探一次，回答「这一档到底带不带思考、能不能用」。
+ * 逐槽模型探针：把**当前厂商注册表里的每个能力槽**（3 质量档 × structured/reasoning）各探一次，
+ * 回答「这个槽到底带不带思考、能不能用」。
  *
- * 起因（真实踩到，不是假想）：某个模型顶着「极速版 / 免费档」的标签、描述还写着「响应最快、
- * 成本最低，适合日常生成报告」，实际却先产出上万字 reasoning_content，把 max_tokens 全吃光
- * ⇒ 正文 0 字、finish_reason='length' ⇒ 报告结构化生成整份降级（见 handleChat 里空正文分流那段的两种文案）。
- * 而「这一档带不带思考」**不在本仓库任何配置里** —— 档位标签（极速版 / 标准版 / 深度推理）
- * 描述的是**期望**，不描述模型实际行为；这件事也不可能从端上日志看出来（端上只看到空正文）。
- * 改造后这件事更要紧：云开发 AI 的模型名以「环境开通了哪些」为准，**换档位就是换模型名**，
- * 每次回填前都该先跑一遍这个探针。
+ * 起因（真实踩到，不是假想）：某个模型顶着「便宜 / 基础档」的标签，实际却先产出上万字
+ * reasoning_content，把 max_tokens 全吃光 ⇒ 正文 0 字、finish_reason='length' ⇒
+ * 报告结构化生成整份降级（见 handleChat 里空正文分流那段的两种文案）。
+ * 而「这个槽带不带思考」标签描述的是**期望**，不描述模型实际行为；这件事也不可能从端上日志
+ * 看出来（端上只看到空正文）。模型名会上下架、思考开关各家不一，回填配置前都该先跑一遍。
  *
- * 判据只有一条：`reasoning_content` 非空 ⇒ 这一档是思考模型。
+ * 判据只有一条：`reasoning_content` 非空 ⇒ 这个槽实际在思考。
  * 提示词与 probeLlm 同款（刻意不加料）：这里要测的是「会不会产 reasoning」，不是「思考多长」，
  * 后者由长生成现场决定（端上 chat:upstream 的 reasoningChars 才是那个数）。
  *
  * ⚠ 局限：上游若不暴露 `reasoning_content`（思考藏在别的字段 / 干脆不返回），此处测不出来，
  *   结论是假阴性 —— 那种情况只能靠端上长生成的实际表现判断。
- * ⚠ 每次调用都真花钱（每个名字一次上游请求），故与 test 探针共用口令，且**必须显式传 `models: true`**
+ * ⚠ 每次调用都真花钱（每个槽一次上游请求），故与 test 探针共用口令，且**必须显式传 `models: true`**
  *   或 `probeModels: [...]`：默认那条 test 的请求次数被测试钉死为「博查 + 大模型 + 兜底源」各一次，
  *   不能悄悄加发。
  *
  * 两个入口：
- *   ① 不传 probeModels → 探档位表里的三档，回答「现在配的这三档各自带不带思考」；
- *   ② 传了 probeModels → 探给定的候选名，回答「还有哪些名字能用」（候选名以控制台 AI 页为准）。
+ *   ① 不传 probeModels → 探 event.vendor（缺省默认厂商）注册表里的 3 档 × 2 槽，
+ *      回答「现在配的这些槽各自带不带思考」；双模模型同一名字会探两次（思考开 / 关各一次）；
+ *   ② 传了 probeModels → 探给定的候选名（云开发 AI 模型名，沿用当前 cloudai 通道），
+ *      回答「还有哪些名字能用」（候选名以控制台 AI 页为准）。
  */
-async function probeModelTiers(llm, requested) {
+async function probeModelTiers(llm, requested, bench) {
   /*
-   * 探哪些名字：`requested` 给了一份就按它探，否则探档位表里的三档。两条路径的区别**只在这里**，
-   * 下面的请求构造与判定逐字共用 —— 判定标准换个入口就得换一套，那才是会漂移的地方。
+   * 探哪些：`requested` 给了一份候选名就按它探（这些是云开发 AI 的模型名，沿用当前路由的
+   * cloudai 通道去敲）；否则逐槽探 llm.vendor 的 3 档 × 2 能力槽 —— 每槽**独立 resolveLlm**：
+   * 槽位可能被环境变量覆盖、缺槽会向下降档，用一个 llm 打天下会测不到真实路由。
    */
-  const tierNames = Object.keys(TIERS).map((t) => TIERS[t].model)
-  const source = Array.isArray(requested) && requested.length ? requested : tierNames
-  const names = source
-    .map((n) => (typeof n === 'string' ? n.trim() : ''))
-    .filter(Boolean)
-    .slice(0, MAX_PROBE_MODELS)
-  /* 档位标注按**名字**反查：探任意候选名时位置没有含义，而 tier 是给人看的；'other' = 表里没登记，纯候选 */
-  const tierOf = (name) => Object.keys(TIERS).find((t) => TIERS[t].model === name) || 'other'
+  const candidateMode = Array.isArray(requested) && requested.length > 0
+  const jobs = candidateMode
+    ? requested
+        .map((n) => (typeof n === 'string' ? n.trim() : ''))
+        .filter(Boolean)
+        .slice(0, MAX_PROBE_MODELS)
+        .map((name) => ({ name, quality: 'other', capability: 'other', conf: llm }))
+    : QUALITIES.reduce((acc, q) => {
+        ;['structured', 'reasoning'].forEach((cap) => {
+          const conf = resolveLlm({
+            vendor: llm.vendor,
+            quality: q.key,
+            purpose: cap === 'reasoning' ? 'ask' : 'generate'
+          })
+          /* 缺槽被降档时 conf.quality 可能等于更矮的档：仍照实际路由探（结果里看得出来） */
+          acc.push({ name: conf.model, quality: conf.quality, capability: cap, conf })
+        })
+        return acc
+      }, [])
+  /*
+   * bench: true 时换大负载 + 真实上限（BENCH_* 常量）：测「生成 facts 批体量要几秒、会不会撞 45s」，
+   * 而不是默认的「连通性两句」（那只测得出带不带思考）。负载与上限是本次探针仅有的两处分支。
+   */
+  const maxTokens = bench ? BENCH_MAX_TOKENS : PROBE_MAX_TOKENS
+  const messages = bench
+    ? [
+        { role: 'system', content: BENCH_SYSTEM },
+        { role: 'user', content: BENCH_USER }
+      ]
+    : [
+        { role: 'system', content: '你是连通性测试助手，只回复两个字：正常' },
+        { role: 'user', content: '连通性测试' }
+      ]
   const out = []
-  for (let i = 0; i < names.length; i++) {
-    const name = names[i]
-    const tier = tierOf(name)
+  for (let i = 0; i < jobs.length; i++) {
+    const { name, quality, capability, conf } = jobs[i]
     const startedAt = Date.now()
     try {
-      const r = await callCloudAi(
-        { ...llm, model: name, chatMaxTokens: PROBE_MAX_TOKENS },
-        name,
-        [
-          { role: 'system', content: '你是连通性测试助手，只回复两个字：正常' },
-          { role: 'user', content: '连通性测试' }
-        ]
-      )
+      const r = await callLlm({ ...conf, chatMaxTokens: maxTokens }, name, messages)
       const chars = r.content.length
       const reasoningChars = r.reasoningChars
       const finishReason = r.finishReason
-      out.push({
-        model: name,
-        tier,
-        ok: true,
-        chars,
-        reasoningChars,
-        finishReason,
-        elapsedMs: Date.now() - startedAt,
-        /* 结论写成人话：看的人不必自己比对两个字数（判据只有 reasoningChars 一项） */
-        verdict: reasoningChars
+      const elapsedMs = Date.now() - startedAt
+      /*
+       * 结论写成人话：看的人不必自己比对两个字数。
+       * 默认判据只有 reasoningChars 一项；bench 模式则直接给「多久出了多少字」—— 那才是换模型的依据。
+       */
+      const verdict = bench
+        ? `${chars} 字 / ${elapsedMs}ms${reasoningChars ? `（含思考 ${reasoningChars} 字）` : ''}：` +
+          (elapsedMs >= (CHAT_DEADLINE_MS * 2) / 3 ? '接近时限，慎用' : '余量充足')
+        : reasoningChars
           ? `思考模型（思考 ${reasoningChars} 字）：长生成会先吃输出预算，不能用来生成报告 JSON`
           : chars
             ? '无思考：可安全用于长 JSON 生成'
             : `无正文（finish_reason=${finishReason || '缺失'}）`
+      out.push({
+        model: name,
+        quality,
+        capability,
+        channel: conf.channel,
+        vendor: conf.vendor,
+        ok: true,
+        chars,
+        reasoningChars,
+        finishReason,
+        elapsedMs,
+        verdict
       })
     } catch (err) {
       /*
-       * 抛错必须带上可照做的信息：最常见的是「模型名没开通」，而 SDK 的报错本身往往只说
-       * 「request failed」—— 等于没答，还得再猜一轮。故把模型名与「是否已开通」写进结论。
+       * 抛错必须带上可照做的信息。三种常见情形分开答：
+       *   - 撞时限（isDeadline）：bench 模式下这是「该模型生成 facts 批超时」的直接证据；
+       *   - 配置错误（isConfig）：缺 key / 厂商名拼错，原话已含该配什么；
+       *   - 其余：最常见是「模型名没开通」，得把名字与开通提示写进结论。
        */
-      out.push({
-        model: name,
-        tier,
-        ok: false,
-        verdict: `${failDetail(err)}（请核对模型名「${name}」是否已在云开发 AI 中开通）`
-      })
+      const hint =
+        conf.channel === 'http'
+          ? `请核对厂商 ${conf.vendor} 的 key / 端点与模型名「${name}」`
+          : `请核对模型名「${name}」是否已在云开发 AI 中开通`
+      out.push(
+        err && err.isDeadline
+          ? {
+              model: name,
+              quality,
+              capability,
+              channel: conf.channel,
+              vendor: conf.vendor,
+              ok: false,
+              elapsedMs: Date.now() - startedAt,
+              deadlineMs: err.deadlineMs,
+              verdict: `生成超时（>${err.deadlineMs}ms）：此模型生成 facts 批体量会撞时限，不可用于报告生成`
+            }
+          : {
+              model: name,
+              quality,
+              capability,
+              channel: conf.channel,
+              vendor: conf.vendor,
+              ok: false,
+              verdict: err && err.isConfig ? failDetail(err) : `${failDetail(err)}（${hint}）`
+            }
+      )
     }
   }
   return out
 }
 
 /**
- * 可用模型清单（2026-10-11 改造）：云开发 AI **没有** OpenAI 那套 `GET /models` 端点。
+ * 注册表模型清单：列出 llm.config.js 里每家厂商 × 3 质量档 × 2 能力槽的生效模型名。
  *
- * 改造前这里直连 `{baseUrl}/models`；换成云开发 AI 后这条路没有了 —— 「当前环境开通了哪些模型」
- * 由控制台的 AI 页管理，SDK 不暴露清单接口。所以这里退化为**列出档位表里配置的名字**：
- * 它是 probeModelTiers 的起点清单（不传 probeModels 时探的就是这几个），也是回填模型名时的对照表。
- * 真正的「哪个名字能用」仍要逐档实测（probeModelTiers）或去控制台看。
+ * 云开发 AI **没有** OpenAI 那套 `GET /models` 端点（「当前环境开通了哪些模型」由控制台 AI 页
+ * 管理，SDK 不暴露清单接口）；外部厂商则各家鉴权与额度不一，这里也不替它们打上游。
+ * 所以清单只反映**我们自己注册表里配了什么**（含环境变量覆盖后的生效值），
+ * 它是 probeModelTiers 的对照总表，也是回填模型名时的依据；
+ * 真正的「哪个名字能用」仍要逐槽实测（models:true）或去各家控制台看。
  */
 async function probeModelList() {
-  const rows = Object.keys(TIERS).map((t) => ({
-    tier: t,
-    model: TIERS[t].model,
-    memberOnly: TIERS[t].memberOnly
-  }))
+  /* 逐槽 resolve：通道 / 模型名都可能被环境变量覆盖，清单必须反映生效值而不是静态表 */
+  const rows = []
+  Object.keys(VENDORS).forEach((vendorKey) => {
+    QUALITIES.forEach((q) => {
+      ;['structured', 'reasoning'].forEach((cap) => {
+        const conf = resolveLlm({
+          vendor: vendorKey,
+          quality: q.key,
+          purpose: cap === 'reasoning' ? 'ask' : 'generate'
+        })
+        rows.push({
+          vendor: vendorKey,
+          vendorLabel: conf.vendorLabel,
+          quality: q.key,
+          qualityRequested: q.key,
+          qualityDowngraded: conf.qualityDowngraded,
+          capability: cap,
+          channel: conf.channel,
+          model: conf.model,
+          memberOnly: q.memberOnly
+        })
+      })
+    })
+  })
   return {
     ok: true,
     count: rows.length,
     models: rows.map((r) => r.model),
-    detail: `档位表配置了 ${rows.length} 个模型名（云开发 AI 无 /models 端点；可用性请用 models:true 逐档实测，或在控制台 AI 页查看）`,
-    tiers: rows
+    detail:
+      `注册表共 ${Object.keys(VENDORS).length} 家厂商 × ${QUALITIES.length} 档 × 2 能力槽 = ${rows.length} 条路由` +
+      '（云开发 AI 无 /models 端点；可用性请用 models:true 逐槽实测，或在控制台 AI 页查看）',
+    slots: rows
   }
 }
 
@@ -1140,6 +1256,107 @@ async function callCloudAi(llm, model, messages, purpose) {
 }
 
 /**
+ * 外部厂商通道（channel='http'）：OpenAI 兼容协议直连 POST {endpoint}/chat/completions。
+ *
+ * 与 callCloudAi 的契约完全一致 —— 返回 { content, finishReason, reasoningChars, usage }，
+ * 于是 handleChat 的空正文 / 截断 / content_filter 分流逐字复用，两条通道只差「怎么把请求送出去」。
+ *
+ * 配置全部来自 llm.config.js 的 resolveLlm（厂商注册表 VENDORS + LLM_MODEL_* 环境变量），
+ * 本函数不内置任何端点 / 模型名；key 在这里现读环境变量（apiKeyEnv 只登记变量名），
+ * 缺失时抛 isConfig 错误，由 handleChat 归成不可重试的 kind='config'。
+ *
+ * 超时复用 postJson 的整体墙钟（发请求 + 收完整响应），取与 cloud.ai 同一道 deadline ——
+ * 45s 墙在云函数 60s 天花板之内，通道不同、预算相同，重试算式才不会出现新变量。
+ */
+async function callVendorHttp(llm, model, messages, purpose) {
+  const deadline = deadlineOf(purpose)
+  const key = readEnv(llm.apiKeyEnv)
+  if (!key) {
+    throw Object.assign(
+      new Error(
+        `大模型厂商 ${llm.vendor} 的 key 未配置：请在云函数环境变量里设置 ${llm.apiKeyEnv}` +
+          '（或在小程序「我的」页切回云开发 AI 厂商）'
+      ),
+      { isConfig: true }
+    )
+  }
+  if (!llm.endpoint) {
+    throw Object.assign(new Error(`厂商 ${llm.vendor} 缺少 endpoint（检查 llm.config.js 的 VENDORS 注册表）`), {
+      isConfig: true
+    })
+  }
+
+  const target = `${llm.endpoint.replace(/\/+$/, '')}/chat/completions`
+  /*
+   * 思考开启时不下发 temperature：DeepSeek v4 / GLM 思考模式下该参数不被支持
+   * （DeepSeek 文档明确「思考模式不支持 temperature」，传了不报错但不生效）。
+   * 判据覆盖注册表里**三种**思考标记：thinking.enabled（DeepSeek / GLM / Kimi k2.6）、
+   * reasoning_effort（Kimi k3）、enable_thinking:true（通义千问）——
+   * 加一家厂商只改 llm.config.js 的 extraBody 形状，这里漏认会让思考槽白白带上 temperature。
+   */
+  const thinkingOn = !!(
+    llm.extraBody &&
+    ((llm.extraBody.thinking && llm.extraBody.thinking.type === 'enabled') ||
+      llm.extraBody.enable_thinking === true ||
+      Object.prototype.hasOwnProperty.call(llm.extraBody, 'reasoning_effort'))
+  )
+  const payload = Object.assign(
+    {
+      model,
+      messages,
+      max_tokens: llm.chatMaxTokens,
+      stream: false,
+      ...(thinkingOn ? {} : { temperature: 0.7 })
+    },
+    llm.extraBody || {}
+  )
+
+  let res
+  try {
+    res = await postJson(target, { Authorization: `Bearer ${key}` }, payload, deadline)
+  } catch (err) {
+    /* sendJson 的整体超时（req.destroy）：与 cloud.ai 的墙钟闸门同义，标 isDeadline 走 network 可重试 */
+    if (err && /超时/.test(String(err.message || ''))) {
+      throw Object.assign(err, { isDeadline: true, deadlineMs: deadline })
+    }
+    throw err
+  }
+
+  if (res.status !== 200) {
+    /*
+     * 抛带 status 的错，原样复用 classifyAiError：429→rate、401/402/403→upstream_quota、
+     * 400→badrequest、5xx→upstream。上游错误原话带上（DeepSeek 等返回 {error:{message}}）。
+     */
+    const body = res.data || {}
+    const detail =
+      (body.error && (body.error.message || body.error.code || JSON.stringify(body.error))) ||
+      (typeof body === 'string' ? body : '') ||
+      `HTTP ${res.status}`
+    throw Object.assign(new Error(`${res.status} ${detail}`), { status: res.status })
+  }
+
+  const body = res.data || {}
+  const choice = (body.choices && body.choices[0]) || {}
+  const msg = choice.message || {}
+  return {
+    content: typeof msg.content === 'string' ? msg.content : '',
+    finishReason: typeof choice.finish_reason === 'string' ? choice.finish_reason : '',
+    /* DeepSeek v4 思考 / GLM / Kimi 等把思考放在 message.reasoning_content，与 cloud.ai 同字段 */
+    reasoningChars: (msg.reasoning_content || '').length,
+    usage: body.usage || null
+  }
+}
+
+/**
+ * 大模型统一调用口：按 resolveLlm 裁决出的 channel 选传输实现。
+ * 全项目（业务调用 / 探针）都只该调它 —— 新增第三种通道时只改这里一处。
+ */
+async function callLlm(llm, model, messages, purpose) {
+  if (llm.channel === 'http') return callVendorHttp(llm, model, messages, purpose)
+  return callCloudAi(llm, model, messages, purpose)
+}
+
+/**
  * 把 cloud.ai 抛出的错误归类成端上认识的 kind（llm.ts 的 RETRYABLE_KINDS 决定要不要重试）。
  *
  * 旧版直连时上游的 HTTP 状态码是明确的（429/401/402/403 各有各的语义）；走 SDK 后这些状态码
@@ -1194,17 +1411,34 @@ async function handleChat(event) {
   }
 
   /*
-   * 用哪一档、哪个模型，全部由 llm.config.js 裁决（换模型不改这里）。
-   * event.tier 即用户在「我的 → 生成档位」选的那一档，**以它为准**；供应商维度已整体移除
-   * （只剩云开发 AI 一家，没有 key 可配 —— 鉴权由云开发环境承担，用户为零配置）。
+   * 厂商 / 质量档 / 能力槽 / 模型，全部由 llm.config.js 裁决（换模型 / 换厂商不改这里）。
+   * event.vendor + event.quality 是用户在「我的」页选的（旧版端上可能仍带 tier，解析器兼容），
+   * event.purpose 决定能力槽（报告/辅助 → structured，问答 → reasoning）。
    */
   const llm = resolveLlm(event)
   /*
-   * 云开发 AI 由云函数环境的 wx-server-sdk 提供（需 ≥ 4.0.1）。这里不再有 baseUrl / apiKey 可检，
-   * 改为检 SDK 能力是否就位：缺失时归 unconfigured（不重试，文案指向依赖版本），
-   * 与旧版「未配置 LLM_API_KEY」是同一道语义。
+   * 配置错误（厂商名拼错 / 基础档也缺该能力槽）在花任何上游钱之前直接拦下：不可重试，
+   * 重发也是同一份错误配置。
    */
-  if (typeof cloud.ai !== 'function') {
+  if (llm.configError) {
+    return { ok: false, kind: 'config', error: llm.configError }
+  }
+  /*
+   * 通道就位检查，按 channel 分两种：
+   *   cloudai —— 检 wx-server-sdk 的 cloud.ai 能力（需 ≥ 4.0.1），缺失归 unconfigured；
+   *   http    —— 检厂商 key 环境变量（值不进代码），缺失归 config（不重试）。
+   */
+  if (llm.channel === 'http') {
+    if (!readEnv(llm.apiKeyEnv)) {
+      return {
+        ok: false,
+        kind: 'config',
+        error:
+          `大模型厂商 ${llm.vendor} 的 key 未配置：请在云函数环境变量里设置 ${llm.apiKeyEnv}` +
+          '（或在小程序「我的」页切回云开发 AI 厂商）'
+      }
+    }
+  } else if (typeof cloud.ai !== 'function') {
     return {
       ok: false,
       kind: 'unconfigured',
@@ -1215,25 +1449,39 @@ async function handleChat(event) {
   const norm = normalizeMessages(event.messages)
   if (norm.error) return { ok: false, kind: 'badrequest', error: norm.error }
 
-  /* 模型名已在 resolveLlm 里按「CLOUD_AI_MODEL_* > 档位表默认」定好 */
+  /* 模型 / 厂商 / 通道已在 resolveLlm 里按「环境变量 > 注册表默认」定好 */
   const requested = llm.model
 
   /*
-   * 会员闸门：端上传的模型名只是「请求」，这里才是裁决点。
-   * 非会员请求会员专属档位 → **静默降级**为默认模型并把 downgraded 回传：
-   * 生成照常出结果（不因一次残留偏好 / 改包就给用户一句报错），
-   * 但代价最高的那一档不会被白用。端上按 downgraded 在诊断日志里记一笔。
+   * 用途只在**一个地方**归一化（resolveLlm 已把未知 purpose 归成 generate）：
+   * 会员降级、额度池判定、报文日志、本次调用的时限档四处共用，不各写一遍，免得漂移。
    */
-  let model = requested
-  let downgraded = false
+  const purpose = llm.purpose || DEFAULT_PURPOSE
+
   /* 会员身份一次读库、两处共用（模型闸门 + 配额闸门）：同一次请求不查两遍权威表 */
   let memberKnown = null
   const isMember = async () => {
     if (memberKnown === null) memberKnown = await isActiveMember(openid)
     return memberKnown
   }
+
+  /*
+   * 会员闸门：端上传的质量档只是「请求」，这里才是裁决点。
+   * 非会员请求标准 / 高级档（含缺槽向下降档后仍落在会员档的情形）→ **同厂商静默降回基础档**，
+   * 并把 downgraded 回传：生成照常出结果（不因一次残留偏好 / 改包就给用户一句报错），
+   * 但高档模型不会被白用。端上按 downgraded 在诊断日志里记一笔。
+   *
+   * 降级只换质量档、**不换厂商**（用户明确选了哪家就是哪家），也不换能力槽：
+   * 问答降回基础档 reasoning 槽（仍是推理模型），报告降回基础档 structured 槽（仍是非思考输出模型）。
+   * 降级必须重新 resolveLlm 拿**整份路由**（extraBody 的思考开关随槽位走），不能只改模型名。
+   */
+  let target = llm
+  let model = requested
+  let downgraded = false
   if (llm.memberOnly && !(await isMember())) {
-    model = llm.defaultModel
+    target = resolveLlm({ vendor: llm.vendor, quality: 'basic', purpose })
+    if (target.configError) return { ok: false, kind: 'config', error: target.configError }
+    model = target.model
     downgraded = true
   }
 
@@ -1243,10 +1491,9 @@ async function handleChat(event) {
    * 这道门管的是「改包者把端上那份上限改大」—— 上限、计数、会员身份三者全在云端。
    */
   /*
-   * 用途只在**一个地方**归一化：额度池判定、报文日志、本次调用的时限档三处都要它，
-   * 各写一遍 `event.purpose || DEFAULT_PURPOSE` 迟早漂移成三种口径。
+   * 用途只在**一个地方**归一化（已在会员闸门前提早声明，那里降级路由也要它）：
+   * 额度池判定、报文日志、本次调用的时限档三处共用，不各写一遍，免得漂移成三种口径。
    */
-  const purpose = event.purpose || DEFAULT_PURPOSE
   const gate = await quotaGate(openid, purpose, isMember)
   if (gate) return gate
 
@@ -1262,21 +1509,29 @@ async function handleChat(event) {
    * 这里只报「这次让谁打、走哪个额度池、多大」，足够回答「为什么是这一档模型 / 为什么被拦」。
    */
   rawLog('chat:req', {
-    tier: llm.tier,
+    /* 请求的厂商 / 质量档 / 能力槽：排障先看这三行（选错厂 / 免费用户带了 premium 一眼可见） */
+    vendor: target.vendor,
+    quality: target.quality,
+    qualityRequested: llm.qualityRequested,
+    capability: target.capability,
+    /* 走哪条通道：云开发 AI 超时还是厂商 401，入口完全不同 */
+    channel: target.channel,
     /*
-     * `requested` 与 `model` **两个都要打**：两者不同就是被会员闸门降级了。
-     * 本机与真机都可能踩到 —— 端上按 `users.membership` 镜像行放行「深度推理」，
+     * `requested` 与 `model` **两个都要打**：两者不同就是被会员闸门降了质量档。
+     * 本机与真机都可能踩到 —— 端上按 `users.membership` 镜像行放行高档，
      * 而云端读的是 memberships 权威表（端上那一行改包者能改，故这里不认）⇒ 判为非会员
-     * ⇒ 这里把 model 换成 `defaultModel`（免费档）。若只打最终 model，现象就是
-     * 「我选了深度推理，怎么发出去的是极速版」，且没有任何线索指向降级。
+     * ⇒ 这里路由降回同厂商基础档。若只打最终 model，现象就是
+     * 「我选了高级版，怎么发出去的是基础档模型」，且没有任何线索指向降级。
+     * qualityDowngraded 是另一回事：所选档缺该能力槽、同厂商向下降档（如 Kimi 高档写报告）。
      */
     requested,
     model,
     downgraded,
+    qualityDowngraded: target.qualityDowngraded,
     purpose,
     messages: norm.messages.length,
     chars: norm.messages.reduce((n, m) => n + String(m.content || '').length, 0),
-    maxTokens: llm.chatMaxTokens,
+    maxTokens: target.chatMaxTokens,
     /*
      * 本次给了多少秒（aux 与报告档不同，见 deadlineOf）。这一行是「-504003 到底卡在哪一次调用」
      * 的唯一线索：平台掐死函数时**不会有任何返回**，但这条 chat:req 在掐死之前早就打出来了 ——
@@ -1287,10 +1542,15 @@ async function handleChat(event) {
 
   let out
   try {
-    out = await callCloudAi(llm, model, norm.messages, purpose)
+    out = await callLlm(target, model, norm.messages, purpose)
   } catch (err) {
     /* 上游根本没回（超时 / 断流）或 SDK 侧报错：这条最要紧 —— 端上只会看到一句「平台通道未就绪」 */
     rawLog('chat:err', String(err && err.message ? err.message : err))
+    /*
+     * 服务端配置错误（厂商 key 缺失 / 端点缺失等，见 callVendorHttp 的 isConfig）：
+     * 与上游欠费不同 —— 重试无意义，直接把「该配哪个环境变量」交回上层。
+     */
+    if (err && err.isConfig) return { ok: false, kind: 'config', error: err.message }
     const kind = classifyAiError(err)
     /*
      * 我们自己掐的那一道（见 deadlineError）：文案已经写全了「为什么掐、接下来怎么办」，
@@ -1354,9 +1614,9 @@ async function handleChat(event) {
        * 诊断与建议对不上，等于教人去改一个与故障无关的设置。
        */
       const error = reasoningChars
-        ? `上游是带推理的模型（${model}）：思考了 ${reasoningChars} 字，把 max_tokens=${llm.chatMaxTokens} 全吃光，` +
-          `正文一个字都没产出。重发同一请求必然再撞同一道墙：请改用非推理档，或调大 llm.config.js 的 chatMaxTokens`
-        : `输出撞上 max_tokens=${llm.chatMaxTokens} 被截断，正文为空。` +
+        ? `上游是带推理的模型（${target.vendor}/${model}）：思考了 ${reasoningChars} 字，把 max_tokens=${target.chatMaxTokens} 全吃光，` +
+          `正文一个字都没产出。重发同一请求必然再撞同一道墙：请检查 llm.config.js 里该厂商 structured 槽是否误配了思考模型，或调大 chatMaxTokens`
+        : `输出撞上 max_tokens=${target.chatMaxTokens} 被截断，正文为空。` +
           `重发同一请求必然再撞同一道墙：请调大 llm.config.js 的 chatMaxTokens，或缩短提示词`
       return { ok: false, kind: 'truncated', finishReason, error }
     }
@@ -1372,7 +1632,7 @@ async function handleChat(event) {
         kind: 'content_filter',
         finishReason,
         error:
-          `云开发 AI 内容安全拦截（finish_reason=content_filter，思考 ${reasoningChars} 字后被拦）：` +
+          `上游模型内容安全拦截（${target.vendor}，finish_reason=content_filter，思考 ${reasoningChars} 字后被拦）：` +
           '生成的内容触发了内容安全策略，正文被过滤为空。这不是超时 / 额度 / 模型配置问题，' +
           '重发同一请求大概率再次被拦（故不重试）。请核对本次对象的名称与素材是否含敏感表述，' +
           '或去掉诱导风险 / 争议判断的措辞后再试。'
@@ -1386,10 +1646,24 @@ async function handleChat(event) {
       ok: false,
       kind: 'upstream',
       finishReason: finishReason || 'missing',
-      error: `云开发 AI 返回空正文（finish_reason=${finishReason || '缺失'}，reasoning=${reasoningChars}字）`
+      error: `上游模型返回空正文（${target.vendor}，finish_reason=${finishReason || '缺失'}，reasoning=${reasoningChars}字）`
     }
   }
-  return { ok: true, content: out.content, model, downgraded, finishReason }
+  /*
+   * 实际路由回执：vendor/quality/capability 让端上诊断日志能记「请求的 vs 实际落的」，
+   * qualityDowngraded 标出缺槽降档（用户选了高级版报告、厂商高档只有推理模型时为 true）。
+   */
+  return {
+    ok: true,
+    content: out.content,
+    model,
+    vendor: target.vendor,
+    quality: target.quality,
+    capability: target.capability,
+    downgraded,
+    qualityDowngraded: target.qualityDowngraded,
+    finishReason
+  }
 }
 
 /*
@@ -1409,6 +1683,18 @@ const handleReportStore = createReportStore({
   failDetail
 })
 
+/**
+ * 厂商就绪清单（免口令、免登录只读）：供「我的」页厂商选择器只展示**已就绪**的厂商。
+ *
+ * 为什么免口令也要放行：选择器必须在用户打开页面时就能拉到，而它不泄露任何敏感信息 —
+ * 只回注册表的公开元数据（key / label / 通道 / 三档槽位有无）和一个布尔 ready
+ * （http 厂 = 对应 *_API_KEY 是否在环境变量里；cloudbase 恒真）。不触达上游、不回 key 内容、
+ * 也不花任何钱，故放在 test 口令分支之前（与 search/chat 同层，但没有任何外部调用）。
+ */
+function handleVendors() {
+  return { ok: true, vendors: vendorCatalog() }
+}
+
 exports.main = async (event) => {
   /*
    * 默认值刻意**不是** 'test'（A3，2026-10-09）：'test' 会向博查与大模型各发一次真实付费探测，
@@ -1417,11 +1703,20 @@ exports.main = async (event) => {
    */
   const action = (event && event.action) || ''
   if (action === 'search') return handleSearch(event || {})
-  if (action === 'chat') return handleChat(event || {})
+  /*
+   * chat / generate / aux 三个业务动作都进 handleChat：报告生成叫 'generate'、AI 问答叫 'chat'、
+   * 辅助小请求叫 'aux'，路由层见名即知；实际额度池与时限仍按 event.purpose 分档（见 handleChat）。
+   */
+  if (action === 'chat' || action === 'generate' || action === 'aux') return handleChat(event || {})
+  /* 厂商就绪清单：免口令只读（见 handleVendors 的说明），放在 test 口令分支之前 */
+  if (action === 'vendors') return handleVendors()
   /* 共享缓存写口（P0-2）：不需要口令，但要求登录身份，且 op 会过写口自己的限速 */
   if (action === 'report') return handleReportStore(event || {})
   if (action !== 'test') {
-    return { ok: false, error: `未知 action：${action}（支持 test / search / chat / report）` }
+    return {
+      ok: false,
+      error: `未知 action：${action}（支持 test / vendors / search / chat / generate / aux / report）`
+    }
   }
 
   /*
@@ -1440,10 +1735,17 @@ exports.main = async (event) => {
   }
 
   const bochaKey = readEnv('BOCHA_API_KEY')
-  /* 探测也走同一张档位表：换档位后，「测试」测的就是换过去的那一档 */
+  /* 探测也走同一份注册表：换厂商 / 换质量档后，「测试」测的就是换过去的那条路（event 可带 vendor/quality） */
   const llmConf = resolveLlm(event)
-  /* 大模型侧没有 key 可检了，改为检 SDK 能力（cloud.ai 是否就位）—— 与 handleChat 的同类判断同源 */
-  const llmReady = typeof cloud.ai === 'function'
+  /*
+   * 通道就位检查与 handleChat 同源：http 通道检厂商 key 环境变量，cloudai 通道检 SDK 能力。
+   */
+  const cloudAiReady = typeof cloud.ai === 'function'
+  const llmReady = llmConf.configError
+    ? false
+    : llmConf.channel === 'http'
+      ? !!readEnv(llmConf.apiKeyEnv)
+      : cloudAiReady
 
   const bocha = Object.assign(keyInfo(bochaKey), { ok: false, detail: '' })
   /*
@@ -1462,8 +1764,13 @@ exports.main = async (event) => {
     }
   }
 
-  if (!llmReady) llm.detail = '云函数环境不支持云开发 AI（需 wx-server-sdk ≥ 4.0.1 并重新部署）'
-  else {
+  if (!llmReady) {
+    llm.detail = llmConf.configError
+      ? llmConf.configError
+      : llmConf.channel === 'http'
+        ? `通道未就位：请配置环境变量 ${llmConf.apiKeyEnv}（厂商 ${llmConf.vendor}）`
+        : '云函数环境不支持云开发 AI（需 wx-server-sdk ≥ 4.0.1 并重新部署）'
+  } else {
     try {
       Object.assign(llm, await probeLlm(llmConf))
     } catch (err) {
@@ -1497,19 +1804,36 @@ exports.main = async (event) => {
   }
 
   /*
-   * 逐档实测（**显式 `models: true` 或 `probeModels: [...]` 才发**，见 probeModelTiers）：
-   * 回答「档位表里的哪一档不带思考」/「这些候选名各自能不能用」。
-   * 与上面的 llm 探针分工不同：那边测「当前生效的这一档通不通」，这边把每个名字都测一遍是否产 reasoning。
-   * 同样**不参与 ok 判定** —— 它是诊断信息（「哪一档能用来生成报告」），不是「平台好不好」的结论。
-   * 候选清单（probeModels）与表内三档是同一个入口的两条路：前者用来找**新**名字，后者用来验**现有**配置。
+   * 逐槽实测（**显式 `models: true` 或 `probeModels: [...]` 才发**，见 probeModelTiers）：
+   * 回答「当前厂商哪个槽带思考」/「这些候选名各自能不能用」。
+   * 与上面的 llm 探针分工不同：那边测「当前生效的那一条路由通不通」，这边把每个槽都测一遍是否产 reasoning。
+   * 同样**不参与 ok 判定** —— 它是诊断信息（「哪个槽能用来生成报告」），不是「平台好不好」的结论。
+   * 候选清单（probeModels）与厂商矩阵是同一个入口的两条路：前者用来找**新**名字，后者用来验**现有**配置。
    */
   const candidates = event && Array.isArray(event.probeModels) ? event.probeModels : null
+  /* bench: true 叠加在 models/probeModels 之上：把探针负载从「连通性」换成「facts 批体量的长 JSON」（见 BENCH_*） */
+  const bench = !!(event && event.bench === true)
   let models = null
   if (event && (event.models === true || (candidates && candidates.length))) {
-    if (!llmReady) models = [{ ok: false, verdict: '云函数环境不支持云开发 AI（需 wx-server-sdk ≥ 4.0.1）' }]
-    else {
+    /*
+     * 候选名（probeModels）是云开发 AI 的模型名，必须有 cloud.ai 才能探；
+     * 逐槽实测则看当前生效通道是否就位（cloudai 检 SDK、http 检 key），
+     * 其余槽位即便通道没就位，也在 probeModelTiers 内部逐项报错而不是整批跳过。
+     */
+    const probeReady = candidates && candidates.length ? cloudAiReady : llmReady
+    if (!probeReady) {
+      models = [
+        {
+          ok: false,
+          verdict:
+            llmConf.channel === 'http'
+              ? `通道未就位：请配置环境变量 ${llmConf.apiKeyEnv}（厂商 ${llmConf.vendor}）`
+              : '云函数环境不支持云开发 AI（需 wx-server-sdk ≥ 4.0.1）'
+        }
+      ]
+    } else {
       try {
-        models = await probeModelTiers(llmConf, candidates)
+        models = await probeModelTiers(llmConf, candidates, bench)
       } catch (err) {
         models = [{ ok: false, verdict: failDetail(err) }]
       }
@@ -1517,8 +1841,8 @@ exports.main = async (event) => {
   }
 
   /*
-   * 模型清单（**显式 `listModels: true` 才发**）：云开发 AI 没有 `GET /models`，这里退化为
-   * **列出档位表里配置的名字** —— 它是逐档实测的起点清单，也是回填模型名时的对照表（见 probeModelList）。
+   * 模型清单（**显式 `listModels: true` 才发**）：云开发 AI 没有 `GET /models`，这里列
+   * **注册表里全部厂商 × 档 × 槽的生效模型名** —— 它是逐槽实测的对照总表，也是回填模型名时的依据（见 probeModelList）。
    * 同样不参与 ok 判定（诊断信息，不是平台结论）。
    */
   let modelList = null
@@ -1533,14 +1857,21 @@ exports.main = async (event) => {
   return {
     ok: bocha.ok && llm.ok,
     checked_at: new Date().toISOString(),
-    tier: llmConf.tier,
     /*
      * 三个模型维度的探针各自独立，别混着看：
-     *   model     = 当前生效的那一档（端上带的 / LLM_TIER 覆写的），回答「这一档通不通」；
-     *   models    = 逐档实测：档位表里的三档，或 probeModels 给的候选名，回答「谁带思考」（没要求时为 null）；
-     *   modelList = 档位表配置的模型名清单，回答「当前配了哪些名字」（没要求时为 null）。
+     *   model     = 当前生效路由（端上带的 vendor/quality/purpose 裁决出的槽），回答「这条路通不通」；
+     *   models    = 逐槽实测：当前厂商的 3 档 × 2 槽，或 probeModels 给的候选名，回答「谁带思考」（没要求时为 null）；
+     *   modelList = 注册表全部厂商的槽位模型清单，回答「当前配了哪些名字」（没要求时为 null）。
      */
     model: llmConf.model,
+    /* 当前生效路由的厂商 / 质量档 / 能力槽 / 通道：回答「这次请求到底发给谁、用哪个槽」 */
+    channel: llmConf.channel,
+    vendor: llmConf.vendor,
+    vendorLabel: llmConf.vendorLabel,
+    quality: llmConf.quality,
+    qualityRequested: llmConf.qualityRequested,
+    qualityDowngraded: llmConf.qualityDowngraded,
+    capability: llmConf.capability,
     models,
     modelList,
     bocha,

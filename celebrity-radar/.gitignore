@@ -23,6 +23,7 @@ src/config/local.ts
 project.private.config.json
 
 # 云函数部署密钥（cloudbaserc.json 以 ${env.XXX} 读取）
-.env
-.env.*
+# `.env*` 兜住 `.env` / `.env.local` / `.env copy` 这类副本
+# （编辑器「复制一份」得到的名字常带空格后缀，`.env.*` 匹配不到，会漏进仓库）
+.env*
 !.env.example

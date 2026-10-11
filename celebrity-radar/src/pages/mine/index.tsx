@@ -3,11 +3,17 @@ import Taro, { useDidShow } from '@tarojs/taro'
 import { View, Text, Button, Input, Image } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { ensureLogin, updateProfile } from '@/utils/auth'
-import { clearLocalSettings, getPreferredTier, setPreferredTier } from '@/utils/settings'
-import { resolveChatSelection } from '@/utils/llm'
-import type { ChatSelection } from '@/utils/llm'
+import {
+  clearLocalSettings,
+  getPreferredTier,
+  setPreferredTier,
+  getPreferredProvider,
+  setPreferredProvider
+} from '@/utils/settings'
+import { resolveChatSelection, listReadyVendors } from '@/utils/llm'
+import type { ChatSelection, ReadyVendor } from '@/utils/llm'
 import { publicConfig } from '@/config/public'
-import type { LlmTier } from '@/config/public'
+import type { LlmVendor, LlmQuality } from '@/config/public'
 import { notifyConfigured, requestNotify } from '@/utils/notify'
 import { clearAllMyData } from '@/utils/data-deletion'
 import { listFollows } from '@/utils/follows'
@@ -64,12 +70,17 @@ export default function Mine() {
    */
   const [qaUsage, setQaUsage] = useState<QaUsage>(() => qaUsageToday(false))
   /**
-   * 当前生效的「生成档位」（2026-10-11 起供应商维度整体移除，端上只选档）。
+   * 当前生效的「厂商 + 质量档」（2026-10-12 v3：厂商维度回归）。
    * 初值按**非会员**口径解析（配额还没读回来，此时确实只能走免费档），
    * loadCounts 拿到会员态后再按真实身份重算一次。
    * 与生成时 utils/llm.ts#resolveChatSelection 同源，页面展示不会和实际调用打架。
    */
   const [selection, setSelection] = useState<ChatSelection>(() => resolveChatSelection(false))
+  /**
+   * 厂商就绪清单（云端 action:'vendors' 只读返回）：null = 还没拉到 / 拉取失败，
+   * 此时按「全部可选」渲染（网络抖动不能把选择器藏没）；拉到后只展示 ready 的厂。
+   */
+  const [readyVendors, setReadyVendors] = useState<ReadyVendor[] | null>(null)
   /**
    * 套餐用量卡是否展开：默认折叠。
    *
@@ -83,41 +94,85 @@ export default function Mine() {
   const isMember = !!genQuota?.member
 
   /**
-   * 下面渲染的档位清单：来自 publicConfig.llm.models（2026-10-11 起供应商维度整体移除，
-   * 只剩云开发 AI 一家，清单是固定三档）。类型显式收敛成 LlmTier[]，
-   * 与 utils/llm.ts#resolveChatSelection 读的是同一份。
+   * 厂商清单：静态注册表来自 publicConfig.llm.vendors，运行时再用云端就绪状态过滤
+   * （未配 key 的外部厂不展示；cloudbase 恒就绪）。readyVendors=null（未拉到）时全展示。
+   *
+   * `?? []` 是**防御**：正常构建里 llm.vendors 恒存在，但新旧包混用（页面按新结构读、
+   * 公共配置还是旧结构）时会拿到 undefined，`undefined.map` 会把整页打成白屏 ——
+   * 白屏把「配置读错」伪装成「页面坏了」，代价远大于选择器短暂为空。
    */
-  const tiers: readonly LlmTier[] = publicConfig.llm.models
+  const vendors: readonly LlmVendor[] = publicConfig.llm.vendors ?? []
+  const visibleVendors = readyVendors
+    ? vendors.filter((v) => readyVendors.some((r) => r.key === v.key && r.ready))
+    : vendors
 
   /**
-   * 切换生成档位（极速版 / 标准版 / 深度推理）：只写本机偏好，下次生成生效。
-   *
-   * 会员专属档位对免费用户不做「静默失败」：说清为什么不能用，并把人送到会员中心 ——
-   * 这是「质」权益最直接的转化触点（用户正是在这里第一次发现「更强的模型要付费」）。
-   * 真正的闸门在云函数 aiProxy（改包也绕不过），这里只负责把话说清楚。
+   * 质量档清单：来自 publicConfig.llm.qualities（基础 / 标准 / 高级）。
+   * 类型显式收敛成 LlmQuality[]，与 utils/llm.ts#resolveChatSelection 读的是同一份；同样带 `?? []` 防御。
    */
-  const chooseTier = async (t: LlmTier) => {
-    if (t.tier === selection.tier) {
-      /*
-       * 已是当前生效档位：若本机存的偏好与显示不一致（残留的会员档被回落成了极速版），
-       * 顺手对齐 —— 否则「显示极速版、存着标准版」，续费后会毫无预兆地跳档。
-       */
-      if (getPreferredTier() !== t.tier) setPreferredTier(t.tier)
+  const qualities: readonly LlmQuality[] = publicConfig.llm.qualities ?? []
+
+  /**
+   * 拉厂商就绪清单（免口令只读，见 utils/llm.ts#listReadyVendors）。
+   * 拉到后若本机存的厂商已不在就绪名单（典型：云端撤了 key），自动切回恒在的云开发 AI ——
+   * 否则选择器里没有当前项、生成又必败，用户只会看到一句配置错误。
+   */
+  const refreshReadyVendors = async () => {
+    const list = await listReadyVendors()
+    if (!list) return
+    setReadyVendors(list)
+    const cur = getPreferredProvider()
+    if (cur && cur !== publicConfig.llm.defaultVendor && !list.some((v) => v.key === cur && v.ready)) {
+      setPreferredProvider(publicConfig.llm.defaultVendor)
+      setSelection(resolveChatSelection(isMember))
+      Taro.showToast({ title: '原选厂商暂未就绪，已切回云开发 AI', icon: 'none' })
+    }
+  }
+
+  /**
+   * 切换厂商（云开发 AI / DeepSeek / 智谱 / Kimi）：只写本机偏好，此后新生成的报告与问答生效。
+   * 切换厂商不改变质量档选择（各家都是基础/标准/高级同一套）。
+   */
+  const chooseVendor = (v: LlmVendor) => {
+    if (v.key === selection.vendor) {
+      /* 显示与存储对齐（残留偏好被回落时顺手修正），与质量档同一做法 */
+      if (getPreferredProvider() !== v.key) setPreferredProvider(v.key)
       return
     }
-    if (t.memberOnly && !isMember) {
+    setPreferredProvider(v.key)
+    setSelection(resolveChatSelection(isMember))
+    Taro.showToast({ title: `已切换到${v.label}`, icon: 'none' })
+  }
+
+  /**
+   * 切换质量档（基础版 / 标准版 / 高级版）：只写本机偏好，下次生成生效。
+   *
+   * 会员专属档对免费用户不做「静默失败」：说清为什么不能用，并把人送到会员中心 ——
+   * 这是「质」权益最直接的转化触点（用户正是在这里第一次发现「更强的模型要付费」）。
+   * 真正的闸门在云函数 aiProxy（改包也绕不过，非会员一律落基础档），这里只负责把话说清楚。
+   */
+  const chooseQuality = async (q: LlmQuality) => {
+    if (q.key === selection.quality) {
+      /*
+       * 已是当前生效档：若本机存的偏好与显示不一致（残留的会员档被回落成了基础版），
+       * 顺手对齐 —— 否则「显示基础版、存着高级版」，续费后会毫无预兆地跳档。
+       */
+      if (getPreferredTier() !== q.key) setPreferredTier(q.key)
+      return
+    }
+    if (q.memberOnly && !isMember) {
       const res = await Taro.showModal({
         title: '会员专属模型',
-        content: `${t.label}仅会员可用：开通后即可用它生成更完整的报告，已生成的报告不受影响`,
+        content: `${q.label}仅会员可用：开通后即可在各厂商使用标准 / 高级模型，报告更完整、问答思考更深，已生成的报告不受影响`,
         confirmText: '去开通',
         cancelText: '再想想'
       })
       if (res.confirm) Taro.navigateTo({ url: '/pages/member/index' })
       return
     }
-    setPreferredTier(t.tier)
+    setPreferredTier(q.key)
     setSelection(resolveChatSelection(isMember))
-    Taro.showToast({ title: '已切换档位', icon: 'none' })
+    Taro.showToast({ title: '已切换质量档', icon: 'none' })
   }
 
   const loadCounts = async () => {
@@ -154,9 +209,11 @@ export default function Mine() {
     setQaUsage(qaUsageToday(askMember))
   }
 
-  /* 每次显示本页都重算：从关注列表取关、取消收藏、生成消耗配额后返回，数字都要跟着变 */
+  /* 每次显示本页都重算：从关注列表取关、取消收藏、生成消耗配额后返回，数字都要跟着变。
+     厂商就绪清单一并刷新（listReadyVendors 内部有缓存，不会每次打云函数） */
   useDidShow(() => {
     void loadCounts()
+    void refreshReadyVendors()
   })
 
   /**
@@ -592,36 +649,56 @@ export default function Mine() {
       </View>
 
       {/*
-        生成档位（M7-4；2026-10-11 起供应商维度整体移除，只剩云开发 AI 一家）：
-        只写本机偏好（utils/settings.ts），仅影响此后新生成的报告。
-        端上不持有任何凭据，也不再知道模型名 —— 用户选的只是**档位**，
-        由云函数 aiProxy 按档位走云开发 AI 代打，因此这里没有配置项，也不需要连通性自检。
+        厂商 × 质量档（M7-4；2026-10-12 v3 厂商维度回归）：
+        用户选「厂商（云开发 AI / DeepSeek / 智谱 / Kimi）× 质量档（基础 / 标准 / 高级）」，
+        能力槽（报告 structured / 问答 reasoning）由云端按 purpose 裁决，端上不传模型名。
+        端上不持有任何凭据；未配 key 的厂商经云端只读 action 'vendors' 上报后不展示。
       */}
       <View className='card page-mine__model'>
         <View className='page-mine__model-head'>
-          <Text className='page-mine__model-title'>生成档位</Text>
-          <Text className='page-mine__model-current'>{selection.tierLabel}</Text>
+          <Text className='page-mine__model-title'>模型厂商与质量档</Text>
+          <Text className='page-mine__model-current'>{selection.vendorLabel} · {selection.qualityLabel}</Text>
         </View>
+        <Text className='page-mine__model-grouplabel'>厂商</Text>
+        {/*
+          厂商用「图标 + 卡片」排列（用户要求）：每行两张卡片，卡片内是厂商表情图标 + 名称 + 一句简介。
+          比原先的整行列表更容易一眼扫出「有哪几家」，也把「换家 = 整组换」的语义做成并列的选项。
+        */}
+        <View className='page-mine__vendor-grid'>
+          {visibleVendors.map((v) => (
+            <View
+              key={v.key}
+              className={`page-mine__vendor-card${v.key === selection.vendor ? ' page-mine__vendor-card--on' : ''}`}
+              hoverClass='page-mine__vendor-card--tap'
+              onClick={() => chooseVendor(v)}
+            >
+              <View className='page-mine__vendor-icon'>{v.icon}</View>
+              <Text className='page-mine__vendor-label'>{v.label}</Text>
+              <Text className='page-mine__vendor-desc'>{v.desc}</Text>
+            </View>
+          ))}
+        </View>
+        <Text className='page-mine__model-grouplabel'>质量档</Text>
         <View className='page-mine__model-options'>
-          {tiers.map((m) => {
-            /* 会员专属档位对免费用户显示「会员」标：先说清门槛，点了再给开通引导 */
-            const locked = m.memberOnly && !isMember
+          {qualities.map((q) => {
+            /* 会员专属档对免费用户显示「会员」标：先说清门槛，点了再给开通引导 */
+            const locked = q.memberOnly && !isMember
             return (
               <View
-                key={m.tier}
-                className={`page-mine__model-option${m.tier === selection.tier ? ' page-mine__model-option--on' : ''}${locked ? ' page-mine__model-option--locked' : ''}`}
-                onClick={() => void chooseTier(m)}
+                key={q.key}
+                className={`page-mine__model-option${q.key === selection.quality ? ' page-mine__model-option--on' : ''}${locked ? ' page-mine__model-option--locked' : ''}`}
+                onClick={() => void chooseQuality(q)}
               >
                 <View className='page-mine__model-option-head'>
-                  <Text className='page-mine__model-option-label'>{m.label}</Text>
+                  <Text className='page-mine__model-option-label'>{q.label}</Text>
                   {locked && <Text className='page-mine__model-lock'>会员</Text>}
                 </View>
-                <Text className='page-mine__model-option-desc'>{m.desc}</Text>
+                <Text className='page-mine__model-option-desc'>{q.desc}</Text>
               </View>
             )
           })}
         </View>
-        <Text className='page-mine__model-note'>额度由平台统一提供；切换后仅影响之后新生成的报告，已生成的报告不会重算</Text>
+        <Text className='page-mine__model-note'>免费版仅可用各厂商基础模型；标准版与高级版为会员权益。报告走结构化输出槽、AI 问答走推理槽；所选档缺槽时在同厂商内自动向下降档，不额外计费</Text>
       </View>
 
       <View className='card' style={{ padding: '8rpx 0' }}>

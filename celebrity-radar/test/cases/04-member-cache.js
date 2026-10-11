@@ -53,6 +53,8 @@ function mkRow(report, state = 'ready') {
 
 const MEMBER_NOTES = { compare: '与同领域的其他人相比……', risk: '接下来值得留意的是……' }
 const CONFLICTS = [{ topic: '说法不一', a: 'A 媒称已回应', b: 'B 媒称未回应' }]
+/* 同领域坐标（2026-10-12）：会员生成才会有的**结构化**会员段（与 memberNotes / conflicts 同类） */
+const PEERS = [{ name: '某同行', gap: '主演作品数量更多，且拿了同档奖项' }]
 
 /* ------------------------------------------------------- 会员段落判定 */
 
@@ -82,10 +84,10 @@ describe('会员段落判定 utils/cache#hasMemberBlocks', () => {
     notOk(hasMemberBlocks(mkReport({ memberNotes: { compare: '', risk: '' } })))
   })
 
-  it('与 utils/member#presentSections 同一口径（两处判定不得走偏）', () => {
+  it('与 utils/member#hasMemberContent 同一口径（两处判定不得走偏）', () => {
     const { load } = fresh()
     const { hasMemberBlocks } = load('utils/cache')
-    const { presentSections } = load('utils/member')
+    const { hasMemberContent } = load('utils/member')
 
     const samples = [
       mkReport(),
@@ -94,9 +96,14 @@ describe('会员段落判定 utils/cache#hasMemberBlocks', () => {
       mkReport({ memberNotes: { compare: '', risk: '只有一段' } }),
       mkReport({ conflicts: CONFLICTS }),
       mkReport({ conflicts: [] }),
-      mkReport({ memberNotes: { compare: '', risk: '' } })
+      mkReport({ memberNotes: { compare: '', risk: '' } }),
+      /* 同领域坐标（2026-10-12）：也是会员生成才会有的字段，两边都必须算「有会员内容」 */
+      mkReport({ peers: PEERS }),
+      mkReport({ peers: [] })
     ]
-    for (const r of samples) eq(hasMemberBlocks(r), presentSections(r).length > 0)
+    for (const r of samples) eq(hasMemberBlocks(r), hasMemberContent(r))
+    ok(hasMemberBlocks(mkReport({ peers: PEERS })), 'peers 非空即算会员版')
+    notOk(hasMemberBlocks(mkReport({ peers: [] })), '空数组不算（与 memberNotes / conflicts 同口径）')
   })
 })
 
@@ -181,7 +188,7 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
   })
 
   it('不达标的产物不进共享缓存、也不扣次数（P0，2026-10-11 公平计费 + 防污染）', () => {
-    const shortfallAt = src.indexOf('const shortfall = reportShortfall(report, memberDeep)')
+    const shortfallAt = src.indexOf('const verdict = shortfallVerdict(report, memberDeep)')
     const saveAt = src.indexOf('const saved = await saveReady')
     const consumeAt = src.indexOf('void consumeGenerateQuota(userId)')
 
@@ -245,7 +252,7 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
   })
 
   it('「可重试」要一路带到页面与埋点（源码钉住）：否则判了也没人用', () => {
-    ok(src.includes('reportShortfallRetryable(report, memberDeep)'), '主流程要给出这个判定')
+    ok(src.includes('shortfallVerdict(report, memberDeep)'), '主流程要给出这个判定')
     ok(src.includes('reason: shortfall, retryable'), '埋点带上它，才能从数据上分离「素材少」与「真故障」')
     ok(src.includes('...(shortfall ? { shortfall, shortfallRetryable: retryable } : {})'), '判定要交回页面')
   })
@@ -382,15 +389,16 @@ describe('档位隔离：会员段不下发给非会员（批 1）', () => {
       }
     ])
 
-  it('stripMemberSections：剥掉两段、不动原对象，其余字段原样', () => {
+  it('stripMemberSections：剥掉三段、不动原对象，其余字段原样', () => {
     const { load } = fresh()
     const { stripMemberSections } = load('utils/member')
 
-    const row = mkReport({ memberNotes: MEMBER_NOTES, conflicts: CONFLICTS, heat: 88 })
+    const row = mkReport({ memberNotes: MEMBER_NOTES, conflicts: CONFLICTS, peers: PEERS, heat: 88 })
     const out = stripMemberSections(row)
 
     eq(out.memberNotes, undefined, 'memberNotes 不能跟着出去')
     eq(out.conflicts, undefined, 'conflicts 不能跟着出去')
+    eq(out.peers, undefined, 'peers（同领域坐标）不能跟着出去 —— 它也是会员生成才会有的字段')
     eq(out.heat, 88, '其余字段（热度等）要原样保留')
     eq(out.name, '测试人物')
     deepEq(row.memberNotes, MEMBER_NOTES, '原对象不能被就地改掉 —— 它还要拿去写库 / 交给会员')
@@ -402,14 +410,18 @@ describe('档位隔离：会员段不下发给非会员（批 1）', () => {
 
     const plain = mkReport({ heat: 1 })
     ok(stripMemberSections(plain) === plain, '无会员段就不该造新对象')
+    /* 空 peers 也不算「有会员内容」：仍走快路径 */
+    const emptyPeers = mkReport({ peers: [] })
+    ok(stripMemberSections(emptyPeers) === emptyPeers, 'peers 为空数组时不该造新对象')
   })
 
-  it('stripMemberSections：只带 memberNotes 的老报告也要剥（两段各自可缺）', () => {
+  it('stripMemberSections：只带 memberNotes 的老报告也要剥（三段各自可缺）', () => {
     const { load } = fresh()
     const { stripMemberSections } = load('utils/member')
 
     eq(stripMemberSections(mkReport({ memberNotes: MEMBER_NOTES })).memberNotes, undefined)
     eq(stripMemberSections(mkReport({ conflicts: CONFLICTS })).conflicts, undefined)
+    eq(stripMemberSections(mkReport({ peers: PEERS })).peers, undefined, '只有 peers 的新报告同样要剥')
   })
 
   it('getCachedReport（问答 / 关注流那条只读路径）：非会员拿到的那一份里没有会员段', async () => {

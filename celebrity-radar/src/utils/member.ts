@@ -70,14 +70,14 @@ export const FREE_REFRESH_COOLDOWN_HOURS = MEMBER_BENEFITS.freeRefreshCooldownHo
 /**
  * 权益说明（会员入口与配额卡展示）。
  * ⚠ 与 MEMBER_BENEFITS 一一对应：改表必须同步改这里，否则页面承诺与实际额度不符。
- * 首条「标准版 / 深度推理模型」不对应本文件的数字，而对应 publicConfig.llm.models 的
- * memberOnly 列（端上锁 + 云函数 aiProxy 校验）。档位标签唯一且稳定（极速版 / 标准版 / 深度推理），
- * 故文案不必随档位调整而改；但改了 memberOnly 列要回来对一遍文案。
+ * 首条「标准版 / 高级版模型」不对应本文件的数字，而对应 publicConfig.llm.qualities 的
+ * memberOnly 列（端上锁 + 云函数 aiProxy 校验）。质量档跨厂商同一套（基础版 / 标准版 / 高级版），
+ * 故文案不必随厂商调整而改；但改了 memberOnly 列要回来对一遍文案。
  */
 export const MEMBER_BENEFIT_POINTS: Array<{ title: string; note: string }> = [
   {
-    title: '标准版 / 深度推理模型',
-    note: '免费版只能用「极速版」；会员可切到标准版与深度推理，长文更完整、推理更强（生成时由服务端校验）'
+    title: '标准版 / 高级版模型',
+    note: '免费版只能用各厂商「基础版」；会员可切到标准版与高级版，长文更完整、推理更强（生成时由服务端校验）'
   },
   {
     /*
@@ -260,21 +260,41 @@ export function askQuotaExhaustedMessage(member: boolean, limit: number): string
 /** 会员专享段落名：顺序即报告页卡片里的渲染顺序，也是促销条措辞的唯一来源 */
 export const MEMBER_SECTIONS = ['对比视角', '风险提示', '信源分歧'] as const
 
+/** 报告里可能出现会员专属字段的最小结构（presentSections / hasMemberContent / strip 共用） */
+interface MemberFielded {
+  memberNotes?: { compare?: string; risk?: string }
+  conflicts?: Array<{ topic?: string }>
+  /**
+   * 同领域坐标（2026-10-12）：与 memberNotes / conflicts 同属**会员生成才会有的字段**
+   * （只在会员提示词里请求）。促销条列不下它（单行 18 字预算），但判定口径必须算上它。
+   */
+  peers?: Array<{ name?: string }>
+}
+
 /** 报告里**实际**存在的专享段落（顺序固定，缺的跳过；空串按不存在处理） */
-export function presentSections(
-  report:
-    | {
-        memberNotes?: { compare?: string; risk?: string }
-        conflicts?: Array<{ topic?: string }>
-      }
-    | null
-    | undefined
-): string[] {
+export function presentSections(report: MemberFielded | null | undefined): string[] {
   const present: string[] = []
   if (report?.memberNotes?.compare) present.push(MEMBER_SECTIONS[0])
   if (report?.memberNotes?.risk) present.push(MEMBER_SECTIONS[1])
   if (report?.conflicts && report.conflicts.length > 0) present.push(MEMBER_SECTIONS[2])
   return present
+}
+
+/**
+ * 报告里是否存在**会员专属内容** —— 三段文字段（memberNotes / conflicts）**或**结构化段 peers。
+ *
+ * 与 presentSections 的分工（2026-10-12 拆开）：
+ *   · presentSections 给的是**能写进促销条的名字** —— 那条是单行、18 字预算（见 03 用例），
+ *     列不下第四段，故只列三段文字段；
+ *   · 本函数是**判定口径** —— 「剥除免费读者拿到的会员内容」（stripMemberSections）与
+ *     「只升不降 / 会员补齐免计费复核」（端上 utils/cache.ts#hasMemberBlocks、云端
+ *     aiProxy/report-store.js 与 quotaGuard）三处共用它。
+ * 两件事一旦混用：要么促销条撑爆单行被裁成「信…」，要么 peers 漏在免费对象里
+ * （免费读者拿到的对象里本不该有会员生成的字段）。
+ */
+export function hasMemberContent(report: MemberFielded | null | undefined): boolean {
+  if (presentSections(report).length > 0) return true
+  return Array.isArray(report?.peers) && report.peers.length > 0
 }
 
 /**
@@ -287,17 +307,18 @@ export function presentSections(
  *
  * ⚠ 端上直连云数据库，改包 / 抓包本就能拿到原文，本函数**不是安全防线**：
  *   它的价值是让「非会员拿到的对象里没有会员段」成为不变式，UI 侧从此不必再各自判一次。
+ *   2026-10-12：剔除范围加上 peers（同领域坐标）—— 它也是会员生成才会有的字段，
+ *   留在免费对象里就破坏了这条不变式（判定统一走 hasMemberContent）。
  *
- * 无会员段落时**返回原对象**（引用相等）：绝大多数报告走这条，不产生拷贝、不读任何库 ——
+ * 无会员内容时**返回原对象**（引用相等）：绝大多数报告走这条，不产生拷贝、不读任何库 ——
  * 这是调用方可以放心到处调它的前提（见 utils/cache.ts#exposeReport 的快路径）。
  */
-export function stripMemberSections<
-  T extends { memberNotes?: { compare?: string; risk?: string }; conflicts?: Array<{ topic?: string }> }
->(report: T): T {
-  if (presentSections(report).length === 0) return report
+export function stripMemberSections<T extends MemberFielded>(report: T): T {
+  if (!hasMemberContent(report)) return report
   const copy: T = { ...report }
   delete copy.memberNotes
   delete copy.conflicts
+  delete copy.peers
   return copy
 }
 

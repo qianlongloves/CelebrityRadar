@@ -1,8 +1,8 @@
 @import '../../styles/variables.scss';
 
-/* 会员中心（付费转化页）：Hero → 权益对比 → 真实示例 → 额度一览 → 选档位 → 说明，支付按钮吸底。
+/* 会员中心（付费转化页）：Hero → 权益对比 → 额度一览 → 选档位 → 说明，支付按钮吸底。
    底部留白 = 吸底栏高度 + 安全区，避免最后一条说明被按钮压住。
-   额度一览刻意夹在「真实示例」和「选档位」之间：先给质、再看实物，然后说清会被拦在哪，最后付钱。 */
+   额度一览夹在「权益对比」和「选档位」之间：先把质说清，再说会被拦在哪，最后付钱。 */
 .page-member {
   padding-bottom: calc(200rpx + env(safe-area-inset-bottom));
 
@@ -107,51 +107,6 @@
   }
 
   &__foot {
-    display: block;
-    margin-top: 20rpx;
-    padding-top: 18rpx;
-    border-top: 2rpx solid $line;
-    font-size: 20rpx;
-    line-height: 1.6;
-    color: $text-3;
-  }
-
-  /* ===== 真实示例（O-22）：紧接对比表，用平台真实产出回答「专享内容长什么样」 =====
-     排版与报告页那张专享卡同源（标签胶囊 + 正文），跨页认得出是同一段东西；
-     卡身的底部小字给出处，示例与营销文案的分界就在这一行。 */
-  &__sample-block {
-    margin-top: 18rpx;
-  }
-
-  &__sample-block + &__sample-block {
-    margin-top: 20rpx;
-  }
-
-  &__sample-label {
-    display: inline-block;
-    padding: 4rpx 16rpx;
-    border-radius: 999rpx;
-    font-size: 20rpx;
-    line-height: 1.6;
-    color: $brand-dark;
-    background: $brand-weak;
-
-    /* 风险提示换暖色：与报告页同一语义色（$accent-orange 系列），不新造颜色 */
-    &--risk {
-      color: $accent-orange;
-      background: $accent-orange-bg;
-    }
-  }
-
-  &__sample-text {
-    display: block;
-    margin-top: 10rpx;
-    font-size: 26rpx;
-    line-height: 1.75;
-    color: $text-1;
-  }
-
-  &__sample-foot {
     display: block;
     margin-top: 20rpx;
     padding-top: 18rpx;

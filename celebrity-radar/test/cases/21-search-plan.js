@@ -35,11 +35,11 @@ function fresh() {
   return { load: env.load }
 }
 
-/** 假上游：记下每一次 chat 的入参；resp 由调用方给（对象=成功，函数=按入参算） */
+/** 假上游：记下每一次 aux 大模型调用的入参；resp 由调用方给（对象=成功，函数=按入参算） */
 function fakeChat(resp) {
   const calls = []
   env.registerCloudFn('aiProxy', (data) => {
-    if (data.action !== 'chat') return { ok: false, kind: 'bad_request', error: '只该发 chat' }
+    if (data.action !== 'aux') return { ok: false, kind: 'bad_request', error: '只该发 aux' }
     calls.push(data)
     return typeof resp === 'function' ? resp(data) : resp
   })
@@ -112,7 +112,7 @@ describe('检索词规划：先问模型「该查什么」，再拿这些词去�
 
     eq(calls.length, 1, '不重试')
     eq(calls[0].purpose, 'aux', '与消歧同档：不占用户当日的生成额度')
-    eq(calls[0].action, 'chat')
+    eq(calls[0].action, 'aux', '检索词规划不该叫 chat，走 aux action（只有 AI 问答才叫 chat）')
   })
 
   it('这一步**结构上**不带任何检索结果（硬性规定：给的是「该查什么」，不是「查到了什么」）', async () => {

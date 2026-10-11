@@ -68,18 +68,17 @@ export const SETTINGS_VERSION = 1
 export const SETTINGS_KEYS = ['llm_provider', 'llm_tier'] as const
 
 /**
- * 每个配置项的默认值。`null` = 「没选过」，读取方自行回落到它自己的首个选项
- * （档位回落 `publicConfig.llm.tier` 那一档，见 `utils/llm.ts`）。
+ * 每个配置项的默认值。`null` = 「没选过」，读取方自行回落到默认值
+ * （厂商回落 `publicConfig.llm.defaultVendor`、质量档回落 `defaultQuality`，见 `utils/llm.ts`）。
  *
  * ⚠ 键名与 `SETTINGS_KEYS` **必须一一对应**（用例逐字比对，少一个就红）：
  * 缺了键的默认值，ensure 就不知道该补什么，那个配置项会永远停在「缺失」。
  *
  * 口径说明：
- *   llm_provider  历史键位（2026-10-08 引入的「模型供应商」；2026-10-11 起供应商维度整体移除）。
- *                 换成云开发 AI 后只剩一家，端上**已不再读它** —— 保留键位只为不动存量用户的
- *                 配置结构（见 utils/settings.ts）
- *   llm_tier      档位标识（fast / standard / reason），**不是模型名** ——
- *                 具体模型名只有云端知道（llm.config.js 的 TIERS），端上不持有也不上报
+ *   llm_provider  厂商标识（cloudbase / deepseek / zhipu / moonshot / qwen），**不是模型名**。
+ *                 2026-10-12 v3 厂商维度回归后重新启用（见 utils/settings.ts）
+ *   llm_tier      质量档标识（basic / standard / premium），**不是模型名** ——
+ *                 具体模型名只有云端知道（llm.config.js 的厂商×档×能力槽矩阵），端上不持有也不上报
  */
 export const DEFAULT_USER_SETTINGS = {
   llm_provider: null,

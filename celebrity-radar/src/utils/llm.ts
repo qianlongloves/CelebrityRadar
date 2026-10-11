@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { publicConfig } from '@/config/public'
-import type { LlmTier } from '@/config/public'
-import { getPreferredTier } from './settings'
+import type { LlmVendor, LlmQuality } from '@/config/public'
+import { getPreferredTier, getPreferredProvider } from './settings'
 import { diagLog } from './cloud-diagnostics'
 import { debugRaw } from './debug'
 import { callCloudFunction, cloudTimeoutHint, isCloudConfigured } from './cloud'
@@ -10,18 +10,17 @@ import { readMemberState } from './member'
 /**
  * LLM 调用封装（阶段 3 起全项目共用）。
  *
- * **单一通道**：云函数代理（平台代付），见 cloudfunctions/aiProxy 的 'chat'。
+ * **单一通道**：云函数代理（平台代付），见 cloudfunctions/aiProxy 的 'chat' / 'generate' / 'aux'。
  * key 只存在云函数环境变量里，客户端不持有任何密钥，用户零配置。
  *
- * 曾经并列存在过「本机 Key 直连」通道（BYOK，Taro.request 直打上游），已整体移除，
- * 理由见下方 chatOnce 上方的说明。search.ts 的博查通道同步做了同样的收敛，
- * 全项目只剩一种模式，用户不必理解「该填 key 还是靠平台」。
+ * 选型模型（2026-10-12 v3）：端上只上报「厂商 + 质量档」（event.vendor / event.quality），
+ * 用途（purpose）决定能力槽 —— 报告 / 辅助走 structured（输出型），AI 问答走 reasoning（推理型）；
+ * 端上既不持有 key、也不知道具体模型名（见 cloudfunctions/aiProxy 的 llm.config.js 注册表）。
+ * 厂商与质量档由 resolveChatSelection() 统一裁决：本机偏好（「我的」页所选）优先，否则回落
+ * publicConfig.llm.defaultVendor / defaultQuality；非会员一律钳到基础档；辅助调用对会员也只走基础档。
+ * 所选档缺能力槽时（如 Kimi 高级档没有非思考旗舰）由云端在同厂商内向下降档，回执带
+ * qualityDowngraded。云函数只在端上没带 / 带了不认识的值时才用 LLM_VENDOR / LLM_TIER 兜底。
  *
- * 端点：云端走**微信云开发 AI**（cloud.ai），端上只上报**档位**（fast / standard / reason）——
- * 端上既不持有 key、也不知道具体模型名（见 cloudfunctions/aiProxy 的 handleChat / llm.config.js）。
- * 用哪一档由 resolveChatSelection() 统一裁决（2026-10-11 起供应商维度整体移除）：
- * 本机偏好（「我的 → 生成档位」所选）优先，否则回落 publicConfig.llm.tier 那一档；
- * 会员专属档位对非会员回落到 fast 档。云函数只在端上没带 / 带了不认识的档位时才用 LLM_TIER 兜底。
  * 取非流式完整响应（云函数侧用 streamText 双流取回正文与 finish_reason，端上仍是完整正文）：
  * 少一层聚合、失败语义更清晰。
  * JSON 的提取与解析见下方 parseModelJson（2026-10-10 重写：字符串感知扫描 + 畸形修复 +
@@ -76,8 +75,14 @@ interface ProxyChatResult {
   ok: boolean
   content?: string
   model?: string
-  /** 云函数把会员专属档位降级成默认模型时置 true（非会员请求了强模型，见 aiProxy 的会员闸门） */
+  /** 实际落路由的厂商 / 质量档 / 能力槽（云端裁决后回执） */
+  vendor?: string
+  quality?: string
+  capability?: string
+  /** 云函数把会员专属质量档降回基础档时置 true（非会员请求了标准/高级，见 aiProxy 的会员闸门） */
   downgraded?: boolean
+  /** 所选档缺该能力槽、同厂商向下降档时置 true（如 Kimi 高级档生成报告 → 降到 k2.6） */
+  qualityDowngraded?: boolean
   /**
    * 上游的 finish_reason 原样回传（见 aiProxy 的 handleChat）。'length' = 输出撞上 max_tokens 被截断，
    * 报告这类长 JSON 一旦被截断就会解析失败、整份降级成纯文本（表现是卡片成批消失），
@@ -151,64 +156,166 @@ export function hasLlmChannel(): boolean {
   return isCloudConfigured
 }
 
-/** 一次生成实际会用的「档位」（设置页展示与请求取值共用同一份判定） */
+/** 一次生成实际会用的路由（厂商 + 质量档 + 能力槽；设置页展示与请求取值共用同一份判定） */
 export interface ChatSelection {
-  /** 档位标识：fast / standard / reason */
-  tier: string
-  /** 档位展示名：极速版 / 标准版 / 深度推理 */
-  tierLabel: string
-  /** 该档是否会员专属（true 且非会员时，上面两项已是**回落**后的结果，不是用户选的那个） */
+  /** 厂商标识：cloudbase / deepseek / zhipu / moonshot / qwen */
+  vendor: string
+  /** 厂商展示名 */
+  vendorLabel: string
+  /** 质量档标识：basic / standard / premium */
+  quality: string
+  /** 质量档展示名：基础版 / 标准版 / 高级版 */
+  qualityLabel: string
+  /** 能力槽：structured（输出型，报告/辅助）/ reasoning（推理型，问答） */
+  capability: 'structured' | 'reasoning'
+  /** 实际落档是否会员专属（true 且非会员时，上面各项已是**回落基础档**后的结果） */
   memberOnly: boolean
 }
 
+/** 用途 → 能力槽（与云端 llm.config.js 的 PURPOSE_CAPABILITY 同源，两端语义必须一致） */
+const PURPOSE_CAPABILITY: Record<QuotaPurpose, 'structured' | 'reasoning'> = {
+  generate: 'structured', // 报告：只要输出型，绝不发给纯推理模型
+  ask: 'reasoning', // AI 问答：必须推理
+  aux: 'structured' // 辅助：小 JSON 输出，同结构化
+}
+
 /**
- * 当前生效的「档位」（2026-10-11 起供应商维度整体移除，端上只选档），同步版：
- * 设置页展示与请求取值共用同一判定。
+ * 清单读不到时的兜底展示项（值同云端 DEFAULT_VENDOR / DEFAULT_QUALITY）。
+ * 正常构建里 llm.vendors / qualities 恒存在，**这里是纯防御**：新旧包混用
+ * （页面按新结构读、公共配置还是旧结构）时避免 `undefined.find` 把「我的」页打成白屏。
+ */
+const FALLBACK_VENDOR = { key: 'cloudbase', label: '云开发 AI', desc: '' }
+const FALLBACK_QUALITY = { key: 'basic', label: '基础版', desc: '', memberOnly: false }
+
+/**
+ * 当前生效的「厂商 + 质量档 + 能力槽」（2026-10-12 v3），同步版：
+ * 「我的」页展示与请求取值共用同一判定。
  *
- * 顺序：本机偏好（「我的 → 生成档位」里选的 tier）→ 公共配置默认档（llm.tier）。
- * 用户选的存的是**档位标识**（fast / standard / reason），不是模型名 ——
- * 端上连模型名都不知道，具体模型名由云端 llm.config.js 按档位决定。
+ * 顺序：本机偏好（settings:llm_provider / settings:llm_tier）→ 公共配置默认值
+ * （llm.defaultVendor / defaultQuality）。存的都是**标识**，不是模型名 ——
+ * 端上连模型名都不知道，具体模型由云端 llm.config.js 按厂商×档×槽决定。
  *
- * 三道关卡：
- *   ① 档位偏好只有在仍存在于 llm.models 清单里时才生效 —— 运营改名或下架某档后
- *      （或用户装的是另一份配置），设备上残留的旧选择不能再被带上，否则会稳定地生成失败
- *      且用户看不出为什么；
- *   ② 标了 memberOnly 的档位只有会员能用（「质」权益，2026-10-07）—— 非会员一律回落
- *      fast 档，这样「设置页显示哪档 = 实际用哪档」的承诺对免费用户同样成立；
- *   ③ 会员态由**调用方传入**：本函数必须同步（设置页要同步渲染），而读库是异步的，
+ * 关卡：
+ *   ① 偏好值只有仍存在于静态清单里才生效 —— 改名 / 下架 / 跨版本残留选择都回落默认值，
+ *      不带一个云端必然不认的字段上去；
+ *   ② 非会员质量档一律钳到 basic（「质」权益，云端还会再拦一次）；辅助调用（aux）对会员也只走
+ *      basic —— 系统内部的消歧 / 选题请求不烧高档的钱（与云端 AUX_FORCE_QUALITY 同口径）；
+ *   ③ 能力槽只由 purpose 决定：generate/aux → structured（报告绝不发推理模型），ask → reasoning；
+ *      不传 purpose（「我的」页展示）按 structured 展示，展示串里不出现槽位；
+ *   ④ 会员态由**调用方传入**：本函数必须同步（设置页要同步渲染），而读库是异步的，
  *      调用方各自已在同一份数据上判过会员（设置页用配额卡那次读数、chatViaPlatform 用
  *      readMemberState），这里不再多读一次库。
  *
+ * 缺槽（某档没有该能力的模型）端上不知道、也不预判 —— 云端在同厂商内向下降档并以
+ * qualityDowngraded 回执（如 Kimi 高级档写报告降到 k2.6）。
+ *
  * ⚠ 端上这一层只管「展示与请求值」，是**可被改包绕过**的；真正的闸门在云函数 aiProxy
- * （llm.config.js 的 TIERS.memberOnly，非会员请求会员档会被静默降级），两处口径必须一致。
+ * （非会员请求标准/高级档会被同厂商静默降回基础档），两处口径必须一致。
  */
-export function resolveChatSelection(member: boolean): ChatSelection {
-  const tiers = publicConfig.llm.models as readonly LlmTier[]
-  const fallback = tiers[0]
-  const wanted = getPreferredTier()
-  const hit = (wanted !== null ? tiers.find((m) => m.tier === wanted) : undefined) ?? fallback
-  const usable = hit.memberOnly && !member ? fallback : hit
+export function resolveChatSelection(member: boolean, purpose?: QuotaPurpose): ChatSelection {
+  const vendors = (publicConfig.llm.vendors ?? []) as readonly LlmVendor[]
+  const qualities = (publicConfig.llm.qualities ?? []) as readonly LlmQuality[]
+  /* 清单读不到只该是「包结构漂移」，不是正常态：留一条日志，让降级可被排查（不是静默） */
+  if (vendors.length === 0 || qualities.length === 0) {
+    diagLog('warn', 'llm', '厂商/质量档清单读不到（公共配置结构异常），本次按 cloudbase / 基础版兜底')
+  }
+  const defaultVendor =
+    vendors.find((v) => v.key === publicConfig.llm.defaultVendor) ?? vendors[0] ?? FALLBACK_VENDOR
+  const defaultQuality =
+    qualities.find((q) => q.key === publicConfig.llm.defaultQuality) ?? qualities[0] ?? FALLBACK_QUALITY
+
+  /* ① 偏好厂商 / 质量档，不认就回落默认 */
+  const wantedVendor = getPreferredProvider()
+  const vendor =
+    (wantedVendor !== null ? vendors.find((v) => v.key === wantedVendor) : undefined) ?? defaultVendor
+  const wantedQuality = getPreferredTier()
+  let quality =
+    (wantedQuality !== null ? qualities.find((q) => q.key === wantedQuality) : undefined) ?? defaultQuality
+
+  /* ③ 能力槽只看用途（不传 purpose = 页面展示，按结构化槽渲染） */
+  const capability = PURPOSE_CAPABILITY[purpose ?? 'generate']
+
+  /* ② 非会员钳基础档；辅助调用任何人都走基础档 */
+  if (quality.memberOnly && !member) quality = defaultQuality
+  if (purpose === 'aux') quality = defaultQuality
+
   return {
-    tier: usable.tier,
-    tierLabel: usable.label,
-    memberOnly: usable.memberOnly
+    vendor: vendor.key,
+    vendorLabel: vendor.label,
+    quality: quality.key,
+    qualityLabel: quality.label,
+    capability,
+    memberOnly: quality.memberOnly
   }
 }
 
 /**
- * 一次读库拿「本次生成用哪一档」：档位由本机偏好 + 会员态裁决
+ * 一次读库拿「本次生成走哪家、哪档」：厂商 / 质量档由本机偏好 + 会员态裁决
  * （resolveChatSelection 必须同步，故会员态在函数内读出再传入）。
  *
  * 这里多一次 users 读是刻意的：请求值和设置页展示必须出自同一套判定，
- * 否则会出现「设置页写着极速版、实际发的是深度推理」这种查不出来的错位。
- * 读库失败按非会员处理（readMemberState 的口径）—— 宁可这一次降级，也不给非会员放行会员档。
+ * 否则会出现「设置页写着高级版、实际发的是基础档」这种查不出来的错位。
+ * 读库失败按非会员处理（readMemberState 的口径）—— 宁可这一次降级，也不给非会员放行高档。
  *
- * 不再往请求体里带 deep（输出上限对所有人一样，见 aiProxy 的 chatMaxTokens）；
- * 端上也不再上报模型名 —— 只带 tier，具体模型由云端 llm.config.js 按档位（+ 环境变量覆盖）决定。
+ * 能力槽不带回：它由 purpose 唯一决定，云端自己会再裁一次；端上请求只带 vendor + quality。
  */
-export async function resolveChatTarget(): Promise<{ tier: string }> {
+export async function resolveChatTarget(
+  purpose: QuotaPurpose = 'generate'
+): Promise<{ vendor: string; quality: string }> {
   const member = (await readMemberState()).member
-  return { tier: resolveChatSelection(member).tier }
+  const sel = resolveChatSelection(member, purpose)
+  return { vendor: sel.vendor, quality: sel.quality }
+}
+
+/* ===== 厂商就绪清单（action:'vendors'，免口令只读，见 aiProxy/handleVendors） ===== */
+
+/** 云端回执里的一家厂商（只含公开元数据 + key 是否配置的布尔，绝无 key 内容） */
+export interface ReadyVendor {
+  key: string
+  label: string
+  channel: string
+  ready: boolean
+}
+
+/** 成功缓存清单；拉取失败为 null（调用方据此「失败放行」：展示全部静态厂商） */
+let readyVendorCache: ReadyVendor[] | null = null
+let readyVendorPromise: Promise<ReadyVendor[] | null> | null = null
+
+/**
+ * 拉厂商就绪清单：哪些 http 厂在云端配了 key（cloudbase 恒就绪）。
+ *
+ * 「我的」页厂商选择器据此只展示就绪厂商。成功结果在本次运行期缓存（偏好页短时间反复
+ * onShow 不必重复拉）；force=true 用于手动刷新。**拉取失败返回 null 而不是空数组** ——
+ * 网络抖动不该把所有厂商藏掉，调用方应按「未知 = 全展示」处理。
+ */
+export function listReadyVendors(force = false): Promise<ReadyVendor[] | null> {
+  if (!force && readyVendorCache) return Promise.resolve(readyVendorCache)
+  if (!force && readyVendorPromise) return readyVendorPromise
+  readyVendorPromise = (async () => {
+    try {
+      const res = (await callCloudFunction('aiProxy', { action: 'vendors' })) as
+        | { ok?: boolean; vendors?: Array<Partial<ReadyVendor>> }
+        | null
+      const list = res && res.ok === true && Array.isArray(res.vendors) ? res.vendors : null
+      if (!list) return null
+      readyVendorCache = list
+        .filter((v) => typeof v.key === 'string' && v.key)
+        .map((v) => ({
+          key: String(v.key),
+          label: typeof v.label === 'string' && v.label ? v.label : String(v.key),
+          channel: typeof v.channel === 'string' ? v.channel : 'cloudai',
+          ready: v.ready !== false
+        }))
+      return readyVendorCache
+    } catch (err) {
+      /* 旧版云函数没有 vendors 动作 / 网络失败：返回 null 让 UI 全展示，选择本身不受影响 */
+      diagLog('warn', 'llm', `厂商就绪清单拉取失败（按全部可选处理）：${errText(err)}`)
+      return null
+    } finally {
+      readyVendorPromise = null
+    }
+  })()
+  return readyVendorPromise
 }
 
 /*
@@ -223,6 +330,20 @@ export async function resolveChatTarget(): Promise<{ tier: string }> {
  */
 
 /**
+ * 业务用途 → 云端 action（aiProxy 的路由字段）。
+ *
+ * 报告生成与 AI 问答在端上虽共用同一套 chatJSON/chatText 通道，但到云端是**两件不同的事**：
+ * 报告是长 JSON 分节生成、AI 问答是跨报告综合追问。于是 action 不再笼统叫 'chat' ——
+ * 只有 AI 问答保留 'chat'，报告生成叫 'generate'、辅助小请求叫 'aux'，云端路由层见名即知。
+ * purpose 字段仍一并带上（额度池 / 时限分档靠它，见 aiProxy/quota.config.js）。
+ */
+const PROXY_ACTION: Record<QuotaPurpose, string> = {
+  generate: 'generate', // 报告 / 周报长生成：结构化 JSON
+  ask: 'chat', // AI 问答：这才是「chat」
+  aux: 'aux' // 消歧 / 选题 / 检索规划等辅助小请求
+}
+
+/**
  * 唯一的 LLM 通道：云函数代理（平台代付）。
  * 客户端不持有任何 key，大模型由 aiProxy 用服务端环境变量代打。
  *
@@ -230,33 +351,34 @@ export async function resolveChatTarget(): Promise<{ tier: string }> {
  * 于是「未就绪」不能再静默降级，必须变成一句能照着操作的报错（见下方两个分支）。
  */
 async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): Promise<ChatAttempt> {
-  const { tier } = await resolveChatTarget()
+  const { vendor, quality } = await resolveChatTarget(purpose)
   const startedAt = Date.now()
   /*
-   * 调试打印：本次调用的**完整入参**（档位 / purpose / system 与 user 两条消息）。
+   * 调试打印：本次调用的**完整入参**（厂商 / 质量档 / purpose / system 与 user 两条消息）。
    *
    * 与下方 `llm:proxy`（返回）配对 —— 排查「这份报告为什么长这样」时只有返回不够：
-   * 同一句返回可能是提示词不同、模型档位不同、或 purpose 让它走了另一个额度池。
+   * 同一句返回可能是提示词不同、厂商或质量档不同、或 purpose 让它走了另一个能力槽 / 额度池。
    * messages 里是完整的 system + user（含全部素材），几万字交给 Console 折叠展开，
    * 比截断成一行有用得多（与 debugRaw 的设计一致）。
    *
    * 开关是 `config/local.ts` 的 `debug.rawIoLog`（默认 false）：**不改变任何行为**，
    * 只影响控制台噪音。
    */
-  debugRaw('llm:proxy:req', { tier, purpose, messages })
+  debugRaw('llm:proxy:req', { vendor, quality, purpose, messages })
   let res: ProxyChatResult | null
   try {
     res = (await callCloudFunction('aiProxy', {
-      action: 'chat',
+      action: PROXY_ACTION[purpose],
       /*
-       * 档位取自同一次判定（resolveChatTarget）：用户在「我的」页选的档在这里生效，
-       * 由云函数按档位决定具体模型并走云开发 AI 代打（端上不持有任何 key、也不知道模型名）。
-       * 云函数只在端上没带、或带了个它不认识的档位时才用它的 LLM_TIER 兜底（见 llm.config.js）。
+       * 厂商 + 质量档取自同一次判定（resolveChatTarget）：用户在「我的」页的选择在这里生效，
+       * 能力槽（structured / reasoning）由云端按 purpose 裁决，端上不持有 key、也不知道模型名。
+       * 云函数只在端上没带、或带了不认识的值时才用 LLM_VENDOR / LLM_TIER 兜底（见 llm.config.js）。
        */
-      tier,
+      vendor,
+      quality,
       /*
-       * purpose 决定云端闸门按哪一池算上限（见 aiProxy/quota.config.js）：报告生成与
-       * AI 提问是两个独立额度池，云端判上限时必须知道这一趟属于哪一池。
+       * purpose 决定云端两件事：能力槽（报告 structured / 问答 reasoning）与额度池
+       * （报告生成与 AI 提问是两个独立额度池，见 aiProxy/quota.config.js）。
        */
       purpose,
       messages
@@ -329,11 +451,15 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
     'info',
     'llm',
     `chatOnce(平台) ${(elapsedMs / 1000).toFixed(1)}s 输出${content.length}字`,
-    /* downgraded 记进 meta：出现「会员说切了深度推理但报告很快」时，一眼能看出是服务端降级 */
+    /* 实际路由记进 meta：「会员说切了高级版但报告很快」时，一眼看出是会员降级还是缺槽降档 */
     /* finishReason 记进 meta：被截断（length）与正常结束（stop）在日志里要分得开 */
     {
+      vendor: res.vendor || vendor,
+      quality: res.quality || quality,
+      capability: res.capability || '',
       model: res.model,
       downgraded: !!res.downgraded,
+      qualityDowngraded: !!res.qualityDowngraded,
       finishReason: res.finishReason || '',
       elapsedMs,
       outputChars: content.length

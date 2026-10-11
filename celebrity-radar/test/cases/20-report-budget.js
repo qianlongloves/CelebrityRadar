@@ -64,20 +64,19 @@ const newsItem = (i) => ({
 const SHORTFALL_FIELDS = ['dynamics', 'quotes', 'timeline']
 
 describe('输出预算：分批之后每批的正文规模算得出来，且离上限有富余', () => {
-  it('端上的预算副本 ≡ 云端档位表的 chatMaxTokens（漂了则「余量」是假的）', () => {
+  it('端上的预算副本 ≡ 云端 CHAT_MAX_TOKENS（漂了则「余量」是假的）', () => {
     const { load } = fresh()
     const budget = load('config/benefits').REPORT_OUTPUT_BUDGET
 
     for (const fn of ['aiProxy', 'hotBoardRefresh']) {
-      const tiers = require(path.join(CLOUD, fn, 'llm.config.js')).TIERS
-      for (const key of Object.keys(tiers)) {
-        eq(
-          tiers[key].chatMaxTokens,
-          budget.chatMaxTokens,
-          `${fn} 的「${key}」档 chatMaxTokens 与端上预算副本不一致：端上按这份估算算余量，` +
-            '两边一漂，余量就是假的（端上以为还剩一半，云端其实只给一半）'
-        )
-      }
+      /* 2026-10-12 v3 起输出上限收敛为全厂商全档统一常量 CHAT_MAX_TOKENS（不再挂在每个档上） */
+      const llmCfg = require(path.join(CLOUD, fn, 'llm.config.js'))
+      eq(
+        llmCfg.CHAT_MAX_TOKENS,
+        budget.chatMaxTokens,
+        `${fn} 的 CHAT_MAX_TOKENS 与端上预算副本不一致：端上按这份估算算余量，` +
+          '两边一漂，余量就是假的（端上以为还剩一半，云端其实只给一半）'
+      )
     }
     ok(
       budget.reasoningReserve > 0 && budget.reasoningReserve < 1,
@@ -199,9 +198,9 @@ describe('模板 → 批次的字段：一份手写映射，得有校验兜着',
     const report = load('utils/report')
 
     const memberOnly = report.REPORT_FIELD_KEYS.filter(
-      (k) => k === 'memberNotes' || k === 'conflicts'
+      (k) => k === 'memberNotes' || k === 'conflicts' || k === 'peers'
     )
-    ok(memberOnly.length === 2, '前提：会员专属字段应为 memberNotes / conflicts')
+    ok(memberOnly.length === 3, '前提：会员专属字段应为 memberNotes / conflicts / peers（新增会员段时同步这里）')
     for (const batch of report.REPORT_BATCHES) {
       const free = report.batchFields(batch, false)
       const paid = report.batchFields(batch, true)
