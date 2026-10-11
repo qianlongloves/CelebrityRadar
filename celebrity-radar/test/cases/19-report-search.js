@@ -10,12 +10,13 @@
  * 只会被读成「这个人没有这些信息」。
  *
  * 于是把「哪几组要哪些素材、这些素材用什么词去问」搬进模板（utils/report-toc.ts
- * 的 SEARCH_LANES + TOC_GROUPS[].search），并在这里钉五件事：
+ * 的 SEARCH_LANES + TOC_GROUPS[].search），并在这里钉六件事：
  *   唯一 —— 关键词与站点白名单在 src 下只有模板一处（其它文件出现即红）；
  *   兑现 —— 改模板的关键词 / 白名单，发出去的请求立刻跟着变（不是抄了一份）；
  *   接上 —— 模板声明了哪几路，就真有几路发得出去（只加声明不接发请求点 = 等于没查）；
  *   完整 —— 每组都声明了素材需求，且没有一条路是白声明的（花了钱却没人用）；
- *   同源 —— 批次带不带「人物背景资料」段，等于该组要不要 profile 路（派生，不手写）。
+ *   同源 —— 批次带不带「人物背景资料」段，等于该组要不要 profile 路（派生，不手写）；
+ *   分工 —— 模型给的检索词只管排在最前，模板句式始终殿后兜底（见文件末尾第二部分）。
  *
  * ⚠ 别把关键词断言写进注释原样引用：本文件按**源码**判字面量出现次数，
  *   在 utils/search.ts 的注释里引一句被禁的写法会把它误伤（故那里只用「模板的 news 路」指代）。
@@ -230,5 +231,118 @@ describe('检索问什么由报告模板说了算（不是写死在检索层）'
       ['identity', 'detail'],
       '带背景段的批次变了：background 一改，动态与争议会被长期履历污染'
     )
+  })
+})
+
+/**
+ * 第二部分：模型给的检索词怎么进阶梯（2026-10-11 检索词规划，规划本身见 utils/search-plan.ts）
+ *
+ * 上半部分钉「问什么由模板说了算」；这部分钉**模型词与模板句式的分工**：
+ *   模型词在前 —— 它是按人物与领域现想的，比通用句式更可能命中冷门人物；
+ *   模板句式殿后 —— 它是**兜底真源**，不许被替换掉：模型词全抓空时，检索能力必须仍等价于改造前，
+ *   只是少了一层「更聪明的词」而已（否则规划一坏，检索就从「句式不对」退化成「没词可用」）。
+ */
+describe('检索阶梯：模型词在前，模板句式殿后', () => {
+  /**
+   * 假上游：`plannedWords` 里出现过的查询一律抓空，其余返回一页 ——
+   * 用来逼出「兜底档还在不在」：只有它还在，后面才会真的发出模板句式的请求并命中。
+   */
+  function spyEmptyPlanned(plannedWords) {
+    const calls = []
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action !== 'search') return { ok: false }
+      calls.push(data)
+      const empty = plannedWords.some((w) => String(data.query).includes(w))
+      return {
+        ok: true,
+        pages: empty ? [] : [{ name: '标题', url: 'https://news.example.com/a', snippet: '正文' }]
+      }
+    })
+    return calls
+  }
+
+  it('模型词接管第一档；它抓空后模板句式按原时间窗跟上，命中即停', async () => {
+    const { load } = fresh()
+    const toc = load('utils/report-toc')
+    const { fetchNews } = load('utils/search')
+    const calls = spyEmptyPlanned(['商业合作'])
+
+    const news = await fetchNews('张三', { socialCount: 0, planned: { news: ['商业合作'] } })
+
+    eq(calls.length, 2, '模型词抓空 → 模板句式接着试；命中即停（不为一次抓空多买检索）')
+    eq(calls[0].query, '张三 商业合作', '模型给的词是第一档')
+    eq(calls[1].query, `张三 ${toc.SEARCH_LANES.news.keywords}`, '模板句式降为兜底档，仍在阶梯里')
+    eq(calls[1].freshness, 'oneMonth', '兜底档用调用方给的时间窗，不因为「轮到兜底」就放宽成一年')
+    ok(Array.isArray(news) && news.length > 0, '抓到内容就返回，不继续空跑')
+  })
+
+  it('全抓空时次数有界（planWordsPerLane + 阶梯档数），末档仍是「只留人名 @ 一年」', async () => {
+    const { load } = fresh()
+    const toc = load('utils/report-toc')
+    const { SEARCH_COUNTS } = load('config/benefits')
+    const { fetchNews } = load('utils/search')
+    const calls = []
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action !== 'search') return { ok: false }
+      calls.push(data)
+      return { ok: true, pages: [] }
+    })
+
+    const planWords = ['商业合作', '访谈']
+    const news = await fetchNews('张三', { socialCount: 0, planned: { news: planWords } })
+
+    deepEq(
+      calls.slice(0, SEARCH_COUNTS.planWordsPerLane).map((c) => c.query),
+      planWords.map((w) => `张三 ${w}`),
+      '模型词按模型给的顺序逐档试'
+    )
+    eq(
+      calls.length,
+      SEARCH_COUNTS.planWordsPerLane + SEARCH_COUNTS.mainFreshnessLadderDays.length,
+      '成本上界：模型词 + 模板句式 + 只留人名（只发生在长尾人物上）'
+    )
+    ok(
+      calls.some((c) => c.query === `张三 ${toc.SEARCH_LANES.news.keywords}`),
+      '兜底句式必须真的发出去过（否则「模板是真源」只是句空话）'
+    )
+    eq(calls[calls.length - 1].query, '张三', '最后一档是「只留人名」')
+    eq(calls[calls.length - 1].freshness, 'oneYear', '只在这一档放宽到一年')
+    deepEq(news, [], '全空返回空数组，调用方据此走无素材兜底')
+  })
+
+  it('社交支线同样「模型词 → 模板句式」，且白名单仍取自模板', async () => {
+    const { load } = fresh()
+    const toc = load('utils/report-toc')
+    const { fetchNews } = load('utils/search')
+    const calls = spyEmptyPlanned(['商业合作', '微博发声'])
+
+    const news = await fetchNews('张三', {
+      socialCount: 6,
+      planned: { news: ['商业合作'], social: ['微博发声'] }
+    })
+
+    eq(calls.length, 4, '主线 2 次（模型词空 → 模板命中）+ 支线 2 次（同理）')
+    eq(calls[2].query, '张三 微博发声', '支线第一档也吃模型词')
+    eq(calls[3].query, `张三 ${toc.SEARCH_LANES.social.keywords}`, '支线也要留兜底句式')
+    ok(
+      Array.isArray(calls[3].include) && calls[3].include.length > 0,
+      '站点白名单仍由模板决定，与用哪句词无关'
+    )
+    ok(Array.isArray(news) && news.length > 0)
+  })
+
+  it('背景线：模型词 → 模板句式（履历的冷门问法）', async () => {
+    const { load } = fresh()
+    const toc = load('utils/report-toc')
+    const { fetchBackground } = load('utils/search')
+    const calls = spyEmptyPlanned(['毕业院校'])
+
+    const bg = await fetchBackground('张三', 8, ['毕业院校'])
+
+    eq(calls.length, 2, '模型词抓空 → 模板句式；命中即停')
+    eq(calls[0].query, '张三 毕业院校', '背景线第一档是模型给的词')
+    eq(calls[0].freshness, 'noLimit', '背景线天生不限时间，模型词也不例外')
+    eq(calls[1].query, `张三 ${toc.SEARCH_LANES.profile.keywords}`, '抓空后回落到模板句式')
+    ok(Array.isArray(bg) && bg.length > 0)
   })
 })

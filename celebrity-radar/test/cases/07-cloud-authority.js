@@ -233,9 +233,16 @@ describe('B8 云端闸门与端上同源', () => {
     ok(/const openid = \(cloud\.getWXContext\(\) \|\| \{\}\)\.OPENID[\s\S]{0,200}kind: 'auth'/.test(proxySrc))
   })
 
-  it('闸门在真正付费的 postJson 之前', () => {
-    ok(proxySrc.includes('const gate = await quotaGate(openid, event.purpose, isMember)'))
+  it('闸门在真正付费的调用之前', () => {
+    ok(proxySrc.includes('const gate = await quotaGate(openid, purpose, isMember)'))
     ok(proxySrc.includes('if (gate) return gate'))
+    /* purpose 先归一化再喂闸门：额度池、报文日志、本次时限三处必须取同一个值（见 handleChat） */
+    ok(
+      /const purpose = event\.purpose \|\| DEFAULT_PURPOSE[\s\S]{0,200}const gate = await quotaGate/.test(
+        proxySrc
+      ),
+      '归一化必须发生在闸门之前，否则闸门按未归一化的值选池、时限按归一化的值选档'
+    )
   })
 
   it('配额数值与端上 MEMBER_BENEFITS 逐一相同（改一端就红）', () => {
@@ -355,13 +362,27 @@ function fakeHttps(responses) {
     const content = typeof message.content === 'string' ? message.content : ''
     const reasoning = typeof message.reasoning_content === 'string' ? message.reasoning_content : ''
     const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : ''
-    return { content, reasoning, finishReason }
+    /* hang：上游「挂着不回」（响应造好了、正文一个字节都不来）—— 见 HANG() 与时限用例 */
+    return { content, reasoning, finishReason, hang: !!r.hang }
   }
   const ai = () => ({
     createModel: (modelGroup) => ({
-      async streamText(payload) {
+      async streamText(payload, options) {
         const payloadWithGroup = Object.assign({}, payload, { __modelGroup: modelGroup })
-        const { content, reasoning, finishReason } = finish(payloadWithGroup)
+        const { content, reasoning, finishReason, hang } = finish(payloadWithGroup)
+        /* 记下第二参（`{ timeout }`）：用例要钉「SDK 那个数 = 函数自设的时限」，不许两个数各说各话 */
+        if (calls.length) calls[calls.length - 1].options = options
+        /*
+         * 挂着不回：两条流都永不吐字（await 一个永不 resolve 的 promise）。
+         * 这里**故意不设定时器** —— 待测的是函数自己的墙钟闸门，假上游不该替它兜底，
+         * 也不该给用例进程留下一个 pending timer。
+         */
+        if (hang) {
+          const never = async function* () {
+            await new Promise(() => {})
+          }
+          return { textStream: never(), dataStream: never() }
+        }
         return {
           textStream: (async function* () {
             if (content) yield content
@@ -396,6 +417,18 @@ const chatOk = (content = '{"ok":true}') => ({
   status: 200,
   data: { choices: [{ message: { content }, finish_reason: 'stop' }] }
 })
+
+/** 上游挂着不回：响应头到了、正文一个字节都不来（复现「被拖过平台上限」那条分支） */
+const HANG = () => ({ status: 200, data: {}, hang: true })
+
+/*
+ * 「函数自设的时限」的默认值 —— 从源码里取，不在这里手抄一份。
+ * 它们是**部署相关**的数：必须明显小于平台执行的 60 秒上限，否则等于没设（见下面两个用例）。
+ */
+const deadlineDefaults = {
+  chat: Number((proxySrc.match(/CHAT_DEADLINE_MS = readDeadlineMs\('[^']+', (\d+)\)/) || [])[1]),
+  aux: Number((proxySrc.match(/AUX_CHAT_DEADLINE_MS = readDeadlineMs\('[^']+', (\d+)\)/) || [])[1])
+}
 
 const searchOk = (n = 3) => ({
   status: 200,
@@ -489,6 +522,92 @@ const CHAT = {
   ]
 }
 const chat = (fn, over) => fn.main(Object.assign({}, CHAT, over))
+
+describe('aiProxy 单次调用时限（-504003 的修法）', () => {
+  /*
+   * 现场（2026-10-11）：真机上报 `errCode: -504003 | Invoking task timed out after 60 seconds`。
+   * 那是**平台**在函数进程之外把 aiProxy 掐死在 60 秒（微信云函数的上限，控制台里 60 就是顶），
+   * 函数一点机会都没有：既没返回 kind，也没留下一行日志 —— 端上只能干瞪眼。
+   *
+   * 修法是把时限挪进函数自己手里：撞到时限就主动断开、按普通失败返回。
+   * 于是这条路径**第一次变得可测**（此前它发生在函数之外，测不到任何返回值）。
+   *
+   * ⚠ 时限是**模块加载时**读进来的常量（readDeadlineMs 在顶层执行）——
+   *   环境变量必须在 loadProxy() **之前**设好，用完立刻删，免得污染同文件后面的用例。
+   */
+  it('上游挂着不回：到时限主动断开，返回可重试的结构化失败', async () => {
+    process.env.AI_PROXY_CHAT_DEADLINE_MS = '300'
+    try {
+      const h = fakeHttps([HANG()])
+      const { fn } = loadProxy({ https: h })
+      const startedAt = Date.now()
+      const res = await chat(fn)
+      const cost = Date.now() - startedAt
+
+      eq(res.ok, false)
+      eq(res.kind, 'network', '归类沿用「超时 / 断流」那一档，端上照旧按可重试处理')
+      ok(cost >= 250, `到点才断（实测 ${cost}ms）：不能一有风吹草动就失败，那等于把正常长生成也掐了`)
+      ok(cost < 5000, `不等上游、更不等平台（实测 ${cost}ms）：平台那一刀要 60 秒，等它就等于没修`)
+      ok(res.error.includes('时限'), `文案要点明是「函数自设时限」，不是上游报错：${res.error}`)
+      ok(
+        !/控制台|改成 60|调到 60/.test(res.error),
+        `不许走 failDetail 的引导：那会让人去调一个已经顶格的配置 —— ${res.error}`
+      )
+    } finally {
+      delete process.env.AI_PROXY_CHAT_DEADLINE_MS
+    }
+  })
+
+  it('辅助调用（消歧 / 选题 / 检索词规划）另有更短的一档时限', async () => {
+    /* 报告档给足 5 秒、辅助档只给 300ms：若两者共用一档，下面这条必然等满 5 秒 */
+    process.env.AI_PROXY_CHAT_DEADLINE_MS = '5000'
+    process.env.AI_PROXY_AUX_DEADLINE_MS = '300'
+    try {
+      const h = fakeHttps([HANG()])
+      const { fn } = loadProxy({ https: h })
+      const startedAt = Date.now()
+      const res = await chat(fn, { purpose: 'aux' })
+      const cost = Date.now() - startedAt
+
+      eq(res.ok, false)
+      eq(res.kind, 'network')
+      ok(cost < 2000, `aux 用的是自己那一档（实测 ${cost}ms，而报告档给的是 5000ms）`)
+      /*
+       * aux 卡在「生成之前」：端上先消歧、先问检索词，然后才开始检索。
+       * 这一档若不单独设短，用户会在「检索中」之前白等满报告档的时间。
+       */
+      ok(cost >= 250, `同样是到点才断（实测 ${cost}ms）`)
+    } finally {
+      delete process.env.AI_PROXY_CHAT_DEADLINE_MS
+      delete process.env.AI_PROXY_AUX_DEADLINE_MS
+    }
+  })
+
+  it('时限之内照旧正常返回；SDK 侧超时与自设时限是同一个数', async () => {
+    const h = fakeHttps([chatOk()])
+    const { fn } = loadProxy({ https: h })
+
+    const res = await chat(fn)
+
+    eq(res.ok, true, '这道闸门只针对慢的：快调用一点都不受影响')
+    eq(
+      h.calls[0].options && h.calls[0].options.timeout,
+      deadlineDefaults.chat,
+      '传给 SDK 的 timeout 必须就是自设时限本身，不能另设一个数（两个数迟早各说各话）'
+    )
+  })
+
+  it('默认值：都在平台 60 秒上限之下，且辅助档短于报告档', () => {
+    ok(
+      deadlineDefaults.chat > 0 && deadlineDefaults.chat < 60000,
+      `报告档默认值必须明显小于平台的 60 秒（读到 ${deadlineDefaults.chat}）`
+    )
+    ok(
+      deadlineDefaults.aux > 0 && deadlineDefaults.aux < deadlineDefaults.chat,
+      `辅助档要比报告档更短（读到 ${deadlineDefaults.aux} vs ${deadlineDefaults.chat}）`
+    )
+  })
+})
 
 describe('aiProxy 模型档位（会员闸门）', () => {
   it('非会员请求会员专属档位：静默降级，且发给上游的就是免费档', async () => {
@@ -1044,6 +1163,10 @@ describe('aiProxy 第二检索源（博查抓空时的兜底，2026-10-10）', (
 
       eq(res.ok, true)
       eq(res.source, 'serper', '一眼看出这条结果是兜底源捞的')
+      /* 只报 source 时，端上分不清主源是「抓空」还是「整条失败」，故把主源的结论一并带回 */
+      eq(res.primary.ok, true, '主源这次是成功的')
+      eq(res.primary.got, 0, '主源是「抓到了但没内容」—— 与账户故障的处置完全不同')
+      eq(res.primary.kind, '', '成功时没有 kind')
       eq(res.pages.length, 2)
       eq(calls.length, 2, '主源空了才问第二家')
       /* fakeHttps 记的是 options.path（不含域名）：博查可按路径认，两家兜底源之间不行 */
@@ -1066,6 +1189,7 @@ describe('aiProxy 第二检索源（博查抓空时的兜底，2026-10-10）', (
 
       eq(res.ok, true)
       eq(res.source, undefined, '主源命中时不该有兜底标记')
+      eq(res.primary, undefined, '主源自己的结果不该带「主源为什么让位」')
       eq(calls.length, 1, '只问一家')
     } finally {
       delete process.env.SERPER_API_KEY
@@ -1192,12 +1316,39 @@ describe('aiProxy 第二检索源（博查抓空时的兜底，2026-10-10）', (
 
       eq(res.ok, true)
       eq(res.source, 'tavily')
+      eq(res.primary.got, 0, '同样的兜底标记，主源这次是空的')
       eq(res.pages[0].name, '塔维标题')
       eq(res.pages[0].url, 'https://tav.example.com/1')
       /* content 是清洗过的正文，与博查的 summary 同性质 —— 原样带回，交给端上的 maxItemChars 裁 */
       eq(res.pages[0].snippet, '一整段正文')
       eq(calls[1].body.api_key, 'test-tavily', '打的是 Tavily：它的 key 放 body 里，不是 header')
       eq(calls[1].body.search_depth, 'basic')
+    } finally {
+      delete process.env.TAVILY_API_KEY
+    }
+  })
+
+  it('主源整条失败（403 资源包）→ 兜底照常兜，但 primary.kind 必须把主源故障带回来', async () => {
+    process.env.TAVILY_API_KEY = 'test-tavily'
+    try {
+      const h = fakeHttps([
+        { status: 403, data: { message: 'forbidden' } },
+        {
+          status: 200,
+          data: {
+            results: [{ title: '塔维标题', url: 'https://tav.example.com/1', content: '正文' }]
+          }
+        }
+      ])
+      const { fn, calls } = loadProxy({ https: h })
+
+      const res = await fn.main({ action: 'search', query: '戊', count: 10 })
+
+      eq(res.ok, true, '兜底捞到了就照常出结果，不把主源故障甩给用户')
+      eq(res.source, 'tavily')
+      eq(res.primary.ok, false, '只看 source 的话，这次与「博查抓空」完全一样')
+      eq(res.primary.kind, 'upstream_quota', '主源是账户问题：要去博查后台查资源包，不是「查不到」')
+      eq(calls.length, 2)
     } finally {
       delete process.env.TAVILY_API_KEY
     }
@@ -1334,6 +1485,31 @@ describe('上游账户问题不得冒充用户额度（P2-9，2026-10-09）', ()
 
     eq(res.kind, 'upstream')
   })
+
+  it('400「参数过大」：归不可重试的 badrequest（原先落默认 network 会白重试一轮长生成）', async () => {
+    const h = fakeHttps([{ status: 400, data: { error: { message: '请求大模型参数过大' } } }])
+    const { fn } = loadProxy({ https: h })
+
+    const res = await chat(fn)
+
+    eq(res.ok, false)
+    eq(
+      res.kind,
+      'badrequest',
+      '请求本身超限重发必然再被拒 —— 归 network 等于让端上白重试一轮 30~40s 的长生成'
+    )
+    notOk(/上游|账户|额度/.test(res.error), '这不是上游欠费，别把用户引去查账户')
+  })
+
+  it('云开发 AI 无 HTTP 状态码、只给一句「参数过大」：同样归 badrequest', async () => {
+    const h = fakeHttps([{ data: { error: { message: '请求大模型参数过大' } } }])
+    const { fn } = loadProxy({ https: h })
+
+    const res = await chat(fn)
+
+    eq(res.ok, false)
+    eq(res.kind, 'badrequest', 'SDK 抛错可能不带 status，只能靠 message 关键词兜住，不能掉回 network')
+  })
 })
 
 /* ==================== ②c  空正文的分流（2026-10-10） ==================== */
@@ -1424,6 +1600,41 @@ describe('上游返回空正文：确定性截断不得当成可重试抖动（2
       res.error.includes('结构异常'),
       `「结构异常」看不出所以然，改报「空正文 + finish_reason」：${res.error}`
     )
+  })
+
+  it('正文空 + content_filter：内容安全拦截，非重试，且文案指向内容侧而非配置', async () => {
+    /*
+     * 真机现场（2026-10-11）：思考了 4691 字后正文被过滤成空、finish_reason='content_filter'。
+     * 它是确定性失败（重发同一请求大概率再被拦），不能混进可重试的 'upstream'；但成因是
+     * 「内容越线」，改法指向素材/措辞，绝不能把用户往超时/额度/max_tokens 方向误导。
+     */
+    const h = fakeHttps([
+      {
+        status: 200,
+        data: {
+          choices: [
+            {
+              index: 0,
+              message: { role: 'assistant', content: '', reasoning_content: '想'.repeat(4691) },
+              finish_reason: 'content_filter'
+            }
+          ]
+        }
+      }
+    ])
+    const { fn, calls } = loadProxy({ https: h })
+
+    const res = await chat(fn)
+
+    eq(res.ok, false)
+    eq(res.kind, 'content_filter', '内容拦截既不是「撞上限」也不是「上游抖动」，不能混成 truncated/upstream')
+    eq(res.finishReason, 'content_filter', '上游给的拦截信号要原样带给端上')
+    ok(/内容安全/.test(res.error), `要点明是内容安全拦截：${res.error}`)
+    notOk(
+      /去控制台|改超时|60 ?秒|调大|max_tokens|换.*档/.test(res.error),
+      `不得把用户往超时/额度/模型参数方向误导（那些都治不了内容拦截）：${res.error}`
+    )
+    eq(calls.length, 1, '云端只发一次；不许在这里自作主张重发')
   })
 })
 

@@ -1821,7 +1821,7 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
     eq(capped.coverage.items, 20)
   })
 
-  it('深度模式放宽 user 预算：免费 15000 字内、会员 20000 字内，且会员真的用上了', async () => {
+  it('深度模式放宽 user 预算：免费 10000 字内、会员 16000 字内，且会员真的用上了', async () => {
     const { db, load } = fresh()
     let seen = null
     env.registerCloudFn('aiProxy', (data) => {
@@ -1834,7 +1834,7 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
      * 不能用 newsItems 默认的「报道0…报道59」：groupByEvent 会把「报道1 / 报道11」判成同一
      * 事件，而组内正文又完全相同（同一个 '内容'×N），L1 的同源判重随即压掉后一条的片段 ——
      * 整包因此变短、撑不到预算上限，这个用例想验证的「会员档真的用上了更宽预算」就落空了。
-     * 每条正文 800 字：总量落在 15000 ~ 20000 之间，免费档必然截断、会员档刚好用得上。
+     * 每条正文 800 字：总量落在 10000 ~ 16000 之间，免费档必然截断、会员档刚好用得上。
      */
     const news = newsItems(60, 400).map((n, i) => ({
       ...n,
@@ -1848,9 +1848,9 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
     await load('utils/report').buildReport('甲#tech', '甲', news, 'all', { member: true })
     const paidLen = seen.messages[1].content.length
 
-    ok(freeLen <= 15000, `免费 user 不应超 15000，实际 ${freeLen}`)
-    ok(paidLen <= 20000, `会员 user 不应超 20000，实际 ${paidLen}`)
-    ok(paidLen > 15000, `会员应真的用上更宽的预算（否则加厚的素材会被直接截掉），实际 ${paidLen}`)
+    ok(freeLen <= 10000, `免费 user 不应超 10000，实际 ${freeLen}`)
+    ok(paidLen <= 16000, `会员 user 不应超 16000，实际 ${paidLen}`)
+    ok(paidLen > 10000, `会员应真的用上更宽的预算（否则加厚的素材会被直接截掉），实际 ${paidLen}`)
   })
 })
 
@@ -1915,12 +1915,12 @@ describe('报告质量（素材分级保留 / 点评拆条 / 信源分歧）', (
   const countOf = (s, sub) => s.split(sub).length - 1
 
   it('装不下时降级为压缩条目，而不是整条丢弃（改造前是「截断即丢失」）', async () => {
-    /* 40 条 × 600 字：全文名额只有 10 个，其余 30 条必然降到压缩档 */
-    const news = distinct(40, 300)
+    /* 30 条 × 400 字：全文名额只有 10 个，其余 20 条必然降到压缩档 */
+    const news = distinct(30, 200)
     const { user } = await buildMessages(news)
 
-    ok(user.length <= 15000, `user 消息不应超预算，实际 ${user.length}`)
-    eq(countOf(user, '（正文从略）'), 30, '超出全文名额的条目应被压成参考条目，而不是消失')
+    ok(user.length <= 10000, `user 消息不应超预算，实际 ${user.length}`)
+    eq(countOf(user, '（正文从略）'), 20, '超出全文名额的条目应被压成参考条目，而不是消失')
     const missing = news.filter((n) => !user.includes(n.url))
     deepEq(missing, [], '每一条素材的 url 都应出现在提示词里（降级只压缩正文，不丢素材）')
     ok(user.includes('内容内容'), '压缩条目仍带正文摘要片段，不是空白占位')

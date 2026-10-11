@@ -108,15 +108,20 @@ export async function callCloudFunction(name: string, data: unknown): Promise<un
  * errCode -504003（FUNCTIONS_TIME_LIMIT_EXCEEDED）。这与「上游报错」「网络抖动」是两回事：
  * 重试必然再撞同一道墙，只会让用户白等一个超时周期。
  *
- * 最容易反复踩的一处：微信云开发给云函数配的默认超时是 **20 秒**，而云函数目录里 config.json
- * 写的 timeout **不随上传生效**，必须在控制台手动改（云函数 → 配置 → 超时时间）。
+ * 两个阶段要靠一句话分清（2026-10-11 起）：
+ *   · 超时时间还是默认的 20 秒 → 去控制台改成 60 秒，这一步照旧；
+ *   · 已经是 60 秒还报这个错 → **没有更大的数可调了**（60 秒是微信云函数的上限）。
+ *     此时真正的原因是「这一趟活儿本身超过了 60 秒」—— 最可能是深度推理档在单次调用里
+ *     思考太久。给用户的路只有一条：换极速版再试。指错方向会让他在控制台里反复折腾一个
+ *     已经顶格的配置，所以这句提示必须把两条路分开说。
  * 排查口径见 doc/联调手册.md §六。
  */
 export function cloudTimeoutHint(msg: string): string | null {
   if (!/-504003|FUNCTIONS_TIME_LIMIT_EXCEEDED|Invoking task timed out/i.test(msg)) return null
   return (
-    '云端执行超时：云函数 aiProxy 的超时时间太短（微信云开发默认为 20 秒，' +
-    'cloudfunctions 里的 config.json 不生效）。请到 云开发控制台 → 云函数 → aiProxy → ' +
-    '配置 → 超时时间 改为 60 秒并保存后重试'
+    '云端执行超时：云函数 aiProxy 被平台掐断（60 秒是微信云函数的上限，调不上去）。' +
+    '若控制台里它还是默认的 20 秒，请到 云开发控制台 → 云函数 → aiProxy → 配置 → 超时时间 ' +
+    '改为 60 秒并保存后重试；若已经是 60 秒，说明这一趟本身太慢，请改用「极速版」档位后重试' +
+    '（深度推理档会先长时间思考，最容易撞上这一道）'
   )
 }

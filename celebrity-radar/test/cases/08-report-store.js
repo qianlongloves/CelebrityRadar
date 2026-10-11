@@ -162,8 +162,8 @@ describe('P0-2 写口：抢锁 / 放锁', () => {
   it('构建者失联超时：锁可被抢占（否则一次崩溃会永久卡住该人物）', async () => {
     const fn = loadProxy()
     /*
-     * 必须**明显大于** report-store.js#BUILDING_TIMEOUT_MS（分批生成后 ≈ 7.5 分钟，值随
-     * 「4 批 × 每批 2 次尝试 × 单次 50s + 检索 + 余量」推导，见 src/utils/cache.ts 注释）。
+     * 必须**明显大于** report-store.js#BUILDING_TIMEOUT_MS（分批生成后 ≈ 6.75 分钟，值随
+     * 「4 批 × 每批 2 次尝试 × 单次 45s + 检索 + 余量」推导，见 src/utils/cache.ts 注释）。
      * 原值 91s 是单次调用时代的口径，分批改造后它已落在锁的有效期内 —— 那样这条用例测的
      * 就不再是「失联可抢占」，而是「他人持锁未失联」（上一条用例）。
      */

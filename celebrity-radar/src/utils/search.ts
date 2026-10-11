@@ -6,6 +6,8 @@ import { SEARCH_COUNTS } from '../config/benefits'
 import { cleanText } from './text'
 /* 关键词与站点白名单的唯一真源：报告模板的分组声明（见 utils/report-toc.ts#SEARCH_LANES） */
 import { SEARCH_LANES, SearchLane } from './report-toc'
+/* 规划结果（模型给的检索词，见 utils/search-plan.ts）—— 只作类型用，不引运行时依赖 */
+import type { SearchPlan } from './search-plan'
 
 /** 检索结果条目（附录 A） */
 export interface NewsItem {
@@ -129,6 +131,15 @@ interface SearchProbe {
   videoKeys: string[]
 }
 
+/** 主源（博查）在命中兜底源的那一次里的结果：只用于诊断，不改任何检索行为 */
+interface PrimaryDigest {
+  ok: boolean
+  /** 主源这一次抓到几条（0 = 抓空；`ok:false` 时这个数字没有意义） */
+  got: number
+  /** 主源失败时的 kind（auth / upstream_quota / rate…），成功时为空串 */
+  kind: string
+}
+
 /** 云函数 search 动作的返回结构（对应 cloudfunctions/aiProxy 的 runSearch） */
 interface ProxySearchResult {
   ok: boolean
@@ -136,6 +147,10 @@ interface ProxySearchResult {
   kind?: string
   error?: string
   probe?: SearchProbe
+  /** 命中兜底源时才有：这条结果来自哪一家（serper / tavily） */
+  source?: string
+  /** 命中兜底源时才有：主源为什么让位（见 PrimaryDigest） */
+  primary?: PrimaryDigest
 }
 
 /** 值得重试的 kind：上游 5xx / 业务错误码 / 网络层失败 */
@@ -193,6 +208,14 @@ async function pagesViaPlatform(params: SearchParams): Promise<PagesAttempt | nu
    * 非 0 时 imageKeys 直接告诉我们字段叫什么（thumbnailUrl？contentUrl？width/height？）。
    */
   if (res.probe) diagLog('info', 'http', '检索响应结构', res.probe as unknown as Record<string, unknown>)
+  /*
+   * 走了兜底源时再把「主源这一次为什么让位」记一笔。`source` 只说结果来自哪一家，
+   * 分不清博查是**抓空**（按设计让位，不必管）还是**整条失败**（密钥 / 资源包 ——
+   * 那是平台自己的账户故障，被兜底静默盖过时看起来与「这个源没收录」毫无区别）。
+   */
+  if (res.source) {
+    diagLog('info', 'http', `检索走了兜底源（${res.source}）`, { primary: res.primary ?? null })
+  }
   return { ok: true, pages: res.pages ?? [] }
 }
 
@@ -300,6 +323,28 @@ function mergeNews(groups: Array<NewsItem[] | null>): NewsItem[] {
 }
 
 /**
+ * 一条检索路的**查询阶梯**：模型给的词在前，模板句式殿后（2026-10-11 检索词规划，见 utils/search-plan.ts）。
+ *
+ * 为什么是这个顺序：模型词是「按人物与领域现想出来的词」，比通用句式更可能命中冷门人物，
+ * 所以先试；而模板句式（utils/report-toc.ts#SEARCH_LANES 的 keywords）是**兜底真源** ——
+ * 模型给不出词、词被净化掉、通道不通时用的就是它。故它是**追加**在模型词之后，不是被替换掉：
+ * 一旦模型词全抓空，检索能力仍然等价于改造前，不会退化成「没词可用」。
+ *
+ * 去重按**整条 query** 比（`人名 + 两个同义词` 只发一条），空串不进阶梯。
+ */
+function queryLadder(name: string, keywords: string, planned?: string[]): string[] {
+  const person = name.trim()
+  const out: string[] = []
+  const push = (words: string) => {
+    const q = `${person} ${words}`.trim()
+    if (q && !out.includes(q)) out.push(q)
+  }
+  for (const w of planned ?? []) push(w)
+  push(keywords)
+  return out
+}
+
+/**
  * 博查检索适配器（附录 A）：主线 + 社交支线两路并发，合并去重后交给报告层。
  *
  * 两路并发而非串行：单路约 1~2s，串行会把整次生成的等待拉长近一倍。
@@ -315,35 +360,43 @@ function mergeNews(groups: Array<NewsItem[] | null>): NewsItem[] {
  */
 export async function fetchNews(
   name: string,
-  opts: { days?: number; maxResults?: number; socialCount?: number } = {}
+  opts: { days?: number; maxResults?: number; socialCount?: number; planned?: SearchPlan } = {}
 ): Promise<NewsItem[] | null> {
   const count = Math.min(opts.maxResults ?? MAIN_COUNT, MAX_RESULTS_CAP)
   const days = opts.days ?? 30
 
   /*
-   * 主线走**降级阶梯**（2026-10-10）：一档抓空就试下一档，直到有内容为止。
+   * 主线走**降级阶梯**：一档抓空就试下一档，直到有内容为止。
    *
-   * 为什么：此前只有单档（「人名 + 模板 news 路的句式」@ 30 天），而冷门 / 低产名人的报道常是
-   * 「半年内有过、近 30 天没有」—— 单档配置下直接空手而归，用户看到「暂未检索到公开信息」。
+   * 阶梯的构成（2026-10-11 检索词规划上线后，前两段来自 utils/search-plan.ts）：
+   *   ⓪ **模型给的词**（每路最多 SEARCH_COUNTS.planWordsPerLane 个）——「该查什么」由模型按人物与
+   *      领域现想，比通用句式更可能命中冷门人物；
+   *   ① **模板句式 + 调用方给的时间窗**（utils/report-toc.ts#SEARCH_LANES 的 keywords）——
+   *      模型给不出词时它就是第一档；绝大多数人物在这一档结束，命中率最高；
+   *   ② **去掉后缀只留人名** —— 博查对纯人名的召回常好于「人名 + 后缀词」，
+   *      后缀词把排序拉向「新闻体」标题，反而会挤掉一手内容。
+   *
+   * 为什么冷门 / 低产人物需要这条阶梯：他们的报道常是「半年内有过、近 30 天没有」，
+   * 单档配置下直接空手而归，用户看到「暂未检索到公开信息」。
    * 对**付费**用户尤其不可接受：他买的就是「查得到」。
    *
-   * 各档的取舍：
-   *   ① 原句式 + 原时间窗（绝大多数人物在这一档就结束，命中率最高）；
-   *   ② **去掉后缀只留人名** —— 博查对纯人名的召回常好于「人名 + 后缀词」，
-   *      后缀词把排序拉向「新闻体」标题，反而会挤掉一手内容；
-   *   ③ 放宽到一年（天数值见 config/benefits.ts 的 SEARCH_COUNTS.mainFreshnessLadderDays）。
-   *
-   * ⚠ 只放宽到「年内」为止：`dynamics` 要的是近期动态，`noLimit` 会把年代久远的事件混成
-   *   「近期」—— 那比空着更糟（与背景线用 noLimit 是两回事，那条只捞履历、不进 dynamics）。
-   * 成本：只有上一档为空时才发下一档，正常人物仍是 1 次调用；最坏 3 次。
+   * ⚠ 时间窗只在**最后一档**放宽到一年（末档天数见 SEARCH_COUNTS.mainFreshnessLadderDays）：
+   *   `dynamics` 要的是近期动态，`noLimit` 会把年代久远的事件混成「近期」—— 那比空着更糟
+   *   （与背景线用 noLimit 是两回事，那条只捞履历、不进 dynamics）。
+   *   模型词与模板句式都用调用方给的窗（days），于是**不给模型词时这条阶梯与改造前逐字一致**。
+   * 成本：只有上一档为空时才发下一档，正常人物仍是 1 次调用；
+   *   最坏 `planWordsPerLane + mainFreshnessLadderDays.length` 次（且只发生在长尾人物上）。
    */
   const ladder = SEARCH_COUNTS.mainFreshnessLadderDays
+  /* 模型词 → 模板句式 → 只留人名（末档才放宽时间窗，见上方 ⚠） */
+  const queries = queryLadder(name, NEWS_LANE.keywords, opts.planned?.news)
+  const personOnly = name.trim()
+  if (personOnly) queries.push(personOnly)
   let main: NewsItem[] = []
-  for (let i = 0; i < ladder.length; i++) {
-    /* 第一档用调用方给的时间窗（days），之后按阶梯放宽；句式取自模板的 news 路 */
+  for (let i = 0; i < queries.length; i++) {
     const pages = await requestChannel({
-      query: i === 0 ? `${name} ${NEWS_LANE.keywords}` : name.trim(),
-      freshness: laneFreshness(NEWS_LANE, i === 0 ? days : ladder[i]),
+      query: queries[i],
+      freshness: laneFreshness(NEWS_LANE, i === queries.length - 1 ? ladder[ladder.length - 1] : days),
       count
     })
     /* null = 通道未就绪（不是「抓空了」）：换句式也一样，交回调用方走 coldstart */
@@ -356,19 +409,26 @@ export async function fetchNews(
   const socialCount = Math.min(opts.socialCount ?? SOCIAL_COUNT, MAX_RESULTS_CAP)
   if (socialCount <= 0) return mergeNews([main, null])
 
-  const social: SearchParams = {
-    query: `${name} ${SOCIAL_LANE.keywords}`,
+  const socialBase: Omit<SearchParams, 'query'> = {
     freshness: laneFreshness(SOCIAL_LANE, days),
     count: socialCount,
     /* 站点白名单同样取自模板；没声明就整条不传（传空数组会被上游读成「一个站都不许」） */
     ...(SOCIAL_LANE.include && SOCIAL_LANE.include.length > 0 ? { include: SOCIAL_LANE.include } : {})
   }
 
-  /* 支线是「锦上添花」：失败一律吞掉，主线才是判据（见函数头注释） */
-  const socialNews = await requestChannel(social).catch((err) => {
-    diagLog('warn', 'http', `社交源定向检索跳过：${err instanceof Error ? err.message : String(err)}`)
-    return null
-  })
+  /*
+   * 支线也吃模型词（一轮阶梯：模型词 → 模板句式）：它是「锦上添花」，但多试一档的代价只是
+   * **一次**请求，换回的是会员报告里那段被门户挤掉的一手发声。
+   * 失败一律吞掉（见函数头注释）：主线才是判据。
+   */
+  let socialNews: NewsItem[] | null = null
+  for (const query of queryLadder(name, SOCIAL_LANE.keywords, opts.planned?.social)) {
+    socialNews = await requestChannel({ ...socialBase, query }).catch((err) => {
+      diagLog('warn', 'http', `社交源定向检索跳过：${err instanceof Error ? err.message : String(err)}`)
+      return null
+    })
+    if (socialNews && socialNews.length > 0) break
+  }
 
   return mergeNews([main, socialNews])
 }
@@ -387,19 +447,32 @@ export async function fetchNews(
  * 通道未就绪返回 null；请求失败一律吞掉返回 null —— 背景线是**补充**，主线才是判据，
  * 它挂了只是「这几节没有内容」，不该让整次生成失败（与社交支线的取舍一致）。
  */
-export async function fetchBackground(name: string, count: number): Promise<NewsItem[] | null> {
+export async function fetchBackground(
+  name: string,
+  count: number,
+  planned?: string[]
+): Promise<NewsItem[] | null> {
   const want = Math.min(count, MAX_RESULTS_CAP)
   if (want <= 0) return []
-  try {
-    return await requestChannel({
-      query: `${name} ${PROFILE_LANE.keywords}`,
-      freshness: laneFreshness(PROFILE_LANE),
-      count: want
-    })
-  } catch (err) {
-    diagLog('warn', 'http', `人物背景线检索跳过：${err instanceof Error ? err.message : String(err)}`)
-    return null
+  /*
+   * 与主线同一套思路（模型词 → 模板句式，见 queryLadder）：履历这类「冷门字眼」正是模型词比
+   * 通用句式更可能命中的地方 —— 模板句式只能写「个人资料」这种泛词，模型知道这个人该问
+   * 「毕业院校」还是「出道作品」。
+   * 成本：最多 `SEARCH_COUNTS.planWordsPerLane + 1` 次；失败语义不变（一律吞掉返回 null）。
+   */
+  let out: NewsItem[] | null = null
+  for (const query of queryLadder(name, PROFILE_LANE.keywords, planned)) {
+    try {
+      out = await requestChannel({ query, freshness: laneFreshness(PROFILE_LANE), count: want })
+    } catch (err) {
+      diagLog('warn', 'http', `人物背景线检索跳过：${err instanceof Error ? err.message : String(err)}`)
+      return null
+    }
+    /* null = 通道未就绪：换词也一样，直接交回调用方 */
+    if (out === null) return null
+    if (out.length > 0) break
   }
+  return out
 }
 
 /** 问答联网检索的条数：够补「报告之后发生了什么」即可，不为一次提问付生成级的检索成本 */

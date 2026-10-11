@@ -328,6 +328,7 @@ npm run config:check    # 只读校验，CI 用（有差异则 exit 1）
 - **`DB_ADMIN_TOKEN`** —— 仅 `dbInit` 的环境变量（自定义口令，写操作的闸门）。❌ 不进包
 - **`AI_PROXY_TEST_TOKEN`** —— 仅 `aiProxy` 的环境变量（`test` 付费探针的口令；**不配则该动作一律拒绝**，这是期望的默认状态）。为运维口令而非部署项，通常只在控制台排障时临时加。探针会一并报出**第二检索源的连通性与耗时** —— 两家都在境外，从境内云函数调用要绕国际出口，这是判断跨境链路能不能用的唯一入口。❌ 不进包
 - **`AI_PROXY_RAW_LOG`** —— 仅 `aiProxy` 的**可选**环境变量（云端原始报文打印，**写 `on` 才开**）。它补的是端上看不到的那一半：`local.ts` 的 `debug.rawIoLog` 只打**云函数的返回**，「上游到底回了什么」看不到，而大模型的问题多半出在那一半（上游 200 但结构异常、输出被 `max_tokens` 截断、检索只回 3 条）。开了之后 `chat:req` / `chat:upstream` / `chat:err` / `search:primary` / `search:backup` 会进云函数日志；**默认关闭，且一律截断、不打正文**（云函数日志有大小上限，几万字报告灌进去会挤掉同一次调用的计费日志）。⚠ **这些日志在「云开发控制台 → 云函数 → 日志」里，不在微信开发者工具的 Console** —— 后者是端上的 console，两处是两套东西，找错地方会以为「没打印」。❌ 不进包
+- **`AI_PROXY_CHAT_DEADLINE_MS` / `AI_PROXY_AUX_DEADLINE_MS`** —— 仅 `aiProxy` 的**可选**环境变量（默认 `45000` / `20000`，毫秒）：给单次对话调用掐的**墙钟时限**，报告档与辅助档（消歧 / 选题 / 检索词规划）各一个。存在的理由：平台 60 秒是硬上限且调不上去，函数只能自己管住自己 —— 撞到时限就主动断开、按可重试失败返回（`kind=network`），而不是被平台掐死（那样端上只会拿到 `-504003`，函数连一行原因都留不下）。⚠ **不要往上调**（它必须小于云函数执行超时）；排障时往下调（如 `3000`）可立刻复现「慢上游被主动掐断」这条分支。❌ 不进包
 - **`WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID`** —— `payCreate` 的环境变量。❌ 不进包
 - **`PAY_ADMIN_TOKEN`** —— 仅 `payCallback` 的环境变量（退款 / 手动对账运营写口的口令；**不配则写口一律拒绝**）。❌ 不进包
 - **`PAY_CALLBACK_GUARD`** —— 仅 `payCallback` 的**可选**环境变量，灰度开关：`log`（默认，端上调用只记日志）/ `strict`（拒绝端上调用）/ `off`（不判）。真机日志确认过回调形态后再切 `strict`。❌ 不进包
@@ -423,7 +424,7 @@ tcb fn deploy aiProxy       -e <your-env-id>
 几条容易踩的：
 
 - **「配置是否随部署生效」取决于部署方式**：`tcb fn deploy`（CloudBase CLI）会读仓库根 `cloudbaserc.json`，把环境变量、超时、触发器一并下发；微信开发者工具右键「上传并部署」**只上传代码**，不读 `cloudbaserc.json` ⇒ 环境变量 / 超时 / 触发器都得去控制台补。
-- `aiProxy`、`hotBoardRefresh`、`notifyFollowUpdates` 的执行超时必须是 **60 秒**（`aiProxy` 内还要满足 `LLM_CHAT_TIMEOUT_MS = 50000` 更小），否则长报告、热门榜一轮「6 检索 + 1 生成」、推送一轮最多 20 次检索都会被平台提前掐断（端上 `-504003`）。
+- `aiProxy`、`hotBoardRefresh`、`notifyFollowUpdates` 的执行超时必须是 **60 秒**（`aiProxy` 内还要满足 `CHAT_DEADLINE_MS = 45s` / `AUX_CHAT_DEADLINE_MS = 20s` 更小 —— 那是函数**给自己掐的时限**：撞到就主动断开、按可重试失败返回，而不是被平台静默掐死），否则长报告、热门榜一轮「6 检索 + 1 生成」、推送一轮最多 20 次检索都会被平台提前掐断（端上 `-504003`）。⚠ **60 秒是微信云函数的上限**：控制台里已经是 60 秒却仍报 `-504003`，说明单次活儿本身就超过了 60 秒，这时调超时无路可走 —— 只能换档位（深度推理档最费时）或把单次生成拆得更细。
 - `dbInit` 是**运维工具、不是运行时依赖**：只在建集合 / 建索引时部署，用完 `tcb fn delete dbInit` 即可（用法见第 3 节）。
 - `contentCheck` 无环境变量（走云调用，凭证由平台托管），唯一前提是 `cloudfunctions/contentCheck/config.json` 里的 `permissions.openapi` **随上传生效**；缺这条声明时端上按 **fail-open** 静默放过。⚠ 它没法用控制台「云端测试」验（需要真实 `openid`），只能在真机问答页验。
 - **端上不能触发定时任务与支付回调（调用方闸门）**：云函数部署后端上 `wx.cloud.callFunction` 就能调到它，而 4 个定时推送函数（`notifyFollowUpdates` / `keywordAlert` / `riskWatch`）与 `payCallback` 本就不该由端上调用 —— 端点判据是 `getWXContext().OPENID`（端上调用必带，定时器 / 微信回调 / 控制台「云端测试」都不带）。前三个**一律拒绝**端上调用；`hotBoardRefresh` 保留端上 `action:'ensure'` 补跑链路，**只拦端上 `force`**；`payCallback` 用 `PAY_CALLBACK_GUARD` **灰度**：默认 `log` 只记日志，在真机日志里确认过支付回调不带 `openid` 后再切 `strict`（即便判错，定时对账也会把滞留的 `granting` 补上，不会永久丢单）。

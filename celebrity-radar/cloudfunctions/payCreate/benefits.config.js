@@ -76,8 +76,8 @@ module.exports = {
   },
   "REPORT_BUDGET": {
     "maxItemChars": 1000,
-    "maxUserChars": 15000,
-    "maxUserCharsMember": 20000
+    "maxUserChars": 10000,
+    "maxUserCharsMember": 16000
   },
   "REPORT_FIELD_LIMITS": {
     "analysisPointChars": 80,
@@ -136,6 +136,7 @@ module.exports = {
       30,
       365
     ],
+    "planWordsPerLane": 2,
     "socialCount": 8,
     "deepMainCount": 24,
     "deepSocialCount": 16,

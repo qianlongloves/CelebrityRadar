@@ -84,6 +84,14 @@ export interface SearchLane {
   /** 查询词后缀：与人名拼成 query（另有「只留人名」的降级档，见 utils/search.ts#fetchNews） */
   keywords: string
   /**
+   * 这一路**要什么素材**（一句话，供「检索词规划」提示词逐路列给模型，见 utils/search-plan.ts）。
+   *
+   * 与 keywords 的分工：keywords 是**兜底句式**（模型给不出词时用它，且它仍是字面量唯一真源，
+   * test/cases/19 钉住）；本字段是给人 / 模型读的**意图声明** —— 改一条路的含义先改这里。
+   * ⚠ 别在这里原样抄 keywords：19 有一条断言「关键词字面量在 src 下只有一处」。
+   */
+  want: string
+  /**
    * 时间语义：
    *   · recent    —— 「近期」语义，按 SEARCH_COUNTS.mainFreshnessLadderDays 逐档放宽
    *                  （动态 / 名言 / 争议 / 立场要的都是近期，混进旧闻比空着更糟）；
@@ -101,7 +109,11 @@ export interface SearchLane {
  */
 export const SEARCH_LANES: Record<SearchLaneKey, SearchLane> = {
   /* 主线：一份报告最核心的素材来源，「事实」与「判断」两组都靠它 */
-  news: { keywords: '近期 新闻 动态 言论', freshness: 'recent' },
+  news: {
+    keywords: '近期 新闻 动态 言论',
+    freshness: 'recent',
+    want: '近期的公开报道与动态：新闻报道、访谈、本人公开发言'
+  },
   /*
    * 社交一手发声：单条 query 的排序权完全在上游 —— 门户转载的标题更「新闻体」，
    * 常把本人微博 / 知乎长文挤到十名开外，而名人的一手发声恰恰在后者。
@@ -110,10 +122,15 @@ export const SEARCH_LANES: Record<SearchLaneKey, SearchLane> = {
   social: {
     keywords: '近期 动态',
     freshness: 'recent',
+    want: '本人在社交平台上的一手发声：微博、知乎、B站、小红书的原创内容',
     include: ['weibo.com', 'zhihu.com', 'bilibili.com', 'xiaohongshu.com']
   },
   /* 人物背景线：「人物档案 / 关系图谱 / 时间线」的素材不进新闻流，30 天窗里天然搜不到 */
-  profile: { keywords: '个人资料 简介 出生地 学历 经历', freshness: 'evergreen' }
+  profile: {
+    keywords: '个人资料 简介 出生地 学历 经历',
+    freshness: 'evergreen',
+    want: '长期不随时间变的履历资料：出身、教育、职业经历、代表作品'
+  }
 }
 
 /**

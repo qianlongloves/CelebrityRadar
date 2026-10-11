@@ -65,9 +65,9 @@ type ChatAttempt =
 export type QuotaPurpose = 'generate' | 'ask' | 'aux'
 
 /**
- * 云通道的超时在云函数内控制（见 aiProxy 的 LLM_CHAT_TIMEOUT_MS），端上已无直连超时。
- * 但那只管「上游多慢算慢」，管不住**函数自己被平台掐断**：函数的执行超时若短于上游超时
- * （微信云开发默认 20 秒，且 config.json 不生效，须在控制台改），长生成会在中途被杀，
+ * 云通道的时限在云函数内控制（见 aiProxy 的 CHAT_DEADLINE_MS / AUX_CHAT_DEADLINE_MS），端上已无直连超时。
+ * 但那只管「上游多慢算慢」，管不住**函数自己被平台掐断**：函数的执行超时若短于那道时限
+ * （微信云开发默认 20 秒，且 config.json 不生效，须在控制台改 —— 上限就是 60 秒），长生成会在中途被杀，
  * 端上只能拿到 -504003 —— 识别与指引见 utils/cloud.ts#cloudTimeoutHint。
  */
 

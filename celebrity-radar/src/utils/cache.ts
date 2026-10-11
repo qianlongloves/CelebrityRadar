@@ -21,6 +21,8 @@ import {
   DEEP_SOCIAL_COUNT,
   NewsItem
 } from './search'
+/* 检索词规划（2026-10-11）：先问模型「该查什么」，再拿这些词去查（见 utils/search-plan.ts 头注释） */
+import { planSearchQueries } from './search-plan'
 import { parsePersonKey } from '@/config/domains'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
@@ -63,8 +65,9 @@ const POLL_INTERVAL_MS = 2000
  * 构建耗时上界（P0，2026-10-11）。**必须按「分批生成」重算，不能沿用单次调用的口径。**
  *
  * 现在的构建 = 4 批顺序调用（utils/report.ts#REPORT_BATCHES），且每批 chatJSON 内部最多 2 次
- * 尝试（utils/llm.ts#chatJSON 的 attempts = 1 + retries(1)），单次上界为云函数侧的
- * LLM_CHAT_TIMEOUT_MS = 50s。故最坏 ≈ 4 × 2 × 50s = 400s，再加重合检索（15s）与余量（30s）。
+ * 尝试（utils/llm.ts#chatJSON 的 attempts = 1 + retries(1)），单次上界为云函数侧给每次调用掐的
+ * 时限 CHAT_DEADLINE_MS = 45s（注意它**不是**「上游超时」：平台 60 秒是天花板，见 aiProxy/index.js
+ * 顶部那段）。故最坏 ≈ 4 × 2 × 45s = 360s，再加重合检索（15s）与余量（30s）。
  *
  * 为什么必须够长：这个常量是「构建者失联判定」——短于真实构建耗时的后果**不是**「多等一会被拒绝」，
  * 而是**正常构建跑到一半就被他人判为失联并抢锁**：两边各白烧一遍 token，后落库的一方还会因
@@ -75,13 +78,13 @@ const POLL_INTERVAL_MS = 2000
  * 也不能让正常的长构建中途被抢。若这个上界在时延上不可接受，该动的是**每批的重试次数或批次数**
  * （减少真实耗时），而**不是**把这个值调回小于构建时长 —— 那等于重新引入抢锁。
  */
-const LLM_SINGLE_TIMEOUT_MS = 50 * 1000
+const CHAT_SINGLE_DEADLINE_MS = 45 * 1000
 const REPORT_BATCH_ATTEMPTS = 2
 const SEARCH_BUDGET_MS = 15 * 1000
 const BUILD_SLACK_MS = 30 * 1000
 
 export const BUILDING_TIMEOUT_MS =
-  REPORT_BATCHES.length * REPORT_BATCH_ATTEMPTS * LLM_SINGLE_TIMEOUT_MS +
+  REPORT_BATCHES.length * REPORT_BATCH_ATTEMPTS * CHAT_SINGLE_DEADLINE_MS +
   SEARCH_BUDGET_MS +
   BUILD_SLACK_MS
 
@@ -588,7 +591,7 @@ export async function getOrBuildReport(
   const userId = useAuth.getState().userId ?? 'anonymous'
   const parsed = parsePersonKey(personKey)
   if (!parsed) return { kind: 'error', message: `非法 personKey：${personKey}` }
-  const { name } = parsed
+  const { name, domain } = parsed
 
   // 0. 缓存命中优先（随用随查）：已生成的报告读取零成本，不受冷却影响。
   //    冷却检查后置到第 1.5 步，只拦「重新生成」，不拦「看已有报告」。
@@ -795,14 +798,34 @@ export async function getOrBuildReport(
      */
     /* 检索阶段（两路并行）：先播报再发起，否则「检索中」要等第一路回来才出现，白等一段 */
     emitProgress('search', 0)
+
+    /*
+     * 检索词规划（2026-10-11）：**先问模型「该查什么」，再拿这些词去查**。
+     *
+     * 为什么加在检索之前：查询词原本是模板里写死的句式（utils/report-toc.ts#SEARCH_LANES），
+     * 冷门 / 低产人物常常「人名 + 通用后缀」一句什么都搜不到 —— 而模型知道这个人该问
+     * 「毕业院校」还是「代言品牌」。规划这一步**不看任何检索结果**（此刻也还没有结果可看），
+     * 它给的是「该查什么」，不是「查到了什么」；素材到手后照旧喂模型成文，
+     * 报告侧「事实仅基于素材」的硬约束一个字都没动。
+     *
+     * 三条边界（详见 utils/search-plan.ts）：
+     *   ① 规划失败 / 没给出可用词一律回落模板句式 —— 它是加分项，不该让任何一次生成失败；
+     *   ② 走 aux 档（不占用户当日的生成额度，与消歧同一档）；
+     *   ③ 只在真要查的几路上问词 —— 免费档不发社交支线（`socialCount: 0`），也就不问社交词。
+     */
+    const plan = await planSearchQueries(name, domain, {
+      lanes: memberDeep ? ['news', 'social', 'profile'] : ['news', 'profile']
+    })
+
+    /* 免费档与会员档的文案口径见上方「批 2」注释；模型词单独走 planned（两档都有） */
+    const mainOpts: NonNullable<Parameters<typeof fetchNews>[1]> = memberDeep
+      ? { maxResults: DEEP_MAIN_COUNT, socialCount: DEEP_SOCIAL_COUNT }
+      : { socialCount: 0 }
+    mainOpts.planned = plan ?? undefined
+
     const [news, background] = await Promise.all([
-      fetchNews(
-        name,
-        memberDeep
-          ? { maxResults: DEEP_MAIN_COUNT, socialCount: DEEP_SOCIAL_COUNT }
-          : { socialCount: 0 }
-      ),
-      fetchBackground(name, memberDeep ? DEEP_BG_COUNT : BG_COUNT)
+      fetchNews(name, mainOpts),
+      fetchBackground(name, memberDeep ? DEEP_BG_COUNT : BG_COUNT, plan?.profile)
     ])
 
     if (news === null || news.length === 0) {

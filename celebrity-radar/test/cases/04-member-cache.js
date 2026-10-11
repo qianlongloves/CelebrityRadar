@@ -797,6 +797,13 @@ describe('只升不降 · 端到端（非会员 force 刷新不得吃掉会员�
       if (data.action === 'search') {
         return { ok: true, pages: [{ name: '标题', url: 'https://news.example.com/a', snippet: '正文' }] }
       }
+      /*
+       * 检索词规划（purpose: 'aux'，2026-10-11）也在 data.messages 里，但它发生在**检索之前**、
+       * 是每次生成额外的一次调用，不属于「报告批次」—— 混进 before 会让「每批一次」失真。
+       */
+      if (data.purpose === 'aux') {
+        return { ok: true, content: JSON.stringify({ news: ['近期动态'], profile: ['履历'] }) }
+      }
       if (data.messages) {
         const row = env.db.__dump('report_cache')[0]
         before.push(row ? row.parts : null)

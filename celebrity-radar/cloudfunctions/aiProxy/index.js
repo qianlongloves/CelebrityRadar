@@ -33,15 +33,20 @@
  * 端上的会员判定只影响 UI 与请求值，改包即可绕过；凡是要花上游钱的权益都必须在这里拦一次。
  *
  * chat 的耗时约束（务必先读）：
- *   报告正文属长生成，单次可能逼近云函数上限，因此这里的上游超时取 LLM_CHAT_TIMEOUT_MS，
- *   而它必须**小于本函数的执行超时**，否则长生成会被平台在中途掐断。
+ *   报告正文属长生成，单次可能逼近云函数上限，所以**我们自己给每次调用掐一个时限**
+ *   （CHAT_DEADLINE_MS / AUX_CHAT_DEADLINE_MS，见它们的注释），并让它**小于本函数的执行超时**。
  *
  *   ⚠ 执行超时只能在控制台改：微信云开发给云函数配的默认超时是 **20 秒**，
  *   而本目录 config.json / cloudbaserc.json 里写的 timeout **不随上传生效**（实测仍是 20s）。
  *   配置路径：云开发控制台 → 云函数 → aiProxy → 配置 → 超时时间，改成 60 秒并保存（改完即生效）。
- *   被平台掐断的后果：函数没有机会返回任何 kind / error，端上只能拿到
- *   errCode -504003（FUNCTIONS_TIME_LIMIT_EXCEEDED），表现为一句无从下手的「生成失败」。
- *   端上已识别该错误码并翻成可照做的提示（src/utils/cloud.ts 的 cloudTimeoutHint）。
+ *   **60 秒就是天花板**（微信云函数的上限，调不上去），所以「把超时调大」这条出路不存在 ——
+ *   函数必须自己管住自己：撞到时限就主动断开并按普通失败返回（kind=network，可重试）。
+ *
+ *   被平台掐断的后果（2026-10-11 之前的样子）：函数没有机会返回任何 kind / error，
+ *   端上只能拿到 errCode -504003（FUNCTIONS_TIME_LIMIT_EXCEEDED），表现为一句无从下手的「生成失败」，
+ *   且控制台里连一行原因都没有。现在这条路已经堵上，但**平台掐断仍可能发生在别处**
+ *   （例如检索侧的两次上游调用叠加），故端上保留识别并翻成可照做的提示
+ *   （src/utils/cloud.ts 的 cloudTimeoutHint）。
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
@@ -146,8 +151,67 @@ const MEMBER_SEARCH_MAX = SEARCH_MAX.member
  * 上限值随供应商配置（llm.config.js 的 chatMaxTokens，默认 8192）。
  */
 
-/** 控制台上的函数超时时间必须大于它，否则长生成会被平台提前掐断 */
-const LLM_CHAT_TIMEOUT_MS = 50000
+/**
+ * 一次对话调用允许占用的**墙钟时间**上限（毫秒）—— 我们自己掐，不等平台掐。
+ *
+ * 现场（2026-10-11）：端上报 `errCode: -504003 | Invoking task timed out after 60 seconds`。
+ * 这行字是**平台**把本函数掐死在 60 秒（微信云函数执行上限，控制台调到 60 就是天花板）时给的，
+ * 此时函数已经死了：既没来得及返回 `{ ok:false, kind }`，也没留下一行日志 ——
+ * 端上只拿到一句平台文案，判不出是超时、还是上游断流，自然也谈不上重试与否。
+ *
+ * 为什么不能只靠 SDK 的 `{ timeout }`：它管得住「请求发出去、响应回来」这一段，
+ * 管不住**消费整条流要多久** —— 上游半死不活、每几秒挤一个字，照样能拖过 60 秒。
+ * 换成 streamText 之前走的是 postJson（一个真·整体超时，到点必抛），
+ * 所以旧的 50 秒是真保证；改成流式之后这条保证没了，
+ * 于是「4 批 × 每批 2 次尝试」的算式里出现了一个能撞穿平台上限的洞。
+ *
+ * 取值 45 秒：**必须明显小于平台的 60 秒**，留出冷启动、DB 读写与回包的时间。
+ * 撞到它时由 callCloudAi 主动中止并抛错，handleChat 照常归类返回（见 deadlineOf）。
+ */
+const CHAT_DEADLINE_MS = readDeadlineMs('AI_PROXY_CHAT_DEADLINE_MS', 45000)
+
+/**
+ * 辅助调用（消歧 / 选题 / 检索词规划）的墙钟上限：20 秒。
+ *
+ * 为什么单独一层、而且更短：这类调用**输出只有一小段 JSON**（一个名字、几个检索词），
+ * 正常两三秒就完事；而它们全部卡在用户能感知的路径上（生成前先消歧、先规划检索词），
+ * 且**每一个都有非 AI 兜底**（消歧回落候选列表、规划回落模板句式）——
+ * 换句话说，把它们掐掉的代价是「少一次加分」，不是功能丧失。
+ * 反过来，若沿用报告档的 45 秒：一次卡住的规划调用会让用户在「检索中」之前白等 45 秒，
+ * 还会把这份预算吃掉，把后面的报告批次挤到平台上限上去。
+ */
+const AUX_CHAT_DEADLINE_MS = readDeadlineMs('AI_PROXY_AUX_DEADLINE_MS', 20000)
+
+/** 读一个毫秒数环境变量：不合法/未设置一律退回默认值（联调与用例用，见 test/cases/07 的时限用例） */
+function readDeadlineMs(name, fallback) {
+  const raw = readEnv(name)
+  const n = raw === null ? NaN : Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
+/** 本次调用用哪一档时限：aux 是「生成之前、必须快」的那一类（理由见 AUX_CHAT_DEADLINE_MS） */
+function deadlineOf(purpose) {
+  return purpose === AUX_PURPOSE ? AUX_CHAT_DEADLINE_MS : CHAT_DEADLINE_MS
+}
+
+/**
+ * 「自己掐的」超时错误。带一个可识别的标记：
+ * handleChat 靠它把归类与文案都走自己的分支，而不是交给 classifyAiError + failDetail 去猜
+ * —— failDetail 见到「超时」二字就会让用户去控制台调超时时间，而这里的现场恰恰是「已经是 60 秒上限」。
+ */
+function deadlineError(ms, purpose) {
+  /* 毫秒级只在联调时出现（默认 45s / 20s），但文案别写成「0 秒」让人以为没时限 */
+  const human = ms >= 1000 ? `${Math.round(ms / 1000)} 秒` : `${ms} 毫秒`
+  const err = new Error(
+    `上游流式响应超过本次调用时限 ${human}（${purpose}）：` +
+      '已在平台 60 秒强制中止之前主动断开，以免任务被直接掐死（那样连原因都留不下）。' +
+      '若反复出现，请改用「极速版」档位后重试 —— 深度推理档会先花大量时间思考，' +
+      '单次很容易撞上这个时限。'
+  )
+  err.isDeadline = true
+  err.deadlineMs = ms
+  return err
+}
 /*
  * 防滥用：这是一条「平台付钱、客户端随便调」的通道，不设闸门就等于对外送一个免费 LLM 网关。
  * 端上实际只发 system + user 两条，这里的上限留了余量而非贴着用。
@@ -922,8 +986,18 @@ async function handleSearch(event) {
       kind: result.kind || ''
     })
     if (result.ok && (result.pages || []).length > 0) {
-      /* source 只给端上诊断用（不改任何检索行为）：一眼看出这条结果来自哪家兜底源 */
-      return Object.assign({}, result, { source: backup.name })
+      /*
+       * source 只给端上诊断用（不改任何检索行为）：一眼看出这条结果来自哪家兜底源。
+       *
+       * primary 再补一句「主源这一次为什么让位」。只看 source 时，端上（与部署者）**分不清**
+       * 博查是「抓空」（按设计让位，不必管）还是「整条失败」（密钥 / 资源包问题）——
+       * 后一种是平台自己在付费源上的账户故障，却被兜底静默盖过，症状与「这个源没收录」一模一样，
+       * 而这两件事的处置完全不同（前者放着不管，后者要去博查后台查资源包）。
+       */
+      return Object.assign({}, result, {
+        source: backup.name,
+        primary: { ok: primary.ok, got: (primary.pages || []).length, kind: primary.kind || '' }
+      })
     }
     return primary.ok ? primary : result
   } catch (err) {
@@ -974,7 +1048,8 @@ function normalizeMessages(raw) {
  *
  * 返回 { content, finishReason, reasoningChars, usage }，不在这里判成败 —— 归类交给 handleChat。
  */
-async function callCloudAi(llm, model, messages) {
+async function callCloudAi(llm, model, messages, purpose) {
+  const deadline = deadlineOf(purpose)
   const aiModel = cloud.ai().createModel(llm.modelGroup)
   /*
    * 入参形状（与 OpenAI 不同，勿照搬）：
@@ -982,6 +1057,8 @@ async function callCloudAi(llm, model, messages) {
    *     —— 所以它照传（理由见 llm.config.js 的 chatMaxTokens 那段）。
    *   · system 提示词走 messages 里的 role:'system'（normalizeMessages 已归好）。
    *   · 第二个参数 `{ timeout }`：cloud.init 的默认超时只有 15s，长报告必须显式放宽。
+   *     传的就是本次的 deadline（**不另设一个数**）：SDK 侧与下面这道闸门若能各说各话，
+   *     迟早出现「SDK 说 50s、闸门按 45s 掐」这种没人说得清谁在生效的局面。
    */
   const res = await aiModel.streamText(
     {
@@ -990,7 +1067,7 @@ async function callCloudAi(llm, model, messages) {
       max_tokens: llm.chatMaxTokens,
       ...(llm.extraBody || {})
     },
-    { timeout: LLM_CHAT_TIMEOUT_MS }
+    { timeout: deadline }
   )
 
   let content = ''
@@ -998,7 +1075,8 @@ async function callCloudAi(llm, model, messages) {
   let reasoningChars = 0
   let usage = null
 
-  await Promise.all([
+  /* 两条流并发消费：任一条没被读，底层 SSE 就可能卡住（见上方 ⚠） */
+  const consume = Promise.all([
     (async () => {
       for await (const chunk of res.textStream) {
         if (typeof chunk === 'string') content += chunk
@@ -1020,6 +1098,43 @@ async function callCloudAi(llm, model, messages) {
       }
     })()
   ])
+  /*
+   * 流本身失败时，错误要**原样抛出去**交给 classifyAiError（429 / 5xx / 断流各有各的归类）。
+   * 先在这里接住转成值，是为了让「时限先到」时不会留下一个没人管的 unhandledRejection。
+   */
+  const settled = consume.then(
+    () => null,
+    (err) => err || new Error('上游流式响应中断')
+  )
+
+  /*
+   * 墙钟闸门：`Promise.race` 只判「谁先到」，不等落败方 —— 卡死的流不该继续占着这一次调用。
+   */
+  let timer = null
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(true), deadline)
+  })
+  const timedOut = await Promise.race([settled.then(() => false), expired])
+  if (timer) clearTimeout(timer)
+
+  if (timedOut) {
+    /*
+     * 尽力把两条流关上（生成器 return / Readable destroy）：关不掉也不等它 ——
+     * 值我们已经要返回了，把连接留着的唯一后果是这个实例的空转。
+     */
+    for (const s of [res.textStream, res.dataStream]) {
+      try {
+        if (s && typeof s.return === 'function') s.return()
+        else if (s && typeof s.destroy === 'function') s.destroy()
+      } catch (e) {
+        /* 关不上就随它去：下面照抛时限错误，用户拿到的归类与文案不受影响 */
+      }
+    }
+    throw deadlineError(deadline, purpose || DEFAULT_PURPOSE)
+  }
+
+  const failure = await settled
+  if (failure) throw failure
 
   return { content, finishReason, reasoningChars, usage }
 }
@@ -1036,8 +1151,22 @@ function classifyAiError(err) {
   if (status === 429) return 'rate'
   /* 401/403/402 都指向「平台侧配置或额度」问题，重试无用 —— 与旧版同口径归 upstream_quota */
   if (status === 401 || status === 403 || status === 402) return 'upstream_quota'
+  /*
+   * 400 = 请求本身不合法（「参数过大」就落在这里）：重发同一请求必然再被拒，
+   * 与「上游抖了（5xx）」是两回事，故归不可重试的 badrequest —— 之前落默认 network，
+   * 端上会把「参数过大」当网络抖动白重试一轮长生成（报告一次 30~40s）。
+   */
+  if (status === 400) return 'badrequest'
   /* 5xx = 上游自己抖了：与旧版同口径归可重试的 upstream（别把它说成账户问题，也别归成 network 之外的新词） */
   if (status >= 500 && status < 600) return 'upstream'
+  /*
+   * 云开发 AI 走 SDK，抛错时可能没有 HTTP status，只给一句中文 message（如「请求大模型参数过大」）。
+   * 这类同样是「请求本身超限、重试无用」：靠关键词兜住，别让它掉回可重试的 network。
+   */
+  const msg = String((err && (err.message || err.errMsg)) || '')
+  if (/参数过大|请求.*(过大|超长)|too large|too many tokens|context length|maximum context|超长|超出.*(上限|限制)/i.test(msg)) {
+    return 'badrequest'
+  }
   return 'network'
 }
 
@@ -1113,7 +1242,12 @@ async function handleChat(event) {
    * 端上发起生成前也判一次（utils/quota.ts / qa.ts），那道门管的是界面与提前拦截；
    * 这道门管的是「改包者把端上那份上限改大」—— 上限、计数、会员身份三者全在云端。
    */
-  const gate = await quotaGate(openid, event.purpose, isMember)
+  /*
+   * 用途只在**一个地方**归一化：额度池判定、报文日志、本次调用的时限档三处都要它，
+   * 各写一遍 `event.purpose || DEFAULT_PURPOSE` 迟早漂移成三种口径。
+   */
+  const purpose = event.purpose || DEFAULT_PURPOSE
+  const gate = await quotaGate(openid, purpose, isMember)
   if (gate) return gate
 
   /*
@@ -1139,19 +1273,33 @@ async function handleChat(event) {
     requested,
     model,
     downgraded,
-    purpose: event.purpose || DEFAULT_PURPOSE,
+    purpose,
     messages: norm.messages.length,
     chars: norm.messages.reduce((n, m) => n + String(m.content || '').length, 0),
-    maxTokens: llm.chatMaxTokens
+    maxTokens: llm.chatMaxTokens,
+    /*
+     * 本次给了多少秒（aux 与报告档不同，见 deadlineOf）。这一行是「-504003 到底卡在哪一次调用」
+     * 的唯一线索：平台掐死函数时**不会有任何返回**，但这条 chat:req 在掐死之前早就打出来了 ——
+     * 控制台里紧挨着报错的那一行，就是凶手。
+     */
+    deadlineMs: deadlineOf(purpose)
   })
 
   let out
   try {
-    out = await callCloudAi(llm, model, norm.messages)
+    out = await callCloudAi(llm, model, norm.messages, purpose)
   } catch (err) {
     /* 上游根本没回（超时 / 断流）或 SDK 侧报错：这条最要紧 —— 端上只会看到一句「平台通道未就绪」 */
     rawLog('chat:err', String(err && err.message ? err.message : err))
     const kind = classifyAiError(err)
+    /*
+     * 我们自己掐的那一道（见 deadlineError）：文案已经写全了「为什么掐、接下来怎么办」，
+     * **不能再走 failDetail** —— 它见到「超时」二字就让用户去控制台把超时时间调大，
+     * 而这里的现场恰恰是「控制台已经顶到 60 秒上限了」，照着做只会白折腾。
+     * 归类仍是 network（可重试）：慢是偶发故障的常见形态，而这条通道的重试是**新开一次调用**
+     * （每次调用各有一份 60 秒预算），与「重试必定再撞同一道墙」是两回事。
+     */
+    if (err && err.isDeadline) return { ok: false, kind: 'network', error: err.message }
     /*
      * upstream_quota 是**平台账户**的问题（云开发 AI 的额度 / 授权），不是用户额度。
      * 文案必须说清是谁的问题：说成「你的额度用完了」会把用户引去查自己那份满着的额度页
@@ -1211,6 +1359,24 @@ async function handleChat(event) {
         : `输出撞上 max_tokens=${llm.chatMaxTokens} 被截断，正文为空。` +
           `重发同一请求必然再撞同一道墙：请调大 llm.config.js 的 chatMaxTokens，或缩短提示词`
       return { ok: false, kind: 'truncated', finishReason, error }
+    }
+    if (finishReason === 'content_filter') {
+      /*
+       * 内容安全拦截（2026-10-11 真机踩到）：模型思考了 4691 字，最终正文被内容安全策略过滤成空。
+       * 它和 'length' 一样是**确定性**的 —— 重发同一请求大概率再次被拦，故不放进 RETRYABLE_KINDS；
+       * 但成因与改法都和 'length' 不同：不是超时、不是额度、也不是撞输出上限，而是**内容本身**越线。
+       * 调配置、换档位都无效，只能往内容侧找（对象的名称/素材，或诱导风险/争议判断的措辞）。
+       */
+      return {
+        ok: false,
+        kind: 'content_filter',
+        finishReason,
+        error:
+          `云开发 AI 内容安全拦截（finish_reason=content_filter，思考 ${reasoningChars} 字后被拦）：` +
+          '生成的内容触发了内容安全策略，正文被过滤为空。这不是超时 / 额度 / 模型配置问题，' +
+          '重发同一请求大概率再次被拦（故不重试）。请核对本次对象的名称与素材是否含敏感表述，' +
+          '或去掉诱导风险 / 争议判断的措辞后再试。'
+      }
     }
     /*
      * 没有 finish_reason 可依（上游没给 / 给了别的值）：保持可重试，但**必须把这个字段报出来**，

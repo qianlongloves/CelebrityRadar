@@ -32,10 +32,10 @@ module.exports = function createReportStore(deps) {
    * 失联判定，**须与端上 src/utils/cache.ts#BUILDING_TIMEOUT_MS 同值**。
    *
    * 2026-10-11 随「分批生成」上调（原值 90s 是**单次调用时代**的估算）：构建现在是 4 批顺序调用，
-   * 每批 chatJSON 内部最多 2 次尝试，单次上游超时 50s（本目录 index.js#LLM_CHAT_TIMEOUT_MS），
+   * 每批 chatJSON 内部最多 2 次尝试，单次调用时限 45s（本目录 index.js#CHAT_DEADLINE_MS），
    * 再加重合检索与余量。原值短于真实构建 ⇒ 正常构建跑到一半就被他人判为失联并抢锁。
    */
-  const BUILDING_TIMEOUT_MS = 445 * 1000
+  const BUILDING_TIMEOUT_MS = 405 * 1000
   /** 单份报告上限（字节）。callFunction 官方建议请求体 ≤ 100KB，贴着它取 */
   const REPORT_MAX_BYTES = 100 * 1024
   /** 中间结果上限（P0-B，saveParts）：一批几千字节，四批封顶，给到 80KB 足够且仍在 callFunction 建议值内 */

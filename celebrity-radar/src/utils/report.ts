@@ -1801,11 +1801,9 @@ export async function buildReport(
       /*
        * 其余失败只丢这一组：它是「这一批写坏了 / 网络抖了」，与后面的批无因果关系，
        * 继续跑不是白花 —— 已成功的批照常合并，缺的那几节在报告页表现为对应卡片不出现。
-       * 冷却只拦「值得等待」的失败（网络 / 上游 5xx / 429 限流）：密钥无效、通道未配置这类，
-       * 用户修好后应立即可用，设冷却只会让「修好了还要白等 10 分钟」。
+       * 冷却不在这里设：单批失败说明不了上游整体不可用（可能只是这一批偶发抖动），部分成功
+       * 照常落库，此时设冷却反而挡住用户补缺/刷新。只有「四批全败」才值得拦（见 done === 0 分支）。
        */
-      const rateLimited = /频繁|429/.test(result.error)
-      if (result.retryable || rateLimited) setCooldown('llm')
       diagLog('warn', 'auth', `报告分批失败（${batch.key}），该组留空：${result.error}`)
       lastFail = result
       continue
@@ -1845,6 +1843,13 @@ export async function buildReport(
   if (done === 0) {
     /* 四批全败 —— 与原单次路径同款抢救：纯文本简版（§5.4 用例 9），不再套结构化 Schema */
     diagLog('warn', 'auth', `报告分批全部失败，降级纯文本：${lastFail ? lastFail.error : '无可用批次'}`)
+    /*
+     * 冷却只在整份都失败时设：此时才说明上游整体不可用（网络 / 上游 5xx / 429 限流），
+     * 拦的是「立即重试同样会失败」的白等；密钥无效、通道未配置这类用户修好应立即可用，
+     * 不该被冷却拖 10 分钟。retryable 由 RETRYABLE_KINDS=['upstream','network'] 界定，
+     * 与这里的「值得等待」口径一致。单批失败（部分成功）已在上方跳过冷却。
+     */
+    if (lastFail && (lastFail.retryable || /频繁|429/.test(lastFail.error))) setCooldown('llm')
     const fallback = await chatText(SYSTEM_FALLBACK, `名人：${name}`)
     if (fallback.ok) {
       return {
