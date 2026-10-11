@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-688%20passing-success.svg)](#开发与测试)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
-> 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 人物档案 / 动态 / 语录 / 点评 / 争议与回应 / 时间线 / 名词解释…），再在端上聚合出词云、情绪走势与热度趋势。
+> 面向微信生态的**名人动态情报台**小程序：输入任意名人名字 → 联网检索近期公开报道 → 大模型提炼成结构化报告（简介 / 人物档案 / 动态 / 语录 / 点评 / 争议与回应 / 时间线 / 名词解释…），再在端上聚合出人物速览、风险雷达与商业价值速览等卡片。
 
 - 技术形态：Taro 3（React）+ Taro UI ｜ 云后端：腾讯云 CloudBase（微信云开发）
 - 许可：[Apache-2.0](./LICENSE) ｜ 更新日志：[`CHANGELOG.md`](./CHANGELOG.md)
@@ -42,7 +42,7 @@
 
 ## 这是一个什么样的项目
 
-一个完整、可编译运行的微信小程序工程：端上 19 个页面，云侧 10 个云函数与 18 张数据库集合，
+一个完整、可编译运行的微信小程序工程：端上 19 个页面，云侧 12 个云函数与 18 张数据库集合，
 覆盖「搜索 → 消歧 → 检索 → 生成 → 缓存 → 订阅 / 收藏 / 分享 / 问答 / 对比」的全链路。
 
 设计重心只有两条：
@@ -61,13 +61,13 @@
 ### 内容生产
 
 - **发现与消歧** —— 搜索框 + 热门领域卡；同名人物候选列表（带领域筛选项）+「都不是 TA」兜底，产出稳定 `personKey`（形如 `雷军#tech`）
-- **报告生成** —— 博查联网检索 → LLM 生成结构化 JSON → zod 全字段校验 + 来源 URL 白名单清洗；**逐段卡片化渲染**（简介 / 人物档案 / 关系图谱 / 近期动态 / 经典名言 / AI 点评 / 近期争议与回应 / 时间线 / 后续关注 / 名词解释 + 一行溯源摘要），骨架屏 + 逐段呈现，附「生成于 xx 前 / 刷新最新」双入口；事实类段落**必须指出素材出处**，指不出一律整条剔除，段落真的为空也出卡写明原因
-- **端上聚合卡** —— 人物速览 / 立场与舆情 / 关键词云 / 语录主题 / 热度趋势 —— **纯端上聚合**，存量缓存同样生效，不新增模型调用与生成额度
+- **报告生成** —— 博查联网检索 → 素材按报告模板分组、分批注入提示词（一次生成 = **4 批**：基本档案 / 事实 / 判断与风险 / 细节与延伸，每批独立契约、独立落库，单批失败只丢那一组）→ LLM 生成结构化 JSON → zod 全字段校验 + 来源 URL 白名单清洗；**逐段卡片化渲染**（简介 / 人物档案 / 关系图谱 / 近期动态 / 经典名言 / AI 点评 / 近期争议与回应 / 时间线 / 商业合作与代言 / 名词解释 + 一行溯源摘要；报告模板共 **17 节**，免费档 11 节 / 会员档 6 节），骨架屏 + 逐段呈现，附「生成于 xx 前 / 刷新最新」双入口；事实类段落**必须指出素材出处**，指不出一律整条剔除，段落真的为空也出卡写明原因
+- **端上聚合卡** —— 人物速览 / 立场与舆情 / 风险雷达 / 商业价值速览 / 商业合作与代言 —— **纯端上聚合**，存量缓存同样生效，不新增模型调用与生成额度
 - **出处核对** —— 只核对「能核对的事实」（这条名言的出处链接是否在本次素材内、那篇报道里有无相同表述），**不做 AI 真伪判定**
 
 ### 浏览与沉淀
 
-- **关注** —— 关注列表 + 变化概览（谁有新动态）+ 聚合流（`feed_cache` 归并 + 下拉刷新，每账号每日 ≤ 10 次）
+- **关注** —— 关注列表 + 变化概览（谁有新动态）+ 聚合流（`feed_cache` 归并 + 下拉刷新，每账号每日 ≤ 10 次，会员 20 次）
 - **周报** —— 一键汇总关注对象最近 7 天的动态 → 逐人要点 + 本周综述 + 话题词；素材取自缓存，**人与其条目以材料为准**，按 ISO 周本机缓存
 - **收藏 / 历史** —— 四类收藏（名言 / 报告 / 动态 / 时间线，`openid#type#hash` 主键防重）+ 浏览历史（保留 50 条）；收藏页名言可直接出**名言卡**
 - **消息中心** —— 一条时间流：关注更新 / 周报提醒 / 平台公告 / 关键词预警；已读**逐条记**，只存本机（零新增集合 / 云函数 / 模型调用）
@@ -84,8 +84,8 @@
 
 ### 会员（freemium）
 
-- **额度** —— 免费版每日 3 次主动生成、会员 30 次（缓存命中不计次；**周报与报告共用这一池**）；AI 提问免费 5 次 / 会员 30 次（与生成分开计数，回答成功才计数）；关注动态刷新两版**同为**每日 10 次；免费档另有「同一份报告生成后 12 小时内不重复生成」的冷却，会员不受限。这些既在「我的」页的配额卡上展示，也在会员中心的**「额度与次数一览」**里逐条列全（含关键词 5 个 / 监控 5 人 / 提问 120 字这类容量与输入上限）；所有数值的唯一来源是 `src/utils/member.ts#MEMBER_BENEFITS`，页面与闸门都引用它，不写死数字
-- **「质」权益** —— **模型供应商自选**（DeepSeek / 通义千问 / 智谱 GLM / Moonshot 任选，key 全在云函数，用户零配置）+ 模型档位（免费版锁定「极速版」，会员可用「标准版 / 深度推理」；换供应商时档位清单整组跟着换，用户选的那一档不变）+ 报告**深度模式**（检索加厚 + 对比视角 / 风险提示 / 信源分歧三段专享内容）
+- **额度** —— 免费版每日 3 次主动生成、会员 30 次（缓存命中不计次；**周报与报告共用这一池**）；AI 提问免费 5 次 / 会员 30 次（与生成分开计数，回答成功才计数）；关注动态刷新免费 10 次 / 会员 20 次；免费档另有「同一份报告生成后 12 小时内不重复生成」的冷却，会员不受限。这些既在「我的」页的配额卡上展示，也在会员中心的**「额度与次数一览」**里逐条列全（含关键词 5 个 / 监控 5 人 / 提问 120 字这类容量与输入上限）；所有数值的唯一来源是 `src/utils/member.ts#MEMBER_BENEFITS`，页面与闸门都引用它，不写死数字
+- **「质」权益** —— **模型厂商自选**（云开发 AI / DeepSeek / 智谱 GLM / Kimi / 通义千问 **5 家**，含零配置的**云开发 AI** 默认通道，key 全在云函数，用户零配置）+ **质量档**（免费版锁定「基础版」，会员可切「标准版 / 高级版」）+ 报告**深度模式**（检索加厚 + 对比视角 / 风险提示 / 信源分歧三段专享内容）+ **完整报告模板**（会员 17 节，多出 6 节专享：商业速览 / 商业合作 / 会员专享 / 同领域坐标 / 立场与舆情 / 名词解释）
 - **定价** —— 月 ¥9.9 / 季 ¥25 / 年 ¥68；**价格源唯一**（云函数 `payCreate` 的 `PLANS`，端上拉取展示，改价无需发版）
 
 ### 平台能力
@@ -132,7 +132,7 @@
 
 #### 名人深度报告
 
-逐段卡片化渲染（简介 / 人物档案 / 关系图谱 / 近期动态 / 经典名言 / AI 点评 / 争议与回应 / 时间线 / 后续关注 / 名词解释），事实类段落必须指得出素材出处。
+逐段卡片化渲染（简介 / 人物档案 / 关系图谱 / 近期动态 / 经典名言 / AI 点评 / 争议与回应 / 时间线 / 商业合作与代言 / 名词解释），事实类段落必须指得出素材出处。
 
 <table>
   <tr>
@@ -171,7 +171,7 @@
 <table>
   <tr>
     <td align="center"><img src="./assets/screenshots/09-mine.png" width="165" alt="我的页"><br><sub><b>我的</b> · 配额透明展示 / 会员权益</sub></td>
-    <td align="center"><img src="./assets/screenshots/10-providers.png" width="165" alt="模型供应商"><br><sub><b>模型供应商自选</b> · DeepSeek / 通义千问 / 智谱 GLM / Moonshot 任选</sub></td>
+    <td align="center"><img src="./assets/screenshots/10-providers.png" width="165" alt="模型厂商"><br><sub><b>模型厂商自选</b> · 云开发 AI / DeepSeek / 智谱 GLM / Kimi / 通义千问 任选</sub></td>
   </tr>
 </table>
 
@@ -186,7 +186,7 @@
 - **时间** —— dayjs：相对时间、ISO 周、配额日期键
 - **云后端** —— 腾讯云 CloudBase（微信云开发）：数据库 + 云函数；环境 ID 由本地配置提供
 - **检索源** —— 博查 `api.bochaai.com`：经云函数 `aiProxy` 代发
-- **大模型** —— **四家 OpenAI 兼容端点任选**：DeepSeek / 通义千问（DashScope 兼容模式）/ 智谱 GLM / Moonshot Kimi，默认 DeepSeek（`https://api.deepseek.com/v1`）；端上可选项与三档位见 `src/config/public.ts`，四家端点、Key 变量名与会员档位见 `cloudfunctions/aiProxy/llm.config.js`（配置步骤见「[配置说明](#配置说明)」第 3 节）
+- **大模型** —— **多厂商任选（5 家，含零配置的云开发 AI）**：云开发 AI（默认，零 key）/ DeepSeek / 智谱 GLM / Kimi / 通义千问，3 档质量档（基础版 / 标准版 / 高级版）；端上只上报「厂商 + 质量档」，具体能力槽由云端按用途裁决（报告 / 辅助走输出型，问答走推理型）。端上厂商 / 档位清单见 `src/config/public.ts` 的 `llm.vendors` / `llm.qualities`，端点、Key 变量名与模型注册表见 `cloudfunctions/aiProxy/llm.config.js`（`hotBoardRefresh` 里有一份逐字相同的副本，用例 07 钉住）；配置步骤见「[配置说明](#配置说明)」第 3 节
 
 依赖安装使用 `.npmrc` 中的 `legacy-peer-deps=true`；`@tarojs/plugin-platform-*` 钉在 `^3.6.25`（勿升级），webpack 钉 `~5.91.0`。
 
@@ -201,7 +201,7 @@
   → 命中 report_cache？──是→ 直接渲染（不触发生成）
        │否
        └→ 博查联网检索（api.bochaai.com）→ 素材
-          → 大模型生成结构化 JSON（四家任选，经云函数 aiProxy 代发）→ zod 校验 + URL 白名单清洗
+          → 大模型生成结构化 JSON（多厂商任选，含零配置的云开发 AI；经云函数 aiProxy 代发）→ zod 校验 + URL 白名单清洗
           → 写入 report_cache → 渲染报告
 ```
 
@@ -215,9 +215,9 @@ src/utils/**              业务逻辑与云访问层（页面唯一的调用出
 utils/db.ts               自建数据访问适配层（id ↔ _id 映射、分页续取、写兜底）
 utils/cloud.ts            CloudBase 初始化与诊断
      ↓
-cloudfunctions/**         10 个云函数（密钥、配额、机审、定时任务、支付）
+cloudfunctions/**         12 个云函数（密钥、配额、机审、定时任务、支付）
      ↓
-上游：博查检索 / 大模型（四家任选）/ 微信支付 / security.msgSecCheck
+上游：博查检索 / 大模型（多厂商任选，含云开发 AI）/ 微信支付 / security.msgSecCheck
 ```
 
 两个关键机制：
@@ -234,8 +234,8 @@ cloudfunctions/**         10 个云函数（密钥、配额、机审、定时任
 环境：Node 16 / 18（建议 LTS）、微信开发者工具、已开通云开发的小程序 appid。
 
 - **小程序 appid + 主体资质** —— 微信平台要求；不配则无法真机预览，无法上线
-- **云开发环境（腾讯云 CloudBase）** —— 数据库与 10 个云函数都跑在这里；不配则登录与**全部** DB 调用不会发起，「我的」页显示「云服务未配置」
-- **大模型 API Key（至少 `DEEPSEEK_API_KEY`）** —— 生成报告（经云函数 `aiProxy` 代打）。用户在「我的」页可以切到别家，**列出哪几家就要配哪几家的 key**（`QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`）；没配的家用户一切过去就是「未配置额度」。不配则生成报错；已缓存报告的浏览、收藏仍可用
+- **云开发环境（腾讯云 CloudBase）** —— 数据库与 12 个云函数都跑在这里；不配则登录与**全部** DB 调用不会发起，「我的」页显示「云服务未配置」
+- **大模型 API Key（可选；默认可零 key）** —— 生成报告（经云函数 `aiProxy` 代打）。默认厂商**云开发 AI** 零 key、开箱即用；要开放外部厂商，就在云端配它的 key（`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY`（通义千问）），**配了哪家端上才出现哪家**。已缓存报告的浏览、收藏始终可用
 - **博查（Bocha）API Key** —— 联网检索素材；不配则检索为空，报告缺素材、时间线不完整
 - **ICP 备案 / 服务类目** —— 上线审核；不配则只影响发布，不影响本地调试
 
@@ -269,22 +269,23 @@ npm run build:h5       # H5 端构建（调试用）
 ### 权益与价格（改一个文件就够）
 
 会员额度、每日次数、冷却、防滥用上限、云端检索与字符上限、套餐价格与天数，
-以及报告的条数目标 / 裁剪上限 / 检索厚度，全部写在 **`src/config/benefits.ts`** —— 唯一真源。
+以及报告的条数目标 / 裁剪上限 / 检索厚度，全部写在 **`src/config/benefits.ts`** —— 唯一真源；
+用户个性化配置的默认值另有一份真源 **`src/config/user-defaults.ts`**（`users.settings` 的默认值与键白名单）。
 
 云函数各自独立打包上传、云环境里 require 不到端上的 TS，所以云端用的是**生成出来的副本**：
 
 ```bash
-# 1. 改 src/config/benefits.ts
-npm run config:sync     # 2. 把副本刷进 cloudfunctions/{aiProxy,quotaGuard,payCreate}/
+# 1. 改 src/config/benefits.ts（或 src/config/user-defaults.ts）
+npm run config:sync     # 2. 刷副本：benefits.config.js → {aiProxy,quotaGuard,payCreate}；user-defaults.config.js → {userInit,userBackfill}
 npm test                # 3. 校验：漏了第 2 步会红（14-config-sync.js 比对真源与副本）
 npm run config:check    # 只读校验，CI 用（有差异则 exit 1）
 ```
 
-副本（`cloudfunctions/*/benefits.config.js`）是**自动生成**的，文件头写着「请勿手改」；
+副本（`cloudfunctions/*/benefits.config.js` 与 `cloudfunctions/*/user-defaults.config.js`）是**自动生成**的，文件头写着「请勿手改」；
 改完要**重新部署对应云函数**才生效，端上随下次发版。
 
 **仍为手工同步**：`aiProxy` 与 `hotBoardRefresh` 两份 `llm.config.js`（含 `resolveLlm` 函数与
-各家 Key 变量名，不是纯数值，供应商增删本身也需要人工验证）。
+各家 Key 变量名，不是纯数值，厂商增删本身也需要人工验证）。
 
 ---
 
@@ -292,7 +293,7 @@ npm run config:check    # 只读校验，CI 用（有差异则 exit 1）
 
 ### 1. 端上配置：`public.ts`（进包）+ `local.ts`（不进包）
 
-- **`src/config/public.ts`**（进版本库）—— 与部署无关的公共配置：可选**供应商**清单与各家的三档位、`memberOnly` 分档。**严禁写入任何 key**（key 在云函数环境变量里，用户切换供应商只是换一次请求参数）
+- **`src/config/public.ts`**（进版本库）—— 与部署无关的公共配置：可选**厂商**清单 `llm.vendors`（5 家）与**质量档**清单 `llm.qualities`（基础 / 标准 / 高级，带 `memberOnly` 分档）。**严禁写入任何 key 或模型名**（key 只在云函数环境变量里；用户选厂商 / 质量档只是改一次请求参数）
 - **`src/config/local.example.ts`**（进版本库）—— 本地配置**模板**，值全为占位串
 - **`src/config/local.ts`**（不进版本库，已被 `.gitignore`）—— 你自己小程序的真实值：环境 ID、订阅模板 ID、业务域名白名单、本地调试开关
 
@@ -309,20 +310,21 @@ npm run config:check    # 只读校验，CI 用（有差异则 exit 1）
 
 `public.ts`：
 
-- **`llm.providers`** —— 可选**供应商**清单：每家有 `id`（须与云函数 `llm.config.js` 的 `PROVIDERS` 键一致）、展示名，与 `models`（统一的三档：`fast` / `standard` / `reason` = 极速版 / 标准版 / 深度推理）。**只列你云端配了 key 的家** —— 用户切到哪家，云函数就用哪家的 key 代打，端上不持有任何凭据
-- **`llm.provider` / `llm.model` / `llm.models`** —— 默认供应商、它的默认模型名、以及它的档位清单（后两者分别 = `providers[0]` 的 fast 档与 `providers[0].models`）。四家的档位标签完全一致（极速版 / 标准版 / 深度推理），所以会员文案（会员中心对比表、权益表）按它推导即可，加一家供应商不用改文案
-- **`models[].memberOnly`** —— `true` = 会员专属：免费用户即使本机选了该档，生成时也会回落该家的极速版。**改这一列必须同步云函数 `aiProxy` 的 `llm.config.js` 里对应供应商的 `memberOnlyModels`**，那份才是计费闸门（端上这份改包即可绕过）
+- **`llm.vendors`** —— 可选**厂商**清单（5 家，顺序即「我的」页顺序）：每家有 `key`（须与云函数 `llm.config.js` 的 `VENDORS` 键一致）、`icon`、`label`、`desc`。云开发 AI（`cloudbase`）恒在；外部厂商是否可选由云端就绪状态（配没配 Key）决定。端上不持有任何 key / 端点 / 模型名
+- **`llm.defaultVendor` / `llm.defaultQuality`** —— 默认厂商（`cloudbase`）与默认质量档（`basic`）；本机没存偏好时的兜底，须与云端 `DEFAULT_VENDOR` / `DEFAULT_QUALITY` 一致
+- **`llm.qualities`** —— 质量档清单（`basic` / `standard` / `premium` = 基础版 / 标准版 / 高级版）：每档有 `key`（须与云端 `QUALITIES` 一致）、`label`、`desc`、`memberOnly`。`memberOnly: true` = 会员专属档，免费用户即使本机选了，请求也会被云端**静默回落基础档**。**改这一列必须同步云函数 `llm.config.js` 的 `QUALITIES[].memberOnly`**，那份才是计费闸门（端上这份改包即可绕过）
 
-> 用户的供应商 / 档位偏好只存本机 storage（`settings:llm_provider` + `settings:llm_tier`）。
-> 存的是**档位标识**而不是模型名，所以换供应商时「我选的那一档」跟着走（DeepSeek 标准版 → 通义千问标准版），
-> 不需要用户重选一次；而档位清单整组换成那家的三档，这正是「换家 = 换档位参数」。
+> 用户的**厂商 + 质量档**偏好只存本机 storage（`settings:llm_provider` + `settings:llm_tier`）。
+> 两键都存**标识**（厂商键名 / `basic` / `standard` / `premium`）而不是模型名 —— 端上根本不持有模型名；
+> 质量档 3 档跨厂商同一套，换厂商时「我选的那一档」跟着走。具体模型由云端按「厂商 × 质量档 × 用途」
+> 在 `llm.config.js` 的注册表里裁决，**真正的计费闸门在云端**（端上这份改包即可绕过）。
 
 > 拆成两个文件的目的：仓库里留真实环境 ID，避免 fork 者直接连上原作者的云环境；
 > 而作者本地为放开额度把 `debug` 置 true 的改动，混在 `public.ts` 里也总有误提交的风险。
 
 ### 2. 密钥归属：只在服务端，端上零密钥
 
-- **`BOCHA_API_KEY` + 各家大模型的 key（`DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`）** —— 云函数 `aiProxy` / `hotBoardRefresh` 的环境变量（部署时从 `.env` 读）。**端上清单里列了哪几家，这里就要配齐哪几家**。❌ 不进包
+- **`BOCHA_API_KEY` + 各外部厂商的 key（`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY`（通义千问））** —— 云函数 `aiProxy` / `hotBoardRefresh` 的环境变量（部署时从 `.env` 读）。**配了哪家，端上才出现哪家**；默认厂商**云开发 AI** 走云开发 AI 通道，**无需 key**。❌ 不进包
 - **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** —— 三个定时云函数各自的环境变量（**三者必须是不同模板**，否则互相吃掉一次性订阅授权）。❌ 不进包
 - **`WX_APPSECRET`** —— 仅 `dbInit` 的环境变量（换 access_token 建索引时用）。❌ 不进包
 - **`DB_ADMIN_TOKEN`** —— 仅 `dbInit` 的环境变量（自定义口令，写操作的闸门）。❌ 不进包
@@ -339,31 +341,34 @@ npm run config:check    # 只读校验，CI 用（有差异则 exit 1）
 
 `src/config/local.ts` 会打进包，所以只该放「不是密钥、但跟机器走」的值。
 
-### 3. 模型供应商与 Key（四家任选）
+### 3. 模型厂商与 Key（5 家，含零配置的云开发 AI）
 
-端上「我的 → 模型供应商」让用户自己挑用哪家，**Key 全部由你（平台）在云函数里出**，用户零配置。当前端上开放的是**四家**（顺序即「我的」页里的顺序）：
+端上「我的 → 模型厂商与质量档」让用户选两样：**厂商**（可随时切）与**质量档**。**Key 全部由你（平台）在云函数里出**，用户零配置；默认厂商**云开发 AI** 走微信云开发 AI 通道，**零 key、开箱即用**。端上开放的 5 家（顺序即「我的」页里的顺序）：
 
-- **DeepSeek**（id `deepseek`）—— 变量名 `DEEPSEEK_API_KEY`；端点 `https://api.deepseek.com/v1`；三档 = `deepseek-v4-flash`（免费档）/ `deepseek-v4`、`deepseek-reasoner`（会员档）
-- **通义千问**（id `qwen`）—— 变量名 `QWEN_API_KEY`；端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`（DashScope 兼容模式）；三档 = `qwen-turbo` / `qwen-plus` / `qwen-max`
-- **智谱 GLM**（id `zhipu`）—— 变量名 `ZHIPU_API_KEY`；端点 `https://open.bigmodel.cn/api/paas/v4`；三档 = `glm-4-flash` / `glm-4-air` / `glm-4-plus`
-- **Moonshot Kimi**（id `moonshot`）—— 变量名 `MOONSHOT_API_KEY`；端点 `https://api.moonshot.cn/v1`；三档 = `moonshot-v1-8k` / `moonshot-v1-32k` / `moonshot-v1-128k`
+- **云开发 AI**（id `cloudbase`）—— **默认厂商**，零 key 兜底
+- **DeepSeek**（id `deepseek`）—— 变量名 `DEEPSEEK_API_KEY`；端点 `https://api.deepseek.com/v1`
+- **智谱 GLM**（id `zhipu`）—— 变量名 `ZHIPU_API_KEY`；端点 `https://open.bigmodel.cn/api/paas/v4`
+- **Kimi / 月之暗面**（id `moonshot`）—— 变量名 `MOONSHOT_API_KEY`；端点 `https://api.moonshot.cn/v1`
+- **通义千问**（id `qwen`）—— 变量名 `DASHSCOPE_API_KEY`；端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`（DashScope 兼容模式）
+
+质量档共 **3 档**：**基础版 basic**（免费）/ **标准版 standard**（会员）/ **高级版 premium**（会员）。具体用哪个模型**不由用户选** —— 报告与辅助调用走该档的 structured（输出型）能力槽，AI 问答走 reasoning（推理型）能力槽，槽位模型在云端 `llm.config.js` 的注册表里；某档缺该能力槽时云端在同厂商内**向下降档**并回执标记。
 
 配置步骤：
 
-1. 把四家的 Key 逐个填进 `celebrity-radar/.env`（由 `.env.example` 复制而来），**变量名必须与上表一致**。
-2. 确认 `cloudbaserc.json` 里 `aiProxy` 与 `hotBoardRefresh` 两个函数的 `envVariables` 含这四个变量名 —— 仓库里已经写好；若你不走 `tcb fn deploy` 而是用开发者工具右键上传，则要去云开发控制台逐项手工补。
+1. 若要开放某家外部厂商，把它的 Key 填进 `celebrity-radar/.env`（由 `.env.example` 复制而来），**变量名必须与上表一致**；**配了哪家，端上「我的」页才出现哪家**（云开发 AI 恒在、无需 key）。
+2. 确认 `cloudbaserc.json` 里 `aiProxy` 与 `hotBoardRefresh` 两个函数的 `envVariables` 含这些变量名 —— 仓库里已经写好；若你不走 `tcb fn deploy` 而是用开发者工具右键上传，则要去云开发控制台逐项手工补。
 3. 部署 `aiProxy` 与 `hotBoardRefresh`（`tcb fn deploy aiProxy && tcb fn deploy hotBoardRefresh`）。
-4. 真机验证：在「我的 → 模型供应商」逐家切过去各生成一次，能出报告即为配通。
+4. 真机验证：在「我的 → 模型厂商与质量档」逐家切过去各生成一次，能出报告即为配通。
 
 几条规则：
 
-- **清单列了几家，就要配几家的 Key**。列了四家却只填一家的 Key，等于给用户三个必然报错的选项（切过去报「平台未配置大模型额度（云函数环境变量 `QWEN_API_KEY`）」）。
-- **不想提供某一家**：从 `src/config/public.ts` 的 `llm.providers` 里删掉那一项（会员中心文案会跟着变），而**不是**"留着入口但不填 Key"。
-- **`LLM_PROVIDER` 只是云端兜底**，不是「选哪家」的总开关。它只在两种情况下生效：端上没带供应商、或带了个供应商表里没有的 id（老版本包 / 改包）。定时任务 `hotBoardRefresh` 没有端上偏好，走的正是这条，默认 `deepseek`。
-- **改会员档位要同时改两处**：端上 `public.ts` 各家的 `memberOnly`（管 UI 与请求值）与云函数 `llm.config.js` 的 `memberOnlyModels`（**管计费闸门**）。只改端上，改包即可白拿会员档。
-- **`OPENAI_API_KEY` 默认用不上**：`llm.config.js` 里有 OpenAI 这一项，但境内云函数连不上官方端点，端上清单里也**故意没有列它**（列了只会多一个必然失败的选项）。要接自建中转，见下一条。
-- **自建网关 / 中转站**：给 `aiProxy` 加 `LLM_BASE_URL` + `LLM_MODEL` + `LLM_API_KEY` 三个环境变量即可覆盖整张供应商表，`LLM_PROVIDER` 都不用改。⚠ 但 `LLM_MODEL` 是**全局覆盖**，会把所有用户锁到同一个模型上（端上仍显示各自选的档位），只当排障 / 中转开关，别当常态配置。
-- **想长期多加一家**：① 端上 `public.ts` 的 `llm.providers` 补一项；② 云函数 `aiProxy` 与 `hotBoardRefresh` 下的**两份** `llm.config.js` 各补一份配置（两份必须逐字一致 —— 微信云函数各自独立打包，跨目录 require 在部署后必然失效）；③ `.env` 与 `cloudbaserc.json` 补该家的 Key 变量名；④ 会员档位两处口径对齐。
+- **清单列了几家，就要配几家的 Key**（云开发 AI 除外，它零 key）。列了一家外部厂商却没填它的 Key，用户就看不到它 —— 「配了才出现」正是这么实现的，不要"留着入口但不填 Key"。
+- **端上只上报「厂商 + 质量档」**：请求由 `aiProxy` 代打，**能力槽由云端按用途（purpose）裁决**（报告 / 辅助走 structured，问答走 reasoning）；端上不持有任何模型名与 key。
+- **计费闸门在云端**：非会员请求标准版 / 高级版会被 `aiProxy` **静默降回基础版**（端上改包绕不过）。改会员档位要同时改两处：端上 `public.ts` 的 `llm.qualities[].memberOnly`（管 UI 与请求值）与云函数 `llm.config.js` 的 `QUALITIES[].memberOnly`（**管计费闸门**）。
+- **可选覆写环境变量**（不设即用默认值）：`LLM_VENDOR`（端上没带厂商 / 定时任务用的默认厂商，默认 `cloudbase`）、`LLM_TIER`（默认质量档）、`LLM_MODEL_<VENDOR>_<QUALITY>_<CAPABILITY>`（覆盖某槽位模型名，如 `LLM_MODEL_DEEPSEEK_STANDARD_REASONING`）、`LLM_HTTP_ENDPOINT_<VENDOR>`（覆盖厂商端点）。
+- **自建网关 / 中转站**：用 `LLM_HTTP_ENDPOINT_<VENDOR>` 覆盖对应厂商的端点即可，不必改注册表。
+- **云开发 AI 通道（默认）**：需在云开发控制台开通 AI 能力，且 `aiProxy` / `hotBoardRefresh` 的 `wx-server-sdk` ≥ 4.0.1、函数超时 60s。
+- **想长期多加一家**：① 端上 `public.ts` 的 `llm.vendors` 补一项（`key` 须与云端 `VENDORS` 键一致）；② 云函数 `aiProxy` 与 `hotBoardRefresh` 下的**两份** `llm.config.js` 的 `VENDORS` 注册表各补一份（两份必须逐字一致 —— 微信云函数各自独立打包，跨目录 require 在部署后必然失效；用例 07 逐字比对钉住）；③ `.env` 与 `cloudbaserc.json` 补该家的 Key 变量名。
 
 ---
 
@@ -385,21 +390,21 @@ npm run config:check    # 只读校验，CI 用（有差异则 exit 1）
 
 若你的 CloudBase CLI 版本不解析该变量，直接把 `cloudbaserc.json` 顶部的 `envId` 写成环境 ID 字面值即可。
 
-### 2. 部署云函数（10 个）
+### 2. 部署云函数（12 个）
 
-`.env` 里要填的是**博查 Key + 四家大模型的 Key**，缺哪家，用户在「模型供应商」切到那家就会报「未配置额度」：
+`.env` 里要填的是**博查 Key + 各外部厂商的 Key**（默认厂商**云开发 AI** 走云开发 AI 通道，零 key、无需配置）；缺哪家，该家就不会出现在「我的」页：
 
 ```
 BOCHA_API_KEY=...
 SERPER_API_KEY=...      # 可选：第二检索源（Google 索引；邮箱注册即送 2500 次，无需信用卡）
 TAVILY_API_KEY=...      # 可选：第二检索源备选（面向 LLM；1000 次/月，同样无需信用卡）
 DEEPSEEK_API_KEY=...
-QWEN_API_KEY=...
+DASHSCOPE_API_KEY=...   # 通义千问（阿里云百炼）
 ZHIPU_API_KEY=...
-MOONSHOT_API_KEY=...
+MOONSHOT_API_KEY=...    # Kimi
 ```
 
-**哪几家对用户可见，由端上 `src/config/public.ts` 的 `llm.providers` 决定**（当前四家）；只想开其中几家时，删端上清单里的项，而不是不填 Key —— 详见「配置说明 → 3. 模型供应商与 Key」。
+**哪几家对用户可见，由云端就绪状态决定**（配了哪家的 Key，端上 `src/config/public.ts` 的 `llm.vendors` 里那家才会出现在「我的」页；云开发 AI 恒在）；详见「配置说明 → 3. 模型厂商与 Key」。
 
 ```bash
 npm i -g @cloudbase/cli     # 只需一次
@@ -410,21 +415,23 @@ tcb fn deploy aiProxy       -e <your-env-id>
 
 `cloudbaserc.json` 已声明函数、环境变量与定时器，逐个 `tcb fn deploy <函数名>` 即可。
 
-- **`aiProxy`** —— 平台代付上游密钥（`search` / `chat`）+ **云端闸门**（会员身份读 `memberships`、每日上限按 `quota.config.js`、防滥用就地自增 `ai_calls`、素材加厚按 `count` 分档）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）+ **共享缓存写口**（`action:'report'`：`acquire` / `release` / `save` / `saveFeed`）；**供应商由端上请求指定**（用户自选），云端只兜底。触发：端上调用；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`）+ `SERPER_API_KEY` / `TAVILY_API_KEY`（可选：第二检索源，**任填其一**；都不填则只用博查）+ `OPENAI_API_KEY`（默认用不上）+ `AI_PROXY_TEST_TOKEN`（可选：`test` 探针口令，**不配则该动作一律拒绝**）+ `AI_PROXY_RAW_LOG`（可选：云端报文打印，**写 `on` 才开**；日志在云开发控制台看）
+- **`aiProxy`** —— 平台代付上游密钥（`search` / `chat` / `generate` / `aux` / `test` / `vendors`）+ **云端闸门**（会员身份读 `memberships`、每日上限按 `quota.config.js`、防滥用就地自增 `ai_calls`、素材加厚按 `count` 分档、**非会员质量档静默回落基础档**）+ 对话输出上限（所有请求都下发，见 `chatMaxTokens`）+ **共享缓存写口**（`action:'report'`：`acquire` / `release` / `save` / `saveFeed`）；**厂商 + 质量档由端上请求指定**（用户自选），云端按用途裁决能力槽，只在端上没带 / 带了不认识的值时才用 `LLM_VENDOR` / `LLM_TIER` 兜底。触发：端上调用；环境变量：`BOCHA_API_KEY` + 各厂 Key（`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY`；**默认厂商云开发 AI 零 key**）+ `SERPER_API_KEY` / `TAVILY_API_KEY`（可选：第二检索源，**任填其一**；都不填则只用博查）+ 可选覆写 `LLM_VENDOR` / `LLM_TIER` / `LLM_MODEL_<VENDOR>_<QUALITY>_<CAPABILITY>` / `LLM_HTTP_ENDPOINT_<VENDOR>` + `AI_PROXY_TEST_TOKEN`（可选：`test` 探针口令，**不配则该动作一律拒绝**）+ `AI_PROXY_RAW_LOG`（可选：云端报文打印，**写 `on` 才开**；日志在云开发控制台看）+ `AI_PROXY_QUOTA_GUARD` / `AI_PROXY_CHAT_DEADLINE_MS` / `AI_PROXY_AUX_DEADLINE_MS`（可选）
 - **`quotaGuard`** —— 配额计数权威（原子自增 + 服务端日期），`refresh` / `generate` / `ask` 三类。触发：端上调用；环境变量：—
 - **`contentCheck`** —— 内容安全机审（云调用 `security.msgSecCheck`），送检源 = AI 提问。触发：端上调用；环境变量：—
-- **`hotBoardRefresh`** —— 热门名人榜每日生产（写 `hot_board`）。触发：定时 06:30；环境变量：`BOCHA_API_KEY` `LLM_PROVIDER` + 四家的 Key（定时任务没有端上偏好，取 `LLM_PROVIDER`，默认 DeepSeek，因此**这家必须配 Key**）
+- **`hotBoardRefresh`** —— 热门名人榜每日生产（写 `hot_board`）。触发：定时 06:30；环境变量：`BOCHA_API_KEY` + 各厂 Key（可选覆写 `LLM_VENDOR` / `LLM_TIER` / `LLM_HTTP_ENDPOINT_<VENDOR>` 等；定时任务没有端上偏好，取 `LLM_VENDOR`，默认云开发 AI，**零 key 即可用**）
 - **`notifyFollowUpdates`** —— 关注更新订阅消息推送。触发：定时 09:00（**拒绝端上调用**）；环境变量：`BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID`
 - **`keywordAlert`** —— 关键词舆情预警（按订阅词检索并写 `keywords`）。触发：定时 09:20（**拒绝端上调用**）；环境变量：`BOCHA_API_KEY` `ALERT_TEMPLATE_ID`
 - **`riskWatch`** —— 名人风险监控（按被监控的人检索、写 `risk_signals` 并推送）。触发：定时 09:40（**拒绝端上调用**）；环境变量：`BOCHA_API_KEY` `RISK_TEMPLATE_ID`
 - **`payCreate`** —— 会员下单（服务端定价 + 云支付统一下单）。触发：端上调用；环境变量：`WX_PAY_SUB_MCH_ID` `PAY_CALLBACK_ENV_ID`
 - **`payCallback`** —— 支付链路的**唯一后端**：支付结果通知（金额校验 + 幂等续期会员）+ **售后**（退款运营写口 `adminOp:'refund'` / 手动对账 `adminOp:'reconcile'`）。触发：微信支付回调（**端上调用受闸门约束**，见下）+ 定时对账 `payReconcile`（每小时第 15 分）；环境变量：`PAY_ADMIN_TOKEN`（运营写口口令，不配则写口一律拒绝）+ `PAY_CALLBACK_GUARD`（可选灰度开关）
 - **`dbInit`** —— 运维工具：建集合 / 比对字段 / 建·改索引（端上不调用）。触发：手动；环境变量：`DB_ADMIN_TOKEN` `WX_APPID` `WX_APPSECRET`
+- **`userInit`** —— 用户账号与个性化配置的**唯一写者**（`users` 行的首登初始化 + 缺键补齐 + 改配置，`action:'ensure'` / `'set'`）。触发：端上登录后调用（**失败回退端上本地初始化**）；环境变量：—；部署前先 `npm run config:sync` 生成 `user-defaults.config.js` 副本
+- **`userBackfill`** —— 一次性运维：把「改造前写入 `settings:{}`、此后未再登录」的存量用户补齐配置（语义与 `userInit.ensure` 完全一致、幂等；**拒绝端上调用**，不传 `apply:true` 为 dry-run）。触发：手动；环境变量：—；用完即删
 
 几条容易踩的：
 
 - **「配置是否随部署生效」取决于部署方式**：`tcb fn deploy`（CloudBase CLI）会读仓库根 `cloudbaserc.json`，把环境变量、超时、触发器一并下发；微信开发者工具右键「上传并部署」**只上传代码**，不读 `cloudbaserc.json` ⇒ 环境变量 / 超时 / 触发器都得去控制台补。
-- `aiProxy`、`hotBoardRefresh`、`notifyFollowUpdates` 的执行超时必须是 **60 秒**（`aiProxy` 内还要满足 `CHAT_DEADLINE_MS = 45s` / `AUX_CHAT_DEADLINE_MS = 20s` 更小 —— 那是函数**给自己掐的时限**：撞到就主动断开、按可重试失败返回，而不是被平台静默掐死），否则长报告、热门榜一轮「6 检索 + 1 生成」、推送一轮最多 20 次检索都会被平台提前掐断（端上 `-504003`）。⚠ **60 秒是微信云函数的上限**：控制台里已经是 60 秒却仍报 `-504003`，说明单次活儿本身就超过了 60 秒，这时调超时无路可走 —— 只能换档位（深度推理档最费时）或把单次生成拆得更细。
+- `aiProxy`、`hotBoardRefresh`、`notifyFollowUpdates` 的执行超时必须是 **60 秒**（`aiProxy` 内还要满足 `CHAT_DEADLINE_MS = 45s` / `AUX_CHAT_DEADLINE_MS = 20s` 更小 —— 那是函数**给自己掐的时限**：撞到就主动断开、按可重试失败返回，而不是被平台静默掐死），否则长报告、热门榜一轮「6 检索 + 1 生成」、推送一轮最多 20 次检索都会被平台提前掐断（端上 `-504003`）。⚠ **60 秒是微信云函数的上限**：控制台里已经是 60 秒却仍报 `-504003`，说明单次活儿本身就超过了 60 秒，这时调超时无路可走 —— 只能换档位（高级版 premium 最费时）或把单次生成拆得更细。
 - `dbInit` 是**运维工具、不是运行时依赖**：只在建集合 / 建索引时部署，用完 `tcb fn delete dbInit` 即可（用法见第 3 节）。
 - `contentCheck` 无环境变量（走云调用，凭证由平台托管），唯一前提是 `cloudfunctions/contentCheck/config.json` 里的 `permissions.openapi` **随上传生效**；缺这条声明时端上按 **fail-open** 静默放过。⚠ 它没法用控制台「云端测试」验（需要真实 `openid`），只能在真机问答页验。
 - **端上不能触发定时任务与支付回调（调用方闸门）**：云函数部署后端上 `wx.cloud.callFunction` 就能调到它，而 4 个定时推送函数（`notifyFollowUpdates` / `keywordAlert` / `riskWatch`）与 `payCallback` 本就不该由端上调用 —— 端点判据是 `getWXContext().OPENID`（端上调用必带，定时器 / 微信回调 / 控制台「云端测试」都不带）。前三个**一律拒绝**端上调用；`hotBoardRefresh` 保留端上 `action:'ensure'` 补跑链路，**只拦端上 `force`**；`payCallback` 用 `PAY_CALLBACK_GUARD` **灰度**：默认 `log` 只记日志，在真机日志里确认过支付回调不带 `openid` 后再切 `strict`（即便判错，定时对账也会把滞留的 `granting` 补上，不会永久丢单）。
@@ -432,9 +439,9 @@ tcb fn deploy aiProxy       -e <your-env-id>
 **没有必装清单，按需部署即可**（不用的功能不部署，也不影响其他部分）：
 
 - **必装**：`aiProxy` —— 生成报告 / 检索 / AI 问答都走它。
-- **建议（现在实际算必装）**：`quotaGuard` —— 云端闸门读的就是它写的计数；不部署 = 三张配额表恒空 ⇒ 每日上限在云端形同不存在（端上仍会自己拦，但那正是「改包即可绕过」的那半边）。部署顺序见第 3 节。
+- **建议（现在实际算必装）**：`quotaGuard` —— 云端闸门读的就是它写的计数；不部署 = 三张配额表恒空 ⇒ 每日上限在云端形同不存在（端上仍会自己拦，但那正是「改包即可绕过」的那半边）。部署顺序见第 3 节。另建议部署 `userInit` —— `users` 行与个性化配置的唯一写者；不部署则端上回退本地初始化、偏好不上云。
 - **可选**：`contentCheck`（机审，fail-open，不部署只是少一道合规兜底）、`hotBoardRefresh`（首页热门榜，需定时触发器 06:30）、`notifyFollowUpdates` / `keywordAlert` / `riskWatch`（三路订阅推送，各需一枚独立模板 + 定时触发器）、`payCreate` / `payCallback`（会员支付，需自己的商户号）。
-- **运维工具**：`dbInit`，用完即删。
+- **运维工具**：`dbInit` / `userBackfill`，用完即删。
 
 ### 3. 建集合与权限（18 张集合）
 
@@ -502,7 +509,7 @@ tcb fn invoke dbInit -e <your-env-id> --params '{"action":"init","token":"<口�
 
 真机预览与上线前，还要在「微信公众平台 → 开发管理」与小程序后台配好：
 
-- **request 合法域名**：**不需要配**。端上没有任何直连上游的请求 —— 博查检索与四家大模型全部由云函数代发，而云函数出网不受小程序域名白名单约束（云数据库 / 云函数走 `wx.cloud`，也不占域名）
+- **request 合法域名**：**不需要配**。端上没有任何直连上游的请求 —— 博查检索与各家大模型全部由云函数代发，而云函数出网不受小程序域名白名单约束（云数据库 / 云函数走 `wx.cloud`，也不占域名）
 - **业务域名**（可选）：只有想让「原文预览」页内嵌外站时才需要，填进 `src/config/local.ts` 的 `webviewDomains`（只写主域名，不带协议与路径）；不填则一律走「素材预览卡 + 复制链接」的降级路径
 - **隐私协议**：收集项为「匿名标识 openid、本地存储」，须与代码实际收集项一致
 - **客服功能**：开通并绑定客服人员（「内容举报 / 反馈」依赖 `open-type="contact"`）
@@ -595,8 +602,8 @@ celebrity-radar/
 │   ├── stores/                 # zustand store
 │   ├── styles/                 # 主题变量、底栏图标
 │   └── custom-tab-bar/         # 自定义底部菜单
-├── cloudfunctions/             # 10 个云函数
-│   ├── aiProxy/                # 平台代付密钥闸门 + 会员 / 配额 / 限速闸门（test / search / chat / report 写口）
+├── cloudfunctions/             # 12 个云函数
+│   ├── aiProxy/                # 平台代付密钥闸门 + 会员 / 配额 / 限速闸门（test / search / chat / generate / aux / report 写口）
 │   ├── quotaGuard/             # 配额计数权威（原子自增 + 服务端日期）
 │   ├── contentCheck/           # 内容安全机审（云调用）
 │   ├── payCreate/              # 会员下单（服务端定价 + 云支付统一下单）
@@ -605,9 +612,11 @@ celebrity-radar/
 │   ├── keywordAlert/           # 关键词舆情预警（定时 09:20，拒绝端上调用）
 │   ├── riskWatch/              # 名人风险监控（定时 09:40，拒绝端上调用）
 │   ├── hotBoardRefresh/        # 热门名人榜每日生产（定时 06:30；端上仅 ensure，force 限运维）
-│   └── dbInit/                 # 运维工具（schema.js 是库结构单一事实源）
+│   ├── dbInit/                 # 运维工具（schema.js 是库结构单一事实源）
+│   ├── userInit/               # users 行与个性化配置的唯一写者（首登初始化 + 缺键补齐 + 改配置）
+│   └── userBackfill/           # 一次性运维：给存量用户补齐配置（拒绝端上调用）
 ├── test/                       # 本地单测（14 个用例文件 / 688 条用例）
-├── scripts/                    # 仓库脚本（sync-config.js：权益真源 → 云函数副本）
+├── scripts/                    # 仓库脚本（sync-config.js：权益 / 用户配置真源 → 云函数副本）
 ├── config/                     # Taro 构建配置（dev / index / prod）
 ├── cloudbaserc.json            # CloudBase 部署描述（函数 + 环境变量 + 定时器）
 ├── .env.example                # 云函数部署密钥模板
@@ -628,21 +637,21 @@ celebrity-radar/
 - **`report.ts`** —— 报告生成、zod 校验、URL 白名单清洗、降级纯文本
 - **`cache.ts`** —— `report_cache` 读写 + `building` 互斥、`feed_cache`、`refresh_quota`
 - **`quota.ts` / `quota-guard.ts`** —— freemium 生成配额与它的服务端通道（未部署时静默回退端上计数）
-- **`llm.ts`** —— LLM 调用：统一经 `aiProxy` 代付；**供应商 + 档位**由本机偏好 + `public.ts` 裁决（换供应商不换档），非会员请求会员档位一律回落该家极速版
+- **`llm.ts`** —— LLM 调用：统一经 `aiProxy` 代付；端上只上报**厂商 + 质量档**（均由本机偏好 + `public.ts` 裁决），**能力槽由云端按用途裁决**（报告 / 辅助走 structured，问答走 reasoning）；非会员请求会员档一律回落基础档
 - **`member.ts` / `member-sample.ts`** —— 会员权益表（唯一事实源）+ 会员判定 + 报告页会员价值条文案；会员中心「真实示例」（只节选不改写、挑不到就不出卡）
 - **`pay.ts`** —— 会员支付：拉取服务端套餐（24h 本机缓存 + 离线兜底）+ 下单 + 拉起收银台 + 轮询确认（价格与时长**只认服务端**）
 - **`qa.ts`** —— AI 问答：报告片段选片 + 提问时联网检索 + 每日额度闸门（回答成功才计数）+ 3 秒连点间隔
 - **`weekly.ts`** —— 关注周报：材料只读 `feed_cache`，LLM 只写文字（人 / 条目以材料为准），按 ISO 周本机缓存
 - **`hot-board.ts` / `explore.ts`** —— 热门榜三级回退读取；「今日名人」与随机探索（种子稳定，xorshift32 去取模偏置）
-- **`keyword-alert.ts` / `keywords.ts`** —— 关键词订阅与预警条目；关键词云 + 高频观点（纯端上聚合，存量缓存立即生效）
+- **`keyword-alert.ts` / `keywords.ts`** —— 关键词订阅与预警条目；关键词 / 高频说法聚合（供对比页的「共同关注点」与话题速览复用，纯端上聚合，存量缓存立即生效）
 - **`risk-watch.ts` / `risk.ts`** —— 名人风险监控的订阅读写与信号分组；报告页风险雷达的事实级清单（两端共用同一份词典，测试钉住一致）
-- **`topic-digest.ts` / `compare.ts` / `stats.ts` / `trend.ts`** —— 主题编目 / 两人对比 / 主页数据 Tab / 热度趋势折线 —— 全部纯端上聚合，不新增 Schema 字段与云函数
+- **`topic-digest.ts` / `compare.ts` / `stats.ts` / `trend.ts`** —— 主题编目 / 两人对比 / 主页数据 Tab / 收藏页走势折线 —— 全部纯端上聚合，不新增 Schema 字段与云函数
 - **`quote-check.ts` / `source-link.ts`** —— 名言出处核对（只核对可核对的事实）；原文预览页的唯一跳转出口
 - **`messages.ts` / `notify.ts`** —— 消息中心时间流与已读口径；微信订阅消息授权与推送落位
 - **`share-card.ts` / `share.ts`** —— Canvas 2D 名言卡（零网络图依赖、不落云存储）；全项目唯一分享文案出口
 - **`sensitive.ts` / `sec-check.ts`** —— 本地敏感名单一级拦截（发版前人工维护）；内容机审（fail-open）
 - **`follows.ts` / `favorites.ts` / `history.ts` / `watch.ts`** —— 关注列表（主键 `openid#personKey`）/ 四类收藏（主键 `openid#type#hash`，天然防重）/ 查询历史（每账号仅留最近 50 条）/ 关注对象的「变化概览」（材料只读 `report_cache` 与 `feed_cache` 两张表）
-- **基础件** —— `time.ts`（相对时间 / 报告过期天数唯一阈值）、`date.ts`（报告日期归一，热度趋势与时间分布共用的唯一解析口径）、`cooldown.ts`（429 冷却 10 分钟）、`debug.ts`（调试开关集中出口）、`cloud-diagnostics.ts`（结构化诊断日志）、`settings.ts`、`events.ts`、`tabbar.ts`、`data-deletion.ts`
+- **基础件** —— `time.ts`（相对时间 / 报告过期天数唯一阈值）、`date.ts`（报告日期归一，走势折线与时间分布共用的唯一解析口径）、`cooldown.ts`（429 冷却 10 分钟）、`debug.ts`（调试开关集中出口）、`cloud-diagnostics.ts`（结构化诊断日志）、`settings.ts`、`events.ts`、`tabbar.ts`、`data-deletion.ts`
 
 ---
 
@@ -652,7 +661,7 @@ celebrity-radar/
 - **输入侧**：本地敏感名单一级拦截，命中即拒答，**不发任何网络请求**
 - **输出侧**：报告 `sources` / `dynamics` 链接强制 URL 白名单清洗，只保留检索素材中出现过的链接
 - **内容口径**：全链路标注「AI 生成，仅供参考」；隐私声明页 + 举报入口 + 「清空我的数据」二次确认
-- **运行成本**：报告缓存共享复用、每账号每日刷新 ≤ 10 次、主动生成 ≤ 3 次（会员 30）、`building` 互斥避免并发重复生成、关注周报按自然周本机缓存
+- **运行成本**：报告缓存共享复用、每账号每日刷新 ≤ 10 次（会员 20）、主动生成 ≤ 3 次（会员 30）、`building` 互斥避免并发重复生成、关注周报按自然周本机缓存
 - **档位决定检索厚度**：免费档只发主线检索（10 条素材），会员档主线 24 + 社交支线 16（共 40 条）—— 检索调用与素材量都随档位走
 - **免费档刷新冷却**：同一人物的「刷新最新」在报告生成后 12 小时内不重复生成（内容本就不会变，直接交回现有的一版并说明），会员不受此限。**注意它与上一条「上游失败冷却」不是一回事**，两者判据、时长、目的都不同
 - **冷却只拦「值得等待」的失败**：仅上游限流 429 / 网络 / 5xx 进入 10 分钟冷却；密钥无效、额度不足即时报错且不冷却；缓存命中永远优先于冷却与配额
@@ -688,16 +697,16 @@ npm run test:only # 跳过 tsc，直接跑
 
 | 问题 | 结论 |
 |---|---|
-| 能直接跑起来吗？ | 能编译。要跑通生成链路，需自备**云开发环境 + 博查 Key + 大模型 Key**（端上开放四家，至少配 `DEEPSEEK_API_KEY` 一家即可用；列在清单里的每一家都要配 Key，见「[配置说明](#配置说明)」第 3 节） |
+| 能直接跑起来吗？ | 能编译。要跑通生成链路，需自备**云开发环境 + 博查 Key**；大模型默认厂商是**零 key 的云开发 AI**（开箱即用），要开放外部厂商（DeepSeek / 智谱 GLM / Kimi / 通义千问）再补对应 Key（配了哪家才出现哪家，见「[配置说明](#配置说明)」第 3 节） |
 | 会烧钱吗？ | 会。检索与大模型都按量计费 —— 项目里的配额、缓存、冷却三套机制正是为此而生 |
 | 能商用吗？ | 协议允许。但**上线另需你自己的主体资质、类目备案与 AI 生成内容合规措施** |
 | 会员支付能用吗？ | 代码完整（`payCreate` / `payCallback` / 定价表 `PLANS`），但需要你自己的微信支付商户号；未配置时端上明确提示，不影响免费功能 |
 | 品牌能沿用吗？ | 「名人雷达」属原作者，fork 后建议改成自己的名字再发布，以免混淆 |
 | 为什么保留商业化代码？ | 它是一份完整参考实现：定价源唯一、端上只读、云函数强校验，取舍都写在注释里 |
-| 支持几家大模型？用户能自选吗？ | 端上开放**四家**：DeepSeek / 通义千问 / 智谱 GLM / Moonshot Kimi，用户在「我的 → 模型供应商」自己挑，Key 由平台在云函数里出（`llm.config.js` 里另备 OpenAI 一项，但未对用户开放）。四家的变量名、配置步骤与漏配后果见「[配置说明](#配置说明)」第 3 节 |
-| 换上游供应商难吗？ | 用户能自选的清单在 `src/config/public.ts` 的 `llm.providers`；云端注册表（端点 / Key 变量名 / 会员档位）在 `cloudfunctions/aiProxy/llm.config.js`（`hotBoardRefresh` 里有一份逐字相同的副本，两份都要改）。加一家 = 端上清单加一项 + 两份云端表各加一项 + 补一个环境变量 |
+| 支持几家大模型？用户能自选吗？ | 端上开放**5 家**（含零配置的默认厂商**云开发 AI**）：云开发 AI / DeepSeek / 智谱 GLM / Kimi / 通义千问，用户在「我的 → 模型厂商与质量档」自己挑**厂商与质量档**（基础版 / 标准版 / 高级版），Key 由平台在云函数里出。各家的变量名、配置步骤与漏配后果见「[配置说明](#配置说明)」第 3 节 |
+| 换上游厂商难吗？ | 用户能自选的清单在 `src/config/public.ts` 的 `llm.vendors`；云端注册表（端点 / Key 变量名 / 各档能力槽）在 `cloudfunctions/aiProxy/llm.config.js` 的 `VENDORS` / `QUALITIES`（`hotBoardRefresh` 里有一份**逐字相同**的副本，两份都要改，用例 07 钉住）。加一家 = 端上清单加一项 + 两份云端表各加一项 + 补一个环境变量 |
 
-**上游依赖风险**：检索源（博查）与大模型（DeepSeek / 通义千问 / 智谱 GLM / Moonshot，均为 OpenAI 兼容端点）都是第三方付费服务，
+**上游依赖风险**：检索源（博查）与大模型（云开发 AI / DeepSeek / 通义千问 / 智谱 GLM / Kimi，其中外部四家为 OpenAI 兼容端点）都是第三方付费服务，
 接口、价格与可用性不受本项目控制 —— 某一家涨价或下线时，换用清单里的另一家即可（见「[配置说明](#配置说明)」第 3 节）。
 
 ---
@@ -727,7 +736,7 @@ npm run test:only # 跳过 tsc，直接跑
 2. 提交信息遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)（`feat:` / `fix:` / `docs:` / `chore:` …），一个提交只做一件事
 3. 提交前跑完上面的「提交前请确认（5 条）」，并在 PR 描述里说明**改动动机**与**验证方式**
 4. 涉及界面或交互的改动，请附真机截图
-5. 改到「手工同步的两处」（供应商 / 档位表、会员档位闸门）时，两份必须一起改
+5. 改到 `llm.config.js`（两份逐字一致的 `VENDORS` / `QUALITIES`，用例 07 钉住）时，两份必须一起改
 6. 行为或配置变更请同步更新 `README`（中英两份）与 [`CHANGELOG.md`](./CHANGELOG.md)
 
 参与本项目即表示你同意遵守 [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md)。
@@ -778,7 +787,7 @@ npm run test:only # 跳过 tsc，直接跑
 
 本项目以 [Apache License 2.0](./LICENSE) 发布，版权与第三方组件声明见 [`NOTICE`](./NOTICE)。
 
-- 上游服务：腾讯云 CloudBase（微信云开发）、博查检索、大模型（DeepSeek / 通义千问 / 智谱 GLM / Moonshot Kimi 四家任选，均为 OpenAI 兼容端点）、微信支付
+- 上游服务：腾讯云 CloudBase（微信云开发，含默认的云开发 AI 通道）、博查检索、大模型（云开发 AI / DeepSeek / 智谱 GLM / Kimi / 通义千问 5 家任选，其中外部四家为 OpenAI 兼容端点）、微信支付
 - 开源依赖：Taro、Taro UI、React、zustand、zod、dayjs 等，版权归各自作者
 
 **免责声明**：本项目仅用于技术学习与交流。使用者需自行承担因使用本项目产生的一切后果，

@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-688%20passing-success.svg)](#development--testing)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
-> A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), with a keyword cloud, sentiment trend and heat curve aggregated on the client.
+> A **celebrity intelligence mini program** for the WeChat ecosystem: type any public figure's name → the app searches recent public coverage online → an LLM turns it into a structured report (bio / profile / activity / quotes / commentary / controversies & responses / timeline / glossary…), plus client-side aggregate cards such as profile snapshot, risk radar and commercial value.
 
 - Stack: Taro 3 (React) + Taro UI ｜ Backend: Tencent CloudBase (WeChat Cloud Development)
 - License: [Apache-2.0](./LICENSE) ｜ Changelog: [`CHANGELOG.md`](./CHANGELOG.md)
@@ -42,7 +42,7 @@
 
 ## What This Project Is
 
-A complete, compilable WeChat mini program: 19 pages on the client, 10 cloud functions and 18 database collections on the server,
+A complete, compilable WeChat mini program: 19 pages on the client, 12 cloud functions and 18 database collections on the server,
 covering the full chain of *search → disambiguation → retrieval → generation → caching → follow / favorite / share / Q&A / compare*.
 
 It is built around two principles:
@@ -61,13 +61,13 @@ It is built around two principles:
 ### Content
 
 - **Discovery & disambiguation** — Search box + popular-domain cards; candidate list for homonyms (with domain filters) plus a "none of them" fallback, producing a stable `personKey` (e.g. `雷军#tech`)
-- **Report generation** — Bocha web search → LLM produces structured JSON → zod validation of every field + source-URL allowlist sanitization; **rendered card by card** (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies & responses / timeline / what to watch / glossary + a one-line source summary), skeleton loading with progressive reveal, and a "generated N ago / refresh" pair of entry points; every factual section must cite a real piece of material — anything unsourced is dropped entirely, and a section that is genuinely empty still renders a card explaining why
-- **Client-side aggregates** — Profile snapshot, stance & sentiment, keyword cloud, quote themes, and a heat-trend curve — **computed entirely on the client**, so existing cached reports benefit immediately with zero extra model calls or quota usage
+- **Report generation** — Bocha web search → material is grouped by the report template and injected batch by batch (**4 batches** per generation: identity / facts / judgement / detail, each with its own contract and its own write, so a single failed batch only loses that group) → LLM produces structured JSON → zod validation of every field + source-URL allowlist sanitization; **rendered card by card** (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies & responses / timeline / commercial partnerships & endorsements / glossary + a one-line source summary; the report template has **17 sections**, 11 free / 6 member), skeleton loading with progressive reveal, and a "generated N ago / refresh" pair of entry points; every factual section must cite a real piece of material — anything unsourced is dropped entirely, and a section that is genuinely empty still renders a card explaining why
+- **Client-side aggregates** — Profile snapshot, stance & sentiment, risk radar, commercial value snapshot, and commercial partnerships & endorsements — **computed entirely on the client**, so existing cached reports benefit immediately with zero extra model calls or quota usage
 - **Quote sourcing** — Verifies only *verifiable* facts (is this quote's source link part of the retrieved material; does that article contain the same wording) — it does **not** render AI verdicts on authenticity
 
 ### Reading & saving
 
-- **Following** — Follow list + change overview (who has news) + merged feed (`feed_cache` merged with pull-to-refresh, capped at 10 refreshes per account per day)
+- **Following** — Follow list + change overview (who has news) + merged feed (`feed_cache` merged with pull-to-refresh, capped at 10 refreshes per account per day — 20 for members)
 - **Weekly digest** — One tap summarizes the last 7 days across followed figures → per-person highlights + weekly overview + topic words; material comes from cache and **people and items follow the material**, cached locally per ISO week
 - **Favorites / History** — Four favorite types (quotes / reports / activity / timeline, deduplicated by an `openid#type#hash` key) + browsing history (last 50 entries); quotes in Favorites can be rendered as a shareable card
 - **Message center** — A single timeline: follow updates / weekly reminders / announcements / keyword alerts; read state is tracked **per item** and stored on-device only (no new collection, cloud function or model call)
@@ -84,8 +84,8 @@ It is built around two principles:
 
 ### Membership (freemium)
 
-- **Quota** — Free tier: 3 on-demand generations per day, 30 for members (cache hits never count; the **weekly digest draws on this same pool**); AI Q&A: 5 questions free, 30 for members (counted separately from generation, and only successful answers count); feed refresh: 10 per day on **both** tiers; the free tier additionally has a 12-hour repeat-generation cooldown for the same report that members do not have. All of it appears both on the profile page's quota card and item by item in the membership centre's **"Quotas & limits"** section (including capacity/input caps such as 5 keywords, 5 monitored people, 120 characters per question); every number comes from `src/utils/member.ts#MEMBER_BENEFITS`, referenced by pages and gates alike rather than hard-coded
-- **Quality perks** — **User-selectable model provider** (DeepSeek / Qwen / Zhipu GLM / Moonshot — keys all live in the cloud function, so users configure nothing) + model tier (free tier is locked to the fast model; members unlock standard / deep reasoning; switching provider swaps the whole tier list while the tier you picked stays the same) plus a **deep report mode** (thicker retrieval plus three member-only sections: comparison angles, risk notes, source disagreements)
+- **Quota** — Free tier: 3 on-demand generations per day, 30 for members (cache hits never count; the **weekly digest draws on this same pool**); AI Q&A: 5 questions free, 30 for members (counted separately from generation, and only successful answers count); feed refresh: 10 per day free / 20 for members; the free tier additionally has a 12-hour repeat-generation cooldown for the same report that members do not have. All of it appears both on the profile page's quota card and item by item in the membership centre's **"Quotas & limits"** section (including capacity/input caps such as 5 keywords, 5 monitored people, 120 characters per question); every number comes from `src/utils/member.ts#MEMBER_BENEFITS`, referenced by pages and gates alike rather than hard-coded
+- **Quality perks** — **User-selectable model vendor** (CloudBase AI / DeepSeek / Zhipu GLM / Kimi / Qwen — **5 vendors**, including the zero-config **CloudBase AI** default channel; keys all live in the cloud function, so users configure nothing) + a **quality tier** (free tier is locked to "Basic"; members can switch to "Standard" / "Premium") + a **deep report mode** (thicker retrieval plus three member-only sections: comparison angles, risk notes, source disagreements) + the **full report template** (17 sections for members, with 6 member-only: Business snapshot / Commercial partnerships / Member-only / Peer comparison / Stance & sentiment / Glossary)
 - **Pricing** — ¥9.9 monthly / ¥25 quarterly / ¥68 yearly; the price has **a single source of truth** (the `PLANS` map in the `payCreate` cloud function, fetched by the client, so changing prices needs no release)
 
 ### Platform
@@ -132,7 +132,7 @@ It is built around two principles:
 
 #### Deep report
 
-Rendered card by card (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies &amp; responses / timeline / what to watch / glossary); every factual section must cite a real piece of material
+Rendered card by card (bio / profile / relationship map / recent activity / notable quotes / AI commentary / controversies &amp; responses / timeline / commercial partnerships &amp; endorsements / glossary); every factual section must cite a real piece of material
 
 <table>
   <tr>
@@ -171,7 +171,7 @@ Reuses both cached reports, zero model calls, one-tap follow / share.
 <table>
   <tr>
     <td align="center"><img src="./assets/screenshots/09-mine.png" width="165" alt="Profile"><br><sub><b>Profile</b> · quota shown transparently / membership perks</sub></td>
-    <td align="center"><img src="./assets/screenshots/10-providers.png" width="165" alt="Model providers"><br><sub><b>Model provider of your choice</b> · DeepSeek / Qwen / Zhipu GLM / Moonshot</sub></td>
+    <td align="center"><img src="./assets/screenshots/10-providers.png" width="165" alt="Model vendors"><br><sub><b>Model vendor of your choice</b> · CloudBase AI / DeepSeek / Zhipu GLM / Kimi / Qwen</sub></td>
   </tr>
 </table>
 
@@ -186,7 +186,7 @@ Reuses both cached reports, zero model calls, one-tap follow / share.
 - **Dates** — dayjs: relative time, ISO weeks, quota date keys
 - **Backend** — Tencent CloudBase (WeChat Cloud Development): database + cloud functions; environment ID comes from local config
 - **Search** — Bocha `api.bochaai.com`: proxied by the `aiProxy` cloud function
-- **LLM** — **any of four OpenAI-compatible providers**: DeepSeek / Qwen (DashScope compatible mode) / Zhipu GLM / Moonshot Kimi; defaults to `https://api.deepseek.com/v1`; selectable providers and their three tiers are in `src/config/public.ts`, while endpoints / key variable names / member tiers are in `cloudfunctions/aiProxy/llm.config.js`
+- **LLM** — **any of several vendors (5, including the zero-config CloudBase AI)**: CloudBase AI (default, zero key) / DeepSeek / Zhipu GLM / Kimi / Qwen, with 3 quality tiers (Basic / Standard / Premium); the client reports only "vendor + quality tier", and the cloud picks the capability slot by purpose (report / auxiliary → structured, Q&A → reasoning). Selectable vendors / tiers are in `llm.vendors` / `llm.qualities` in `src/config/public.ts`; endpoints, key variable names and the model registry are in `cloudfunctions/aiProxy/llm.config.js` (with a word-for-word identical copy in `hotBoardRefresh`, pinned by case 07); setup steps are in [Configuration](#configuration) §3
 
 Dependencies are installed with `legacy-peer-deps=true` from `.npmrc`; `@tarojs/plugin-platform-*` is pinned to `^3.6.25` (do not upgrade) and webpack to `~5.91.0`.
 
@@ -201,7 +201,7 @@ User enters a name
   → report_cache hit? ──yes→ render directly (no generation triggered)
        │no
        └→ Bocha web search (api.bochaai.com) → source material
-          → LLM produces structured JSON (any of the four providers, proxied by aiProxy) → zod validation + URL allowlist
+          → LLM produces structured JSON (any of several vendors, including the zero-config CloudBase AI; proxied by aiProxy) → zod validation + URL allowlist
           → write to report_cache → render report
 ```
 
@@ -215,9 +215,9 @@ src/utils/**              business logic & cloud access (the only entry point pa
 utils/db.ts               hand-rolled data-access adapter (id ↔ _id mapping, pagination, write fallbacks)
 utils/cloud.ts            CloudBase initialization & diagnostics
      ↓
-cloudfunctions/**         10 cloud functions (secrets, quota, moderation, scheduled jobs, payments)
+cloudfunctions/**         12 cloud functions (secrets, quota, moderation, scheduled jobs, payments)
      ↓
-Upstream: Bocha search / LLM (any of four providers) / WeChat Pay / security.msgSecCheck
+Upstream: Bocha search / LLM (any of several vendors, incl. CloudBase AI) / WeChat Pay / security.msgSecCheck
 ```
 
 Two mechanisms worth knowing:
@@ -234,8 +234,8 @@ Two mechanisms worth knowing:
 Environment: Node 16 / 18 (LTS recommended), WeChat DevTools, and a mini program appid with Cloud Development enabled.
 
 - **Mini program appid + entity qualifications** — required by WeChat; without it, no on-device preview and no publishing
-- **CloudBase environment (Tencent Cloud)** — hosts the database and all 10 cloud functions; without it, login and **all** database calls are never issued and the profile page shows "cloud service not configured"
-- **An LLM API key (at least `DEEPSEEK_API_KEY`)** — generates reports (via the `aiProxy` cloud function). Users may switch provider under "Profile", so **every provider you list needs its key** (`QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`); without it, switching to that provider fails with "no quota configured". Without any key, generation fails; browsing and favoriting cached reports still works
+- **CloudBase environment (Tencent Cloud)** — hosts the database and all 12 cloud functions; without it, login and **all** database calls are never issued and the profile page shows "cloud service not configured"
+- **An LLM API key (optional; zero-key by default)** — generates reports (via the `aiProxy` cloud function). The default vendor, **CloudBase AI**, needs no key and works out of the box; to offer an external vendor, configure its key in the cloud (`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY` (Qwen)) — **a vendor only appears in the app once its key is configured**. Browsing and favoriting cached reports always works
 - **Bocha API key** — retrieves source material online; without it retrieval is empty, so reports lack material and the timeline is incomplete
 - **ICP filing / service category** — launch review; affects publishing only, not local debugging
 
@@ -270,19 +270,20 @@ None of the three is committed (all are in `.gitignore`), so your edits never po
 
 Member quotas, daily limits, cooldowns, abuse caps, cloud-side search/char limits, plan prices &
 durations, and the report's target counts / clipping limits / retrieval depth all live in
-**`src/config/benefits.ts`** — the single source of truth.
+**`src/config/benefits.ts`** — the single source of truth; user settings defaults have their own truth
+source, **`src/config/user-defaults.ts`** (the default `users.settings` values and key allowlist).
 
 Cloud functions are packaged and uploaded independently and cannot `require` the app's TypeScript
 at runtime, so the cloud side uses **generated copies**:
 
 ```bash
-# 1. edit src/config/benefits.ts
-npm run config:sync     # 2. refresh copies in cloudfunctions/{aiProxy,quotaGuard,payCreate}/
+# 1. edit src/config/benefits.ts (or src/config/user-defaults.ts)
+npm run config:sync     # 2. refresh copies: benefits.config.js → {aiProxy,quotaGuard,payCreate}; user-defaults.config.js → {userInit,userBackfill}
 npm test                # 3. verify (skipping step 2 turns the suite red: 14-config-sync.js)
 npm run config:check    # read-only check for CI (exit 1 on drift)
 ```
 
-The copies (`cloudfunctions/*/benefits.config.js`) are **auto-generated** and marked "do not edit";
+The copies (`cloudfunctions/*/benefits.config.js` and `cloudfunctions/*/user-defaults.config.js`) are **auto-generated** and marked "do not edit";
 redeploy the affected cloud function for a change to take effect (the app side ships with the next
 release).
 
@@ -296,7 +297,7 @@ needs human verification anyway).
 
 ### 1. Client config: `public.ts` (shipped) + `local.ts` (local only)
 
-- **`src/config/public.ts`** (committed) — deployment-independent settings: the selectable **provider** list with each provider's three tiers, plus `memberOnly` flags. **Never put any key here** (keys live in cloud function environment variables; switching provider only changes request parameters)
+- **`src/config/public.ts`** (committed) — deployment-independent settings: the selectable **vendor** list `llm.vendors` (5 vendors) and the **quality-tier** list `llm.qualities` (Basic / Standard / Premium, with `memberOnly` flags). **Never put any key or model name here** (keys live in cloud function environment variables; choosing a vendor / tier only changes request parameters)
 - **`src/config/local.example.ts`** (committed) — template for local config, all values are placeholders
 - **`src/config/local.ts`** (not committed, in `.gitignore`) — your own real values: environment ID, subscription template IDs, webview domain allowlist, local debug switch
 
@@ -313,21 +314,21 @@ needs human verification anyway).
 
 `public.ts`:
 
-- **`llm.providers`** — Selectable **providers** (currently four: DeepSeek / Qwen / Zhipu GLM / Moonshot Kimi): each has an `id` (must match a `PROVIDERS` key in the cloud function's `llm.config.js`), a display name, and `models` (the same three tiers everywhere: `fast` / `standard` / `reason` = Turbo / Standard / Deep Reasoning). **List only the providers whose keys you configured in the cloud** — whichever one a user picks, the cloud function pays with that provider's key and the client holds no credentials
-- **`llm.provider` / `llm.model` / `llm.models`** — Default provider, its default model, and its tier list (the latter two equal `providers[0]`'s fast tier and `providers[0].models`). Tier labels are identical across providers, so membership copy can be derived from them — adding a provider changes no wording
-- **`models[].memberOnly`** — `true` = members only: free users fall back to that provider's Turbo tier even if they picked it locally. **Changing this flag requires updating `memberOnlyModels` for the matching provider in the `aiProxy` cloud function's `llm.config.js`** — that copy is the real billing gate (the client copy can be bypassed by repackaging)
+- **`llm.vendors`** — Selectable **vendors** (5, in the order shown in the app): each has a `key` (must match a `VENDORS` key in the cloud function's `llm.config.js`), an `icon`, a `label` and a `desc`. CloudBase AI (`cloudbase`) is always present; whether an external vendor is selectable is decided by its cloud readiness (whether its key is configured). The client holds no key / endpoint / model name
+- **`llm.defaultVendor` / `llm.defaultQuality`** — the default vendor (`cloudbase`) and default quality tier (`basic`); the fallback when nothing is stored locally, and must match the cloud's `DEFAULT_VENDOR` / `DEFAULT_QUALITY`
+- **`llm.qualities`** — the quality-tier list (`basic` / `standard` / `premium` = Basic / Standard / Premium): each has a `key` (must match the cloud's `QUALITIES`), a `label`, a `desc` and `memberOnly`. `memberOnly: true` = member-only: even if a free user picks it locally, the cloud **silently falls back to Basic**. **Changing this flag requires updating `QUALITIES[].memberOnly` in the cloud `llm.config.js`** — that copy is the real billing gate (the client copy can be bypassed by repackaging)
 
-> A user's provider / tier choice lives in local storage only (`settings:llm_provider` + `settings:llm_tier`).
-> What is stored is the **tier id**, not the model name, so switching provider keeps "the tier I picked"
-> (DeepSeek Standard → Qwen Standard) without asking the user to choose again; the tier list itself is
-> replaced wholesale by the new provider's three tiers — that is what "switching provider switches the tier parameters" means.
+> A user's **vendor + quality-tier** choice lives in local storage only (`settings:llm_provider` + `settings:llm_tier`).
+> Both keys store an **id** (a vendor key / `basic` / `standard` / `premium`), never a model name — the client holds no model names at all;
+> the three tiers are the same across vendors, so switching vendor keeps "the tier I picked". The concrete model is
+> resolved in the cloud from the "vendor × quality tier × purpose" registry in `llm.config.js`, and the **real billing gate lives in the cloud** (the client copy can be bypassed by repackaging).
 
 > They are split so that a real environment ID in the repository does not make forks connect to the original author's cloud environment,
 > and so that the author's local `debug: true` edits in `public.ts` cannot be committed by accident.
 
 ### 2. Secret ownership: server-side only, zero client secrets
 
-- **`BOCHA_API_KEY` + each provider's key (`DEEPSEEK_API_KEY` / `QWEN_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY`)** — environment variables of the `aiProxy` / `hotBoardRefresh` cloud functions (read from `.env` at deploy time). **Every provider listed in the client config must have one**. ❌ not in the bundle
+- **`BOCHA_API_KEY` + each external vendor's key (`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY` (Qwen))** — environment variables of the `aiProxy` / `hotBoardRefresh` cloud functions (read from `.env` at deploy time). **A vendor only appears in the app once its key is configured**; the default vendor **CloudBase AI** uses the CloudBase AI channel and needs **no key**. ❌ not in the bundle
 - **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** — environment variables of the three scheduled functions (**three different templates**, or they consume each other's one-time grants). ❌ not in the bundle
 - **`WX_APPSECRET`** — `dbInit` only (to exchange an access_token for index updates). ❌ not in the bundle
 - **`DB_ADMIN_TOKEN`** — `dbInit` only (custom token, the gate for write actions). ❌ not in the bundle
@@ -344,31 +345,34 @@ Every request is proxied through a cloud function; the client holds no keys and 
 
 `src/config/local.ts` *is* bundled, so only put "not a secret, but machine-specific" values there.
 
-### 3. Model providers and API keys (four, pick any)
+### 3. Model vendors and API keys (5, including the zero-config CloudBase AI)
 
-The "Profile → Model provider" screen lets users pick which provider to use, **with the platform paying for the keys inside the cloud function** — users configure nothing. Four providers are exposed to the client (in the order shown in the app):
+The "Profile → Model vendor & quality tier" screen lets users choose two things: a **vendor** (switchable at any time) and a **quality tier**. **The platform pays for the keys inside the cloud function** — users configure nothing; the default vendor **CloudBase AI** uses the WeChat CloudBase AI channel, with **zero keys and no setup**. Five vendors are exposed to the client (in the order shown in the app):
 
-- **DeepSeek** (id `deepseek`) — key variable `DEEPSEEK_API_KEY`; endpoint `https://api.deepseek.com/v1`; tiers `deepseek-v4-flash` (free) / `deepseek-v4`, `deepseek-reasoner` (members)
-- **Qwen** (id `qwen`) — key variable `QWEN_API_KEY`; endpoint `https://dashscope.aliyuncs.com/compatible-mode/v1` (DashScope compatible mode); tiers `qwen-turbo` / `qwen-plus` / `qwen-max`
-- **Zhipu GLM** (id `zhipu`) — key variable `ZHIPU_API_KEY`; endpoint `https://open.bigmodel.cn/api/paas/v4`; tiers `glm-4-flash` / `glm-4-air` / `glm-4-plus`
-- **Moonshot Kimi** (id `moonshot`) — key variable `MOONSHOT_API_KEY`; endpoint `https://api.moonshot.cn/v1`; tiers `moonshot-v1-8k` / `moonshot-v1-32k` / `moonshot-v1-128k`
+- **CloudBase AI** (id `cloudbase`) — the **default vendor**, a zero-key fallback
+- **DeepSeek** (id `deepseek`) — key variable `DEEPSEEK_API_KEY`; endpoint `https://api.deepseek.com/v1`
+- **Zhipu GLM** (id `zhipu`) — key variable `ZHIPU_API_KEY`; endpoint `https://open.bigmodel.cn/api/paas/v4`
+- **Kimi / Moonshot** (id `moonshot`) — key variable `MOONSHOT_API_KEY`; endpoint `https://api.moonshot.cn/v1`
+- **Qwen** (id `qwen`) — key variable `DASHSCOPE_API_KEY`; endpoint `https://dashscope.aliyuncs.com/compatible-mode/v1` (DashScope compatible mode)
+
+There are **3 quality tiers**: **Basic** (free) / **Standard** (members) / **Premium** (members). The concrete model is **not chosen by the user** — reports and auxiliary calls use that tier's structured (output) capability slot, AI Q&A uses the reasoning slot, and the slot models live in the cloud `llm.config.js` registry; when a tier lacks a slot, the cloud **downgrades within the same vendor** and flags it in the reply.
 
 Setup:
 
-1. Put all four keys into `celebrity-radar/.env` (copied from `.env.example`) — **the variable names must match the list above**.
-2. Make sure `aiProxy` and `hotBoardRefresh` in `cloudbaserc.json` carry those four variables under `envVariables` (the repository already does; if you upload via the DevTools context menu instead of `tcb fn deploy`, add them by hand in the CloudBase console).
+1. To offer an external vendor, put its key into `celebrity-radar/.env` (copied from `.env.example`) — **the variable names must match the list above**; **a vendor only appears in "Profile" once its key is configured** (CloudBase AI is always present and needs no key).
+2. Make sure `aiProxy` and `hotBoardRefresh` in `cloudbaserc.json` carry those variables under `envVariables` (the repository already does; if you upload via the DevTools context menu instead of `tcb fn deploy`, add them by hand in the CloudBase console).
 3. Deploy both functions (`tcb fn deploy aiProxy && tcb fn deploy hotBoardRefresh`).
-4. Verify on a real device: switch to each provider under "Profile → Model provider" and generate once — a report means that key works.
+4. Verify on a real device: switch to each vendor under "Profile → Model vendor & quality tier" and generate once — a report means that key works.
 
 Rules worth knowing:
 
-- **Every provider left in the client list needs its own key.** Listing four and filling in one gives users three options that are bound to fail (they see "the platform has no quota configured for this model (cloud function env `QWEN_API_KEY`)").
-- **To stop offering a provider**, remove it from `llm.providers` in `src/config/public.ts` (the membership copy follows automatically) — do **not** leave the entry and skip its key.
-- **`LLM_PROVIDER` is only a cloud-side fallback**, not the "which provider" switch. It applies when the client sends no provider, or an id that is not in the registry (old build / repackaged client). The `hotBoardRefresh` cron has no client preference and therefore uses it — DeepSeek by default.
-- **Changing member tiers means editing two places**: `memberOnly` in the client `public.ts` (UI and request value) and `memberOnlyModels` in the cloud `llm.config.js` (**the billing gate**). Client-only edits can be bypassed by repackaging.
-- **`OPENAI_API_KEY` is unused by default**: `llm.config.js` has an OpenAI entry, but cloud functions in mainland China cannot reach the official endpoint, and the client list deliberately omits it.
-- **Self-hosted gateway / relay**: add `LLM_BASE_URL` + `LLM_MODEL` + `LLM_API_KEY` to `aiProxy` to override the whole registry (no need to touch `LLM_PROVIDER`). ⚠ `LLM_MODEL` is a **global override** that pins every user to one model (the client still shows the tier they picked), so treat it as a debugging / relay switch, not a permanent setting.
-- **Adding a provider for good**: ① add an entry to `llm.providers` in the client `public.ts`; ② add a matching block to **both** copies of `llm.config.js` (`aiProxy` and `hotBoardRefresh` — they must stay word-for-word identical, because each WeChat cloud function is packaged separately and a cross-directory `require` breaks after deploy); ③ add that provider's key variable to `.env` and `cloudbaserc.json`; ④ keep the member-tier gates aligned in both places.
+- **Every vendor you offer needs its own key** (except CloudBase AI, which is zero-key). Offer an external vendor without a key and users simply will not see it — "configured equals visible" is exactly how it works, so do **not** leave an entry and skip its key.
+- **The client reports only "vendor + quality tier"**: the request is proxied by `aiProxy` and the **capability slot is decided in the cloud by purpose** (report / auxiliary → structured, Q&A → reasoning); the client holds no model names or keys.
+- **The billing gate lives in the cloud**: a non-member requesting Standard / Premium is **silently dropped back to Basic** by `aiProxy` (a repackaged client cannot bypass it). Changing member tiers means editing two places: `llm.qualities[].memberOnly` in the client `public.ts` (UI and request value) and `QUALITIES[].memberOnly` in the cloud `llm.config.js` (**the billing gate**).
+- **Optional override variables** (defaults apply when unset): `LLM_VENDOR` (the default vendor used when the client sends none / by cron jobs; `cloudbase` by default), `LLM_TIER` (the default quality tier), `LLM_MODEL_<VENDOR>_<QUALITY>_<CAPABILITY>` (override a slot's model name, e.g. `LLM_MODEL_DEEPSEEK_STANDARD_REASONING`), `LLM_HTTP_ENDPOINT_<VENDOR>` (override a vendor's endpoint).
+- **Self-hosted gateway / relay**: override the target vendor's endpoint with `LLM_HTTP_ENDPOINT_<VENDOR>` — no need to touch the registry.
+- **CloudBase AI channel (default)**: requires the AI capability enabled in the CloudBase console, `wx-server-sdk` ≥ 4.0.1 on `aiProxy` / `hotBoardRefresh`, and a 60s function timeout.
+- **Adding a vendor for good**: ① add an entry to `llm.vendors` in the client `public.ts` (its `key` must match a cloud `VENDORS` key); ② add a matching entry to the `VENDORS` registry in **both** copies of `llm.config.js` (`aiProxy` and `hotBoardRefresh` — they must stay word-for-word identical, because each WeChat cloud function is packaged separately and a cross-directory `require` breaks after deploy; case 07 pins them); ③ add that vendor's key variable to `.env` and `cloudbaserc.json`.
 
 ---
 
@@ -389,21 +393,21 @@ The order matters: without collections and permissions in place first, reads and
 
 If your CloudBase CLI version does not resolve that variable, write the environment ID literally into `envId` at the top of `cloudbaserc.json`.
 
-### 2. Deploy cloud functions (10)
+### 2. Deploy cloud functions (12)
 
-Fill in the **Bocha key plus all four LLM keys** in `.env`: skip one and users who switch to that provider see "no quota configured":
+Fill in the **Bocha key plus each external vendor's key** in `.env` (the default vendor **CloudBase AI** uses the CloudBase AI channel — zero key, nothing to configure); skip one and that vendor simply will not appear in "Profile":
 
 ```
 BOCHA_API_KEY=...
 SERPER_API_KEY=...      # optional: 2nd search source (Google index; 2500 free, no credit card)
 TAVILY_API_KEY=...      # optional: alternative 2nd source (LLM-oriented; 1000/mo, no card)
 DEEPSEEK_API_KEY=...
-QWEN_API_KEY=...
+DASHSCOPE_API_KEY=...   # Qwen (Alibaba Cloud Bailian)
 ZHIPU_API_KEY=...
-MOONSHOT_API_KEY=...
+MOONSHOT_API_KEY=...    # Kimi
 ```
 
-**Which providers users can see is decided by `llm.providers` in `src/config/public.ts`** (four today). To offer only some of them, delete entries from that client list instead of skipping keys — see [Configuration](#configuration) §3.
+**Which vendors users can see is decided by cloud readiness** (a vendor in `llm.vendors` in `src/config/public.ts` appears in "Profile" only once its key is configured; CloudBase AI is always present); see [Configuration](#configuration) §3.
 
 ```bash
 npm i -g @cloudbase/cli     # once
@@ -414,21 +418,23 @@ tcb fn deploy aiProxy       -e <your-env-id>
 
 `cloudbaserc.json` already declares the functions, environment variables and timers, so deploy each one with `tcb fn deploy <name>`.
 
-- **`aiProxy`** — platform-paid upstream keys (`search` / `chat`) + **server-side gates** (membership read from `memberships`; daily caps from `quota.config.js`; anti-abuse counter incremented in place in `ai_calls`; thicker retrieval gated by `count`) + a chat output cap applied to **every** request (see `chatMaxTokens`); **the provider comes from the client request** (user-selectable), the cloud only falls back. Trigger: client call; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (`DEEPSEEK_API_KEY` `QWEN_API_KEY` `ZHIPU_API_KEY` `MOONSHOT_API_KEY`) + `SERPER_API_KEY` / `TAVILY_API_KEY` (optional: second search source — fill any one) + `OPENAI_API_KEY` (unused by default) + `AI_PROXY_TEST_TOKEN` (optional: token for the `test` probe — **unset means that action is always rejected**) + `AI_PROXY_RAW_LOG` (optional: cloud-side raw payload logging — **only `on` enables it**; logs live in the CloudBase console)
+- **`aiProxy`** — platform-paid upstream keys (`search` / `chat` / `generate` / `aux` / `test` / `vendors`) + **server-side gates** (membership read from `memberships`; daily caps from `quota.config.js`; anti-abuse counter incremented in place in `ai_calls`; thicker retrieval gated by `count`; **non-member quality tiers silently dropped back to Basic**) + a chat output cap applied to **every** request (see `chatMaxTokens`) + the **shared cache write port** (`action:'report'`: `acquire` / `release` / `save` / `saveFeed`); **the vendor + quality tier come from the client request** (user-selectable), the cloud resolves the capability slot by purpose and only falls back with `LLM_VENDOR` / `LLM_TIER` when the client sends nothing / an unknown value. Trigger: client call; environment variables: `BOCHA_API_KEY` + each vendor's key (`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY`; **the default vendor CloudBase AI needs no key**) + `SERPER_API_KEY` / `TAVILY_API_KEY` (optional: second search source — fill any one; without either, Bocha only) + optional overrides `LLM_VENDOR` / `LLM_TIER` / `LLM_MODEL_<VENDOR>_<QUALITY>_<CAPABILITY>` / `LLM_HTTP_ENDPOINT_<VENDOR>` + `AI_PROXY_TEST_TOKEN` (optional: token for the `test` probe — **unset means that action is always rejected**) + `AI_PROXY_RAW_LOG` (optional: cloud-side raw payload logging — **only `on` enables it**; logs live in the CloudBase console) + `AI_PROXY_QUOTA_GUARD` / `AI_PROXY_CHAT_DEADLINE_MS` / `AI_PROXY_AUX_DEADLINE_MS` (optional)
 - **`quotaGuard`** — authoritative quota counting (atomic increments with server dates): `refresh` / `generate` / `ask`. Trigger: client call; environment variables: —
 - **`contentCheck`** — content moderation via `security.msgSecCheck`, applied to AI questions. Trigger: client call; environment variables: —
-- **`hotBoardRefresh`** — builds the daily hot board (writes `hot_board`). Trigger: cron 06:30; environment variables: `BOCHA_API_KEY` `LLM_PROVIDER` + all four providers' keys (a cron job has no client preference, so it takes `LLM_PROVIDER`, DeepSeek by default — **that provider must therefore have a key**)
+- **`hotBoardRefresh`** — builds the daily hot board (writes `hot_board`). Trigger: cron 06:30; environment variables: `BOCHA_API_KEY` + each vendor's key (optional overrides such as `LLM_VENDOR` / `LLM_TIER` / `LLM_HTTP_ENDPOINT_<VENDOR>`; a cron job has no client preference, so it takes `LLM_VENDOR`, CloudBase AI by default — **zero key works**)
 - **`notifyFollowUpdates`** — pushes follow-update subscription messages. Trigger: cron 09:00 (**client calls rejected**); environment variables: `BOCHA_API_KEY` `SUBSCRIBE_TEMPLATE_ID`
 - **`keywordAlert`** — keyword alerting (searches subscribed keywords, writes `keywords`). Trigger: cron 09:20 (**client calls rejected**); environment variables: `BOCHA_API_KEY` `ALERT_TEMPLATE_ID`
 - **`riskWatch`** — person risk monitoring (searches per monitored person, writes `risk_signals` and pushes). Trigger: cron 09:40 (**client calls rejected**); environment variables: `BOCHA_API_KEY` `RISK_TEMPLATE_ID`
 - **`payCreate`** — membership order creation (server-side pricing + cloud pay unified order). Trigger: client call; environment variables: `WX_PAY_SUB_MCH_ID` `PAY_CALLBACK_ENV_ID`
 - **`payCallback`** — the payment pipeline's **only backend**: payment notification (amount verification + idempotent renewal) + **after-sales** (refund ops write port `adminOp:'refund'` / manual reconcile `adminOp:'reconcile'`). Trigger: WeChat Pay callback (**client calls gated**, see below) + the `payReconcile` cron (minute 15 of every hour); environment variables: `PAY_ADMIN_TOKEN` (write-port token; unset means the port is always rejected) + `PAY_CALLBACK_GUARD` (optional rollout switch)
 - **`dbInit`** — ops tool: create collections, compare fields, create/update indexes (never called by the client). Trigger: manual; environment variables: `DB_ADMIN_TOKEN` `WX_APPID` `WX_APPSECRET`
+- **`userInit`** — the **single writer** for user accounts and personal settings (first-login init of the `users` row + back-filling missing keys + setting changes; `action:'ensure'` / `'set'`). Trigger: called by the client after login (**falls back to local client init on failure**); environment variables: —; run `npm run config:sync` to generate the `user-defaults.config.js` copy before deploying
+- **`userBackfill`** — one-off ops: back-fills settings for existing users that "wrote `settings:{}` before the migration and never logged in since" (same semantics as `userInit.ensure`, idempotent; **rejects client calls**; a dry-run unless `apply:true` is passed). Trigger: manual; environment variables: —; delete it when done
 
 Common pitfalls:
 
 - **Whether config ships with a deployment depends on how you deploy**: `tcb fn deploy` (CloudBase CLI) reads the root `cloudbaserc.json` and applies environment variables, timeouts and triggers; uploading with "Upload and Deploy" in WeChat DevTools **uploads code only**, so you must set environment variables, timeouts and triggers in the console yourself.
-- `aiProxy`, `hotBoardRefresh` and `notifyFollowUpdates` must have a **60-second timeout** (`aiProxy` additionally requires the smaller `CHAT_DEADLINE_MS = 45s` / `AUX_CHAT_DEADLINE_MS = 20s` — a **wall-clock deadline the function imposes on itself**: on hitting it, the call is aborted and returns an ordinary retryable failure instead of being silently killed by the platform), otherwise long reports, the hot board's "6 searches + 1 generation" round, and up to 20 searches per push round are cut off early by the platform (`-504003` on the client). ⚠ **60 seconds is the ceiling for WeChat cloud functions**: if the console already says 60 and you still get `-504003`, a single unit of work is itself exceeding 60 seconds — there is no larger timeout to set, so switch tiers (the deep-reasoning tier is the slowest) or split the work further.
+- `aiProxy`, `hotBoardRefresh` and `notifyFollowUpdates` must have a **60-second timeout** (`aiProxy` additionally requires the smaller `CHAT_DEADLINE_MS = 45s` / `AUX_CHAT_DEADLINE_MS = 20s` — a **wall-clock deadline the function imposes on itself**: on hitting it, the call is aborted and returns an ordinary retryable failure instead of being silently killed by the platform), otherwise long reports, the hot board's "6 searches + 1 generation" round, and up to 20 searches per push round are cut off early by the platform (`-504003` on the client). ⚠ **60 seconds is the ceiling for WeChat cloud functions**: if the console already says 60 and you still get `-504003`, a single unit of work is itself exceeding 60 seconds — there is no larger timeout to set, so switch tiers (the Premium tier is the slowest) or split the work further.
 - `dbInit` is an **ops tool, not a runtime dependency**: start with `{ "action": "report" }` for a read-only audit; write actions require `DB_ADMIN_TOKEN` (otherwise they are rejected); delete the function when you are done (see step 3).
 - `contentCheck` needs no environment variables (it uses cloud calls with platform-managed credentials); the only requirement is that `permissions.openapi` in `cloudfunctions/contentCheck/config.json` **takes effect on upload**. Without that declaration the client **fails open**. ⚠ It cannot be verified with the console's "cloud test" (which requires a real `openid`) — test it in the Q&A page on a real device.
 - **The client cannot trigger scheduled jobs or payment callbacks (caller gate)**: once deployed, any cloud function can be reached from the client via `wx.cloud.callFunction`, yet the four scheduled push functions (`notifyFollowUpdates` / `keywordAlert` / `riskWatch`) and `payCallback` should never be called from the client. The test is `getWXContext().OPENID` (present for client calls, absent for timers / WeChat callbacks / the console's "cloud test"). The first three **reject client calls outright**; `hotBoardRefresh` keeps the client's `action:'ensure'` cold-start path and **only blocks client `force`**; `payCallback` uses `PAY_CALLBACK_GUARD` as a **rollout switch** — the default `log` only records, so switch to `strict` after real-device logs confirm callbacks carry no `openid` (even if that judgement is wrong, reconcile back-fills stuck `granting` orders, so no order is lost forever).
@@ -436,9 +442,9 @@ Common pitfalls:
 **There is no mandatory install list — deploy what you need** (skipping a function does not affect the others):
 
 - **Required**: `aiProxy` — report generation / retrieval / AI Q&A all go through it.
-- **Recommended (effectively required)**: `quotaGuard` — the server-side gates read the counters it writes; skip it and the three quota collections stay empty, so the daily caps effectively do not exist in the cloud (the client still enforces them, but that is exactly the half a repackaged client can bypass). Step 3 states the deployment order you must follow.
+- **Recommended (effectively required)**: `quotaGuard` — the server-side gates read the counters it writes; skip it and the three quota collections stay empty, so the daily caps effectively do not exist in the cloud (the client still enforces them, but that is exactly the half a repackaged client can bypass). Step 3 states the deployment order you must follow. Also recommended: `userInit` — the single writer for the `users` row and personal settings; skip it and the client falls back to local init and settings are not synced to the cloud.
 - **Optional**: `contentCheck` (moderation; fails open, so skipping it only drops one compliance fallback), `hotBoardRefresh` (daily hot board, timer 06:30), `notifyFollowUpdates` / `keywordAlert` / `riskWatch` (three subscription pushes, each needs its own template + timer), `payCreate` / `payCallback` (membership payments, needs your own merchant account).
-- **Ops tool**: `dbInit`, delete it when you are done.
+- **Ops tools**: `dbInit` / `userBackfill`, delete them when you are done.
 
 ### 3. Collections & permissions (18 collections)
 
@@ -504,7 +510,7 @@ When that variable is unset, write actions are **rejected outright** (the read-o
 
 Before previewing on a real device and before launch, configure in "Official Platform → Development Management" and the mini program console:
 
-- **Request domains**: **not needed** — the client never calls an upstream domain directly. Bocha search and all four LLM providers are proxied by cloud functions, and cloud-function egress is not subject to the mini program domain allowlist (the cloud database / functions go through `wx.cloud` and need no domain either)
+- **Request domains**: **not needed** — the client never calls an upstream domain directly. Bocha search and all LLM vendors are proxied by cloud functions, and cloud-function egress is not subject to the mini program domain allowlist (the cloud database / functions go through `wx.cloud` and need no domain either)
 - **Business domains** (optional): only needed if you want the "original article preview" page to embed external sites; put them in `src/config/local.ts` → `webviewDomains` (domain only, no scheme or path). Leave it empty and every link falls back to the material preview card + copy link
 - **Privacy policy**: collected items are "anonymous openid, local storage", and must match what the code actually collects
 - **Customer service**: enable it and bind staff (reporting and feedback rely on `open-type="contact"`)
@@ -596,8 +602,8 @@ celebrity-radar/
 │   ├── stores/                 # zustand stores
 │   ├── styles/                 # Theme variables, tab-bar icons
 │   └── custom-tab-bar/         # Custom bottom tab bar
-├── cloudfunctions/             # 10 cloud functions
-│   ├── aiProxy/                # Upstream key proxy + member model gate (test / search / chat)
+├── cloudfunctions/             # 12 cloud functions
+│   ├── aiProxy/                # Upstream key proxy + member / quota / rate gates (test / search / chat / generate / aux / report writes)
 │   ├── quotaGuard/             # Authoritative quota counting (atomic increments + server dates)
 │   ├── contentCheck/           # Content moderation (cloud call)
 │   ├── payCreate/              # Order creation (server-side pricing + cloud pay order)
@@ -606,9 +612,11 @@ celebrity-radar/
 │   ├── keywordAlert/           # Keyword alerting (cron 09:20, client calls rejected)
 │   ├── riskWatch/              # Person risk monitoring (cron 09:40, client calls rejected)
 │   ├── hotBoardRefresh/        # Daily hot board (cron 06:30; client may `ensure`, `force` is ops-only)
-│   └── dbInit/                 # Ops tool (schema.js is the schema source of truth)
+│   ├── dbInit/                 # Ops tool (schema.js is the schema source of truth)
+│   ├── userInit/               # Single writer for the users row & personal settings (first-login init + back-fill + set)
+│   └── userBackfill/           # One-off ops: back-fill settings for existing users (rejects client calls)
 ├── test/                       # Local unit tests (14 case files / 688 cases)
-├── scripts/                    # Repo scripts (sync-config.js: benefits truth → cloud-function copies)
+├── scripts/                    # Repo scripts (sync-config.js: benefits / user-config truth → cloud-function copies)
 ├── config/                     # Taro build config (dev / index / prod)
 ├── cloudbaserc.json            # CloudBase deployment descriptor (functions + env vars + timers)
 ├── .env.example                # Deployment secret template
@@ -629,15 +637,15 @@ celebrity-radar/
 - **`report.ts`** — report generation, zod validation, URL allowlist sanitization, plain-text degradation
 - **`cache.ts`** — `report_cache` read/write with the `building` mutex, plus `feed_cache` and `refresh_quota`
 - **`quota.ts` / `quota-guard.ts`** — freemium generation quota and its server-side channel (falls back to local counting when not deployed)
-- **`llm.ts`** — LLM calls, always proxied by `aiProxy`; **provider + tier** are resolved from the local preference plus `public.ts` (switching provider keeps the tier), and non-members requesting a member tier always fall back to that provider's fast model
+- **`llm.ts`** — LLM calls, always proxied by `aiProxy`; the client reports only a **vendor + quality tier** (both resolved from the local preference plus `public.ts`), and the **capability slot is decided in the cloud by purpose** (report / auxiliary → structured, Q&A → reasoning); a non-member requesting a member tier always falls back to Basic
 - **`member.ts` / `member-sample.ts`** — the membership benefit table (single source of truth), member checks and the report page's member value copy; the "real sample" in the membership center (excerpted verbatim, and omitted when nothing qualifies)
 - **`pay.ts`** — membership payments: fetch server plans (24h local cache + offline fallback) + create order + open checkout + poll for confirmation (price and duration come from the **server only**)
 - **`qa.ts`** — AI Q&A: passage selection from the report, an extra web search per question, a daily quota gate counted only on success, and a 3-second tap interval
 - **`weekly.ts`** — weekly digest: material read from `feed_cache` only, the LLM writes text only (people and items follow the material), cached locally per ISO week
 - **`hot-board.ts` / `explore.ts`** — hot board with three-level fallback; "figure of the day" and random exploration (stable seeds, xorshift32 to remove modulo bias)
-- **`keyword-alert.ts` / `keywords.ts`** — keyword subscriptions and alert items; keyword cloud and frequent viewpoints (pure client-side aggregation, effective immediately for cached reports)
+- **`keyword-alert.ts` / `keywords.ts`** — keyword subscriptions and alert items; keyword / frequent-phrase aggregation (reused by the compare page's "shared topics" and the topic digest; pure client-side aggregation, effective immediately for cached reports)
 - **`risk-watch.ts` / `risk.ts`** — person risk monitoring subscriptions and signal grouping; the fact-level risk radar list on the report page (both share one dictionary, held in sync by a test)
-- **`topic-digest.ts` / `compare.ts` / `stats.ts` / `trend.ts`** — topic catalog / two-person comparison / profile stats tab / heat-trend curve — all aggregated on the client, adding no schema fields or cloud functions
+- **`topic-digest.ts` / `compare.ts` / `stats.ts` / `trend.ts`** — topic catalog / two-person comparison / profile stats tab / the favorites-page trend curve — all aggregated on the client, adding no schema fields or cloud functions
 - **`quote-check.ts` / `source-link.ts`** — quote sourcing (verifies only verifiable facts); the single outbound link path for the article preview page
 - **`messages.ts` / `notify.ts`** — message-center timeline and its read semantics; WeChat subscription authorization and push placement
 - **`share-card.ts` / `share.ts`** — Canvas 2D quote cards (no remote images, nothing uploaded) and the project's only share-copy exit
@@ -653,7 +661,7 @@ celebrity-radar/
 - **Input side**: the local sensitive-name list blocks requests before any network call is made
 - **Output side**: `sources` / `dynamics` links are sanitized against an allowlist and must have appeared in the retrieved material
 - **Content policy**: every report is labeled "AI-generated, for reference only"; there is a privacy statement page, a reporting entry point and a two-step "delete my data" flow
-- **Cost control**: shared report cache, ≤ 10 feed refreshes and ≤ 3 generations per account per day (30 for members), a `building` mutex to prevent duplicate concurrent generation, and weekly digests cached per calendar week
+- **Cost control**: shared report cache, ≤ 10 feed refreshes (20 for members) and ≤ 3 generations per account per day (30 for members), a `building` mutex to prevent duplicate concurrent generation, and weekly digests cached per calendar week
 - **Retrieval depth follows the tier**: the free tier issues the main search line only (10 items); members get 24 main + 16 social (40). Both the number of search calls and the material volume scale with the tier
 - **Free-tier refresh cooldown**: within 12 hours of a report being generated, "refresh latest" on a free account returns the existing version with an on-page explanation instead of regenerating (the content would not have changed); members are exempt. **Do not confuse this with the upstream-failure cooldown** — different criteria, duration and purpose
 - **Feed refresh uses the main search line only**: one pull-to-refresh queries each followed person once (the social line is dropped: 20 → 10 search calls per refresh), rotates by "least recently refreshed" so people beyond the 10-per-refresh cap get a turn, and runs 4 requests at a time
@@ -690,16 +698,16 @@ Before submitting a change, confirm these six:
 
 | Question | Answer |
 |---|---|
-| Can I just run it? | It compiles. To exercise generation you need a **CloudBase environment + a Bocha key + LLM keys** (four providers are selectable; configuring `DEEPSEEK_API_KEY` alone is enough to get started, but **every provider left in the client list needs its own key**, see [Configuration](#configuration) §3) |
+| Can I just run it? | It compiles. To exercise generation you need a **CloudBase environment + a Bocha key**; the default LLM vendor is the **zero-key CloudBase AI** (works out of the box), and external vendors (DeepSeek / Zhipu GLM / Kimi / Qwen) need their keys configured — a vendor only appears once it is configured, see [Configuration](#configuration) §3 |
 | Will it cost money? | Yes. Search and LLM calls are metered — the quota, cache and cooldown mechanisms exist precisely to contain that |
 | Can I use it commercially? | The license allows it, but **launching requires your own entity qualifications, category filing and AI-content compliance measures** |
 | Does the membership payment work? | The code is complete (`payCreate`, `payCallback`, the `PLANS` price map) but needs your own WeChat Pay merchant account; without it the client says so explicitly and free features keep working |
 | Can I keep the brand? | "Celebrity Radar" belongs to the original author; please rename before publishing a fork to avoid confusion |
 | Why is commercial code included? | It is a complete reference implementation: a single price source, a read-only client, and cloud-side enforcement — the reasoning is documented in the comments |
-| Which LLMs are supported and can users choose? | The client offers **four** selectable providers: DeepSeek / Qwen / Zhipu GLM / Moonshot Kimi, picked by the user under "Profile → Model provider", with the platform paying for the keys in the cloud function (`llm.config.js` also lists OpenAI, but it is deliberately not exposed). Variable names, setup steps and the cost of a missing key are in [Configuration](#configuration) §3 |
-| How hard is it to swap upstreams? | The providers users may pick live in `llm.providers` in `src/config/public.ts`; the cloud registry (endpoints / key variable names / member tiers) is `cloudfunctions/aiProxy/llm.config.js` (with a byte-identical copy in `hotBoardRefresh` — change both). Adding one = one entry on each side + one environment variable |
+| Which LLMs are supported and can users choose? | The client offers **5 vendors** (including the zero-config default **CloudBase AI**): CloudBase AI / DeepSeek / Zhipu GLM / Kimi / Qwen, and the user picks a **vendor and a quality tier** (Basic / Standard / Premium) under "Profile → Model vendor & quality tier", with the platform paying for the keys in the cloud function. Vendor variable names, setup steps and the cost of a missing key are in [Configuration](#configuration) §3 |
+| How hard is it to swap upstreams? | The vendor list users may pick lives in `llm.vendors` in `src/config/public.ts`; the cloud registry (endpoints / key variable names / per-tier capability slots) is the `VENDORS` / `QUALITIES` in `cloudfunctions/aiProxy/llm.config.js` (with a **word-for-word identical** copy in `hotBoardRefresh`, pinned by case 07 — change both). Adding one = one entry on each side + one environment variable |
 
-**Upstream risk**: the search provider (Bocha) and the LLMs (DeepSeek / Qwen / Zhipu GLM / Moonshot Kimi, all OpenAI-compatible endpoints) are third-party paid services;
+**Upstream risk**: the search provider (Bocha) and the LLMs (CloudBase AI / DeepSeek / Qwen / Zhipu GLM / Kimi, the external four being OpenAI-compatible endpoints) are third-party paid services;
 their APIs, pricing and availability are outside this project's control.
 
 ---
@@ -725,7 +733,7 @@ Issues and pull requests are welcome. **The full process, review criteria and Is
 2. Follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:` / `fix:` / `docs:` / `chore:` …), one concern per commit
 3. Complete the five checks in "Before submitting a change" above and explain the motivation and verification in the PR description
 4. Attach on-device screenshots for UI or interaction changes
-5. When touching either "hand-synced pair" (the provider/tier tables, the member-tier gate), change both copies
+5. When touching `llm.config.js` (the two word-for-word identical `VENDORS` / `QUALITIES` copies, pinned by case 07), change both copies
 6. Keep both READMEs (`README.md` / `README.en.md`) in sync, and update [`CHANGELOG.md`](./CHANGELOG.md)
 
 By participating you agree to the [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
@@ -779,7 +787,7 @@ perform (database schema, cloud-function contract, config renames — flagged as
 
 Released under the [Apache License 2.0](./LICENSE); copyright and third-party notices are in [`NOTICE`](./NOTICE).
 
-- Upstream services: Tencent CloudBase (WeChat Cloud Development), Bocha search, four selectable LLM providers (DeepSeek / Qwen / Zhipu GLM / Moonshot Kimi), WeChat Pay
+- Upstream services: Tencent CloudBase (WeChat Cloud Development, including the default CloudBase AI channel), Bocha search, several selectable LLM vendors (CloudBase AI / DeepSeek / Zhipu GLM / Kimi / Qwen, the external four being OpenAI-compatible endpoints), WeChat Pay
 - Open-source dependencies: Taro, Taro UI, React, zustand, zod, dayjs and others, each owned by its respective authors
 
 **Disclaimer**: this project is intended for technical learning and exchange. You are responsible for any consequences of using it,
