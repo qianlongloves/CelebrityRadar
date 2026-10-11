@@ -93,6 +93,9 @@ module.exports = {
     "relationMax": 5,
     "relationNameChars": 20,
     "relationNoteChars": 40,
+    "timelineMax": 8,
+    "timelineDateChars": 10,
+    "timelineEventChars": 60,
     "watchMax": 4,
     "watchWhenChars": 12,
     "watchWhatChars": 40,
@@ -119,6 +122,11 @@ module.exports = {
     "timelineTarget": 5,
     "profileMin": 3,
     "profileTarget": 5
+  },
+  "REPORT_OUTPUT_BUDGET": {
+    "chatMaxTokens": 8192,
+    "reasoningReserve": 0.4,
+    "charsPerToken": 1
   },
   "SEARCH_COUNTS": {
     "maxAttempts": 3,

@@ -15,6 +15,15 @@ export interface ReportCacheRow {
   builder: string | null // openid，用于安全释放锁
   search_meta: { news_count: number } | null
   /**
+   * 分批生成的**中间结果**（P0-B，2026-10-11）：每批成功即写一次，元素形如
+   * `{ key: 'identity' | 'facts' | 'judgement' | 'detail', data: {…该批字段} }`。
+   *
+   * 它只是过程记录，**不参与任何读取判定**：缓存命中与读者可见性都只看 state / report。
+   * 但正因如此它必然不是必填 —— acquire 会清空它、save 会连同旧行一起替换掉它，
+   * 只有「正在按批生成」的那一段时间里才有值，所以声明成可选。
+   */
+  parts?: unknown
+  /**
    * 报告 Schema 版本（见 utils/report.ts#REPORT_SCHEMA_VERSION）。
    *
    * **可选是刻意的**：`report_cache` 由端上直写，2026-10-09 之前落库的行没有这个字段，

@@ -8,13 +8,20 @@ import { cleanText, clipText } from './text'
 import {
   REPORT_BUDGET,
   REPORT_FIELD_LIMITS,
+  REPORT_OUTPUT_BUDGET,
   REPORT_QUOTAS,
   REPORT_SOURCE
 } from '../config/benefits'
+/* 分批生成的**分组口径**取自报告模板（页面目录块用的同一份真源）：不另立一套分组 */
+import { REPORT_TEMPLATE, TOC_GROUPS, TocGroupKey, groupNeedsLane } from './report-toc'
 
 /**
  * AI 报告 Schema v2（§2.3）与生成/校验（附录 B）。
  * 不信任提示词：URL 白名单、来源标注、枚举值全部代码层强制。
+ *
+ * **生成是分多批的**（P0-B，2026-10-11）：按报告模板的四组各调一次模型、逐批合并
+ * （规格见 BATCH_SPEC / REPORT_BATCHES，主流程见 buildReport）。所以下面「一份报告」的完整
+ * 契约（LlmReportObject）与「一批」的契约（batchSchema）是两张表，都从 REPORT_FIELDS 派生。
  */
 
 /**
@@ -372,62 +379,94 @@ const ControversySchema = z.object({
   basis: looseStr()
 })
 
-/** LLM 输出契约（heat 由本地计算，不由模型给） */
-const LlmReportSchema = z.union([
-  z.object({ refused: z.literal(true) }),
-  z.object({
-    /* 这里刻意用 unknown 而不是 literal(false)：模型偶发写 "refused": "false" / 0 时，
-       literal 两处都不匹配 → 整份报告校验失败 → 降级。判「是不是拒答」只需看它是否全等 true
-       （见 isRefusedResult），值域校验不必要，也不必付整份报告的代价。 */
-    refused: z.unknown().optional(),
-    intro: looseStr(),
-    dynamics: z.array(DynamicSchema).catch([]),
-    quotes: z.array(QuoteSchema).catch([]),
-    analysis: looseStr(),
-    /* 点评拆条（本轮）：新提示词只请求它，analysis 由 sanitize 从各条拼出来。
-       analysis 仍保留在契约里 —— 降级简版路径（SYSTEM_FALLBACK）产出的就是一整段文字，
-       两条路共用同一个渲染出口（见 pages/report/index.tsx）。 */
-    analysisPoints: z.array(AnalysisPointSchema).catch([]),
-    stance: z.array(StanceSchema).catch([]),
-    timeline: z.array(TimelineSchema).catch([]),
-    sources: z.array(SourceSchema).catch([]),
-    /* 会员专属段落（O-11）：只有会员的提示词里会出现它，免费报告恒为 undefined。
-       必须在 schema 里声明 —— zod 的非严格对象会把未声明的键**静默丢弃**。 */
-    memberNotes: MemberNotesSchema.optional().catch(undefined),
-    /* 信源分歧（本轮，会员专享）：同上，不声明就等于白要（会被 zod 静默丢掉） */
-    conflicts: z.array(ConflictSchema).optional().catch(undefined),
-    /* 第二批（免费可见）：五段结构化事实字段，随 SYSTEM_REALTIME 一起要。
-       同样必须先声明 —— zod 的非严格对象会把未声明的键静默丢弃。
-       一律 .catch([]) 而不是 .default([])：模型把它们写成对象 / 字符串时也只是这一段为空，
-       不该让整份报告在校验这一步失败（.catch 同时兜住键缺失，故不必再叠 .default）。 */
-    profile: z.array(ProfileItemSchema).catch([]),
-    relations: z.array(RelationSchema).catch([]),
-    watchlist: z.array(WatchItemSchema).catch([]),
-    glossary: z.array(GlossaryItemSchema).catch([]),
-    controversies: z.array(ControversySchema).catch([]),
-    /* 本系统的客观评价（批 2）：可选 —— 模型偶尔不给也不该让整份报告降级，故 .optional().catch */
-    verdict: z
-      .object({ summary: looseStr(), positioning: looseStr() })
-      .optional()
-      .catch(undefined),
-    /* 口碑两极 / 言行一致度（批 2）：同 verdict，评价类、可选、不给不崩 */
-    reputation: z
-      .object({ positive: looseStr(), negative: looseStr() })
-      .optional()
-      .catch(undefined),
-    consistency: z
-      .object({ claim: looseStr(), act: looseStr(), gap: looseStr() })
-      .optional()
-      .catch(undefined)
-  })
-])
+/**
+ * 报告的字段契约：**字段名 → 字段 schema**（heat 由本地计算，不由模型给）。
+ *
+ * 为什么要拆成一张「字段表」而不是像原先那样写成一个对象字面量：分批之后每次调用只要其中
+ * 几个键，而**契约必须只有一份** —— 分成四份各写一遍类型是这类改造最容易坏的地方，
+ * 而且坏起来不报错：zod 的非严格对象遇到未声明的键是**静默丢弃**（这正是下面 memberNotes
+ * 那条注释反复强调的坑），漏声明的表现只是「某一批的字段在报告里凭空消失」。
+ * 现在整体契约（LlmReportObject）与分批契约（batchSchema → pickFields）都从这张表里挑。
+ */
+const REPORT_FIELDS = {
+  intro: looseStr(),
+  dynamics: z.array(DynamicSchema).catch([]),
+  quotes: z.array(QuoteSchema).catch([]),
+  analysis: looseStr(),
+  /* 点评拆条（本轮）：新提示词只请求它，analysis 由 sanitize 从各条拼出来。
+     analysis 仍保留在契约里 —— 降级简版路径（SYSTEM_FALLBACK）产出的就是一整段文字，
+     两条路共用同一个渲染出口（见 pages/report/index.tsx）。 */
+  analysisPoints: z.array(AnalysisPointSchema).catch([]),
+  stance: z.array(StanceSchema).catch([]),
+  timeline: z.array(TimelineSchema).catch([]),
+  /* ⚠ 这里**刻意没有** sources：那片「来源清单」不再由模型产出，改由端上从报告里真正
+     引用到的素材派生（见 sanitizeReport）。留在契约里就等于还在向模型要它 —— 而它恰是
+     facts 批最大的一块输出、且规模随素材数增长（见提示词池里第 5 条删除处的注释）。 */
+  /* 会员专属段落（O-11）：只有会员的提示词里会出现它，免费报告恒为 undefined。
+     必须在 schema 里声明 —— zod 的非严格对象会把未声明的键**静默丢弃**。 */
+  memberNotes: MemberNotesSchema.optional().catch(undefined),
+  /* 信源分歧（本轮，会员专享）：同上，不声明就等于白要（会被 zod 静默丢掉） */
+  conflicts: z.array(ConflictSchema).optional().catch(undefined),
+  /* 第二批（免费可见）：五段结构化事实字段，随提示词一起要。
+     同样必须先声明 —— zod 的非严格对象会把未声明的键静默丢弃。
+     一律 .catch([]) 而不是 .default([])：模型把它们写成对象 / 字符串时也只是这一段为空，
+     不该让整份报告在校验这一步失败（.catch 同时兜住键缺失，故不必再叠 .default）。 */
+  profile: z.array(ProfileItemSchema).catch([]),
+  relations: z.array(RelationSchema).catch([]),
+  watchlist: z.array(WatchItemSchema).catch([]),
+  glossary: z.array(GlossaryItemSchema).catch([]),
+  controversies: z.array(ControversySchema).catch([]),
+  /* 本系统的客观评价（批 2）：可选 —— 模型偶尔不给也不该让整份报告降级，故 .optional().catch */
+  verdict: z
+    .object({ summary: looseStr(), positioning: looseStr() })
+    .optional()
+    .catch(undefined),
+  /* 口碑两极 / 言行一致度（批 2）：同 verdict，评价类、可选、不给不崩 */
+  reputation: z
+    .object({ positive: looseStr(), negative: looseStr() })
+    .optional()
+    .catch(undefined),
+  consistency: z
+    .object({ claim: looseStr(), act: looseStr(), gap: looseStr() })
+    .optional()
+    .catch(undefined)
+}
 
-export type LlmReport = z.infer<typeof LlmReportSchema> & { refused?: boolean }
+/**
+ * 把若干字段包成一次调用的解析契约：拒答分支 + 只含这些键的对象分支。
+ * 拒答分支的 refused 刻意用 unknown 而不是 literal(false)：模型偶发写 "refused": "false" / 0 时，
+ * literal 两处都不匹配 → 整份报告校验失败 → 降级。判「是不是拒答」只需看它是否全等 true
+ * （见 isRefusedResult），值域校验不必要，也不必付整份报告的代价。
+ */
+const llmContract = (fields: Record<string, z.ZodTypeAny>) =>
+  z.union([z.object({ refused: z.literal(true) }), z.object({ refused: z.unknown().optional(), ...fields })])
+
+/** 按字段名挑出这批要的键；字段名写错就抛（见 pickFields 注释） */
+function pickFields(fields: string[]): Record<string, z.ZodTypeAny> {
+  const picked: Record<string, z.ZodTypeAny> = {}
+  for (const field of fields) {
+    const one = (REPORT_FIELDS as Record<string, z.ZodTypeAny>)[field]
+    /* 抛而不是跳过：字段名写错（比如 analysisPoints 写成 analysisPoint）只会让那一批
+       悄悄不产出该字段，页面上表现为「卡片消失」，很难追到是分批清单写错了 */
+    if (!one) throw new Error(`报告分批出现未知字段：${field}（见 REPORT_FIELDS）`)
+    picked[field] = one
+  }
+  return picked
+}
+
+/**
+ * 整体契约：**全量字段**的一份对象 schema。
+ * 分批生成（buildReport）实际按批解析（batchSchema），这份用于推导 LlmReport 类型
+ * 与「整份报告」的形状自检（heat 由本地计算，不由模型给）。
+ */
+const LlmReportObject = z.object({ refused: z.unknown().optional(), ...REPORT_FIELDS })
+
+export type LlmReport = z.infer<typeof LlmReportObject> & { refused?: boolean }
 
 /** 拒答结果的显式类型守卫（联合窄化用） */
 export function isRefusedResult(x: unknown): x is { refused: true } {
   const refused = typeof x === 'object' && x !== null ? (x as { refused?: unknown }).refused : undefined
-  /* 兼收字符串 'true'：schema 里 refused 是宽容字段（见 LlmReportSchema 的注释），模型写成
+  /* 兼收字符串 'true'：schema 里 refused 是宽容字段（见 llmContract 的注释），模型写成
      "refused": "true" 时不该被当成「没有拒答」—— 那会让一份本该拒答的报告变成一堆空卡片 */
   return refused === true || refused === 'true'
 }
@@ -486,7 +525,7 @@ export interface LlmReportFields {
   analysisPoints?: Array<{ point?: string; basis?: string }>
   stance?: Array<{ topic?: string; attitude?: string; note?: string }>
   timeline?: Array<{ date?: string; event?: string }>
-  sources?: Array<{ title?: string; url: string }>
+  /* sources 不在这里：改由端上派生（见 REPORT_FIELDS 的同名说明与 sanitizeReport） */
   memberNotes?: { compare?: string; risk?: string }
   conflicts?: Array<{ topic?: string; a?: string; b?: string }>
   /* 第二批（免费可见）：宽松形态，字段可能缺失或非字符串，由 sanitize 内部归一 */
@@ -620,7 +659,35 @@ export interface ReportCoverage {
 
 export const DISCLAIMER = '内容由 AI 基于公开网络信息生成，仅供参考，不代表本平台立场。'
 
-const SYSTEM_REALTIME = [
+/*
+ * ═════════════ 报告提示词（分批生成，P0-B 2026-10-11） ═════════════
+ *
+ * 原先是**一份** SYSTEM_REALTIME：一次调用要模型吐完 16 节 JSON。问题不在提示词写了什么，
+ * 而在「一次要太多」这件事本身：
+ *   ① 输出预算：max_tokens 是**整轮 completion** 的预算，推理模型的 reasoning_content 也算在里面。
+ *      整份报告 JSON 一次吐完接近 1 万字（四批加起来，见 FIELD_OUTPUT_ESTIMATE），
+ *      再被思考吃掉一截，必然撞上限；而**截断的 JSON 修不回来**（utils/llm.ts#parseModelJson
+ *      刻意不补右括号），代价是整份 16 节全废、降级成一段纯文本。
+ *      分批之后「每批吐多少」就是可算的了 —— 预算口径在 config/benefits.ts#REPORT_OUTPUT_BUDGET，
+ *      逐批校验在 test/cases/20。
+ *   ② 失败面：一次调用失败 = 整份报废；报告页本来就是按字段逐卡降级的，拆开之后失败只丢一组。
+ *   ③ 可续跑：每批成功即落库（见 utils/cache.ts 的 saveReportParts），已付的 token 不作废。
+ *
+ * 分批的**分组口径不是新发明**：它就是报告模板的四组（utils/report-toc.ts#TOC_GROUPS，
+ * 页面目录块用的同一份）。「哪一节属于哪一组」只有一处真源 —— REPORT_TEMPLATE，
+ * 下面 REPORT_BATCHES 的 sectionIds 由它派生（测试核对两者一致）。
+ *
+ * 提示词的组织：正文**逐字未动**，只是按组切开 ——
+ *   · SYSTEM_SHARED_REALTIME：每批都带的硬约束（角色 / 出处写法 / 第 1、14 条）；
+ *   · REPORT_RULES_REALTIME：各条字段要求（条号写在字符串开头），分批时按组取用；
+ *   · REPORT_BATCHES：每批负责哪些节、哪些字段、要不要背景素材、带不带会员补充。
+ * **条号沿用原编号、不重排**（于是每批的编号是跳着的）：条文之间有多处「见第 16 条」
+ * 「口径同第 16 条」这样的互相引用，重排会让这些引用全部错位；沿用编号也便于把新旧日志、
+ * 新旧注释里的「第 N 条」直接对上。
+ */
+
+/** 全批共用的硬约束：角色 + 出处写法 + 第 1 条 + 第 14 条（免费与会员逐字节一致） */
+const SYSTEM_SHARED_REALTIME = [
   '你是名人动态分析师。基于提供的真实新闻素材，为指定名人生成一份结构化报告。',
   '硬约束：',
   /*
@@ -633,6 +700,28 @@ const SYSTEM_REALTIME = [
    */
   '出处（basis）写法：优先直接复制素材里的 url（整串照抄，不要改写、不要省略）。若那串字符太长、记不准，写该素材的媒体名（如「新华社」）同样算指认出处。两者都必须来自本次素材。',
   '1. 仅基于素材作答，不编造日期与来源。',
+  /*
+   * 第 14 条（敏感人物拒答）从下面那份要求池里**提到了这里**：它和 1 一样是全局条，
+   * 拆批之后只要有**任何一批**返回 {"refused": true}，整份报告就按拒答处理（见 buildReport），
+   * 所以它必须出现在每一批里，不能只挂在某一批上（挂在某一批 = 另外三批会照常写敏感内容）。
+   */
+  '14. 若素材显示该人物属政治、军事类敏感人物，仅返回 {"refused": true}。'
+].join('\n')
+
+/*
+ * 各条字段要求池：**就是原来那份 SYSTEM_REALTIME 的正文，逐字未动**。
+ * 分批时按条号取用（见 BATCH_SPEC.ruleIds 与 ruleLines()），共用条（1、14）已提到上面。
+ * 为什么按条号取、而不是手抄成四份：这些条文里有大量互相引用与成段的取舍说明
+ * （例如「见第 16 条」「口径同第 16 条」、watchlist 那条里对 timeline 边界的解释），
+ * 抄成四份之后它们会各自漂移 —— 而提示词措辞漂移**不报错**，只会让模型少写一块内容。
+ */
+/**
+ * 第 15 条里那个「本批要写的字段清单」的占位符：分批时替换成本批的字段（见 ruleFill）。
+ * 必须定义在池**之前** —— 池里的模板字面量在模块初始化时就要读它，const 有 TDZ，放到后面会直接抛。
+ */
+const RULE_FIELDS_PLACEHOLDER = '__本批字段__'
+
+const REPORT_RULES_REALTIME = [
   /*
    * intro 的写法原先**只出现在第 16 条的 JSON 格式里**（"intro":string），没有任何质量要求：
    * 它是全篇第一段、也是全篇唯一没有字数区间与内容骨架的段落，于是实测常出现「一句泛泛的
@@ -649,7 +738,15 @@ const SYSTEM_REALTIME = [
    */
   `3. dynamics 每条字段：date(YYYY-MM-DD)、title、summary(一句摘要)、source(来源媒体名)、url(必须从素材 URL 原样复制)、sentiment(只能是 positive/neutral/negative)；素材里可确认的动态给 ${REPORT_QUOTAS.dynamicsMin}~${REPORT_QUOTAS.dynamicsMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.dynamicsTarget} 条），同一件事只写一条。`,
   `4. quotes 每条字段：text(名言原文)、context(出处场合/时间)、background(背景：这句话是在什么场合、什么背景下说的，1~2 句，须出自素材)、note(注解：这句话的含义 / 影响 / 争议，1~2 句，须出自素材，没有可说的就填空串)、source(素材 URL 或「据公开资料」)；background 与 note 合计不超过 100 字。素材里可确认的语录给 ${REPORT_QUOTAS.quotesMin}~${REPORT_QUOTAS.quotesMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.quotesTarget} 条）。`,
-  '5. sources 列出全部用到的素材：title + url(原样复制)。',
+  /*
+   * ⚠ 第 5 条（`sources 列出全部用到的素材：title + url`）**已删除**（2026-10-11），条号不再补位。
+   * 原因三宗罪，任一都够：
+   *   ① 它是 facts 批（最大的一批）里最大的一块输出，而且**规模不可静态封顶** —— 条数等于本次
+   *      用到的素材数，随检索结果增长，预算算不出来（这正是「输出预算可校验」要拦的东西）；
+   *   ② 内容 100% 是端上已知的（sanitize 本来就用素材自身的 title / url 覆盖模型给的）；
+   *   ③ 让模型抄 N 条 URL，恰是提示词自己承认「走形率很高」的动作（见出处写法的注释）。
+   * 现在那片清单由端上**从报告里真正引用到的素材**派生（见 sanitizeReport 的 sources 段）。
+   */
   `6. analysisPoints：${REPORT_QUOTAS.analysisPointsMin}~${REPORT_FIELD_LIMITS.analysisPointMax} 条**各自独立、就具体事件或说法给出的判断**，每条字段：point(一句完整的判断，40 字内，以句号结尾)、basis(这条判断依据的素材 url，原样复制；素材里找不到出处的写「据公开资料」)。判断必须具体到人、事、时间或具体说法，禁止「风格独特」「备受关注」「引发讨论」这类换个人名也成立的套话；各条之间不要互相重复。**整体结论不写在这里**——那是 verdict.summary 的职责（见第 16 条），这里的每一条都是「某件事怎么看」，不是「TA 这个人整体怎么样」。`,
   `7. stance：${REPORT_QUOTAS.stanceMin}~${REPORT_QUOTAS.stanceMax} 个近期热点话题上的舆论态度，每条字段：topic(话题名，12 字内)、attitude(只能是 positive/neutral/negative/mixed)、note(一句话依据，须出自素材)；素材里确实没有任何可判断的舆论态度才留空数组。`,
   `8. timeline：素材中可确认的**已经发生**的关键事件(date + event)，给 ${REPORT_QUOTAS.timelineMin}~${REPORT_QUOTAS.timelineMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.timelineTarget} 条），同一件事只写一条；素材里确实没有可确认的事件才留空数组。**尚未发生**的未来节点（已公布的档期一类）不写在这里，写进 watchlist。`,
@@ -678,7 +775,6 @@ const SYSTEM_REALTIME = [
   `11. watchlist：未来值得跟踪的时间点或事件，只写素材里**已公布**的，最多 ${REPORT_FIELD_LIMITS.watchMax} 条，每条字段：when(已公布的时间刻度，只写**绝对时间**：能确定到日就写 YYYY-MM-DD、只到月就写 YYYY-MM（如 2026-11），**不要写「下月」「年底」这类相对说法**——报告会被长期复用，相对说法过一阵就连自己指哪个月都说不清，12 字内)、what(事件，40 字内)、basis(素材，写法见开头)。**只写尚未发生的**：素材里已公布、但时间已经过去的（已上映、已开播、已结束等）属于 timeline，不要写进这里。素材里确实没有已公布且尚未发生的时间点才留空数组（不得推测档期）。`,
   `12. glossary：本报告或素材里出现、普通读者可能不懂的行话或背景词（如文娱「番位」、财经「对赌」），最多 ${REPORT_FIELD_LIMITS.glossaryMax} 条，每条字段：term(词，10 字内)、explain(一句话解释，50 字内)。只解释确实出现过的词（确实没有这类词才留空数组）；解释用该词的通行含义即可（这一条答的是词义，不是关于本人的事实），不做褒贬评价。`,
   `13. controversies：近期公开争议与各方的回应，最多 ${REPORT_FIELD_LIMITS.controversyMax} 条，每条字段：topic(争议点，12 字内)、claim(争议内容，60 字内，**须写明发生时间**，时间要出自素材)、response(当事方或相关方的公开回应，40 字内；素材里没有公开回应就填空串)、basis(素材，写法见开头)。只写素材里确实存在的争议，只陈述、不评价、不裁决。`,
-  '14. 若素材显示该人物属政治、军事类敏感人物，仅返回 {"refused": true}。',
   /*
    * 「写满」这条是补上去的，它对应一类此前没被当成问题的失败：模板里每段都留了「素材不足
    * 则留空」的口子，而模型对这类口子的利用程度远超预期 —— 它会把「省事」读成「素材不足」，
@@ -687,7 +783,7 @@ const SYSTEM_REALTIME = [
    * 故这里把两个概念的边界写死：先尽力找，确实没有才留空；同时把第 1 条再钉一遍，
    * 免得这句被读成鼓励注水。
    */
-  '15. 除「素材里确实没有」之外，**每一段都要给出内容**（dynamics / quotes / analysisPoints / stance / timeline / sources / profile / relations / watchlist / glossary / controversies / verdict / reputation / consistency 都算）：先尽力在素材里找，确实找不到才留空数组。不许因为条数不好凑、懒得逐一核对就返回空数组 —— 用户看到的是一整块卡片直接消失，比少一条信息严重得多；但也不得为凑数编造（第 1 条）。',
+  `15. 除「素材里确实没有」之外，**本批每一段都要给出内容**（${RULE_FIELDS_PLACEHOLDER} 都算）：先尽力在素材里找，确实找不到才留空数组。不许因为条数不好凑、懒得逐一核对就返回空数组 —— 用户看到的是一整块卡片直接消失，比少一条信息严重得多；但也不得为凑数编造（第 1 条）。`,
   /*
    * verdict / reputation / consistency 是批 2 的「本系统客观评价」三维。与事实字段不同：它们是
    * **评价/判断**，允许在素材事实之上做归纳推断（比如「处于事业上升期」「在同领域属头部」），
@@ -696,13 +792,349 @@ const SYSTEM_REALTIME = [
    */
   '16. verdict：本系统基于公开信息给出的**客观评价**（仅供参考，不构成对 TA 本人的定性或裁决）：summary(一句话结论，60 字内、以句号结尾：TA 目前大致处于什么状态、值不值得关注，**这是全篇的导读句**，要具体到人、事或领域，禁止「值得关注」「备受关注」这类套话)、positioning(行业定位，60 字内：在同领域大致处于什么位置，可提对标人物；公开信息不足以判断就写「公开信息不足以判断」)。这是归纳推断，允许在素材事实之上做判断，但不得编造不存在的事实或数据。',
   '17. reputation 与 consistency（同为客观评价，口径同第 16 条）：reputation(口碑两极：positive 支持方/正面评价的核心观点 60 字内、negative 反对方/负面评价的核心观点 60 字内，两侧都要来自素材里的实际声音，某一侧素材里没有就写「素材里未见」)、consistency(言行一致度：claim 该人物公开表达过的立场或人设 40 字内、act 素材里与此相关的实际做法 40 字内、gap 客观说明两者是否一致 40 字内，只陈述差异、不裁决对错；素材不足以判断就整个字段留空)。',
-  '18. 只输出 JSON，格式：{"intro":string,"verdict":{"summary":string,"positioning":string},"reputation":{"positive":string,"negative":string},"consistency":{"claim":string,"act":string,"gap":string},"dynamics":[],"quotes":[],"analysisPoints":[],"stance":[],"timeline":[],"sources":[],"profile":[],"relations":[],"watchlist":[],"glossary":[],"controversies":[]}'
-].join('\n')
+]
+
+/**
+ * 按条号取要求（**找不到就抛**，不静默漏条）：条号写在字符串开头，如「3. dynamics 每条字段：…」。
+ * 抛异常而不是返回空串是有意的 —— 漏掉一条要求不会报错，只会让模型少写一整块内容，
+ * 而这种缺陷在页面上看不出来（卡片直接消失，看起来像「素材不足」），只能靠这里吵出来。
+ * 与之配套的完整性检查见 test/cases/03：除 1、14 两条全局条外，每一条都必须被唯一一批认领。
+ */
+function ruleLines(ids: number[]): string[] {
+  return ids.map((id) => {
+    const hit = REPORT_RULES_REALTIME.find((rule) => rule.startsWith(`${id}.`))
+    if (!hit) throw new Error(`报告提示词缺少第 ${id} 条：REPORT_RULES_REALTIME 里没有以「${id}.」开头的要求`)
+    return hit
+  })
+}
+
+/* ═════════════ 分批：每批 = 报告模板的一组（utils/report-toc.ts#TOC_GROUPS） ═════════════ */
+
+/** 分批键 = 模板分组键（identity / facts / judgement / detail），不另立一套命名 */
+export type ReportPartKey = TocGroupKey
+
+interface BatchSpec {
+  /** 本批要模型产出的字段（写进提示词第 15 / 18 条；测试核对「谁归哪批」也用它） */
+  fields: string[]
+  /** 本批认领的要求池条号（1、14 是全局条，已在 SYSTEM_SHARED_REALTIME 里） */
+  ruleIds: number[]
+  /** 本批的 JSON 格式行（原第 18 条的按批收窄版） */
+  format: string
+  /** 是否承载会员专属字段：MEMBER_HINT_REALTIME **只**追加在这一批上 */
+  memberFields: boolean
+}
+
+export interface ReportBatch extends BatchSpec {
+  key: ReportPartKey
+  /** 本批负责的模板节 id（由 REPORT_TEMPLATE 的 group 派生，不手抄） */
+  sectionIds: string[]
+  /**
+   * 是否给「人物背景资料」段（见 BACKGROUND_HEAD）—— 背景只喂「经历类」字段，不喂动态与争议。
+   *
+   * **由模板派生**（该组要不要 profile 检索路，见 utils/report-toc.ts#groupNeedsLane），
+   * 不在这里手写：它是「素材从哪来」的一部分，与 SEARCH_LANES 是同一件事的两端 ——
+   * 手写的那一版曾经需要「加一节档案 + 记得把这一批的 background 改成 true」两处同时改对。
+   */
+  background: boolean
+}
+
+/** 模板每一组包含哪些节 —— 从模板配置派生（测试会核对两边一致） */
+const sectionIdsOf = (key: TocGroupKey): string[] =>
+  REPORT_TEMPLATE.filter((section) => section.group === key).map((section) => section.id)
+
+const BATCH_SPEC: Record<ReportPartKey, BatchSpec> = {
+  /* 基本档案：简介 + 三维评价 + 档案 + 关系。这一组的判断字段（16/17）需要一个全局视角，
+     故与简介、档案放在同一批里，让模型在同一段上下文里把「身份」与「评价」对齐。 */
+  identity: {
+    fields: ['intro', 'verdict', 'reputation', 'consistency', 'profile', 'relations'],
+    ruleIds: [2, 9, 10, 16, 17],
+    format:
+      '18. 只输出 JSON，格式：{"intro":string,"verdict":{"summary":string,"positioning":string},"reputation":{"positive":string,"negative":string},"consistency":{"claim":string,"act":string,"gap":string},"profile":[],"relations":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
+    memberFields: false
+  },
+  /* 事实：动态 + 语录。**不带背景段** —— BACKGROUND_HEAD 明确要求背景
+     不要用来写 dynamics（背景是长期履历，容易被写成「动态」），
+     这一条由模板的 facts.search 决定（不含 profile 路，见 REPORT_BATCHES）。
+     这一批是**最大的一批**（动态 6 条 + 语录 5 条，见 FIELD_OUTPUT_ESTIMATE），而它同时握着
+     达标判定（dynamics+quotes+timeline ≥ N）里的两条 ⇒ 单点。故它的输出规模有两道闸：
+     ① 预算校验（用例 20）对它按「单点批」标准要求更严的余量；
+     ② 曾是它最大一块的 sources 清单已改为端上派生（见提示词池第 5 条的删除注释）。 */
+  facts: {
+    fields: ['dynamics', 'quotes'],
+    ruleIds: [3, 4],
+    format:
+      '18. 只输出 JSON，格式：{"dynamics":[],"quotes":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
+    memberFields: false
+  },
+  /* 判断与风险：点评 + 立场 + 争议，外加会员的对比/风险/信源分歧（模板把 sec-member 归在这一组）。
+     同样不带背景段：这一组要的是对**近期事件**的判断，背景线会诱导出「长期印象」式的点评。 */
+  judgement: {
+    fields: ['analysisPoints', 'stance', 'controversies'],
+    ruleIds: [6, 7, 13],
+    format:
+      '18. 只输出 JSON，格式：{"analysisPoints":[],"stance":[],"controversies":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
+    memberFields: true
+  },
+  /* 细节与延伸：时间线 + 后续关注 + 行话。时间线要靠背景段补早期经历（模板的 detail.search 含 profile 路）。 */
+  detail: {
+    fields: ['timeline', 'watchlist', 'glossary'],
+    ruleIds: [8, 11, 12],
+    format:
+      '18. 只输出 JSON，格式：{"timeline":[],"watchlist":[],"glossary":[]}。**只输出这几个键**：本批以外的字段一律不要出现（多写的键会被丢弃）。',
+    memberFields: false
+  }
+}
+
+/**
+ * 四批，顺序 = 模板 TOC_GROUPS 的顺序（也就是页面从上到下的顺序）：
+ * 基本档案 → 事实 → 判断与风险 → 细节与延伸。
+ * 顺序有意与模板一致，不为「把会员那批放最后」之类的理由重排：日志里四批的先后与
+ * 用户看到的卡片顺序一致，出问题时能一眼对上用户反映的是哪一块。
+ *
+ * `background` 与 `sectionIds` 一样**从模板派生**（该组要不要 profile 检索路）：
+ * 这两件事都是「模板说有哪几节 + 那几节的素材从哪来」，与提示词里的字段清单不是一回事，
+ * 手写会与模板脱节（症状见 ReportBatch.background 的注释）。
+ */
+export const REPORT_BATCHES: ReportBatch[] = TOC_GROUPS.map((group) => ({
+  key: group.key,
+  sectionIds: sectionIdsOf(group.key),
+  background: groupNeedsLane(group.key, 'profile'),
+  ...BATCH_SPEC[group.key]
+}))
+
+/**
+ * 承载会员段的那一批要额外产出的两个键（就是 MEMBER_HINT_REALTIME 里额外要的那两段）。
+ * 与 BATCH_SPEC.judgement.fields 分开放：免费与会员共用同一份 BATCH_SPEC，
+ * 「这次要不要会员段」是**本次调用**的属性（谁在生成），不是这一批的静态属性。
+ */
+const MEMBER_FIELDS = ['memberNotes', 'conflicts']
+
+/**
+ * 本批在这次调用下的**实际字段清单**：免费档 = 批的静态清单；会员档且本批承载会员段时追加两个会员键。
+ * 只给解析契约与落库用（提示词里那两段由 MEMBER_HINT_REALTIME 末尾点名，理由见 buildReportSystem）。
+ */
+export function batchFields(batch: ReportBatch, member: boolean): string[] {
+  return member && batch.memberFields ? [...batch.fields, ...MEMBER_FIELDS] : batch.fields
+}
+
+/**
+ * 某一批的解析契约：**必须**比提示词多认这两个会员键（batchFields），否则 MEMBER_HINT_REALTIME 要来的
+ * memberNotes / conflicts 会被 zod 的非严格对象静默丢弃（见 REPORT_FIELDS 注释）——
+ * 「提示词要了却落不了库」正是这张字段表存在的意义。
+ */
+export function batchSchema(batch: ReportBatch, member: boolean): z.ZodTypeAny {
+  return llmContract(pickFields(batchFields(batch, member)))
+}
+
+/**
+ * 一条出处的估算规模（模型照抄素材 url 时的长度；写成媒体名时更短）—— 按大的算。
+ * 全篇的出处字段都走这个数：basics 里的 basis、dynamics 的 url、quotes 的 source。
+ */
+const OUTPUT_EST_BASIS_CHARS = 80
+/** JSON 结构开销：每个条目一对键名 + 引号 + 逗号（约 20 字），每批另有一层外壳（约 80 字） */
+const OUTPUT_EST_ITEM_OVERHEAD_CHARS = 20
+const OUTPUT_EST_BATCH_OVERHEAD_CHARS = 80
+
+/**
+ * **单批正文的可用预算**（token）：`chatMaxTokens × (1 − reasoningReserve)`。
+ * 推理模型的思考同样计入 max_tokens，故不能拿整个 max_tokens 当正文的家底。
+ */
+export const OUTPUT_BUDGET_TOKENS = Math.floor(
+  REPORT_OUTPUT_BUDGET.chatMaxTokens * (1 - REPORT_OUTPUT_BUDGET.reasoningReserve)
+)
+
+/**
+ * 每个字段的**输出规模估算**（条数 × 每条字数）—— 「输出预算」这件事在端上的落点。
+ *
+ * 只有两个用处：test/cases/20 逐批求和后与 OUTPUT_BUDGET_TOKENS 比；以及改字段 / 放条数时
+ * 先看一眼「这一动会把这批推到哪里」。为什么可以只靠「估算」：这里要拦的不是几十 token 的偏差，
+ * 而是**量级** —— 某一批的正文是不是已经逼近 max_tokens（撞上的代价是整批截断，见
+ * REPORT_OUTPUT_BUDGET 的注释）。故口径一律取**上界**：
+ *   · 条数取提示词允许的上限（模型多写会被端上裁掉 = 白写，却照样花掉输出限额）；
+ *   · 字数取提示词给的区间上界与 REPORT_FIELD_LIMITS 的裁剪线中**较大**者（两者刻意不同刻度，
+ *     见 REPORT_QUOTAS 的注释）；
+ *   · 保守取 1 字 ≈ 1 token（见 REPORT_OUTPUT_BUDGET.charsPerToken）。
+ *
+ * ⚠ 每加一个字段就要在这里补一行：用例 20 会检查「每一批的每个字段都有估算」，漏了即红
+ *   （估算器把漏掉的字段记进 `unevaluated`，不会静默按 0 算）。这条检查真正拦的是
+ *   **规模不可封顶的字段** —— 条数不能是「用到的素材数」这种没有上限的量
+ *   （facts 批此前的 sources 清单就是这么被赶下架的，见提示词池第 5 条删除处的注释）。
+ */
+export const FIELD_OUTPUT_ESTIMATE: Record<string, { count: number; chars: number }> = {
+  /* 基本档案（identity） */
+  intro: { count: 1, chars: 150 }, // 第 2 条：2~3 句、80~150 字
+  verdict: { count: 1, chars: 120 }, // 第 16 条：summary 60 + positioning 60
+  reputation: { count: 1, chars: 120 }, // 第 17 条：正面 60 + 负面 60
+  consistency: { count: 1, chars: 120 }, // 第 17 条：claim / act / gap 各 40
+  profile: {
+    count: REPORT_FIELD_LIMITS.profileMax, // 第 9 条：3~6 条
+    chars:
+      REPORT_FIELD_LIMITS.profileLabelChars +
+      REPORT_FIELD_LIMITS.profileValueChars +
+      OUTPUT_EST_BASIS_CHARS
+  },
+  relations: {
+    count: REPORT_FIELD_LIMITS.relationMax, // 第 10 条：最多 5 条
+    chars:
+      REPORT_FIELD_LIMITS.relationNameChars +
+      8 /* 关系词（「导演」）*/ +
+      REPORT_FIELD_LIMITS.relationNoteChars +
+      OUTPUT_EST_BASIS_CHARS
+  },
+  /* 事实（facts）—— 见 BATCH_SPEC.facts 的注释：最大的一批，且是达标判定的单点 */
+  dynamics: {
+    // 第 3 条：3~6 条，每条 date 10 + title 40 + summary 60 + source 12 + url + sentiment 8
+    count: REPORT_QUOTAS.dynamicsMax,
+    chars: 10 + 40 + 60 + 12 + OUTPUT_EST_BASIS_CHARS + 8
+  },
+  quotes: {
+    // 第 4 条：2~5 条，每条原文 80 + 语境 30 + 背景/注解（quoteNoteChars）+ 出处
+    count: REPORT_QUOTAS.quotesMax,
+    chars: 80 + 30 + REPORT_FIELD_LIMITS.quoteNoteChars + OUTPUT_EST_BASIS_CHARS
+  },
+  /* 判断与风险（judgement） */
+  analysisPoints: {
+    // 第 6 条：3~4 条，每条判断（裁剪线 80，提示词 40 → 取大）+ 出处
+    count: REPORT_FIELD_LIMITS.analysisPointMax,
+    chars: REPORT_FIELD_LIMITS.analysisPointChars + OUTPUT_EST_BASIS_CHARS
+  },
+  stance: {
+    // 第 7 条：2~4 条，每条话题 12 + 态度 10 + 说明 60（与 analysisPointChars 同档）
+    count: REPORT_QUOTAS.stanceMax,
+    chars: 12 + 10 + 60
+  },
+  controversies: {
+    // 第 13 条：最多 3 条，每条争点 + 说法 + 回应 + 出处
+    count: REPORT_FIELD_LIMITS.controversyMax,
+    chars:
+      REPORT_FIELD_LIMITS.controversyTopicChars +
+      REPORT_FIELD_LIMITS.controversyClaimChars +
+      REPORT_FIELD_LIMITS.controversyResponseChars +
+      OUTPUT_EST_BASIS_CHARS
+  },
+  /* 会员段（只加在承载它的那一批上，见 batchFields） */
+  memberNotes: { count: 1, chars: REPORT_FIELD_LIMITS.memberNoteChars * 2 }, // compare + risk 各一段
+  conflicts: {
+    count: REPORT_FIELD_LIMITS.conflictMax,
+    chars:
+      REPORT_FIELD_LIMITS.conflictTopicChars +
+      REPORT_FIELD_LIMITS.conflictSideChars * 2
+  },
+  /* 细节与延伸（detail） */
+  timeline: {
+    // 第 8 条：3~8 条（裁剪线 8，提示词目标 5 → 取大），每条日期 + 事件
+    count: REPORT_FIELD_LIMITS.timelineMax,
+    chars: REPORT_FIELD_LIMITS.timelineDateChars + REPORT_FIELD_LIMITS.timelineEventChars
+  },
+  watchlist: {
+    // 第 11 条：最多 4 条，每条时点 + 关注点 + 出处
+    count: REPORT_FIELD_LIMITS.watchMax,
+    chars:
+      REPORT_FIELD_LIMITS.watchWhenChars +
+      REPORT_FIELD_LIMITS.watchWhatChars +
+      OUTPUT_EST_BASIS_CHARS
+  },
+  glossary: {
+    // 第 12 条：最多 5 条，每条词 + 解释
+    count: REPORT_FIELD_LIMITS.glossaryMax,
+    chars: REPORT_FIELD_LIMITS.glossaryTermChars + REPORT_FIELD_LIMITS.glossaryExplainChars
+  }
+}
+
+export interface BatchOutputEstimate {
+  key: ReportPartKey
+  /** 计入估算的字段（会员档含 memberNotes / conflicts） */
+  fields: string[]
+  /** 条目总数 */
+  items: number
+  /** 估算正文规模（字） */
+  chars: number
+  /** 估算 token（保守：1 字 ≈ 1 token） */
+  tokens: number
+  /** 占 OUTPUT_BUDGET_TOKENS 的比例：> 1 = 这一批可能撞 max_tokens 被整批截断 */
+  ratio: number
+  /** 没有估算表条目的字段（应为空；非空 = 预算算漏了，用例 20 会红） */
+  unevaluated: string[]
+}
+
+/**
+ * 按字段估算表把某一批的输出规模算出来（`member` = 这次是不是会员生成）。
+ * 不参与请求，只为校验与「改字段前先看一眼」服务。
+ */
+export function estimateBatchOutput(batch: ReportBatch, member = false): BatchOutputEstimate {
+  const fields = batchFields(batch, member)
+  const unevaluated: string[] = []
+  let items = 0
+  let chars = OUTPUT_EST_BATCH_OVERHEAD_CHARS
+  for (const field of fields) {
+    const est = FIELD_OUTPUT_ESTIMATE[field]
+    if (!est) {
+      /* 不按 0 静默算：漏估算意味着预算少算了这一块，必须让用例看见 */
+      unevaluated.push(field)
+      continue
+    }
+    items += est.count
+    chars += est.count * (est.chars + OUTPUT_EST_ITEM_OVERHEAD_CHARS)
+  }
+  const tokens = Math.ceil(chars / REPORT_OUTPUT_BUDGET.charsPerToken)
+  return { key: batch.key, fields, items, chars, tokens, ratio: tokens / OUTPUT_BUDGET_TOKENS, unevaluated }
+}
+
+/**
+ * 契约字段的键名清单（REPORT_FIELDS 未导出，这里是给用例看的只读视图）。
+ * 用例 20 用它校验「批的字段并集 = 契约字段 − 降级专用字段」，即「模型要写的字段一处不差」。
+ */
+export const REPORT_FIELD_KEYS: string[] = Object.keys(REPORT_FIELDS)
+
+/**
+ * 不在任何一批里的字段：只走**降级简版**（SYSTEM_FALLBACK 那条纯文本路径，见 sanitizeReport）。
+ * 除它以外的每个契约字段都必须被某一批认领 —— 否则就是「提示词里要了、没人负责写」。
+ */
+export const OFF_BATCH_FIELDS: string[] = ['analysis']
+
+/**
+ * 第 15 条（「写满」）的字段清单按批替换：只列本批要写的字段，免得模型照单去写别的分组的字段。
+ * 池里那条留着占位符（RULE_FIELDS_PLACEHOLDER），文本仍只有一份。
+ */
+const ruleFill = (fields: string[]): string =>
+  ruleLines([15])[0].replace(RULE_FIELDS_PLACEHOLDER, fields.join(' / '))
+
+/**
+ * 某一批的 system = 共用硬约束 + 本批范围 + 本批认领的要求 + 写满 + 本批 JSON 格式 + 补充要求。
+ * 会员补充**只**追加在承载会员段的那一批（judgement）上：免费提示词逐字节不变（见 MEMBER_HINT_REALTIME）。
+ */
+export function buildReportSystem(batch: ReportBatch, focus: FocusCode, member: boolean): string {
+  const group = TOC_GROUPS.find((item) => item.key === batch.key)
+  /*
+   * 这里刻意用**批的静态字段**（batch.fields）而不是 member 感知的 batchFields：
+   * 会员段由末尾的 MEMBER_HINT_REALTIME 自己点名（「额外输出 memberNotes 与 conflicts」），
+   * 若把这两个键塞进本批的字段清单（本段与第 15 条），会员的 system 就不再是
+   * 「免费 system + 末尾追加」—— 那会让「免费提示词逐字节不变」这条硬约束只对未承载会员段的批成立，
+   * 而对真正多付钱的会员批失效（这一条正是 MEMBER_HINT_REALTIME 注释里反复强调的）。
+   * 解析契约另走 batchFields（见 batchSchema）：**必须**声明这两个键，否则 zod 会把它们静默丢弃。
+   */
+  const fields = batch.fields
+  const head = [
+    SYSTEM_SHARED_REALTIME,
+    `本批只负责「${group ? group.label : batch.key}」这一组字段：${fields.join(' / ')}。其余分组由并行的另几次调用负责，**不要输出本批以外的字段**，也不要用空数组占位。`,
+    ...ruleLines(batch.ruleIds),
+    ruleFill(fields),
+    batch.format
+  ].join('\n')
+  const hints = [
+    /* 侧重（FOCUS_HINT_REALTIME）每一批都追加：它点名的是跨组的字段（dynamics / quotes /
+       timeline…），只追加到某一批会让「侧重」在其余组里静默失效；它只有一两百字，四批都带也便宜。 */
+    FOCUS_HINT_REALTIME[focus],
+    member && batch.memberFields ? MEMBER_HINT_REALTIME : ''
+  ].filter((hint) => hint !== '')
+  return hints.length > 0 ? `${head}\n${hints.join('\n')}` : head
+}
 
 /**
  * 会员专属段落的补充提示（O-11）：**只追加在会员的 system 末尾**，免费提示词逐字节不变
  * （不给免费用户白付这两段的 token，也避免免费报告的 JSON 里出现空字段）。
- * 与 FOCUS_HINT_REALTIME 同一写法：补充要求叠在 SYSTEM_REALTIME 之后，不另起一套提示词。
+ * 与 FOCUS_HINT_REALTIME 同一写法：补充要求叠在**承载会员段的那一批**（judgement）的 system 末尾，
+ * 不另起一套提示词（见 buildReportSystem）。
  */
 const MEMBER_HINT_REALTIME = [
   '会员补充要求：额外输出 memberNotes 与 conflicts（**无素材支撑就留空**，不得为了凑数而编）。',
@@ -825,6 +1257,13 @@ const PROFILE_VALUE_CHARS = REPORT_FIELD_LIMITS.profileValueChars
 const RELATION_MAX = REPORT_FIELD_LIMITS.relationMax
 const RELATION_NAME_CHARS = REPORT_FIELD_LIMITS.relationNameChars
 const RELATION_NOTE_CHARS = REPORT_FIELD_LIMITS.relationNoteChars
+
+/* 时间线（P1，2026-10-11）：与 watchlist / glossary 同批产出（REPORT_BATCHES.detail），
+ * 但落库口径单独一组 —— 它的 date 是端上「按年分块」的输入，夹进控制符会让年份判错，
+ * 见 sanitizeReport 里 timeline 处的注释。 */
+const TIMELINE_MAX = REPORT_FIELD_LIMITS.timelineMax
+const TIMELINE_DATE_CHARS = REPORT_FIELD_LIMITS.timelineDateChars
+const TIMELINE_EVENT_CHARS = REPORT_FIELD_LIMITS.timelineEventChars
 
 const WATCH_MAX = REPORT_FIELD_LIMITS.watchMax
 const WATCH_WHEN_CHARS = REPORT_FIELD_LIMITS.watchWhenChars
@@ -1291,60 +1730,121 @@ const FOCUS_HINT_REALTIME: Record<FocusCode, string> = {
 }
 
 /**
+ * 一批的产出：批键 + 这一批通过契约的字段（只含本批字段，不含 refused）。
+ * 中间结果落库（opts.onPart）与最终合并都以它为最小单位。
+ */
+export interface ReportPart {
+  key: ReportPartKey
+  data: LlmReportFields
+}
+
+/**
  * 生成报告（基于实时素材，无素材时由 utils/cache.ts 直接进引导态、不调用本函数）。
- * 只负责调 LLM + 校验；缓存互斥由 utils/cache.ts 负责。
+ * 只负责调 LLM + 校验；缓存互斥与中间结果落库由调用方（utils/cache.ts）负责。
+ *
+ * **分批生成（P0-B）**：按报告模板的分组（utils/report-toc.ts#TOC_GROUPS）拆成多次调用，
+ * 每批只产出自己那几节，逐批合并（见下方 REPORT_BATCHES 与 buildReportSystem）。为什么拆：
+ *   · 一次要 16 节时，任一节写坏或 max_tokens 撞上限都会让**整份**报告降级成纯文本；
+ *     拆开后**失败只丢一组**，其余组照常合并落库（每批成功即回调 opts.onPart）。
+ *   · 每批字段少，模型更容易按要求写满，也更少把 token 花在推理上。
+ * 代价是调用次数从 1 次变 4 次 —— 可接受：报告是全局共享缓存，生成一次全站复用。
  *
  * `opts.member`（O-11 深度模式）：决定「要不要多要两段会员专属文字」与 user 消息预算。
  * 会员态**由调用方传入**（cache.ts 已在配额检查那次读数里拿到），这里不再多读一次库。
+ *
+ * `opts.onPart`：每批成功后的回调，收到**迄今累计**的批次结果（调用方可据此落库中间结果）。
+ * 落库失败一律不影响生成（回调里的异常被这里吞掉），因为「报告能不能出」优先于「中间结果存没存上」。
  */
 export async function buildReport(
   personKey: string,
   name: string,
   news: NewsItem[],
   focus: FocusCode = 'all',
-  opts: { member?: boolean; background?: NewsItem[] } = {}
+  opts: {
+    member?: boolean
+    background?: NewsItem[]
+    onPart?: (parts: ReportPart[]) => void | Promise<void>
+  } = {}
 ): Promise<ChatJSONResult<Report | { refused: true }>> {
   const member = opts.member === true
   /*
    * 背景素材（P1，2026-10-10）：与 news **分开**传 —— 它进 user 消息里单独的「人物背景资料」段，
    * 且**不参与**热度与报道画像（那两项必须只用近期素材，否则同一个人「被谁生成过」会改变热度，
    * 跨档就不可比了，见 sanitizeReport 里的 HEAT_COUNT_CAP 注释）。
+   * 分批后按批次的 background（由模板派生，见 REPORT_BATCHES）决定哪几批带它
+   * （见 batch.background ? background : []）。
    */
   const background = opts.background ?? []
-  /* 补充要求按序叠加：侧重在先、会员专属在后（后者是本轮新加的一层，不覆盖既有取舍） */
-  const hints = [FOCUS_HINT_REALTIME[focus], member ? MEMBER_HINT_REALTIME : ''].filter(
-    (h) => h !== ''
-  )
-  const system = hints.length > 0 ? `${SYSTEM_REALTIME}\n${hints.join('\n')}` : SYSTEM_REALTIME
-  const user = buildUserMessage(name, news, focus, member, background)
+  const merged: LlmReportFields = {}
+  const parts: ReportPart[] = []
+  let done = 0
+  /* 记住最后一次失败，供「四批全败」时把原因如实交回上层（而不是只说「降级也失败了」） */
+  let lastFail: { error: string; retryable?: boolean; kind?: string } | null = null
 
-  const result = await chatJSON(system, user, LlmReportSchema)
-  if (!result.ok) {
-    /*
-     * 云端闸门拦下（kind='quota' / 'abuse'）时**不降级**：降级本身也是一次真实调用，
-     * 会被同一道闸门再拦一次 —— 白多等一轮往返，还把「额度用完」记成「生成失败」。
-     * 直接把云端文案交回上层，不做改写的理由见下方 upstream_quota。
-     *
-     * `upstream_quota`（上游自己欠费 / 未开通资源包，P2-9 2026-10-09）同样不降级，但**不是**一回事：
-     * 降级那次打的是同一个上游，账户欠费时必然再被拒一次，省下这一轮往返；
-     * 而文案保持上游原文（「…上游账户余额」），**不换成 quotaExhaustedMessage** ——
-     * 平台账户问题被说成「你的额度用完了」，用户去额度页一看是满的，只会来问客服。
-     */
-    if (result.kind === 'quota' || result.kind === 'abuse' || result.kind === 'upstream_quota') {
-      diagLog('warn', 'auth', `云端 / 上游拦下（${result.kind}），不降级走纯文本：${result.error}`)
-      return { ok: false, error: result.error, retryable: false, kind: result.kind }
+  for (const batch of REPORT_BATCHES) {
+    const fields = batchFields(batch, member)
+    const system = buildReportSystem(batch, focus, member)
+    const user = buildUserMessage(name, news, focus, member, batch.background ? background : [])
+    const result = await chatJSON(system, user, batchSchema(batch, member))
+
+    if (!result.ok) {
+      /*
+       * 云端闸门拦下（kind='quota' / 'abuse'）与上游欠费（'upstream_quota'）时**立即中止、不降级**：
+       * 后面几批打的是同一个上游 / 同一道闸门，必然同样被拒，继续跑只是白等三轮往返，
+       * 还把「额度用完」记成「生成失败」。直接把云端文案交回上层（不换文案的理由见原注释：
+       * 平台账户问题被说成「你的额度用完了」，用户去额度页一看是满的，只会来问客服）。
+       */
+      if (result.kind === 'quota' || result.kind === 'abuse' || result.kind === 'upstream_quota') {
+        diagLog('warn', 'auth', `云端 / 上游拦下（${result.kind}），不降级走纯文本：${result.error}`)
+        return { ok: false, error: result.error, retryable: false, kind: result.kind }
+      }
+      /*
+       * 其余失败只丢这一组：它是「这一批写坏了 / 网络抖了」，与后面的批无因果关系，
+       * 继续跑不是白花 —— 已成功的批照常合并，缺的那几节在报告页表现为对应卡片不出现。
+       * 冷却只拦「值得等待」的失败（网络 / 上游 5xx / 429 限流）：密钥无效、通道未配置这类，
+       * 用户修好后应立即可用，设冷却只会让「修好了还要白等 10 分钟」。
+       */
+      const rateLimited = /频繁|429/.test(result.error)
+      if (result.retryable || rateLimited) setCooldown('llm')
+      diagLog('warn', 'auth', `报告分批失败（${batch.key}），该组留空：${result.error}`)
+      lastFail = result
+      continue
     }
-    /*
-     * 冷却只拦「值得等待」的失败（随用随查原则）：
-     *   - retryable（网络 / 上游 5xx）：等一会儿可能真就好了；
-     *   - 429 限流（文案含「频繁」）：上游明确要求等。
-     * 密钥无效 / 额度不足 / 通道未配置这类错误，用户修好配置或换通道后应立即可用，
-     * 设冷却只会造成「修好了还要白等 10 分钟」的糟糕体验。
-     */
-    const rateLimited = /频繁|429/.test(result.error)
-    if (result.retryable || rateLimited) setCooldown('llm')
-    // 降级：纯文本简版（§5.4 用例 9），不再套结构化 Schema
-    diagLog('warn', 'auth', `报告结构化生成失败，降级纯文本：${result.error}`)
+
+    const data = result.data as Record<string, unknown>
+    if (isRefusedResult(data)) {
+      /* 任一批拒答 ⇒ 整份拒答：第 14 条是全局条（见 SYSTEM_SHARED_REALTIME），
+         不能因为「另外三批照常写了」就把一份敏感人物的报告拼出来 */
+      diagLog('info', 'auth', `报告 LLM 拒答：${personKey}（${batch.key}）`)
+      return { ok: true, data: { refused: true } }
+    }
+
+    /* 逐字段搬进 merged：各批字段互不重叠（模板分组天然切分），且只搬本批契约声明的键
+       —— data 里可能混有 refused 等非字段键，整体 Object.assign 会把它们也带进报告 */
+    const part: LlmReportFields = {}
+    for (const field of fields) {
+      const value = data[field]
+      if (value === undefined) continue
+      ;(merged as Record<string, unknown>)[field] = value
+      ;(part as Record<string, unknown>)[field] = value
+    }
+    done++
+
+    /* 中间结果落库：每批成功即回调 —— 后面几批失败时，前面这几批的 token 不作废。
+       回调异常一律吞掉：中间结果存不上不该让整次生成失败（最终 save 才是关键路径）。 */
+    parts.push({ key: batch.key, data: part })
+    if (opts.onPart) {
+      try {
+        await opts.onPart(parts.slice())
+      } catch (err) {
+        diagLog('warn', 'db', `报告中间结果落库失败（${batch.key}）：${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  }
+
+  if (done === 0) {
+    /* 四批全败 —— 与原单次路径同款抢救：纯文本简版（§5.4 用例 9），不再套结构化 Schema */
+    diagLog('warn', 'auth', `报告分批全部失败，降级纯文本：${lastFail ? lastFail.error : '无可用批次'}`)
     const fallback = await chatText(SYSTEM_FALLBACK, `名人：${name}`)
     if (fallback.ok) {
       return {
@@ -1372,22 +1872,12 @@ export async function buildReport(
     return { ok: false, error: fallback.error }
   }
 
-  if (isRefusedResult(result.data)) {
-    diagLog('info', 'auth', `报告 LLM 拒答：${personKey}`)
-    return { ok: true, data: { refused: true } }
-  }
-
   /*
-   * 这里必须显式断言一次：上面各个字段都用了 .catch() 做宽容兜底，而 zod 的 ZodCatch 为了让
-   * 兜底能接住任何输入，把类型的 Input 拓宽成了 unknown —— 于是一个含 .catch() 的 object 在
-   * TS 眼里会整体退化成「每个字段都是 unknown」，union 的输出类型也跟着糊掉。
-   * 运行时形状由 zod 保证（出参就是 LLM 给的对象，字段只多不少），且 sanitizeReport 对每个
-   * 字段都是防御式读取（?? ''），所以这条边界用一个显式断言收掉，比为了类型好看而放弃
-   * .catch() 的运行时宽容更划算 —— 前者只是少一层类型检查，后者是「一个 null 让整份报告降级」。
+   * 合并后的字段仍是「模型给的原始形状」（各批契约都用了 .catch() 宽容兜底，而 zod 的 ZodCatch
+   * 为了让兜底接住任何输入，把类型的 Input 拓宽成了 unknown），运行时有 zod 保证、且 sanitizeReport
+   * 对每个字段都是防御式读取（?? ''），故这条边界用一个显式断言收掉（理由同原单次路径）。
    */
-  const report = sanitizeReport(personKey, name, result.data as LlmReportFields, news, focus, {
-    background
-  })
+  const report = sanitizeReport(personKey, name, merged, news, focus, { background })
   return { ok: true, data: report }
 }
 
@@ -1550,7 +2040,8 @@ function strictSourceOf(basis: string | undefined, index: SourceIndex): string {
 
 /**
  * 代码层强制校验（附录 B，不信任提示词）：
- * 1. dynamics/sources 的 url 必须 ∈ 素材 url 集合，否则剔除
+ * 1. dynamics 的 url 必须 ∈ 素材 url 集合，否则剔除；sources 干脆不由模型给 ——
+ *    它是端上从报告里真引用到的素材派生的（见「来源清单」那段），端上派的，自然条条对得上
  * 2. quotes.source 为素材 url 或「据公开资料」，否则剔除
  * 3. heat 由 §1.6 公式本地计算；sentiment 已由 zod 枚举保证
  * 4. memberNotes 是会员专属段落，两段皆空则整段不落库（免费报告恒无此字段）
@@ -1630,16 +2121,61 @@ export function sanitizeReport(
       source: hit ? hit.url : '据公开资料'
     })
   }
-  /* 来源清单：只收能对上素材的，且标题 / URL 以素材自身为准（这片清单的用处就是点回原文） */
-  const sources: Report['sources'] = []
-  const seenSourceUrl = new Set<string>()
-  for (const s of llm.sources ?? []) {
-    const hit = matchNewsOf(s.url, srcIndex) ?? matchNewsOf(s.title, srcIndex)
-    if (!hit || seenSourceUrl.has(hit.url)) continue
-    seenSourceUrl.add(hit.url)
-    sources.push({ title: s.title || hit.title, url: hit.url })
+  /*
+   * 来源清单（2026-10-11 改为**端上派生**）：此前是模型输出的一段
+   * `sources: [{title, url}]`，三宗罪：① 它是 facts 批（最大的一批）里最大的一块输出，
+   * 且条数随「用到的素材数」增长 —— 预算无法静态封顶；② 内容全是端上已知的（标题 / URL
+   * 本来就得用素材自身的，见下面注释）；③ 让模型抄 N 条 URL，恰是提示词自己承认
+   * 「走形率很高」的动作。
+   *
+   * 现在改成：把报告里**真的点回原文的引用位**（动态 url、语录 source、各处 basis）反查一遍素材，
+   * 命中的列出。于是「引用 N 篇」变成端上可核对的真值（模型说它用了哪几条，不算数）——
+   * 而且每条都保证能点开（命中的是素材自身的 URL）。
+   *
+   * 顺序按素材自身顺序（不按引用出现的先后）：这片清单的用处是「这篇报告建立在哪些报道上」，
+   * 与封面「素材」段的顺序一致才读得顺；背景线素材也算 —— 它同样是本次引用的公开素材。
+   */
+  const citedRaw = [
+    ...(llm.dynamics ?? []).map((d) => d.url),
+    ...(llm.quotes ?? []).map((q) => q.source),
+    ...(llm.analysisPoints ?? []).map((p) => p.basis),
+    ...(llm.profile ?? []).map((p) => p.basis),
+    ...(llm.relations ?? []).map((r) => r.basis),
+    ...(llm.watchlist ?? []).map((w) => w.basis),
+    ...(llm.controversies ?? []).map((c) => c.basis)
+  ]
+  const citedUrl = new Set<string>()
+  for (const raw of citedRaw) {
+    const hit = matchNewsOf(raw, srcIndex)
+    if (hit) citedUrl.add(hit.url)
   }
-  const timeline = (llm.timeline ?? []).map((t) => ({ date: t.date ?? '', event: t.event ?? '' }))
+  const sources: Report['sources'] = []
+  const seenSource = new Set<string>()
+  for (const n of [...news, ...(opts.background ?? [])]) {
+    /* 同一篇素材被两条报道带回同一个 URL（检索源偶发）：引用位对得上，清单里只留一条 */
+    if (!citedUrl.has(n.url) || seenSource.has(n.url)) continue
+    seenSource.add(n.url)
+    sources.push({ title: cleanText(n.title), url: n.url })
+  }
+  /*
+   * 时间线（P1，2026-10-11 补）：此前它是整个 sanitize 里**唯一**既不净化也不限量的段落 ——
+   * 连裸 slice 都没有，模型原文原样落库。两条具体危害：
+   *   · date 会进端上的年份分块（timelineGroups 按前 4 位切年份）：夹进一个零宽或控制符，
+   *     「这条属于哪一年」就会判错，时间线上多出一段无标题的乱序块；
+   *   · event 无上限：模型偶发写成整段综述时，一行能把整屏撑满。
+   * 口径与其余各段对齐：date 有明确长度上限（走 clipText），event 是段落级文本（同样 clipText，
+   * 上限给到「一句话」），去空后截到 timelineMax 条。**不重排**：时间线是模型按素材给的，
+   * 端上重排会打乱「同年内先后」这个模型唯一把握得住的信息。
+   * ⚠ 去空是行为收紧（原实现会把 event 为空的条目落库成一行空白）；端上本来就按条目渲染，
+   *   空行没有任何信息，只会让横幅多一截。
+   */
+  const timeline = (llm.timeline ?? [])
+    .map((t) => ({
+      date: clipText(t.date, TIMELINE_DATE_CHARS),
+      event: clipText(t.event, TIMELINE_EVENT_CHARS)
+    }))
+    .filter((t) => t.date !== '' && t.event !== '')
+    .slice(0, TIMELINE_MAX)
   /* 话题态度：topic / note 是自由文本，没有像 url 那样可白名单的锚点，
      只能做「去空 + 限条数 + 收敛长度」，因此它排在各段之后（见附录 B 的校验顺序） */
   /*
@@ -1656,10 +2192,11 @@ export function sanitizeReport(
     .filter((s) => s.topic !== '')
     .slice(0, 4)
 
+  /* 这里的「剔除」只数**模型给的条数 − 落库条数**：sources 不在其中 —— 它已由端上派生
+     （见上面的来源清单），模型没给过它，也就无所谓剔除 */
   let removed = 0
   removed += (llm.dynamics?.length ?? 0) - dynamics.length
   removed += (llm.quotes?.length ?? 0) - quotes.length
-  removed += (llm.sources?.length ?? 0) - sources.length
   if (removed > 0) {
     diagLog('warn', 'db', `白名单剔除 ${removed} 条（${personKey}）`)
   }

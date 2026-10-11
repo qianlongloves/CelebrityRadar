@@ -49,15 +49,94 @@ export interface TocGroup {
   key: TocGroupKey
   /** 组标签：它不是一节，是给几节归类的行首小字，故比节标签更短 */
   label: string
+  /**
+   * 这一组的节从哪几路检索取素材（见 SEARCH_LANES）。
+   *
+   * 组内所有节共用同一批路：分组既决定「谁跟谁一起写」（生成，见 utils/report.ts 的
+   * REPORT_BATCHES），也决定「素材从哪来」—— 两者同一份口径，才不会出现「模板加了
+   * 一节、检索不知道该查什么」。
+   */
+  search: SearchLaneKey[]
 }
 
-/** 组的顺序 = 页面呈现顺序（与模板顺序一致） */
+/**
+ * 检索路（2026-10-11）：报告要的**外部素材**分几路、每路怎么问博查。
+ *
+ * 为什么关键词写在这里，而不是 utils/search.ts：模板随时可能增减节（例如给「基本档案」组
+ * 加一节「商业合作」），检索若仍只问「近期 新闻 动态 言论」，新节的素材压根没被查过 ——
+ * 而页面上「没查」与「查了没有」长得一模一样（卡片直接不出现），只会被读成
+ * 「这个人没有这些信息」。故把「哪几组要哪些素材、这些素材用什么词去问」与模板放在同一份
+ * 真源里：检索层只按这里的声明发请求，**utils/search.ts 里不再出现任何关键词字面量**
+ * （test/cases/19 钉住）。
+ *
+ * ⚠ 这里只管**素材需求**，不含成本取舍：社交路在免费档刻意不发（连请求都不发，
+ *   见 utils/search.ts#fetchNews 的 socialCount: 0），那是档位策略，不是「不需要」。
+ * ⚠ 检索层目前把这三条路各自接在**具体的发请求点**上（fetchNews 的阶梯与支线、
+ *   fetchBackground），所以**新增一条路要同时在 utils/search.ts 接上** —— 只加声明不会
+ *   自动多问一句。test/cases/19 有一条用例专门盯这件事：声明了却没人发，测试即红。
+ * ⚠ 需求与「怎么用」的分工：`recent` 两路合并成的「素材」段**所有批都读**
+ *   （判断也要建立在事实上），只有 `evergreen`（profile）那一段按组区分 ——
+ *   见 utils/report.ts 里批次 `background` 的派生。
+ */
+export type SearchLaneKey = 'news' | 'social' | 'profile'
+
+export interface SearchLane {
+  /** 查询词后缀：与人名拼成 query（另有「只留人名」的降级档，见 utils/search.ts#fetchNews） */
+  keywords: string
+  /**
+   * 时间语义：
+   *   · recent    —— 「近期」语义，按 SEARCH_COUNTS.mainFreshnessLadderDays 逐档放宽
+   *                  （动态 / 名言 / 争议 / 立场要的都是近期，混进旧闻比空着更糟）；
+   *   · evergreen —— 不限时间（出生地、学历、履历不随时间变，窗口越窄越搜不到）。
+   */
+  freshness: 'recent' | 'evergreen'
+  /** 限定站点白名单（过滤发生在博查服务端，不往 request 合法域名里加东西） */
+  include?: string[]
+}
+
+/**
+ * 三条路：近期主线、社交一手发声、人物背景线。
+ *
+ * 数值（条数、时间窗阶梯）在 config/benefits.ts 的 SEARCH_COUNTS；这里只有**问什么**。
+ */
+export const SEARCH_LANES: Record<SearchLaneKey, SearchLane> = {
+  /* 主线：一份报告最核心的素材来源，「事实」与「判断」两组都靠它 */
+  news: { keywords: '近期 新闻 动态 言论', freshness: 'recent' },
+  /*
+   * 社交一手发声：单条 query 的排序权完全在上游 —— 门户转载的标题更「新闻体」，
+   * 常把本人微博 / 知乎长文挤到十名开外，而名人的一手发声恰恰在后者。
+   * 故补一路限定站点的检索把它们单独捞一遍（补充路，失败一律吞掉）。
+   */
+  social: {
+    keywords: '近期 动态',
+    freshness: 'recent',
+    include: ['weibo.com', 'zhihu.com', 'bilibili.com', 'xiaohongshu.com']
+  },
+  /* 人物背景线：「人物档案 / 关系图谱 / 时间线」的素材不进新闻流，30 天窗里天然搜不到 */
+  profile: { keywords: '个人资料 简介 出生地 学历 经历', freshness: 'evergreen' }
+}
+
+/**
+ * 组的顺序 = 页面呈现顺序（与模板顺序一致）。`search` 的取舍：
+ *   · 基本档案 / 细节与延伸要**履历**（档案、关系、时间线），故带 profile 路；
+ *   · 事实 / 判断与风险要的是**近期**（动态、名言、争议、立场），只吃 news；
+ *   · 事实与判断另需社交一手发声（名人的原话与动态常在社交站），故声明 social。
+ */
 export const TOC_GROUPS: TocGroup[] = [
-  { key: 'identity', label: '基本档案' },
-  { key: 'facts', label: '事实' },
-  { key: 'judgement', label: '判断与风险' },
-  { key: 'detail', label: '细节与延伸' }
+  { key: 'identity', label: '基本档案', search: ['news', 'profile'] },
+  { key: 'facts', label: '事实', search: ['news', 'social'] },
+  { key: 'judgement', label: '判断与风险', search: ['news', 'social'] },
+  { key: 'detail', label: '细节与延伸', search: ['news', 'profile'] }
 ]
+
+/**
+ * 这一组要不要某一路素材。目前唯一的运行时消费点是**批次的 `background`**
+ * （utils/report.ts#REPORT_BATCHES）：带 profile 路的组才在 user 消息里拿到
+ * 「人物背景资料」段 —— 这条此前手写在 BATCH_SPEC 上，模板一动就可能两边对不上。
+ */
+export function groupNeedsLane(key: TocGroupKey, lane: SearchLaneKey): boolean {
+  return (TOC_GROUPS.find((g) => g.key === key)?.search ?? []).includes(lane)
+}
 
 export interface TocOptions {
   /** 当前是否会员：会员档的节（tier === 'member'）只对会员列出 / 渲染 */

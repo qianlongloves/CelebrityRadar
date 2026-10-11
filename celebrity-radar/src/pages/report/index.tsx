@@ -8,7 +8,15 @@ import EmptyState from '@/components/empty-state'
 import NoticeClose from '@/components/notice-close'
 import QuoteDetail from '@/components/quote-detail'
 import ReportLoading, { ReportRefreshing } from '@/components/report-loading'
-import { getOrBuildReport, getCachedReports, isFreeRefreshCooling, refreshFailureNote, ReportOutcome } from '@/utils/cache'
+import {
+  getOrBuildReport,
+  getCachedReports,
+  isFreeRefreshCooling,
+  refreshFailureNote,
+  ReportOutcome,
+  ReportProgress,
+  BUILDING_TIMEOUT_MS
+} from '@/utils/cache'
 import { peekGenerateQuota } from '@/utils/quota'
 import type { GenerateQuotaSummary } from '@/utils/quota'
 import { hasSearchChannel } from '@/utils/search'
@@ -54,12 +62,14 @@ type PageState =
   | { phase: 'ready'; report: Report; fromCache: boolean }
 
 /**
- * waiting 态（他人正在生成）的轮询参数（P2-19，2026-10-09）。
- * 上限与云端锁的 BUILDING_TIMEOUT_MS（90s，见 cloudfunctions/aiProxy/report-store.js）对齐：
+ * waiting 态（他人正在生成）的轮询参数（P2-19，2026-10-09；2026-10-11 改引真源）。
+ * 上限直接取 utils/cache.ts#BUILDING_TIMEOUT_MS（构建耗时上界，按分批数量推导）—— 两者必须是
+ * 同一个数：原先这里与云端锁各硬编码一个 90s，分批改造后两边会各自漂移，而漂移的两种后果
+ * （页面先于锁放弃、页面比锁等更久）都表现为「等待页永远转不完」。
  * 超过它还没好，说明那次生成大概率已经失败，再转下去只是耗用户的耐心。
  */
 const WAIT_POLL_MS = 5_000
-const WAIT_POLL_MAX_MS = 90_000
+const WAIT_POLL_MAX_MS = BUILDING_TIMEOUT_MS
 
 const SENTIMENT_META: Record<string, { label: string; cls: string }> = {
   positive: { label: '积极', cls: 'positive' },
@@ -346,6 +356,13 @@ export default function ReportPage() {
    * 读库失败按非会员处理，与上方同一口径。代价是免费用户的促销条也晚半秒出现 —— 比说错一句话划算。
    */
   const [memberReady, setMemberReady] = useState(false)
+  /**
+   * 本机生成的真实进度（2026-10-11）：由 `getOrBuildReport` 的 onProgress 透传，喂给等待动画。
+   *
+   * 只在「本机真生成」时有值；命中缓存 / 排队等待始终为 null，等待动画据此回落按秒估算。
+   * 每次 load 开头复位 —— 否则上一轮的「已完成 4/4 批」会残留到新一轮（看着像已经生成完了）。
+   */
+  const [progress, setProgress] = useState<ReportProgress | null>(null)
 
   const name = personKey.split('#')[0] || '名人'
   const domain = (personKey.split('#')[1] || 'other') as DomainCode
@@ -373,6 +390,8 @@ export default function ReportPage() {
       } else {
         setState({ phase: 'loading' })
       }
+      /* 新一轮复制定位（见 progress 注释）：残留的上一轮进度会让人以为这次已经生成完了 */
+      setProgress(null)
       setPrevReport(null)
       setKeptMember(false)
       setShortfall(null)
@@ -386,7 +405,12 @@ export default function ReportPage() {
         顶部刷新提示会永久停在那儿，页面看着「一直在生成」。折成 error 后走下面已有的分支：
         有旧报告就只挂一条失败说明（P1-8 的原意），没有才落错误空态。
       */
-      const outcome: ReportOutcome = await getOrBuildReport(personKey, { force, focus }).catch(
+      const outcome: ReportOutcome = await getOrBuildReport(personKey, {
+        force,
+        focus,
+        /* 真实进度直通等待动画（见 progress 注释）；生成结束后立刻清掉（见下方复位那行） */
+        onProgress: setProgress
+      }).catch(
         (err): ReportOutcome => ({
           kind: 'error',
           message: err instanceof Error ? err.message : String(err)
@@ -395,6 +419,8 @@ export default function ReportPage() {
       /* 先解锁再处理结果：下面 switch 里的 setState 是同步的，不会有等待窗口 */
       loadingRef.current = false
       setRefreshing(false)
+      /* 生成已结束：清掉进度（否则错误/空态下等待动画退场前会闪一下「4/4」） */
+      setProgress(null)
       /* 纯函数（utils/cache.ts），文案与「成功时不提示」都被单测钉着 */
       const failureNote = refreshFailureNote(outcome)
       switch (outcome.kind) {
@@ -457,7 +483,7 @@ export default function ReportPage() {
    * 每 5 秒重试一次**普通** load（force=false）：读缓存 / 抢锁等待即可，绝不能借机触发一次
    * 真生成（那是白烧配额）。拿到 ready 会自动切过去，effect 依赖 state.phase 变化后自行清理。
    *
-   * 上限 90s 与云端锁的 BUILDING_TIMEOUT_MS 对齐：超过它还没好，说明那次生成大概率已经失败
+   * 上限取 BUILDING_TIMEOUT_MS（与云端锁同值，见上方常量注释）：超过它还没好，说明那次生成大概率已经失败
    * （持锁者崩了 / 云函数超时），继续转只是耗尽用户的耐心。此时转 error 态并把决定权交回去 ——
    * 不自动 force，免得把用户的配额烧在一次自动重试上。
    */
@@ -1120,7 +1146,7 @@ export default function ReportPage() {
         「加载动画没浮在最顶层、也没覆盖页面」就是这个原因）。
         没有它时这条路径**只有页脚那颗按钮转圈**，从顶部「重新生成为…」点进来的用户完全看不到反馈。
       */}
-      {refreshing && <ReportRefreshing />}
+      {refreshing && <ReportRefreshing progress={progress} />}
 
       {showFocusBar && !focusClosed && (
         <View className='page-report__focus'>
@@ -1370,7 +1396,7 @@ export default function ReportPage() {
         </View>
       )}
 
-      {state.phase === 'loading' && <ReportLoading />}
+      {state.phase === 'loading' && <ReportLoading progress={progress} />}
 
       {state.phase === 'waiting' && <ReportLoading mode='waiting' />}
 

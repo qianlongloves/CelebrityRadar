@@ -1735,9 +1735,9 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     ok(src.includes('生成失败或内容不完整时不计数'), '确认弹窗要给出「不达标不计数」的承诺')
   })
 
-  it('P2-19：waiting 态有轮询（5s 一次、90s 封顶转 error），兑现「无需刷新自动展示」的承诺', () => {
+  it('P2-19：waiting 态有轮询（5s 一次、上限取锁的 BUILDING_TIMEOUT_MS 后转 error），兑现「无需刷新自动展示」的承诺', () => {
     ok(src.includes('WAIT_POLL_MS = 5_000'), '轮询间隔常量缺失')
-    ok(src.includes('WAIT_POLL_MAX_MS = 90_000'), '轮询上限须与云端锁 BUILDING_TIMEOUT_MS 对齐')
+    ok(src.includes('WAIT_POLL_MAX_MS = BUILDING_TIMEOUT_MS'), '轮询上限必须直接引用 utils/cache.ts#BUILDING_TIMEOUT_MS，不得再写一个数（改了锁就会漂移）')
     ok(src.includes("if (state.phase !== 'waiting') return"), '轮询只在 waiting 态启动')
     ok(src.includes('setInterval'), '必须有轮询定时器（此前一行都没有，等待页永远转不完）')
     ok(src.includes('clearInterval'), '离开该态要清定时器')
@@ -1855,6 +1855,30 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     const z = Number((rule.match(/z-index:\s*(\d+)/) || [])[1])
     ok(Number.isFinite(z), '出口必须给死 z-index —— 只放开 position 不够，组件自己的 z-index 仍会被 `> view` 压成 1')
     ok(z > 1000, `z-index 要压过 custom-tab-bar 的 999 与 share-poster 的 1000，实际 ${z}`)
+  })
+
+  it('等待动画播报真实分批进度（2026-10-11：此前只按秒数估算）', () => {
+    /*
+     * 报告生成是「检索 → 4 批串行」，系统明明知道走到第几批，此前却没有任何出口 ——
+     * 加载动画纯按秒数念估算文案。这条钉住整条透传链：真生成时把 progress 从
+     * getOrBuildReport 一路喂到等待动画，且新旧两轮之间要复位（残留会让人以为已经生成完）。
+     */
+    ok(src.includes('onProgress: setProgress'), '生成入口要把进度回调接上，否则进度永远出不来')
+    eq((src.match(/setProgress\(null\)/g) || []).length, 2, '每次 load 开头与生成结束各复位一次')
+    ok(src.includes('<ReportLoading progress={progress} />'), '全屏等待态要吃真进度')
+    ok(src.includes('<ReportRefreshing progress={progress} />'), '刷新浮层（同一颗动画）也要吃真进度')
+    /* waiting 态没有本机生成，不该被喂进度（回落到排队文案） */
+    ok(src.includes("<ReportLoading mode='waiting' />"), '排队态仍是纯等待，不接生成进度')
+
+    const loading = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'src', 'components', 'report-loading', 'index.tsx'),
+      'utf8'
+    )
+    ok(
+      loading.includes('正在生成深度报告…（已完成 ${progress.done}/${progress.total} 批）'),
+      '阶段文案要报出「已完成 X/Y 批」（真实批数，不是估算）'
+    )
+    ok(loading.includes('batchStage(progress)'), '生成阶段用真进度替代按秒估算的文案，其余路径回落')
   })
 
   it('提示条的 ✕ 各关各的（2026-10-10：此前四条共用一个开关，点一个全关）', () => {

@@ -1,12 +1,14 @@
 import { table } from './db'
 import {
   Report,
+  ReportPart,
   buildReport,
   buildKnowledgeFallback,
   isRefusedResult,
   REPORT_SCHEMA_VERSION,
   reportShortfall,
-  reportShortfallRetryable
+  reportShortfallRetryable,
+  REPORT_BATCHES
 } from './report'
 import { FocusCode } from '@/config/filters'
 import {
@@ -23,8 +25,8 @@ import { parsePersonKey } from '@/config/domains'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { todayKey } from './time'
-import { cooldownMinutesLeft } from './cooldown'
-import { peekGenerateQuota, consumeGenerateQuota } from './quota'
+import { cooldownMinutesLeft, scopedCooldownRemainingMs, setScopedCooldown } from './cooldown'
+import { peekGenerateQuota, consumeGenerateQuota, beginGenerateInflight } from './quota'
 import {
   quotaExhaustedMessage,
   presentSections,
@@ -39,6 +41,7 @@ import {
   acquireLockViaCloud,
   releaseLockViaCloud,
   saveReportViaCloud,
+  saveReportPartsViaCloud,
   saveFeedViaCloud
 } from './report-store'
 import { REFRESH_QUOTA_DISABLED } from './debug'
@@ -54,19 +57,68 @@ import type { ReportCacheRow, FeedCacheRow, RefreshQuotaRow } from '@/types/db'
  * 唯一的重生入口是用户点「刷新最新」（getOrBuildReport force=true）。
  */
 
-// 构建者失联判定：单次构建上限为 LLM 60s 超时 + 检索 15s + 余量，90s 足够；
-// 原值 5 分钟过长——一旦构建中途失败留下 building 脏行，期间所有查询都只能排队。
-const BUILDING_TIMEOUT_MS = 90 * 1000
-// 等待方轮询上限必须 ≥ 一次完整构建耗时（约 35s，最坏 75s），
-// 原值 30s 短于构建时间，导致「同一个人被重复查询」时等待方必然超时报错。
-const WAIT_TIMEOUT_MS = 75 * 1000
 const POLL_INTERVAL_MS = 2000
+
+/**
+ * 构建耗时上界（P0，2026-10-11）。**必须按「分批生成」重算，不能沿用单次调用的口径。**
+ *
+ * 现在的构建 = 4 批顺序调用（utils/report.ts#REPORT_BATCHES），且每批 chatJSON 内部最多 2 次
+ * 尝试（utils/llm.ts#chatJSON 的 attempts = 1 + retries(1)），单次上界为云函数侧的
+ * LLM_CHAT_TIMEOUT_MS = 50s。故最坏 ≈ 4 × 2 × 50s = 400s，再加重合检索（15s）与余量（30s）。
+ *
+ * 为什么必须够长：这个常量是「构建者失联判定」——短于真实构建耗时的后果**不是**「多等一会被拒绝」，
+ * 而是**正常构建跑到一半就被他人判为失联并抢锁**：两边各白烧一遍 token，后落库的一方还会因
+ * builder 不符被云端写口拒绝（saveBuild 返回 failed，缓存不更新，用户拿到报告却全站查不到）。
+ * 原值 90s 是单次调用时代的估算（那时「LLM 60s + 检索 15s」确实够），分批改造后已明显不足。
+ *
+ * 取舍：宁可让「构建者进程被杀」留下的 building 脏行多留几分钟（只在异常时发生），
+ * 也不能让正常的长构建中途被抢。若这个上界在时延上不可接受，该动的是**每批的重试次数或批次数**
+ * （减少真实耗时），而**不是**把这个值调回小于构建时长 —— 那等于重新引入抢锁。
+ */
+const LLM_SINGLE_TIMEOUT_MS = 50 * 1000
+const REPORT_BATCH_ATTEMPTS = 2
+const SEARCH_BUDGET_MS = 15 * 1000
+const BUILD_SLACK_MS = 30 * 1000
+
+export const BUILDING_TIMEOUT_MS =
+  REPORT_BATCHES.length * REPORT_BATCH_ATTEMPTS * LLM_SINGLE_TIMEOUT_MS +
+  SEARCH_BUDGET_MS +
+  BUILD_SLACK_MS
+
+/**
+ * 等待方轮询上限（P0，2026-10-11）：**取与构建上界同值**。
+ *
+ * 原先刻意取得比 BUILDING_TIMEOUT_MS 短（75s vs 90s），留下一个「锁还没过期、等待方已放弃」的
+ * 空窗：等待方报「正在生成中」之后，那 15s 里既读不到新报告、也抢不到锁。两者同值后，
+ * 等待方的上限与「构建者可能还在正常工作」的时间窗一致。
+ * 注意这只是**上限**而非预期等待 —— 正常构建约 40~100s，超时只在对方真卡住时才会走到。
+ */
+const WAIT_TIMEOUT_MS = BUILDING_TIMEOUT_MS
 /*
  * 每日刷新次数上限（10）不再写在这里：它是会员页要展示给用户的数字，唯一来源是
  * utils/member.ts#MEMBER_BENEFITS.refreshPerDay（免费与会员同额）。本文件此前自带一份
  * `const DAILY_REFRESH_LIMIT = 10`，与会员页各写一份 ⇒ 迟早出现「页面说 10 次、
  * 闸门按别的数拦」。判定权威在云函数 quotaGuard，本常量只在云函数不可用时兜底。
  */
+
+/**
+ * 生成进度（2026-10-11）：报告是「检索素材 → 分 4 批生成」，页面的等待动画据此显示真实阶段。
+ *
+ * 为什么需要它：加载动画此前**只按秒数推进**（报告页从发出请求到拿到结果全程只 await 一次），
+ * 用户看到的「正在阅读并筛选素材…」纯属估计，与后端到底走到哪一步无关 —— 分批后系统明明
+ * 知道「4 批跑到第几批了」，却没有任何出口。
+ *
+ * 两阶段而非更细：检索（一次并行请求）与生成（4 批串行）是**可观测**的两件事；
+ * 再往下切（比如每批拆成「正在写 X 节」）没有真实信号支撑，只会退化成另一种虚假进度。
+ */
+export interface ReportProgress {
+  /** search：正在检索素材；generate：正在分批生成报告 */
+  stage: 'search' | 'generate'
+  /** 生成阶段已成功的批数（search 阶段恒 0） */
+  done: number
+  /** 生成总批数（REPORT_BATCHES.length，当前为 4） */
+  total: number
+}
 
 export type ReportOutcome =
   | {
@@ -302,6 +354,9 @@ async function acquire(
         state: 'building',
         builder: userId,
         search_meta: null,
+        /* 新行还没有中间结果，但把键写出来（null = 无）：行形状与 dbInit 的 def 保持一致，
+           排障时不必区分「没有这个键」与「有键但是空」两种情况 */
+        parts: null,
         schemaVersion: REPORT_SCHEMA_VERSION
       })
       .select()
@@ -329,7 +384,15 @@ async function acquire(
    * 免得排障时看到「state=building 却没有 schemaVersion」而要再想一遍是哪种情况。
    */
   const { data: upd, error: updErr } = await table('report_cache')
-    .update({ state: 'building', builder: userId, generated_at: now, schemaVersion: REPORT_SCHEMA_VERSION })
+    .update({
+      state: 'building',
+      builder: userId,
+      generated_at: now,
+      schemaVersion: REPORT_SCHEMA_VERSION,
+      /* 清掉上一轮（可能是被抢占 / 中断的那一次）留下的中间结果：它属于旧的那次生成，
+         留着会让「报告缺的那一块是什么原因」的排查读到一份对不上号的记录 */
+      parts: null
+    })
     .eq('id', personKey)
     .or(`state.eq.ready,generated_at.lt.${expireIso}`)
     .select()
@@ -368,7 +431,13 @@ async function release(personKey: string, userId: string): Promise<void> {
 
   if (row.report) {
     const { error } = await table('report_cache')
-      .update({ state: 'ready', builder: null, generated_at: row.report.generatedAt ?? row.generated_at })
+      .update({
+        state: 'ready',
+        builder: null,
+        generated_at: row.report.generatedAt ?? row.generated_at,
+        /* 中断退回的这一次没生成完整报告，中间结果一并清掉（理由同 acquire 里那处） */
+        parts: null
+      })
       .eq('id', personKey)
       .eq('builder', userId)
       .eq('state', 'building')
@@ -441,6 +510,8 @@ async function saveReady(
     generated_at: report.generatedAt,
     builder: null,
     search_meta: { news_count: newsCount },
+    /* 成品落库，分批生成的中间结果随之作废 */
+    parts: null,
     /* 落库时打版本：这是「这份报告由哪个版本的端上生成」的唯一记录点 */
     schemaVersion: REPORT_SCHEMA_VERSION
   })
@@ -453,6 +524,37 @@ async function saveReady(
   // 报告本身仍返回给本次用户，只是这一次不进缓存（下次重新生成，但不会再排队）。
   await release(personKey, userId).catch(() => undefined)
   return 'failed'
+}
+
+/**
+ * 中间结果落库（P0-B，best-effort）：分批生成时，每批成功即把累计的批次结果写进 building 行的
+ * `parts` 字段 —— 后面几批失败时，前面这几批已经花掉的 token 不会白费（可据 parts 排查
+ * 「报告缺的那一块是模型没写还是那一批调用失败了」）。
+ *
+ * 三条边界：
+ *   · **不改 state、不写 report**：这只是一次过程记录，缓存命中判定与读者可见性都只看 state/report，
+ *     所以写它永远不会把半成品暴露给用户；
+ *   · 写口明确拒绝时不回退直写（与 saveReady 同一口径）：拒绝的正是这类写入，回退等于绕过刚拒掉的校验；
+ *   · 任何失败都只记日志、不抛 —— 它是锦上添花，不该把一次正在进行的生成打断。
+ */
+async function saveReportParts(
+  personKey: string,
+  parts: ReportPart[],
+  userId: string
+): Promise<void> {
+  const viaCloud = await saveReportPartsViaCloud(personKey, parts)
+  if (viaCloud === 'saved') return
+  if (viaCloud === 'rejected') {
+    diagLog('warn', 'db', `写口拒绝中间结果落库：${personKey}`)
+    return
+  }
+
+  const { error } = await table('report_cache')
+    .update({ parts })
+    .eq('id', personKey)
+    .eq('builder', userId)
+    .eq('state', 'building')
+  if (error) diagLog('warn', 'db', `中间结果落库失败：${personKey}：${error.message ?? error}`)
 }
 
 /** 他人 building：轮询等待 ready（≤30s） */
@@ -474,10 +576,13 @@ async function waitForReady(personKey: string): Promise<Report | null> {
  * focus 为发现页「关注」筛选（生成侧重）：**不参与缓存键**，
  * 缓存仍以 personKey 为唯一键，避免破坏关注流 / 个人页的只读缓存读取；
  * 侧重不一致时由报告页提示「重新生成以聚焦」，用户点刷新（force）后覆盖缓存。
+ *
+ * `opts.onProgress`（2026-10-11）：本机真实生成时逐阶段回调（检索 → 分批生成），供等待动画
+ * 显示真实进度；命中缓存 / 排队等待等**不产生**进度的路径不会回调（那些路径本就没有「生成」可播报）。
  */
 export async function getOrBuildReport(
   personKey: string,
-  opts: { force?: boolean; focus?: FocusCode } = {}
+  opts: { force?: boolean; focus?: FocusCode; onProgress?: (p: ReportProgress) => void } = {}
 ): Promise<ReportOutcome> {
   const focus = opts.focus ?? 'all'
   const userId = useAuth.getState().userId ?? 'anonymous'
@@ -553,6 +658,28 @@ export async function getOrBuildReport(
     }
   }
 
+  /*
+   * 1.2 该人物的「无素材」冷却（P1，2026-10-11）：机制见 utils/cooldown.ts#setScopedCooldown，
+   * 记录点在下方 nonews 分支。
+   *
+   * 为什么单独一档：无素材兜底（C）**既不入共享缓存、也不计用户次数** —— 两条都是对的
+   * （理由见那处注释），但合起来的效果是「同一个人物可以无限重跑」：每点一次刷新就是一次
+   * 全量检索（main + social + bg，源侧最多 3 次尝试）加一次模型调用，产物却永远不落库、
+   * 不留任何痕迹，也就谈不上复用。全局的 'search' / 'llm' 冷却挡不住它：那是**设备级**键位，
+   * 为一个查不到素材的人物把整台设备封 10 分钟，用户只会以为应用坏了。
+   *
+   * 位置：排在全局冷却之后、配额检查之前 —— 它是**纯本地**判定（零网络），能省下后面的每一次
+   * 检索与模型调用；也因此不会出现「先被告知次数用完、再被告知没素材」这种自相矛盾的顺序。
+   */
+  const materialCool = scopedCooldownRemainingMs('search', personKey)
+  if (materialCool > 0) {
+    const minutes = Math.ceil(materialCool / 60000)
+    const message = `「${name}」刚刚已查过、暂无公开素材（约 ${minutes} 分钟后可再试）`
+    /* 缓存里有旧版就交回旧版（与全局冷却同一处理）；没有就进素材空态（§2.4）——
+       两者都比「再烧一次上游、再给一遍同样的空结果」对用户更诚实 */
+    return (await cachedFallback(message)) ?? { kind: 'nonews' }
+  }
+
   // 1.5 生成配额检查（freemium 免费层）：只拦「真实发起生成」的路径。
   //     缓存命中已在上方返回（不计数、不受限）；配额用完仍可浏览所有已生成报告。
   try {
@@ -562,6 +689,16 @@ export async function getOrBuildReport(
       return (await cachedFallback(message, quota.member)) ?? { kind: 'error', message }
     }
     memberDeep = quota.member
+    /*
+     * 闸门通过 ⇒ 记一笔在途占位（P1，2026-10-11）：peek 在这里、consume 在落库之后，
+     * 中间隔着几十秒上游调用。同一用户在这段窗口里对**两个不同人物**各发起一次生成时，
+     * 两次 peek 会看到同一个 used 而双双放行 —— 免费额度被一次性突破，而抢锁拦不住它
+     * （抢锁按 personKey，两个不同人物本来就是两把锁）。
+     * 撤销不在这里：占位自身会失效（计费推进即失效 / 过期即失效），见 utils/quota.ts
+     * 的「在途占位」一节。TTL 与锁同值，故直接用 BUILDING_TIMEOUT_MS。
+     * ⚠ 配额服务异常（下面的 catch）不记占位：那条路径本就按「宁可少量超发」放行。
+     */
+    beginGenerateInflight(userId, personKey, BUILDING_TIMEOUT_MS, quota.used)
   } catch (err) {
     /* 配额服务异常不拦生成：宁可少量超发，不可让所有人无法生成（与冷却的降级哲学一致） */
     diagLog('warn', 'db', `配额检查失败，放行本次生成：${err instanceof Error ? err.message : String(err)}`)
@@ -621,6 +758,15 @@ export async function getOrBuildReport(
     return { kind: 'error', message: '报告正在生成中，请稍后查看' }
   }
 
+  /*
+   * 进度出口（2026-10-11）：只在「本机真生成」路径上报（命中缓存 / 排队等待在前面就返回了，
+   * 那种情况本就没有生成可播报）。total 取自分批数真源 REPORT_BATCHES，不另写常量 ——
+   * 分批数改了这里跟着改，页面的「X/4」才不会与真实批数对不上（BatchSpec 的注释同款理由）。
+   */
+  const totalBatches = REPORT_BATCHES.length
+  const emitProgress = (stage: ReportProgress['stage'], done: number) =>
+    opts.onProgress?.({ stage, done, total: totalBatches })
+
   // 4. 我是构建者：博查检索 → LLM → 校验 → 落库
   try {
     /*
@@ -647,6 +793,8 @@ export async function getOrBuildReport(
      * 判据仍然是主线：背景线返回 null（通道未就绪 / 上游失败）一律吞掉 —— 它只是补充，
      * 与社交支线同一个取舍。
      */
+    /* 检索阶段（两路并行）：先播报再发起，否则「检索中」要等第一路回来才出现，白等一段 */
+    emitProgress('search', 0)
     const [news, background] = await Promise.all([
       fetchNews(
         name,
@@ -672,6 +820,15 @@ export async function getOrBuildReport(
        *      之后所有读者（包括本来能搜到素材的那些档位）都会读到它 —— 那是污染，不是兜底。
        */
       if (news !== null) {
+        /*
+         * 记一笔「该人物暂无素材」的作用域冷却（P1，2026-10-11；键位与判定见 utils/cooldown.ts
+         * 与上方 1.2 节）。放在兜底**之前**：兜底成功还是失败，这一次都已经把全部检索源跑遍了
+         * （utils/search.ts 的降级阶梯 + aiProxy 的第二源），重复跑一遍不会有不同结果。
+         *
+         * ⚠ 只在 `news !== null`（通道可用）时记：`news === null` 是**通道没就绪**，
+         * 那是设备/配置问题，不该由「某个人物」来承担，而且下次进来本就该重新探测通道。
+         */
+        setScopedCooldown('search', personKey)
         const know = await buildKnowledgeFallback(personKey, name, focus)
         if (know.ok) {
           await release(personKey, userId)
@@ -685,9 +842,20 @@ export async function getOrBuildReport(
       return { kind: news === null ? 'coldstart' : 'nonews' }
     }
 
+    /* 素材到手、进入分批生成：先把阶段切到「生成 (0/4)」，避免第一批回来前一直停在「检索中」 */
+    emitProgress('generate', 0)
     const res = await buildReport(personKey, name, news, focus, {
       member: memberDeep,
-      background: background ?? []
+      background: background ?? [],
+      /*
+       * 分批生成：每批成功即落一次中间结果（best-effort，见 saveReportParts 的注释），
+       * 并把「已完成几批」交给等待动画。先播报再落库：落库是库往返（几十~几百 ms），
+       * 让进度先动起来，观感上不会「明明这一批写完了，界面还停在上一批」。
+       */
+      onPart: async (parts) => {
+        emitProgress('generate', parts.length)
+        await saveReportParts(personKey, parts, userId)
+      }
     })
     if (!res.ok) {
       await release(personKey, userId)
@@ -750,6 +918,68 @@ export async function getOrBuildReport(
       /* 快照刚好不可用（极端：字段缺失的脏行）：退化成普通生成照常计数，不能让用户白等一场还没报告 */
     }
 
+    /*
+     * 达标判定必须在**落库之前**（P0，2026-10-11）—— 这是本次流程重排的核心。
+     *
+     * 原顺序是「先 saveReady 落库，再判 shortfall」，于是**不达标的产物已经写进共享缓存了**，
+     * 只是事后没扣次数。而 `report_cache` 是**全站共享、免费共用、ready 后长期复用且不自愈**的
+     * 一行，两份守卫都拦不住这种情况：
+     *   · 「只升不降」只认会员段（见 shouldKeepMemberVersion），管不了「完整版被降级纯文本覆盖」；
+     *   · 云端 storeSave 的四道校验里同样没有质量维度。
+     * 后果是叠乘的：一次上游抖动（四批全败 → report.ts 的 chatText 降级，degraded:true）产出的
+     * 一段纯文本，会**覆盖掉该人物全站的完整报告**；此后所有读者（含会员）读到它，直到有人主动
+     * 刷新；而这一轮又不计次数 ⇒ 没有任何人付代价、也没有任何机制推动修复。
+     *
+     * 重排后的语义（与原「不达标不计数」的承诺一致，只是把「不写」也补上）：
+     *   · 不达标 ⇒ **不写共享缓存**（release 放锁；行上原有的旧版因此被保留），不计数，把本次产物
+     *     交回给当前用户并由页面说明原因（页面文案见 pages/report 的 shortfall 分支）；
+     *   · 达标 ⇒ 照原流程落库 + 计数。
+     * 代价：缓存里没有旧版时，后续读者会重新生成一次 —— 可接受，因为上游抖动已经点着
+     * utils/cooldown.ts 的 llm 冷却（report.ts 在失败批上 setCooldown），重复重建会被挡住。
+     *
+     * ⚠ 判定仍排在「只升不降」守卫**之后**（见上方那条 if）：本次产物较简略、而缓存里已有
+     * 含会员段的完整版时，keep 掉旧版是严格更优的结果，不该被 shortfall 分支抢先。
+     */
+    const shortfall = reportShortfall(report, memberDeep)
+    /*
+     * 不达标还要再分一次「值不值得重试」（P2，2026-10-10）：页面按它选文案。
+     * 判据在 utils/report.ts#shortfallVerdict（素材够不够，取 coverage.items），
+     * 这里只管把它带给页面与埋点 —— 埋点带上这个字段，才能从数据上看出
+     * 「不达标里有多少是素材本来就少」（那部分不该按故障去追）。
+     */
+    const retryable = shortfall !== null && reportShortfallRetryable(report, memberDeep)
+    if (shortfall) {
+      /* tag 取 'db'：诊断标签只有 http/storage/auth/db/llm 五档，配额类日志一律归 db（同 utils/quota.ts） */
+      diagLog('info', 'db', `本次产物未达最低要求：不写缓存、不消耗次数：${shortfall}（可重试：${retryable}）`)
+      track('report_generate_shortfall', { personKey, reason: shortfall, retryable })
+      /* 锁是我们抢的，这一轮不落库也必须放掉；release 会把行退回 ready 并交还旧内容 */
+      await release(personKey, userId).catch(() => undefined)
+      /*
+       * 不写库了，但「只升不降」的意图仍要兑现：缓存里若已有含会员段的完整版，它比这份残版
+       * **严格更优** —— 内容更全，而且用户已经为它付过一次费，交回它比交回残版对用户更好。
+       *
+       * 为什么要在 release 之后再判：keptReport 的 isUsable 要求 state==='ready'，而抢锁中的行
+       * 是 'building'（这也是上面那条提前判定必须靠 saveReady 兜底生效的原因）。放锁之后这一行
+       * 才是可复用的那一版，判定才有意义。keptReport 内部会再 release 一次 —— 幂等，可忽略。
+       */
+      const afterRelease = await getRow(personKey)
+      if (!hasMemberBlocks(report) && shouldKeepMemberVersion(report, afterRelease)) {
+        const kept = await keptReport(afterRelease)
+        if (kept) return kept
+      }
+      /* 本次产物按**本次身份**过滤：免费读者不该从这份残版里读到会员段 */
+      const shown = await exposeReport(report, memberDeep)
+      return {
+        kind: 'report',
+        report: shown.report,
+        fromCache: false,
+        prev: prevReport,
+        memberLocked: shown.locked,
+        /* 只有不达标时才带：页面据此说明「这次没有扣次数」+「要不要再试」（见 ReportOutcome 两字段） */
+        ...(shortfall ? { shortfall, shortfallRetryable: retryable } : {})
+      }
+    }
+
     /* 免计费申请：必须在 upsert 之前，理由见上方 ② */
     if (memberUpgrade) {
       void consumeGenerateQuota(userId, { waiveIf: 'member_upgrade', target: personKey })
@@ -770,7 +1000,7 @@ export async function getOrBuildReport(
     track('report_generate', { personKey, mode: 'realtime' })
     /*
      * 配额只在「用户真的拿到一份合格报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
-     *   上方的 refused / error / coldstart / nonews 分支均已提前 return，不计数；
+     *   上方的 refused / error / coldstart / nonews / shortfall 分支均已提前 return，不计数；
      *   缓存命中（第 0 步 / 抢锁失败等待他人构建）与上面的 kept 分支同样不计数；
      *   落库失败会抛到下面的 catch，此时用户拿不到报告 → 不计数（release 会把上一版交还）。
      * 2026-10-10 加严：**产物不达标同样不计数**（判定见 utils/report.ts#reportShortfall）——
@@ -778,19 +1008,7 @@ export async function getOrBuildReport(
      *   best-effort：计数写失败不影响本次返回，少量丢失可接受（宁可少算不多算）。
      *   memberUpgrade 的那一次已在落库前申请（见上方 ②），此处不再重复申请。
      */
-    const shortfall = reportShortfall(report, memberDeep)
-    /*
-     * 不达标还要再分一次「值不值得重试」（P2，2026-10-10）：页面按它选文案。
-     * 判据在 utils/report.ts#shortfallVerdict（素材够不够，取 coverage.items），
-     * 这里只管把它带给页面与埋点 —— 埋点带上这个字段，才能从数据上看出
-     * 「不达标里有多少是素材本来就少」（那部分不该按故障去追）。
-     */
-    const retryable = shortfall !== null && reportShortfallRetryable(report, memberDeep)
-    if (shortfall) {
-      /* tag 取 'db'：诊断标签只有 http/storage/auth/db/llm 五档，配额类日志一律归 db（同 utils/quota.ts） */
-      diagLog('info', 'db', `本次产物未达最低要求，不消耗次数：${shortfall}（可重试：${retryable}）`)
-      track('report_generate_shortfall', { personKey, reason: shortfall, retryable })
-    } else if (!memberUpgrade) {
+    if (!memberUpgrade) {
       void consumeGenerateQuota(userId)
     }
     /* 本次产物按**本次身份**过滤（批 1）：非会员生成的报告本就不含会员段 → 快路径直出、零额外读 */
@@ -800,9 +1018,7 @@ export async function getOrBuildReport(
       report: shown.report,
       fromCache: false,
       prev: prevReport,
-      memberLocked: shown.locked,
-      /* 只有不达标时才带：页面据此说明「这次没有扣次数」+「要不要再试」（见 ReportOutcome 两字段） */
-      ...(shortfall ? { shortfall, shortfallRetryable: retryable } : {})
+      memberLocked: shown.locked
     }
   } catch (err) {
     await release(personKey, userId).catch(() => undefined)

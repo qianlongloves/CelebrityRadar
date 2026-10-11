@@ -12,7 +12,9 @@
         "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
         "SERPER_API_KEY": "{{env.SERPER_API_KEY}}",
         "TAVILY_API_KEY": "{{env.TAVILY_API_KEY}}",
-        "AI_PROXY_QUOTA_GUARD": "{{env.AI_PROXY_QUOTA_GUARD}}"
+        "AI_PROXY_QUOTA_GUARD": "{{env.AI_PROXY_QUOTA_GUARD}}",
+        "AI_PROXY_TEST_TOKEN": "{{env.AI_PROXY_TEST_TOKEN}}",
+        "AI_PROXY_RAW_LOG": "{{env.AI_PROXY_RAW_LOG}}"
       }
     },
     {

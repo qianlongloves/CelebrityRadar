@@ -161,7 +161,13 @@ describe('P0-2 写口：抢锁 / 放锁', () => {
 
   it('构建者失联超时：锁可被抢占（否则一次崩溃会永久卡住该人物）', async () => {
     const fn = loadProxy()
-    const stale = new Date(Date.now() - 91 * 1000).toISOString()
+    /*
+     * 必须**明显大于** report-store.js#BUILDING_TIMEOUT_MS（分批生成后 ≈ 7.5 分钟，值随
+     * 「4 批 × 每批 2 次尝试 × 单次 50s + 检索 + 余量」推导，见 src/utils/cache.ts 注释）。
+     * 原值 91s 是单次调用时代的口径，分批改造后它已落在锁的有效期内 —— 那样这条用例测的
+     * 就不再是「失联可抢占」，而是「他人持锁未失联」（上一条用例）。
+     */
+    const stale = new Date(Date.now() - 8 * 60 * 1000).toISOString()
     env.db.__seed('report_cache', [lockRow({ builder: 'u-other', generated_at: stale })])
     const res = await callStore(fn, { op: 'acquire', personKey: 'A#tech' })
     eq(res.result, 'acquired')
@@ -361,6 +367,101 @@ describe('P0-2 写口：落库校验', () => {
       report: report({ analysis: 'x'.repeat(200 * 1024) })
     })
     eq(res.kind, 'badrequest')
+  })
+})
+
+/* ============== ③b 中间结果写口（P0-B 分批生成的逐批落库） ============== */
+
+/*
+ * 报告改成按模板分组多次生成后，每批成功都会把**迄今累计**的批次结果写进 building 行的 `parts`
+ * （见 utils/report.ts#buildReport 的 onPart ↔ utils/cache.ts#saveReportParts）。
+ * 它不参与任何读取判定（读者只看 state / report），但仍是**写口**：若不校验持锁与会员一致性，
+ * 所有人可写的那条老路就又从 `parts` 这扇侧门打开了。
+ */
+describe('P0-B 写口：中间结果（parts）', () => {
+  const partsOf = (over) => [{ key: 'identity', data: Object.assign({ intro: 'x' }, over) }]
+
+  it('持锁时写入成功，且只动 parts —— report / state 一个字都不碰', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow({ report: { name: '上一版' } })])
+    const res = await callStore(fn, { op: 'saveParts', personKey: 'A#tech', parts: partsOf() })
+
+    eq(res.ok, true)
+    eq(res.result, 'saved')
+    const row = env.db.__dump('report_cache')[0]
+    eq(row.parts.length, 1, '中间结果落库了')
+    eq(row.parts[0].key, 'identity')
+    eq(row.state, 'building', '它只是过程记录，不该改生成状态')
+    eq(row.report.name, '上一版', '更不该碰那一行上躺着的那一版报告')
+  })
+
+  it('未持锁（他人持锁）：拒绝，且不写入任何字段', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow({ builder: 'u-other' })])
+    const res = await callStore(fn, { op: 'saveParts', personKey: 'A#tech', parts: partsOf() })
+
+    eq(res.ok, false)
+    eq(res.kind, 'lock')
+    eq(env.db.__dump('report_cache')[0].parts, undefined, '被拒就不该落库')
+  })
+
+  it('parts 不是数组：拒绝', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow()])
+    const res = await callStore(fn, { op: 'saveParts', personKey: 'A#tech', parts: { key: 'identity' } })
+    eq(res.kind, 'badrequest')
+  })
+
+  it('体积超限：拒绝', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow()])
+    const res = await callStore(fn, {
+      op: 'saveParts',
+      personKey: 'A#tech',
+      parts: [{ key: 'facts', data: { analysis: 'x'.repeat(100 * 1024) } }]
+    })
+    eq(res.kind, 'badrequest')
+  })
+
+  it('非会员写含会员段的中间结果：拒绝 —— 否则「伪造会员内容」只是换了一扇门进来', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow()])
+    const res = await callStore(fn, {
+      op: 'saveParts',
+      personKey: 'A#tech',
+      parts: partsOf({ memberNotes: { compare: '伪造的对比视角' } })
+    })
+
+    eq(res.ok, false)
+    eq(res.kind, 'auth')
+    eq(env.db.__dump('report_cache')[0].parts, undefined)
+  })
+
+  it('会员写含会员段的中间结果：放行', async () => {
+    const fn = loadProxy()
+    env.db.__seed('memberships', [memberRow()])
+    env.db.__seed('report_cache', [lockRow()])
+    const res = await callStore(fn, {
+      op: 'saveParts',
+      personKey: 'A#tech',
+      parts: partsOf({ memberNotes: { compare: '对比视角' } })
+    })
+    eq(res.result, 'saved')
+  })
+
+  it('acquire 会清掉上一轮留下的中间结果（那一份属于旧的那次生成）', async () => {
+    const fn = loadProxy()
+    /* 抢占场景：他人 building 已过期（generated_at 是很久以前），行上还留着上一轮的 parts */
+    env.db.__seed('report_cache', [
+      Object.assign(lockRow({ builder: 'u-other', parts: partsOf() }), {
+        generated_at: new Date(Date.now() - 60 * 60000).toISOString()
+      })
+    ])
+
+    const res = await callStore(fn, { op: 'acquire', personKey: 'A#tech' })
+
+    eq(res.result, 'acquired')
+    eq(env.db.__dump('report_cache')[0].parts, null, '对不上号的旧记录留着只会误导读排障的人')
   })
 })
 

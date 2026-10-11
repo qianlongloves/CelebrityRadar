@@ -30,9 +30,12 @@
  *   · `cloud.init({ timeout })` 默认 15000ms；单次调用可用 `options.timeout` 覆盖。
  *
  * ── ⚠ 模型名必须实测回填（本次改造唯一的未定项）──────────────────
- * `generateText({ model })` 里的模型名**以「你的云开发环境已开通了哪些模型」为准**，
- * 文档不会给死清单（示例里的 hy3-preview / deepseek-r1 只是「可能可用」）。
- * 下表的三个默认值取自官方文档里**确切出现过**的名字，但**上线前必须实测确认**：
+ * `generateText({ model })` 里的模型名**以「你的云开发环境已开通了哪些模型」为准**。
+ * 官方 cloudbase 组清单（2026-10-11 查证，最终以控制台 AI 页为准）：
+ *   hy3 / hy3-preview / deepseek-v4-flash / deepseek-v4-pro / glm-5.1
+ *   （Changelog 另列：deepseek-v3.2 / glm-5 / glm-5-turbo / glm-5v-turbo /
+ *     kimi-k2.5 / kimi-k2.6 / minimax-m2.5 / minimax-m2.7）
+ * 下表的三个默认值取自该清单，但**上线前必须实测确认**（且控制台需手动开启对应模型开关）：
  *   ① 控制台 → 云开发 → AI → 模型管理，看已开通的模型；或
  *   ② 部署后调 aiProxy 的 `{ action:'test', token, models:true }` 探针，它会逐档真跑一遍并列出结果。
  * 若实测发现某个名字不通，**不必改代码**：用环境变量覆盖即可（见下方 MODEL_ENV_PREFIX）：
@@ -89,8 +92,8 @@ const TIERS = {
   },
   reason: {
     label: '深度推理',
-    /* 文档示例中出现过的推理模型；实测确认后可换 */
-    model: 'deepseek-r1',
+    /* 强推理档：deepseek-v4-pro（官方 cloudbase 清单内）；实测确认后可换 */
+    model: 'deepseek-v4-pro',
     memberOnly: true,
     chatMaxTokens: 8192,
     extraBody: null

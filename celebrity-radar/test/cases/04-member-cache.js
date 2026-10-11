@@ -180,16 +180,23 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
     ok(src.includes('keptMember: true'), '页面要靠这个标记解释「刷新了却没变化」')
   })
 
-  it('配额只在**产物达标**时才消耗：不达标（reportShortfall）一分不扣（2026-10-10 公平计费）', () => {
-    const saveAt = src.indexOf('const saved = await saveReady')
+  it('不达标的产物不进共享缓存、也不扣次数（P0，2026-10-11 公平计费 + 防污染）', () => {
     const shortfallAt = src.indexOf('const shortfall = reportShortfall(report, memberDeep)')
+    const saveAt = src.indexOf('const saved = await saveReady')
     const consumeAt = src.indexOf('void consumeGenerateQuota(userId)')
 
-    ok(saveAt > 0 && shortfallAt > saveAt, '达标判定在落库之后（落库失败会抛到 catch，不计数）')
-    ok(consumeAt > shortfallAt, '计费点在不达标判定之后')
-    /* 计数只在不达标分支的 else 里：`if (shortfall) {…} else if (!memberUpgrade) { consume… }` */
-    ok(src.slice(shortfallAt, consumeAt).includes('} else if (!memberUpgrade) {'), '不达标走 if 分支，计数只在 else 分支里')
-    notOk(/if \(shortfall\) \{[^}]*consumeGenerateQuota/.test(src), '不达标分支里绝不能调用计费')
+    /*
+     * 判定必须**前移到落库之前**：原顺序是「先 saveReady 再判 shortfall」，于是不达标的产物
+     * 已经写进全站共享行，只是事后没扣次数 —— 一次上游抖动产出的降级纯文本会覆盖掉该人物
+     * 全站的完整报告，而「只升不降」只认会员段、云端写口也没有质量维度，谁都不会拦它。
+     */
+    ok(shortfallAt > 0 && shortfallAt < saveAt, '达标判定必须在落库之前（不达标的产物一律不写缓存）')
+    ok(consumeAt > shortfallAt, '计费点仍在不达标判定之后')
+    /* 不达标走独立的提前 return：分支里只放锁，不落库、不计数 */
+    const branch = src.slice(shortfallAt, saveAt)
+    ok(branch.includes('if (shortfall) {'), '不达标要有独立分支')
+    ok(branch.includes('await release(personKey, userId)'), '不达标必须把抢到的锁放掉（否则 building 残留到超时）')
+    notOk(/if \(shortfall\) \{[^}]*consumeGenerateQuota/.test(branch), '不达标分支里绝不能调用计费')
     ok(src.includes("track('report_generate_shortfall'"), '不达标要单独埋点，便于观察上游抖动频次')
   })
 
@@ -487,8 +494,8 @@ describe('档位隔离已接进读取路径（源码钉住，防「写了剥离�
     const n = (src.match(/memberLocked: shown\.locked/g) || []).length
     eq(
       n,
-      6,
-      '缓存命中 / 等待他人 ×2 / kept / 生成成功 / 刷新失败交回旧版（cachedFallback）—— 六处交回口一个都不能少'
+      7,
+      '缓存命中 / 等待他人 ×2 / kept / 生成成功 / 不达标交回残版（2026-10-11 新增：不落库也要按身份剥离）/ 刷新失败交回旧版（cachedFallback）—— 七处交回口一个都不能少'
     )
   })
 
@@ -708,6 +715,32 @@ describe('只升不降 · 端到端（非会员 force 刷新不得吃掉会员�
    * 末尾追加」用例同一套口径）：免费档的提示词里没有那条要求，于是产物不含会员段 ——
    * 正是 P0 要拦下的那份输入。
    */
+  /*
+   * 2026-10-11：产物必须**达标**（判据见 utils/report.ts#reportShortfall）。
+   * 这几条用例钉的是抢锁 / 只升不降 / 中间结果的**时序**，不是计费门槛；而达标判定前置后，
+   * 不达标的产物一律不落库 —— 之前这里只回 `{intro:'新简介'}`，四批合并后没有实质条目
+   * （dynamics+quotes+timeline < 3），于是整组用例会因为「没落库」而失败，且失败原因与
+   * 它们真正想测的东西无关。骨架（intro/analysis）+ 3 条时间线是最低配置。
+   * 四批的分批契约是**非严格**对象（多写的键被静默丢弃，见 report.ts#batchSchema 注释），
+   * 所以同一份 superset 回给每一批是安全的：各批各取自己的字段。
+   */
+  const RICH = {
+    intro: '新简介',
+    /*
+     * 必须用**模型侧的契约字段名**：judgement 批要的是 analysisPoints，`analysis` 是 sanitize
+     * 从各条拼出来的派生字段（见 report.ts#REPORT_FIELDS 注释）—— 回 analysis 会被 zod 的非严格
+     * 对象静默丢弃，于是 report.analysis 为空、整份产物判成「没有 AI 点评正文」。
+     */
+    analysisPoints: [
+      { point: '点评一。', basis: '据公开资料' },
+      { point: '点评二。', basis: '据公开资料' }
+    ],
+    timeline: [
+      { date: '2026-09-01', event: '事件一' },
+      { date: '2026-08-01', event: '事件二' },
+      { date: '2026-07-01', event: '事件三' }
+    ]
+  }
   const online = () => {
     env.registerCloudFn('aiProxy', (data) => {
       if (data.action === 'search') {
@@ -716,7 +749,7 @@ describe('只升不降 · 端到端（非会员 force 刷新不得吃掉会员�
       const asked = data.messages[0].content.includes('会员补充要求')
       return {
         ok: true,
-        content: JSON.stringify(asked ? { intro: '新简介', memberNotes: MEMBER_NOTES } : { intro: '新简介' })
+        content: JSON.stringify(asked ? { ...RICH, memberNotes: MEMBER_NOTES } : RICH)
       }
     })
   }
@@ -753,6 +786,63 @@ describe('只升不降 · 端到端（非会员 force 刷新不得吃掉会员�
     eq(row.state, 'ready')
     ok(hasMemberBlocks(row.report), '会员产物本来就含会员段')
     eq(row.report.intro, '新简介', '会员这一次是真的重新生成了')
+  })
+
+  it('分批生成：每批成功都把中间结果写进 building 行的 parts，成品落库后作废', async () => {
+    const { load } = fresh()
+    const cache = load('utils/cache')
+    /* 每次模型调用**前**先看一眼行上的 parts —— 它就是「上一批」的落库结果 */
+    const before = []
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action === 'search') {
+        return { ok: true, pages: [{ name: '标题', url: 'https://news.example.com/a', snippet: '正文' }] }
+      }
+      if (data.messages) {
+        const row = env.db.__dump('report_cache')[0]
+        before.push(row ? row.parts : null)
+        /* 同样必须是达标产物（见上方 RICH 注释）：不落库的产物没有 parts 可看，本用例会失真 */
+        return { ok: true, content: JSON.stringify(RICH) }
+      }
+      /* 写口回「通道未就绪」⇒ 走端上直写（正是 P0-2 收紧前的既有行为） */
+      return { ok: false, error: '云函数未部署' }
+    })
+
+    const out = await cache.getOrBuildReport('测试人物#tech')
+    eq(out.kind, 'report')
+
+    eq(before.length, 4, '按模板四组各一次调用')
+    eq(before[0], null, '第一批之前还没有中间结果')
+    eq(before[1].length, 1, '第一批成功后已落库一批 —— 后面几批失败时这一批的 token 不作废')
+    eq(before[2].length, 2)
+    eq(before[3].length, 3)
+    eq(
+      env.db.__dump('report_cache')[0].parts,
+      null,
+      '成品落库后中间结果作废（save 是整篇替换，别让旧的过程记录留着误导排障）'
+    )
+  })
+
+  it('分批进度：onProgress 报出「检索 → 生成 0/4 → 1/4 … 4/4」（2026-10-11）', async () => {
+    /*
+     * 等待动画此前只按秒数估算，分批后系统明明知道走到第几批。这条钉住真实的进度信号：
+     * 先报「检索」，进生成前报 0/4，之后每批成功 +1，总批数取自 REPORT_BATCHES。
+     * 页面据此显示「已完成 X/4 批」（页面侧由 01-pure 的源码断言钉住透传链）。
+     */
+    const { load } = fresh()
+    const { getOrBuildReport } = load('utils/cache')
+    online()
+
+    const seen = []
+    const out = await getOrBuildReport('测试人物#tech', { onProgress: (p) => seen.push(p) })
+    eq(out.kind, 'report')
+
+    eq(seen[0].stage, 'search', '第一步是检索素材')
+    eq(seen[0].done, 0)
+    const gen = seen.filter((p) => p.stage === 'generate').map((p) => p.done)
+    deepEq(gen, [0, 1, 2, 3, 4], '进生成时报 0/4，每批成功 +1，最后一批到 4/4')
+    ok(seen.every((p) => p.total === 4), '总批数恒等于 REPORT_BATCHES.length（分批数真源）')
+    /* 落库失败等等都不该影响进度回调（这里只关心「有没有走到 4/4」） */
+    eq(seen[seen.length - 1].done, 4)
   })
 })
 
@@ -852,5 +942,89 @@ describe('force 刷新失败不得清空正在读的报告（P1-8）', () => {
     ok(typeof refreshFailureNote({ kind: 'nonews' }) === 'string')
     ok(typeof refreshFailureNote({ kind: 'refused' }) === 'string')
     ok(typeof refreshFailureNote({ kind: 'error', message: '上游不可用' }) === 'string')
+  })
+})
+
+/* ------------------------------------------- 无素材兜底的作用域冷却（P1，2026-10-11） */
+
+describe('「该人物暂无素材」的作用域冷却（P1：同一个人物不被反复重跑）', () => {
+  /**
+   * 检索通道可用但**一条都抓不到**（`pages: []` —— 端上据此判 nonews，口径见 07 的
+   * 「空数组 = 抓到了但没内容」用例），这就是 nonews 分支的入口。
+   *
+   * 为什么这条链路必须有冷却：它的产物**不入共享缓存、也不计用户次数**（两条都是对的，
+   * 见 utils/cache.ts 那处注释），合起来的效果就是「同一个人物可以无限重跑」——
+   * 每点一次刷新 = 一次全量检索（main + social + bg，源侧最多 3 次尝试）加一次模型调用，
+   * 产物却永远不落库。故断言钉在「第二轮一次检索都不再发」上。
+   *
+   * 本文件刻意**不开** isCloudConfigured（04 那批 coldstart 用例的前提就是它关着），
+   * 因此模型知识兜底本身可能因通道未就绪而失败 —— 与本用例无关：冷却记在兜底**之前**，
+   * 只要检索通道可用（`news !== null`）就会记上。首轮的 kind 因此放宽到两种合法结果。
+   */
+  it('同一人物第二轮被冷却挡住（一次检索都不再发），其余人物不受影响', async () => {
+    const { load } = fresh()
+    let searches = 0
+    /*
+     * 假上游分三类（照抄同文件「分批中间结果」那条用例的判据）：
+     *   search → 通道可用但一条都没抓到（nonews 分支的入口）；
+     *   带 messages → 模型调用（知识兜底，回一份最小产物）；
+     *   其余（写口：抢锁 / 落库 / parts）→ 「云函数未部署」⇒ 端上按 P0-2 走 degraded 直写。
+     * 不注册写口替身是有意的：那会让抢锁走「接管既有行」并依赖假响应的解析细节，
+     * 与本节要测的「无素材冷却」无关（758 那条用例已经覆盖了抢锁那条链路）。
+     */
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action === 'search') {
+        searches++
+        return { ok: true, pages: [] }
+      }
+      if (data.messages) return { ok: true, content: JSON.stringify({ intro: '张某，演员。' }) }
+      return { ok: false, error: '云函数未部署' }
+    })
+    const { getOrBuildReport } = load('utils/cache')
+    /* 前置：作用域冷却这套读写在测试环境里是通的（关掉冷却开关时它会一律返回 0） */
+    const { setScopedCooldown, scopedCooldownRemainingMs } = load('utils/cooldown')
+    setScopedCooldown('search', '冷却自检#tech')
+    ok(
+      scopedCooldownRemainingMs('search', '冷却自检#tech') > 0,
+      '作用域冷却本身要可用（否则本用例的失败原因不在被测逻辑上）'
+    )
+
+    const first = await getOrBuildReport('测试人物#tech', { force: true })
+    const afterFirst = searches
+    ok(afterFirst > 0, `首轮要真的打出去检索，否则本用例测的不是这条链路：${first.kind}`)
+    ok(
+      first.kind === 'report' || first.kind === 'nonews',
+      `首轮只能是「兜底报告」或「素材空态」：${first.kind}`
+    )
+
+    const second = await getOrBuildReport('测试人物#tech', { force: true })
+
+    eq(
+      searches,
+      afterFirst,
+      `冷却期内第二轮不得再发起任何检索（${afterFirst} → ${searches}）—— 这正是这条冷却存在的理由`
+    )
+    eq(second.kind, 'nonews', '没有旧版可交回时进素材空态（§2.4）')
+
+    /* 冷却按 personKey 分开记：另一个人物照常打检索。否则就成了设备级封禁，方向反了 */
+    await getOrBuildReport('另一个人物#tech', { force: true })
+    ok(searches > afterFirst, '冷却只封这一个人物')
+  })
+
+  it('通道未就绪（news === null）不记冷却：那是配置问题，不该由某个人物承担', async () => {
+    const { load } = fresh()
+    /* 不注册 aiProxy：callCloudFunction 抛错 → pagesViaPlatform 返回 null → coldstart */
+    const { getOrBuildReport } = load('utils/cache')
+
+    const first = await getOrBuildReport('测试人物#tech', { force: true })
+    eq(first.kind, 'coldstart', '通道未就绪走 coldstart')
+
+    /*
+     * 第二次仍是 coldstart（而不是被冷却挡成 nonews）= 没记冷却。
+     * 这条区分很重要：通道没配好是**设备级**问题，下次进来本就该重新探测；
+     * 若在这里也记冷却，用户配好通道后还要再等 10 分钟才能查这个人。
+     */
+    const second = await getOrBuildReport('测试人物#tech', { force: true })
+    eq(second.kind, 'coldstart', '通道未就绪不得记「该人物无素材」的冷却')
   })
 })

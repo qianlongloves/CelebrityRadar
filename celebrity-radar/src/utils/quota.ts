@@ -1,3 +1,4 @@
+import Taro from '@tarojs/taro'
 import { table } from './db'
 import { todayKey } from './time'
 import { diagLog } from './cloud-diagnostics'
@@ -91,6 +92,76 @@ async function readCount(userId: string): Promise<number> {
   return (data as GenerateQuotaRow | null)?.count ?? 0
 }
 
+/* ------------------------------------------------- 在途占位（P1，2026-10-11） */
+
+/**
+ * 「已通过闸门、还没有结束」的生成占位，按 userId 记在本机 storage。
+ *
+ * 解决什么：闸门天然是**先查后做** —— peek 在生成前、consume 在落库后，中间隔着几十秒的上游调用。
+ * 同一用户在窗口里对**两个不同人物**各发起一次生成时，两次 peek 看到的是同一个 used，于是双双放行，
+ * 免费额度被一次性突破（报告页返回后立刻查另一个人、或两个页面并发，都会命中）。
+ * 抢锁拦不住它 —— 那是按 personKey 的，两个不同人物本来就是两把锁。
+ *
+ * 做法：闸门通过时记一笔占位，peek 把未过期的占位数一起算进 `remaining`。
+ * 撤销有两条路，**都不需要调用方显式收尾**：
+ *   ① 计费推进即失效：占位带着「记录时的 used」，之后只要读到的 used 超过了它，
+ *      说明这一次已经真的计过数（或已被别的计数覆盖），占位即冗余 —— 读时剪掉；
+ *   ② 过期即失效：TTL 由调用方给（cache.ts 传 BUILDING_TIMEOUT_MS，与锁同口径），
+ *      构建者进程被杀时不会留下一笔永久占位把用户挡在门外。
+ * 副作用的方向是刻意选的：漏剪只会**少占**一个名额（回到老行为），绝不会**误挡**一个真实可用的名额。
+ *
+ * ⚠ 边界（如实记录）：
+ *   · 挡得住：同设备并发（连点、多入口、后台构建期间又查另一个人）—— 实际会发生的形态；
+ *   · 挡不住：跨设备并发（两台手机同时点）。那需要云端原子「预留 + 退还」，
+ *     代价是云端要新增动作、并接受「进程被杀时预留无法退还」，属于产品级取舍，未实施。
+ *   · 它**不参与计费**：`used` 始终是服务端的真实计数，占位只进 `remaining` / `allowed` 的判定。
+ */
+const INFLIGHT_KEY = 'generate_inflight'
+
+/** 一条占位：[人物, 过期时间戳, 记录时的已用次数] */
+type InflightEntry = [string, number, number]
+
+function readInflight(userId: string, used: number): InflightEntry[] {
+  try {
+    const raw = Taro.getStorageSync(`${INFLIGHT_KEY}#${userId}`)
+    const list = Array.isArray(raw) ? (raw as InflightEntry[]) : []
+    const now = Date.now()
+    /* 读时就地剪（没有定时器，读是唯一的清理时机）：过期项 + 计费已推进的项，理由见上方 ①② */
+    return list.filter(
+      (it) =>
+        Array.isArray(it) &&
+        typeof it[1] === 'number' &&
+        typeof it[2] === 'number' &&
+        it[1] > now &&
+        it[2] >= used
+    )
+  } catch {
+    return []
+  }
+}
+
+/** 记一笔在途生成（闸门通过后立刻调用）。ttlMs 由调用方给，避免第二个「构建耗时」常量各自漂移 */
+export function beginGenerateInflight(
+  userId: string,
+  personKey: string,
+  ttlMs: number,
+  usedAtBegin: number
+): void {
+  try {
+    const key = `${INFLIGHT_KEY}#${userId}`
+    const raw = Taro.getStorageSync(key)
+    const list = (Array.isArray(raw) ? raw : []) as InflightEntry[]
+    const now = Date.now()
+    list.push([personKey, now + ttlMs, usedAtBegin])
+    Taro.setStorageSync(
+      key,
+      list.filter((it) => Array.isArray(it) && typeof it[1] === 'number' && it[1] > now)
+    )
+  } catch {
+    /* 静默：占位只是闸门的加严项，写失败最坏是回到「可能被并发突破一次」的老行为 */
+  }
+}
+
 /**
  * 查询配额（不消耗）：生成前的闸门检查 + 「我的」页展示共用。
  * 会员判定读 users 行失败时按免费版处理（保守，不放大免费额度）。
@@ -99,7 +170,7 @@ export async function peekGenerateQuota(userId: string): Promise<GenerateQuotaSu
   const state = await readMemberState()
   const limit = dailyGenerateLimit(state.member)
   const used = await readCount(userId)
-  const realRemaining = Math.max(0, limit - used)
+  const realRemaining = Math.max(0, limit - used - readInflight(userId, used).length)
   return {
     used,
     limit,
@@ -110,6 +181,11 @@ export async function peekGenerateQuota(userId: string): Promise<GenerateQuotaSu
      * 本机开挂时已生成多次，弹窗仍说「今日剩余 30/30」。两害相权：假数字是**静默**的错
      * （用户照着它做判断），而矛盾展示的来源看得见，且真机上开关恒为 false，这个矛盾
      * 根本不会出现。
+     *
+     * 另注（P1，2026-10-11）：realRemaining 还减掉了**在途占位**（见本文件「在途占位」一节）。
+     * `remaining` 的口径是「还能再发起几次」——那笔在途生成已经过了闸门、必然要计数
+     * （不达标或不落库时占位会自行失效），所以它必须先占住一个名额，否则同一个用户
+     * 在两次 peek 之间就能用两个人物把额度突破掉。
      */
     remaining: realRemaining,
     allowed: GENERATE_QUOTA_DISABLED || realRemaining > 0,

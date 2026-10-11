@@ -1,10 +1,14 @@
 import { useEffect, useState } from 'react'
 import { View, Text } from '@tarojs/components'
+import type { ReportProgress } from '@/utils/cache'
 import './index.scss'
 
 /**
- * 生成阶段提示：按等待时长推进，文案对应真实链路（检索素材 → 阅读筛选 → 生成六段），
- * 仅用于缓解等待焦虑，不代表后端精确进度。
+ * 生成阶段提示：**没有真实进度可用时**的兜底文案，按等待时长推进。
+ *
+ * 它对应真实链路（检索素材 → 阅读筛选 → 生成六段），但只按秒数估 —— 所以一旦拿到了
+ * `progress`（报告页把分批生成的进展透传进来，见 ReportProgress），就用真进度取代这套估算；
+ * 命中缓存 / 他人持锁排队等没有真实进度的路径，仍回落到这里（那些路径本就没有「生成」可播报）。
  */
 const STAGES: Array<{ at: number; label: string }> = [
   { at: 0, label: '正在检索公开网络信息…' },
@@ -20,6 +24,13 @@ const MAX_PROGRESS = 92
 interface ReportLoadingProps {
   /** generating：本机正在生成；waiting：他人持锁，本机排队等待 */
   mode?: 'generating' | 'waiting'
+  /**
+   * 真实生成进度（nullable）：报告页透传自 getOrBuildReport 的 onProgress。
+   *
+   * 有它时才播报真实阶段（检索 / 生成 X/4）；为 null 表示没有真实进度可用
+   * （命中缓存、排队等待、尚未回调），此时与旧行为逐字一致（按秒数推进）。
+   */
+  progress?: ReportProgress | null
 }
 
 /**
@@ -52,6 +63,23 @@ function progressPercent(elapsed: number): number {
 }
 
 /**
+ * 分批进度对应的阶段文案（2026-10-11）：报告生成是「检索 → 4 批串行」，
+ * 拿到 progress 就该说真话（走到第几批），而不是继续按秒数念估算文案。
+ * 返回 null 表示「此刻没有真实生成进度」——由调用方回落到 stageLabel（命中缓存 / 排队等路径）。
+ */
+function batchStage(progress: ReportProgress | null | undefined): string | null {
+  if (!progress || progress.stage !== 'generate') return null
+  if (progress.done >= progress.total) return '正在整理报告…'
+  return `正在生成深度报告…（已完成 ${progress.done}/${progress.total} 批）`
+}
+
+/** 分批进度对应的进度条百分比：批完成数 / 总批数，封顶 92%（与时间估算同源） */
+function batchPercent(progress: ReportProgress): number {
+  if (progress.total <= 0) return 0
+  return Math.min(MAX_PROGRESS, Math.round((progress.done / progress.total) * MAX_PROGRESS))
+}
+
+/**
  * 等待动画本体：双环反向旋转 + 中心脉冲。
  *
  * 抽成独立组件是因为「全屏等待态」与「悬浮刷新卡」共用这一颗动画（2026-10-10）；
@@ -80,6 +108,8 @@ interface LoadingBodyProps {
    * 但环、阶段文案、进度条三者必须与全屏等待态逐项同源，否则「一致」就无从谈起。
    */
   hint?: string
+  /** 真实生成进度（见 ReportLoadingProps.progress）：有它时阶段文案与进度条改用真进度 */
+  progress?: ReportProgress | null
 }
 
 /**
@@ -88,12 +118,21 @@ interface LoadingBodyProps {
  * 「全屏等待态」（ReportLoading）与「悬浮刷新卡」（ReportRefreshing）现在渲染的是**同一个**
  * LoadingBody：同尺寸、同结构、同动画，差别只剩外层容器（整页留白 vs 悬浮卡片）。
  */
-function LoadingBody({ mode = 'generating', hint }: LoadingBodyProps) {
+function LoadingBody({ mode = 'generating', hint, progress }: LoadingBodyProps) {
   const elapsed = useElapsedSeconds(mode === 'generating')
 
   const waiting = mode === 'waiting'
-  const stage = waiting ? '其他用户正在生成同一份报告，已为你排队…' : stageLabel(elapsed)
-  const progress = progressPercent(elapsed)
+  /* 真进度优先：进入「生成」阶段就播报批次（见 batchStage），否则回落到按秒估算 */
+  const realStage = waiting ? null : batchStage(progress)
+  const stage = waiting
+    ? '其他用户正在生成同一份报告，已为你排队…'
+    : (realStage ?? stageLabel(elapsed))
+
+  /*
+   * 进度条：时间估算与分批进度**取大者**。两者都单调不减，取 max 也就不会倒退；
+   * 若只用分批进度，done=0 时是 0%、比此刻的时间估算（约几十 %）还小，会看起来像卡回去。
+   */
+  const percent = Math.max(progressPercent(elapsed), realStage && progress ? batchPercent(progress) : 0)
 
   const tip =
     hint !== undefined
@@ -113,7 +152,7 @@ function LoadingBody({ mode = 'generating', hint }: LoadingBodyProps) {
       <View className='report-loading__bar'>
         <View
           className={waiting ? 'report-loading__bar-fill report-loading__bar-fill--waiting' : 'report-loading__bar-fill'}
-          style={{ width: waiting ? '100%' : `${progress}%` }}
+          style={{ width: waiting ? '100%' : `${percent}%` }}
         />
       </View>
 
@@ -123,10 +162,10 @@ function LoadingBody({ mode = 'generating', hint }: LoadingBodyProps) {
 }
 
 /** 深度报告生成等待态（§2.4 边界态：loading / waiting 共用）；骨架屏只在这一态出现 */
-export default function ReportLoading({ mode = 'generating' }: ReportLoadingProps) {
+export default function ReportLoading({ mode = 'generating', progress = null }: ReportLoadingProps) {
   return (
     <View className='report-loading'>
-      <LoadingBody mode={mode} />
+      <LoadingBody mode={mode} progress={progress} />
 
       <View className='report-loading__skeleton'>
         <View className='rl-sk'>
@@ -172,12 +211,12 @@ export default function ReportLoading({ mode = 'generating' }: ReportLoadingProp
  * 用户会看到「盖着一张卡，内容却在滚」。蒙层没有点击回调、也不可关闭 —— 它是进行态而非提示条，
  * 中途关掉只会让用户以为生成被取消（会在页面停留十余秒的假象）。
  */
-export function ReportRefreshing() {
+export function ReportRefreshing({ progress = null }: { progress?: ReportProgress | null }) {
   return (
     <View className='report-refreshing glow-overlay' catchMove>
       <View className='report-refreshing__mask' />
       <View className='report-refreshing__card'>
-        <LoadingBody hint='生成完成后自动替换当前这一版' />
+        <LoadingBody hint='生成完成后自动替换当前这一版' progress={progress} />
       </View>
     </View>
   )

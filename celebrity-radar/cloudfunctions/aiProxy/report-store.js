@@ -28,19 +28,27 @@ module.exports = function createReportStore(deps) {
   const { db, cloud, isActiveMember, bumpAbuseCount, quotaGuardDisabled, todayKey, failDetail } = deps
   const _ = db.command
 
-  /** 失联判定，**须与端上 src/utils/cache.ts#BUILDING_TIMEOUT_MS 同值** */
-  const BUILDING_TIMEOUT_MS = 90 * 1000
+  /**
+   * 失联判定，**须与端上 src/utils/cache.ts#BUILDING_TIMEOUT_MS 同值**。
+   *
+   * 2026-10-11 随「分批生成」上调（原值 90s 是**单次调用时代**的估算）：构建现在是 4 批顺序调用，
+   * 每批 chatJSON 内部最多 2 次尝试，单次上游超时 50s（本目录 index.js#LLM_CHAT_TIMEOUT_MS），
+   * 再加重合检索与余量。原值短于真实构建 ⇒ 正常构建跑到一半就被他人判为失联并抢锁。
+   */
+  const BUILDING_TIMEOUT_MS = 445 * 1000
   /** 单份报告上限（字节）。callFunction 官方建议请求体 ≤ 100KB，贴着它取 */
   const REPORT_MAX_BYTES = 100 * 1024
+  /** 中间结果上限（P0-B，saveParts）：一批几千字节，四批封顶，给到 80KB 足够且仍在 callFunction 建议值内 */
+  const PARTS_MAX_BYTES = 80 * 1024
   /** 单个人物动态列表上限：feed 只存检索结果映射（10~20 条），实测 10~30KB */
   const FEED_MAX_BYTES = 60 * 1024
   /**
    * 写口限速（**不分会员档**）：它不产生上游成本，要防的只是「反复抢锁击穿全站缓存」这类 DoS。
-   * 一次正常生成最多 3 次写口调用（acquire / save / release），150 次 ≈ 50 次完整生成，
-   * 远高于产品额度（免费 3 / 会员 30），对正常用户无感。
+   * 一次正常生成最多 7 次写口调用（acquire + 最多 4 次 saveParts + save + release），
+   * 400 次 ≈ 57 次完整生成，远高于产品额度（免费 3 / 会员 30），对正常用户无感。
    * 计数走**独立键**（`openid#日期#store`），不挤占 chat / search 那条 ABUSE_LIMITS。
    */
-  const STORE_ABUSE_LIMIT = 150
+  const STORE_ABUSE_LIMIT = 400
   /** 主键长度上限：超长先在门口挡住，别把库当网盘 */
   const MAX_KEY_LEN = 120
 
@@ -109,6 +117,8 @@ module.exports = function createReportStore(deps) {
             state: 'building',
             builder: openid,
             search_meta: null,
+            /* 新行没有中间结果，但把键写出来（null = 无），行形状与 dbInit 的 def 一致 */
+            parts: null,
             ...(typeof schemaVersion === 'number' ? { schemaVersion } : {})
           }
         })
@@ -133,6 +143,8 @@ module.exports = function createReportStore(deps) {
             state: 'building',
             builder: openid,
             generated_at: now,
+            /* 清掉上一轮（被抢占 / 中断的那一次）留下的中间结果：它属于旧的那次生成 */
+            parts: null,
             ...(typeof schemaVersion === 'number' ? { schemaVersion } : {})
           }
         })
@@ -157,7 +169,15 @@ module.exports = function createReportStore(deps) {
         const res = await db
           .collection('report_cache')
           .where(where)
-          .update({ data: { state: 'ready', builder: null, generated_at: str(row.report.generatedAt) || row.generated_at } })
+          .update({
+            data: {
+              state: 'ready',
+              builder: null,
+              generated_at: str(row.report.generatedAt) || row.generated_at,
+              /* 退回 ready 的这一次没生成完整报告，中间结果一并清掉（同端上 release） */
+              parts: null
+            }
+          })
         if (res && res.stats && res.stats.updated > 0) return { ok: true, result: 'restored' }
       } catch (err) {
         /* 退回失败不致命：下面的删行同样只动自己的锁；再失败还有 BUILDING_TIMEOUT_MS 兜底 */
@@ -226,12 +246,62 @@ module.exports = function createReportStore(deps) {
             generated_at: str(report.generatedAt) || new Date().toISOString(),
             builder: null,
             search_meta: { news_count: newsCount },
+            /* 成品落库，中间结果随之作废（顺带兜住「set 若是合并语义」的极端情况） */
+            parts: null,
             ...(typeof event.schemaVersion === 'number' ? { schemaVersion: event.schemaVersion } : {})
           }
         })
       return { ok: true, result: 'saved' }
     } catch (err) {
       return { ok: false, kind: 'upstream', error: `报告落库失败：${failDetail(err)}` }
+    }
+  }
+
+  /**
+   * 中间结果落库（P0-B，`op:'saveParts'`）：报告按模板分组拆成多次生成，每批成功即把**累计的
+   * 批次结果**写进 building 行的 `parts` 字段。三道校验：
+   *   · **持锁**：只有该行的 builder 能写（与 storeSave 同一依据）；
+   *   · **形状与体积**：parts 必须是数组、≤ PARTS_MAX_BYTES；
+   *   · **会员一致性**：任一批含会员段而调用者不是有效会员 ⇒ 拒绝（同 storeSave，别让中间结果
+   *     成为绕过写口写会员内容的侧门）。
+   * **刻意不判「只升不降」**：那是成品之间的比较，中间结果还没成型。
+   * 写 `parts` 用 where().update()（点路径只动这一个字段）：**不动 report / state**，
+   * 所以半成品永远不会被读者看到（读者只看 state / report）。
+   */
+  async function storeSaveParts(event, openid) {
+    const personKey = str(event.personKey)
+    if (!personKey) return bad('缺少 personKey')
+    if (personKey.length > MAX_KEY_LEN) return bad('personKey 过长')
+
+    const row = await readRow('report_cache', personKey)
+    if (!row || row.state !== 'building' || row.builder !== openid) {
+      return { ok: false, kind: 'lock', error: '未持有该人物的生成锁（或已被接管），拒绝写入中间结果' }
+    }
+
+    const parts = event.parts
+    if (!Array.isArray(parts)) return bad('parts 必须是数组')
+
+    const bytes = Buffer.byteLength(JSON.stringify(parts), 'utf8')
+    if (bytes > PARTS_MAX_BYTES) return bad(`中间结果体积超限（${bytes} > ${PARTS_MAX_BYTES} 字节）`)
+
+    if (!(await isActiveMember(openid))) {
+      const tricky = parts.some((part) => part && typeof part === 'object' && hasMemberPayload(part.data))
+      if (tricky) {
+        return { ok: false, kind: 'auth', error: '中间结果含会员专属段落，但当前账号不是有效会员，拒绝写入' }
+      }
+    }
+
+    try {
+      const res = await db
+        .collection('report_cache')
+        .where({ _id: personKey, builder: openid, state: 'building' })
+        .update({ data: { parts } })
+      const updated = res && res.stats ? res.stats.updated : 0
+      /* 锁刚好被接管 ⇒ 按 lock 交回（端上把它当 best-effort，不再重试这一条） */
+      if (updated === 0) return { ok: false, kind: 'lock', error: '中间结果写入时锁已被接管' }
+      return { ok: true, result: 'saved' }
+    } catch (err) {
+      return { ok: false, kind: 'upstream', error: `中间结果落库失败：${failDetail(err)}` }
     }
   }
 
@@ -270,8 +340,8 @@ module.exports = function createReportStore(deps) {
     if (!OPENID) return { ok: false, kind: 'auth', error: '缓存写口需要登录身份（未取到 openid）' }
 
     const op = event.op
-    if (op !== 'acquire' && op !== 'release' && op !== 'save' && op !== 'saveFeed') {
-      return bad(`未知 op：${op}（支持 acquire / release / save / saveFeed）`)
+    if (op !== 'acquire' && op !== 'release' && op !== 'save' && op !== 'saveParts' && op !== 'saveFeed') {
+      return bad(`未知 op：${op}（支持 acquire / release / save / saveParts / saveFeed）`)
     }
 
     /*
@@ -289,6 +359,7 @@ module.exports = function createReportStore(deps) {
     if (op === 'acquire') return storeAcquire(personKey, OPENID, event.schemaVersion)
     if (op === 'release') return storeRelease(personKey, OPENID)
     if (op === 'save') return storeSave(event, OPENID)
+    if (op === 'saveParts') return storeSaveParts(event, OPENID)
     return storeSaveFeed(event)
   }
 }

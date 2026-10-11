@@ -316,6 +316,17 @@ export const REPORT_FIELD_LIMITS = {
   /** 关系说明 */
   relationNoteChars: 40,
 
+  /**
+   * 时间线（P1，2026-10-11 补）：此前 timeline 是 sanitize 里**唯一**既不净化也不限量的段落，
+   * 模型原文直接落进全站共享缓存。理由与其余各段一致 —— 自由文本没有可白名单的锚点，只能收敛长度。
+   */
+  timelineMax: 8,
+  /** 日期：只该是 YYYY-MM-DD / YYYY-MM 这类刻度（10 字已满格）。它与 timelineMax 同值于
+   *  REPORT_QUOTAS.timelineMax 的「条数上限」—— 提示词里给的是目标条数，这里是裁剪线 */
+  timelineDateChars: 10,
+  /** 事件：一句话说清「什么时候发生了什么」，与 watch.what 同档 */
+  timelineEventChars: 60,
+
   /** 后续关注条数 */
   watchMax: 4,
   /** 时间点（「2026-11」这类已公布的**绝对刻度**，不是日期格式 —— 绝对刻度是端上判定过期的前提） */
@@ -358,6 +369,12 @@ export const REPORT_QUOTAS = {
   dynamicsMin: 3,
   dynamicsMax: 6,
   dynamicsTarget: 5,
+  /*
+   * ⚠ 「输出规模」这件事的落点不在这里，也不在 REPORT_FIELD_LIMITS，而在下面的
+   *   REPORT_OUTPUT_BUDGET + utils/report.ts#FIELD_OUTPUT_ESTIMATE（test/cases/20 校验）。
+   *   加字段 / 放条数之前先过一遍那份估算：区间放大 2 倍，撞 max_tokens 的概率不是 2 倍
+   *   —— 撞上就是整批 JSON 截断（见那边注释），那一批的卡片全空。
+   */
 
   /** quotes 条数 */
   quotesMin: 2,
@@ -382,10 +399,41 @@ export const REPORT_QUOTAS = {
 } as const
 
 /**
+ * 单次调用的**输出预算**（分批生成，2026-10-11 补）。
+ *
+ * 为什么需要它：报告是长 JSON，撞上 max_tokens 的下场不是「少写一点」，而是**整批截断**
+ * （JSON 解析失败 → 这一批的字段全空 → 页面上整块卡片直接消失，看起来像「素材不足」）。
+ * 分批之后每一批的输出规模**是可以算出来的**（字段条数上限 × 每条字数 + JSON 开销），
+ * 于是本表 + utils/report.ts#FIELD_OUTPUT_ESTIMATE 一起构成可静态校验的预算口径：
+ *   · test/cases/20 逐批估一遍，超线即红（改字段 / 放条数时就该撞在这一关，而不是线上）；
+ *   · 「预算」按 `chatMaxTokens × (1 − reasoningReserve)` 算，不是整个 max_tokens ——
+ *     推理模型的思考（reasoning_content）同样计入 max_tokens（见 aiProxy 的 reasoningChars 日志）。
+ *
+ * ⚠ chatMaxTokens 的**真源在云端**（cloudfunctions/{aiProxy,hotBoardRefresh}/llm.config.js 的
+ *   TIERS[].chatMaxTokens），本值是它的副本，由 test/cases/20 读那份文件核对 ——
+ *   两边漂移的话，这里的「余量」就是假的（端上以为还有一半，云端其实只给一半）。
+ */
+export const REPORT_OUTPUT_BUDGET = {
+  /** 与云端 TIERS[].chatMaxTokens 一致（用例 20 校验） */
+  chatMaxTokens: 8192,
+  /**
+   * 推理「思考」可能吃掉的份额：报告是长 JSON，思考一旦吃掉大半限额，正文就会被截断，
+   * 故单批正文的估算规模必须留在 `chatMaxTokens × (1 − 本值)` 以内。
+   * 取 0.4 是一次有意留宽的取舍：宁可逼着我们把字段写短、把批拆细，也不赌「这次没思考」。
+   */
+  reasoningReserve: 0.4,
+  /**
+   * 换算口径：保守取 1 字 ≈ 1 token（中文大致就是 1 字 1 token，英文与 URL 更省），
+   * 即估算出来的 token 数只会偏大 —— 校验宁可误报，也不要漏放一次截断。
+   */
+  charsPerToken: 1
+} as const
+
+/**
  * 检索厚度（utils/search.ts）。
  *
  * main / social 是**一次生成**的主线与社交支线，bg 是独立的人物背景线
- * （只捞不限时间的履历资料，见 utils/search.ts#BACKGROUND_QUERY_SUFFIX 的注释），
+ * （只捞不限时间的履历资料，关键词与时间语义见 utils/report-toc.ts#SEARCH_LANES 的 profile 路），
  * ask 是问答链路的补充检索。
  *
  * ⚠ 深度档（deep*）只在**报告生成路径**生效：报告是一次生成、长期缓存的资产，加厚一次长期受益；

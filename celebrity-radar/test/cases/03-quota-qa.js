@@ -652,6 +652,44 @@ describe('生成配额 utils/quota', () => {
     await load('utils/quota').consumeGenerateQuota('u1')
     eq(db.__dump('generate_quota')[0].count, 1)
   })
+
+  it('在途占位：已过闸门但还没落库的那一次先占住名额（P1，2026-10-11 防并发突破）', async () => {
+    const { db, load } = fresh()
+    const q = load('utils/quota')
+    seedCount(db, 'u1', 2) // 免费层上限 3，已用 2 ⇒ 只剩 1 次
+
+    eq((await q.peekGenerateQuota('u1')).allowed, true, '起点：还有 1 次可用')
+
+    /*
+     * 模拟「已通过闸门、还在生成」的那一次。这正是被突破的时机：这一笔必然要计数，
+     * 若 peek 不认它，用户在同一窗口里换个人物再点一次就会双双放行（抢锁按人物，拦不住）。
+     */
+    q.beginGenerateInflight('u1', '甲#tech', 60_000, 2)
+    const mid = await q.peekGenerateQuota('u1')
+    eq(mid.used, 2, 'used 仍是服务端真数 —— 占位不是计数')
+    eq(mid.remaining, 0, '在途的那一次必须先占住名额')
+    eq(mid.allowed, false, '同窗口内再发起一次必须被挡住')
+
+    /* 过期占位读时即被剪掉：构建者进程被杀是唯一的兜底路径，不得把用户永久挡在门外 */
+    const fresh2 = load('utils/quota')
+    fresh2.beginGenerateInflight('u1', '乙#tech', -1, 2)
+    eq((await q.peekGenerateQuota('u1')).remaining, 0, '过期的乙不额外占名额（甲仍有效）')
+  })
+
+  it('在途占位：计费一推进就自动失效，不会重复扣（成功路径无需任何显式撤销）', async () => {
+    const { db, load } = fresh()
+    const q = load('utils/quota')
+    seedCount(db, 'u1', 1)
+
+    q.beginGenerateInflight('u1', '丙#tech', 60_000, 1)
+    eq((await q.peekGenerateQuota('u1')).remaining, 1, '在途时占住一个名额（上限 3 - 已用 1 - 占位 1）')
+
+    await q.consumeGenerateQuota('u1') // 这一次真的落了库
+
+    const done = await q.peekGenerateQuota('u1')
+    eq(done.used, 2, '计数已推进')
+    eq(done.remaining, 1, '占位自动失效：不得在这次真实计数之上再扣一个名额')
+  })
 })
 
 /* --------------------------------------------- 问答闸门与计数 utils/qa */
@@ -1635,10 +1673,10 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
 
   it('会员段落的提示词只往会员的 system 末尾追加，免费提示词逐字节不变', async () => {
     const { db, load } = fresh()
-    let seen = null
+    let calls = []
     /* 模拟真实模型行为：只有被要求时才输出 memberNotes */
     env.registerCloudFn('aiProxy', (data) => {
-      seen = data
+      calls.push(data)
       const asked = data.messages[0].content.includes('会员补充要求')
       const body = asked
         ? { intro: 'x', memberNotes: { compare: '对比视角', risk: '风险提示' } }
@@ -1647,16 +1685,32 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
     })
 
     const news = newsItems(3)
-    const free = await load('utils/report').buildReport('甲#tech', '甲', news, 'all')
-    const freeSystem = seen.messages[0].content
-    notOk(freeSystem.includes('memberNotes'), '免费提示词不该出现会员段落（也就不白付这两段的 token）')
+    const report = load('utils/report')
+    const free = await report.buildReport('甲#tech', '甲', news, 'all')
+    /* 分批生成：一次 buildReport = 报告模板的每一组发一次调用（逐批比对，见下） */
+    const freeSystems = calls.map((c) => c.messages[0].content)
+    eq(freeSystems.length, report.REPORT_BATCHES.length, '一次生成 = 按报告模板分组的一批一次调用')
+    eq(freeSystems.length, 4, '模板共 4 组（identity / facts / judgement / detail）⇒ 4 批；改分组时这条要跟着改')
+    ok(
+      freeSystems.every((s) => !s.includes('memberNotes')),
+      '免费提示词不该出现会员段落（也就不白付这两段的 token）'
+    )
     eq(free.data.memberNotes, undefined, '免费报告恒无会员段落')
 
     seedMember(db)
-    const paid = await load('utils/report').buildReport('甲#tech', '甲', news, 'all', { member: true })
-    const memberSystem = seen.messages[0].content
-    ok(memberSystem.startsWith(freeSystem), '会员提示词 = 免费提示词 + 追加，而不是另起一套')
-    ok(memberSystem.includes('会员补充要求'), '应追加 O-11 的会员段要求')
+    calls = []
+    const paid = await report.buildReport('甲#tech', '甲', news, 'all', { member: true })
+    const memberSystems = calls.map((c) => c.messages[0].content)
+    eq(memberSystems.length, freeSystems.length, '会员不多加调用：只是同一批里多要两段')
+    for (let i = 0; i < memberSystems.length; i++) {
+      ok(
+        memberSystems[i].startsWith(freeSystems[i]),
+        `第 ${i + 1} 批：会员提示词 = 免费提示词 + 追加，而不是另起一套`
+      )
+    }
+    /* 会员补充只叠在承载会员段的那一批上：否则等于每批都为这两段白付 token */
+    ok(memberSystems.some((s) => s.includes('会员补充要求')), '应追加 O-11 的会员段要求')
+    ok(!memberSystems.every((s) => s.includes('会员补充要求')), '会员补充不该在每一批里重复一遍')
     eq(paid.data.memberNotes.compare, '对比视角', 'schema 必须声明 memberNotes，否则 zod 会静默丢弃')
     eq(paid.data.memberNotes.risk, '风险提示')
   })
@@ -1833,16 +1887,29 @@ describe('报告质量（素材分级保留 / 点评拆条 / 信源分歧）', (
       })
     )
 
-  /** 跑一次 buildReport，把真正发给模型的两条消息正文取回来 */
+  /**
+   * 跑一次 buildReport，把真正发给模型的各批消息正文取回来。
+   * 分批生成（P0-B）后一次 buildReport 会按报告模板分组发**多批**调用，所以除了「最后一批」的
+   * system / user（多数用例只关心素材选取，各批的素材段一致），还把 systems / users 全量给出，
+   * 供「某个字段 / 某段要求属于哪一批」的用例逐批比对。
+   */
   const buildMessages = async (news, member = false) => {
     const { load } = fresh()
-    let seen = null
+    const calls = []
     env.registerCloudFn('aiProxy', (data) => {
-      seen = data
+      calls.push(data)
       return { ok: true, content: JSON.stringify({ intro: 'x' }) }
     })
     await load('utils/report').buildReport('甲#tech', '甲', news, 'all', member ? { member: true } : {})
-    return { system: seen.messages[0].content, user: seen.messages[1].content }
+    const systems = calls.map((c) => c.messages[0].content)
+    const users = calls.map((c) => c.messages[1].content)
+    return {
+      system: systems[systems.length - 1],
+      user: users[users.length - 1],
+      systems,
+      users,
+      batches: systems.length
+    }
   }
 
   const countOf = (s, sub) => s.split(sub).length - 1
@@ -2144,14 +2211,18 @@ describe('报告质量（素材分级保留 / 点评拆条 / 信源分歧）', (
         content: '重复正文'.repeat(100)
       })
     ])
-    const { system: freeSystem, user: freeUser } = await buildMessages(news)
-    const { system: paidSystem, user: paidUser } = await buildMessages(news, true)
+    const free = await buildMessages(news)
+    const paid = await buildMessages(news, true)
 
-    notOk(freeSystem.includes('conflicts'), '免费提示词不该出现会员段')
-    notOk(freeUser.includes('conflicts'), '免费提示词不该出现会员段')
-    ok(paidSystem.startsWith(freeSystem), '会员提示词仍是「免费 + 追加」，不另起一套')
-    ok(paidSystem.includes('conflicts'), '会员应被要求输出信源分歧')
-    eq(paidUser, freeUser, '素材选取只取决于素材本身，与会员身份无关（预算够时两者逐字相同）')
+    /* 会员段只叠在承载它的那一批上 ⇒ 判「免费里没有、会员里有」要看**全部批次** */
+    ok(!free.systems.some((s) => s.includes('conflicts')), '免费提示词不该出现会员段')
+    ok(!free.users.some((u) => u.includes('conflicts')), '免费提示词不该出现会员段')
+    ok(paid.systems.some((s) => s.includes('conflicts')), '会员应被要求输出信源分歧')
+    eq(paid.batches, free.batches, '会员与免费的批数一致（会员只多要内容，不多加调用）')
+    for (let i = 0; i < paid.batches; i++) {
+      ok(paid.systems[i].startsWith(free.systems[i]), `第 ${i + 1} 批：会员提示词仍是「免费 + 追加」，不另起一套`)
+      eq(paid.users[i], free.users[i], '素材选取只取决于素材本身，与会员身份无关（预算够时两者逐字相同）')
+    }
   })
 })
 
@@ -2182,16 +2253,19 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
       newsItem({ title: `报道${i}某影星相关消息`, url: `https://example.com/${i}` })
     )
 
-  /** 跑一次 buildReport，取回真正发给模型的两条消息正文 */
+  /** 跑一次 buildReport，取回真正发给模型的**各批**消息正文（分批生成见上面的用例） */
   const buildMessages = async (news, member = false) => {
     const { load } = fresh()
-    let seen = null
+    const calls = []
     env.registerCloudFn('aiProxy', (data) => {
-      seen = data
+      calls.push(data)
       return { ok: true, content: JSON.stringify({ intro: 'x' }) }
     })
     await load('utils/report').buildReport('甲#tech', '甲', news, 'all', member ? { member: true } : {})
-    return { system: seen.messages[0].content, user: seen.messages[1].content }
+    return {
+      systems: calls.map((c) => c.messages[0].content),
+      users: calls.map((c) => c.messages[1].content)
+    }
   }
 
   /** sanitizeReport 的最小入参骨架 */
@@ -2203,14 +2277,18 @@ describe('报告第二批（人物档案 / 关系图谱 / 后续关注 / 名词�
 
   it('五段（及 verdict / reputation / consistency）都进免费提示词：会员拿到的是「免费 + 追加」', async () => {
     const news = distinct(2)
-    const { system: freeSystem } = await buildMessages(news)
-    const { system: paidSystem } = await buildMessages(news, true)
+    const free = await buildMessages(news)
+    const paid = await buildMessages(news, true)
 
+    /* 分批生成：每个字段归某一批，「进没进提示词」的判据是**某一批**的 system 里有它 */
     for (const key of ['profile', 'relations', 'watchlist', 'glossary', 'controversies', 'verdict', 'reputation', 'consistency']) {
-      ok(freeSystem.includes(key), `免费提示词应要求输出 ${key}（它对免费用户同样是核心信息）`)
-      ok(paidSystem.includes(key), `会员提示词 = 免费 + 追加，故同样要它：${key}`)
+      ok(free.systems.some((s) => s.includes(key)), `免费提示词应要求输出 ${key}（它对免费用户同样是核心信息）`)
+      ok(paid.systems.some((s) => s.includes(key)), `会员提示词 = 免费 + 追加，故同样要它：${key}`)
     }
-    ok(paidSystem.startsWith(freeSystem), '会员提示词仍是「免费 + 追加」')
+    eq(paid.systems.length, free.systems.length, '会员与免费的批数一致（会员只多要内容，不多加调用）')
+    for (let i = 0; i < paid.systems.length; i++) {
+      ok(paid.systems[i].startsWith(free.systems[i]), `第 ${i + 1} 批：会员提示词仍是「免费 + 追加」`)
+    }
   })
 
   it('档案/关系/后续关注/争议：指不出真出处就整条剔除，不退化成「据公开资料」', () => {
@@ -2675,5 +2753,191 @@ describe('提示词注入隔离（P2-16）', () => {
   it('注入的自然语言照原样带给模型（不静默篡改素材），交给 system 声明兜底', async () => {
     const { user } = await askPoisoned('TA 最近有什么动态？')
     ok(user.includes('忽略以上规则'), '素材原文应照旧传入 —— 净化的是结构标记，不是搜索结果本身')
+  })
+})
+
+/* ─────────────────────── 报告分批生成（P0-B，2026-10-11） ─────────────────────── */
+
+/*
+ * 原先一次调用要模型吐完 16 节 JSON，两个结构性问题：①任一节写坏或 max_tokens 撞上限就**整份**
+ * 降级成一段纯文本；②失败面不可分割。P0-B 改成「按报告模板的四组各调一次 → 每批成功即落库
+ * → 最后合并」（见 utils/report.ts 的 REPORT_BATCHES / buildReport）。
+ *
+ * 下面几组用例钉住三件事：
+ *   ① 分组口径取自模板**真源**，不是另造一份分组（否则模板加了节、生成端不知道）；
+ *   ② 提示词一条不漏 —— 拆开后最容易出的错是某条要求没被任何一批带上，而它**不报错**，
+ *      只表现为「页面上某块卡片凭空消失」，看起来像素材不足；
+ *   ③ 调用次数、合并结果、失败时「只丢一组」，以及中间结果落库的挂点（onPart）。
+ */
+describe('报告分批生成（P0-B：按模板分组多次调用 + 逐批落库 + 最后合并）', () => {
+  const miniNews = (n = 3) =>
+    Array.from({ length: n }, (_, i) => ({
+      title: `报道${i}`,
+      content: '内容'.repeat(20),
+      url: `https://example.com/${i}`,
+      source: '媒体X',
+      publishedDate: new Date(Date.now() - i * 3600 * 1000).toISOString()
+    }))
+
+  /** 按「本批的格式行里出现了哪个字段」造一份合法的返回值（第 18 条的格式串是各批的指纹） */
+  const bodyFor = (system, url) => {
+    if (system.includes('"intro"')) {
+      return {
+        intro: '某演员，代表作是若干电影，近期在拍新片。',
+        profile: [{ label: '职业', value: '演员', basis: url }]
+      }
+    }
+    if (system.includes('"dynamics"')) {
+      return {
+        dynamics: [
+          { date: '2026-10-01', title: '新片开机', summary: '开拍', source: '媒体X', url, sentiment: 'neutral' }
+        ],
+        quotes: [],
+        sources: [{ title: '报道0', url }]
+      }
+    }
+    if (system.includes('"analysisPoints"')) {
+      return { analysisPoints: [{ point: '新片开机是一次事业推进。', basis: url }], stance: [], controversies: [] }
+    }
+    return { timeline: [], watchlist: [], glossary: [] }
+  }
+
+  it('批次与模板分组一一对应：顺序一致、节的归属由模板派生、合起来恰好是全部节', () => {
+    const { load } = fresh()
+    const report = load('utils/report')
+    const toc = load('utils/report-toc')
+
+    deepEq(
+      report.REPORT_BATCHES.map((b) => b.key),
+      toc.TOC_GROUPS.map((g) => g.key),
+      '批次顺序 = 模板分组顺序（也就是页面目录与卡片的顺序）'
+    )
+
+    for (const batch of report.REPORT_BATCHES) {
+      const ids = toc.REPORT_TEMPLATE.filter((s) => s.group === batch.key).map((s) => s.id)
+      deepEq(batch.sectionIds, ids, `${batch.key} 的节必须由 REPORT_TEMPLATE 派生，不能另写一份`)
+    }
+    deepEq(
+      report.REPORT_BATCHES.flatMap((b) => b.sectionIds),
+      toc.REPORT_TEMPLATE.map((s) => s.id),
+      '四批的节合起来 = 模板全部节，且顺序一致、不重不漏'
+    )
+  })
+
+  it('拆批后要求池仍一条不漏：1、14 两条全局条每批都带，其余各由恰好一批认领', () => {
+    const { load } = fresh()
+    const report = load('utils/report')
+
+    /* 池里的条号（第 15 条「写满」由每批的 ruleFill 注入、第 18 条是格式行、第 1/14 条在共用段，
+       故这三处不在 ruleIds 里，见 utils/report.ts 的 BATCH_SPEC）。
+       第 5 条（sources 清单）已删除、条号不补位：那片清单改由端上从报告真引用到的素材派生
+       （见 utils/report.ts 的「来源清单」段），模型不再抄 N 条 URL —— 那是 facts 批最大的一块输出，
+       而且条数随素材数增长、预算封不住。 */
+    const claimed = report.REPORT_BATCHES.flatMap((b) => b.ruleIds)
+    deepEq(
+      claimed.slice().sort((a, b) => a - b),
+      [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 16, 17],
+      '池里每一条都必须被某一批认领 —— 漏掉不报错，只会让模型少写一整块内容'
+    )
+    eq(new Set(claimed).size, claimed.length, '同一条要求不该被两批重复下发（白费 token，还可能自相矛盾）')
+
+    for (const batch of report.REPORT_BATCHES) {
+      const system = report.buildReportSystem(batch, 'all', false)
+      ok(system.includes('1. 仅基于素材作答，不编造日期与来源。'), `${batch.key}：第 1 条是全局条，每批都要带`)
+      ok(
+        system.includes('14. 若素材显示该人物属政治、军事类敏感人物'),
+        `${batch.key}：第 14 条（拒答）必须每批都带 —— 任一批返回 {"refused":true} 整份按拒答处理`
+      )
+      notOk(system.includes('__本批字段__'), '第 15 条的字段占位符必须已按批替换')
+      ok(system.includes(batch.fields.join(' / ')), '第 15 条要逐字列出本批字段，模型才知道本批要写什么')
+      notOk(system.includes('"memberNotes"'), '免费提示词不该出现会员段（免费也不该为它付 token）')
+    }
+  })
+
+  it('会员补充只追加在承载它的那一批末尾，免费段逐字节不变', () => {
+    const { load } = fresh()
+    const report = load('utils/report')
+    const free = report.REPORT_BATCHES.map((b) => report.buildReportSystem(b, 'all', false))
+    const paid = report.REPORT_BATCHES.map((b) => report.buildReportSystem(b, 'all', true))
+    const carrier = report.REPORT_BATCHES.findIndex((b) => b.memberFields)
+
+    ok(carrier >= 0, '前提：应有一批承载会员字段')
+    for (let i = 0; i < free.length; i++) {
+      ok(paid[i].startsWith(free[i]), `第 ${i + 1} 批：会员 system 必须是「免费 system + 末尾追加」，而不是另起一套`)
+    }
+    eq(
+      paid.filter((s) => s.includes('会员补充要求')).length,
+      1,
+      '会员补充只追加一次 —— 每批都追加等于白付三遍这段 token'
+    )
+    eq(
+      paid.findIndex((s) => s.includes('会员补充要求')),
+      carrier,
+      '追加在承载会员字段的那一批上（其余批连会员段的字都不该出现）'
+    )
+
+    /* 提示词里那两段由 MEMBER_HINT_REALTIME 末尾点名，但**契约必须单独声明** ——
+       zod 的非严格对象会把未声明的键静默丢弃，即「要了却落不了库」（这正是 REPORT_FIELDS 存在的意义） */
+    const judged = report.REPORT_BATCHES[carrier]
+    const notes = { memberNotes: { compare: 'x', risk: 'y' } }
+    eq(
+      report.batchSchema(judged, false).safeParse(notes).data.memberNotes,
+      undefined,
+      '免费契约不含 memberNotes ⇒ 即便出现也会被丢弃'
+    )
+    eq(
+      report.batchSchema(judged, true).safeParse(notes).data.memberNotes.compare,
+      'x',
+      '会员契约必须声明 memberNotes，否则会员段落不了库'
+    )
+  })
+
+  it('一次生成 = 每批各一次调用，各批字段合并成完整报告', async () => {
+    const { load } = fresh()
+    const url = miniNews()[0].url
+    const calls = []
+    env.registerCloudFn('aiProxy', (data) => {
+      calls.push(data)
+      return { ok: true, content: JSON.stringify(bodyFor(data.messages[0].content, url)) }
+    })
+
+    const res = await load('utils/report').buildReport('甲#tech', '甲', miniNews(), 'all')
+
+    eq(calls.length, 4, '按模板四组各调一次（不再一次要 16 节）')
+    eq(res.ok, true)
+    eq(res.data.mode, 'realtime')
+    notOk(res.data.degraded, '四批都成功时不该降级')
+    eq(res.data.profile.length, 1, 'identity 批的字段进了报告')
+    eq(res.data.profile[0].value, '演员')
+    eq(res.data.dynamics.length, 1, 'facts 批的字段进了报告')
+    eq(res.data.analysisPoints.length, 1, 'judgement 批的字段进了报告')
+    deepEq(res.data.watchlist, [], 'detail 批的字段进了报告（空数组同样是合并的结果）')
+  })
+
+  it('某一批失败只丢那一组：其余批照常合并，且每批成功都回调一次（中间结果落库的挂点）', async () => {
+    const { load } = fresh()
+    const url = miniNews()[0].url
+    const parts = []
+    env.registerCloudFn('aiProxy', (data) => {
+      const system = data.messages[0].content
+      if (system.includes('"dynamics"')) return { ok: false, error: '上游 500', retryable: true }
+      return { ok: true, content: JSON.stringify(bodyFor(system, url)) }
+    })
+
+    const res = await load('utils/report').buildReport('甲#tech', '甲', miniNews(), 'all', {
+      onPart: (p) => {
+        parts.push(p.map((x) => x.key))
+      }
+    })
+
+    eq(res.ok, true, '只剩一批失败时不该整份降级成纯文本 —— 这正是拆批的目的')
+    notOk(res.data.degraded)
+    deepEq(res.data.dynamics, [], '失败那一组的字段没进报告（报告页据此不出「近期动态」卡）')
+    eq(res.data.profile.length, 1, '其余组照常合并')
+    deepEq(
+      parts,
+      [['identity'], ['identity', 'judgement'], ['identity', 'judgement', 'detail']],
+      '每批成功即回调一次，且收到的是**累计**结果（落库按它整体覆盖写入）'
+    )
   })
 })

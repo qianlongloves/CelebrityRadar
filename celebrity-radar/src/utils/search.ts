@@ -4,6 +4,8 @@ import { diagLog } from './cloud-diagnostics'
 import { callCloudFunction, isCloudConfigured } from './cloud'
 import { SEARCH_COUNTS } from '../config/benefits'
 import { cleanText } from './text'
+/* 关键词与站点白名单的唯一真源：报告模板的分组声明（见 utils/report-toc.ts#SEARCH_LANES） */
+import { SEARCH_LANES, SearchLane } from './report-toc'
 
 /** 检索结果条目（附录 A） */
 export interface NewsItem {
@@ -236,14 +238,28 @@ async function requestChannel(params: SearchParams): Promise<NewsItem[] | null> 
   throw new Error(lastError)
 }
 
-/**
- * 社交源站点白名单（§1.4 V1.5「动态多域名源过滤」）。
- *
- * 单条 query 的排序权完全在上游：门户转载的标题更「新闻体」，常把本人微博 / 知乎长文
- * 挤到十名开外，而名人的一手发声恰恰在后者。这里补一路限定站点的检索把社交源单独捞一遍。
- * 只列域名、不往 request 合法域名里加东西 —— 过滤发生在博查服务端。
+/*
+ * 三条检索路（近期主线 / 社交一手发声 / 人物背景线）的**关键词与站点白名单都写在报告模板里**
+ * （utils/report-toc.ts#SEARCH_LANES）：模板才是「报告由哪些节组成」的真源，素材需求随之。
+ * 本文件一个关键词字面量都不留 —— 否则模板加了节、关键词还停在旧句子上，症状是
+ * 「新节的素材从没被查过」，而页面上「没查」与「查了没有」长得一模一样。
+ * 这里只取引用（且取的是**对象本身**，不在模块初始化时抽出字符串，测试才能改模板验证）。
  */
-const SOCIAL_SITES = ['weibo.com', 'zhihu.com', 'bilibili.com', 'xiaohongshu.com']
+const NEWS_LANE = SEARCH_LANES.news
+const SOCIAL_LANE = SEARCH_LANES.social
+const PROFILE_LANE = SEARCH_LANES.profile
+
+/**
+ * 按模板声明的路取博查 freshness 档。
+ *
+ * `evergreen` 路固定 noLimit（履历不随时间变，窗口越窄越搜不到）；`recent` 路把天数交给
+ * 调用方的阶梯（fetchNews 逐档放宽，见 SEARCH_COUNTS.mainFreshnessLadderDays）。
+ * 默认值给最宽的一年：万一哪条路被改成 recent 却没人传天数，宁可宽一点也别窄到搜不到。
+ */
+function laneFreshness(lane: SearchLane, days = 365): string {
+  return lane.freshness === 'evergreen' ? 'noLimit' : freshnessOf(days)
+}
+
 /* 主线 / 支线 / 深度档条数：数值在 config/benefits.ts 的 SEARCH_COUNTS（改那里即改策略） */
 /** 支线条数：够补齐社交维度即可，不为支线付主线的检索成本 */
 const SOCIAL_COUNT = SEARCH_COUNTS.socialCount
@@ -260,19 +276,6 @@ const MAIN_COUNT = SEARCH_COUNTS.mainCount
  */
 export const DEEP_MAIN_COUNT = SEARCH_COUNTS.deepMainCount
 export const DEEP_SOCIAL_COUNT = SEARCH_COUNTS.deepSocialCount
-
-/**
- * 人物背景线（2026-10-10，P1「检索拆路」）：一次生成只发一条「近期新闻」主线，答不了
- * 「人物档案 / 关系图谱 / 时间线」这几个字段 —— 出生地、学历、履历、生平节点**不进新闻流**，
- * 30 天窗里天然搜不到，于是这几节常年为空。
- *
- * 故单独开一路，只做一件事：用 noLimit（不限时间）捞公开的人物背景资料。
- *   · freshness 取 noLimit 而不是 oneMonth：履历不随时间变，窗口越窄越搜不到；
- *   · 与主线**分开成两个调用**（而不是一个 query 里堆关键词）：主线要保持「近期」这个语义，
- *     混进旧闻会让 dynamics（近期动态）被年代久远的事件污染 —— 那是最核心的一节。
- * 代价：每次生成多一次检索调用（免费 2 路、会员 3 路），调用点见 utils/cache.ts。
- */
-const BACKGROUND_QUERY_SUFFIX = '个人资料 简介 出生地 学历 经历'
 
 /* 背景线条数：数值在 config/benefits.ts 的 SEARCH_COUNTS（改那里即改策略） */
 /** 免费档背景线条数：够补出档案与时间线即可，不为「一次生成」付两次深度检索的钱 */
@@ -320,13 +323,13 @@ export async function fetchNews(
   /*
    * 主线走**降级阶梯**（2026-10-10）：一档抓空就试下一档，直到有内容为止。
    *
-   * 为什么：此前只有单档（`人名 近期 新闻 动态 言论` @ 30 天），而冷门 / 低产名人的报道常是
+   * 为什么：此前只有单档（「人名 + 模板 news 路的句式」@ 30 天），而冷门 / 低产名人的报道常是
    * 「半年内有过、近 30 天没有」—— 单档配置下直接空手而归，用户看到「暂未检索到公开信息」。
    * 对**付费**用户尤其不可接受：他买的就是「查得到」。
    *
    * 各档的取舍：
    *   ① 原句式 + 原时间窗（绝大多数人物在这一档就结束，命中率最高）；
-   *   ② **去掉后缀只留人名** —— 博查对「张三」的人名召回常好于「张三 近期 新闻 动态 言论」，
+   *   ② **去掉后缀只留人名** —— 博查对纯人名的召回常好于「人名 + 后缀词」，
    *      后缀词把排序拉向「新闻体」标题，反而会挤掉一手内容；
    *   ③ 放宽到一年（天数值见 config/benefits.ts 的 SEARCH_COUNTS.mainFreshnessLadderDays）。
    *
@@ -337,10 +340,10 @@ export async function fetchNews(
   const ladder = SEARCH_COUNTS.mainFreshnessLadderDays
   let main: NewsItem[] = []
   for (let i = 0; i < ladder.length; i++) {
-    /* 第一档用调用方给的时间窗（days），之后按阶梯放宽 */
+    /* 第一档用调用方给的时间窗（days），之后按阶梯放宽；句式取自模板的 news 路 */
     const pages = await requestChannel({
-      query: i === 0 ? `${name} 近期 新闻 动态 言论` : name.trim(),
-      freshness: freshnessOf(i === 0 ? days : ladder[i]),
+      query: i === 0 ? `${name} ${NEWS_LANE.keywords}` : name.trim(),
+      freshness: laneFreshness(NEWS_LANE, i === 0 ? days : ladder[i]),
       count
     })
     /* null = 通道未就绪（不是「抓空了」）：换句式也一样，交回调用方走 coldstart */
@@ -354,10 +357,11 @@ export async function fetchNews(
   if (socialCount <= 0) return mergeNews([main, null])
 
   const social: SearchParams = {
-    query: `${name} 近期 动态`,
-    freshness: freshnessOf(days),
+    query: `${name} ${SOCIAL_LANE.keywords}`,
+    freshness: laneFreshness(SOCIAL_LANE, days),
     count: socialCount,
-    include: SOCIAL_SITES
+    /* 站点白名单同样取自模板；没声明就整条不传（传空数组会被上游读成「一个站都不许」） */
+    ...(SOCIAL_LANE.include && SOCIAL_LANE.include.length > 0 ? { include: SOCIAL_LANE.include } : {})
   }
 
   /* 支线是「锦上添花」：失败一律吞掉，主线才是判据（见函数头注释） */
@@ -376,6 +380,8 @@ export async function fetchNews(
  *   · fetchNews —— 「近期」语义（freshness 30 天），用户消息里的「素材」段，喂动态 / 名言 / 争议；
  *   · 本函数 —— 「不限时间」语义（noLimit），用户消息里单独的「人物背景资料」段，喂档案 / 关系 / 履历。
  * 拿近期窗口去找出生地、学历，等于用错尺子（这也正是这几节此前常年为空的原因）。
+ * 句式与时间语义都取自模板的 profile 路（utils/report-toc.ts#SEARCH_LANES）：它是
+ * 「履历不进新闻流」这件事的声明处，改关键词去那一处改，本文件不留字面量。
  *
  * 降级语义：`count <= 0` 返回空数组（调用方完全不启用这一路）；
  * 通道未就绪返回 null；请求失败一律吞掉返回 null —— 背景线是**补充**，主线才是判据，
@@ -386,8 +392,8 @@ export async function fetchBackground(name: string, count: number): Promise<News
   if (want <= 0) return []
   try {
     return await requestChannel({
-      query: `${name} ${BACKGROUND_QUERY_SUFFIX}`,
-      freshness: 'noLimit',
+      query: `${name} ${PROFILE_LANE.keywords}`,
+      freshness: laneFreshness(PROFILE_LANE),
       count: want
     })
   } catch (err) {

@@ -157,6 +157,11 @@ const collections = [
       f('state', 'string', { required: true, enumHint: ['building', 'ready'] }),
       f('builder', 'string?', { required: true }),
       f('search_meta', 'object?', { def: null }),
+      /* 分批生成的中间结果（P0-B，2026-10-11；写口 `op:'saveParts'`）。
+         元素 = `{ key: 'identity'|'facts'|'judgement'|'detail', data: {…该批字段} }`。
+         只在「正在按批生成」的空窗里有值：acquire 清空、save/release 一并清掉，
+         故 def 为 null；它不参与任何读取判定，纯粹用于排障与「不白费已花的 token」。 */
+      f('parts', 'array?', { def: null }),
       /* 报告 Schema 版本（前置项，2026-10-09；取值见 src/utils/report.ts#REPORT_SCHEMA_VERSION）。
          **故意不给 def**：缺失 = 版本未知的老报告，读取方按 1 处理。若在这里 def 成当前版本，
          巡检回填会把第一批的老报告一并标成新版本，这个字段就失去意义了。 */

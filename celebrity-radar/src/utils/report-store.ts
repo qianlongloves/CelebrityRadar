@@ -80,7 +80,8 @@ export async function acquireLockViaCloud(
 
 /**
  * 放锁（best-effort）。`rejected` 也按「已处理」返回：锁没放掉最坏是让该行
- * 以 `building` 残留到 `BUILDING_TIMEOUT_MS`（90s）后由他人抢占，不该为此去绕过写口。
+ * 以 `building` 残留到 `BUILDING_TIMEOUT_MS` 后由他人抢占（值见 src/utils/cache.ts，按分批数量推导），
+ * 不该为此去绕过写口。
  */
 export async function releaseLockViaCloud(personKey: string): Promise<'done' | 'unavailable'> {
   const reply = await callStore({ op: 'release', personKey })
@@ -100,6 +101,23 @@ export async function saveReportViaCloud(
     newsCount,
     schemaVersion: REPORT_SCHEMA_VERSION
   })
+  if (reply.kind === 'ok' && reply.result === 'saved') return 'saved'
+  if (reply.kind === 'rejected') return 'rejected'
+  return 'unavailable'
+}
+
+/**
+ * 中间结果落库（P0-B）：报告按模板分组拆成多次生成，每批成功即把**迄今累计的批次结果**
+ * 写进 building 行的 `parts` 字段（不改 state，不写 report，不影响前面的 acquire）。
+ *
+ * 与 saveReportViaCloud 的差别只有「写什么」：这里不判「只升不降」（还没成型，谈不上降级），
+ * 但同样要求**持有这把锁**（云端按 builder 判定），所以仍走写口、仍不回退已明确拒绝的请求。
+ */
+export async function saveReportPartsViaCloud(
+  personKey: string,
+  parts: unknown
+): Promise<'saved' | 'rejected' | 'unavailable'> {
+  const reply = await callStore({ op: 'saveParts', personKey, parts })
   if (reply.kind === 'ok' && reply.result === 'saved') return 'saved'
   if (reply.kind === 'rejected') return 'rejected'
   return 'unavailable'
