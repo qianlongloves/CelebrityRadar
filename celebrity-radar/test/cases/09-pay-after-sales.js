@@ -651,7 +651,43 @@ function fakeHttps(responses) {
       return req
     }
   }
-  return { module, calls }
+  /*
+   * 云开发 AI 通道（2026-10-11 起大模型不再走 https，改走 wx-server-sdk 的 cloud.ai）：
+   * 与假 https **共用同一个响应队列**（顺序 = 真实调用顺序），请求体记进 calls[].body。
+   * hotBoardRefresh 的定时生成用 generateText（cron 不需要 finish_reason），故只实现它。
+   */
+  const ai = () => ({
+    createModel: () => ({
+      async generateText(payload) {
+        calls.push({ path: 'cloud.ai', body: payload })
+        const r = responses.length ? responses.shift() : { status: 200, data: {} }
+        let body = r.data
+        if (typeof body === 'string') {
+          try {
+            body = JSON.parse(body)
+          } catch (e) {
+            body = {}
+          }
+        }
+        const status = r.status || 0
+        const upstreamError = body && body.error
+        if (status >= 400 || upstreamError) {
+          const detail =
+            (upstreamError && (upstreamError.message || upstreamError.code)) ||
+            (typeof body.message === 'string' && body.message) ||
+            ''
+          const err = new Error(`${status || 'upstream'}${detail ? ` ${detail}` : ''}`)
+          err.status = status
+          err.statusCode = status
+          throw err
+        }
+        const choice = (body.choices && body.choices[0]) || {}
+        const message = choice.message || {}
+        return { text: typeof message.content === 'string' ? message.content : '', usage: { total_tokens: 1 } }
+      }
+    })
+  })
+  return { module, calls, ai }
 }
 
 const searchOk = (n = 2) => ({
@@ -691,6 +727,8 @@ function loadTimerFnWithHttps(name, responses, opts) {
     DYNAMIC_CURRENT_ENV: 'test-env',
     init() {},
     database: () => db,
+    /* 云开发 AI：hotBoardRefresh 生成热榜解读走这条（http 在下方创建，闭包到调用时才求值） */
+    ai: () => http.ai(),
     getWXContext: () => ({}),
     openapi: {
       subscribeMessage: {
@@ -1010,7 +1048,7 @@ describe('P2-32 热榜构建锁', () => {
 
   it('锁被持有（新鲜的 building 行）：本轮直接让出，一次上游都不打', async () => {
     const { fn, calls } = loadTimerFnWithHttps('hotBoardRefresh', [], {
-      env: { BOCHA_API_KEY: 'bocha-test', QWEN_API_KEY: 'llm-test' }
+      env: { BOCHA_API_KEY: 'bocha-test' }
     })
     env.db.__seed('hot_board', [{ _id: 'building', at: new Date().toISOString() }])
 
@@ -1028,7 +1066,7 @@ describe('P2-32 热榜构建锁', () => {
       chatOk(JSON.stringify({ items: hotItems() }))
     ]
     const { fn } = loadTimerFnWithHttps('hotBoardRefresh', responses, {
-      env: { BOCHA_API_KEY: 'bocha-test', QWEN_API_KEY: 'llm-test' }
+      env: { BOCHA_API_KEY: 'bocha-test' }
     })
     env.db.__seed('hot_board', [{ _id: 'building', at: ago(10 * 60 * 1000) }])
 
@@ -1059,7 +1097,7 @@ describe('P2-32 热榜构建锁', () => {
       .replace(/\}/g, '｝')
 
     const { fn } = loadTimerFnWithHttps('hotBoardRefresh', [...Array.from({ length: 12 }, () => searchOk(3)), chatOk(raw)], {
-      env: { BOCHA_API_KEY: 'bocha-test', QWEN_API_KEY: 'llm-test' }
+      env: { BOCHA_API_KEY: 'bocha-test' }
     })
     env.db.__seed('hot_board', [{ _id: 'building', at: ago(10 * 60 * 1000) }])
 
@@ -1081,7 +1119,7 @@ describe('P2-32 热榜构建锁', () => {
     const raw = JSON.stringify([{ items }])
 
     const { fn } = loadTimerFnWithHttps('hotBoardRefresh', [...Array.from({ length: 12 }, () => searchOk(3)), chatOk(raw)], {
-      env: { BOCHA_API_KEY: 'bocha-test', QWEN_API_KEY: 'llm-test' }
+      env: { BOCHA_API_KEY: 'bocha-test' }
     })
     env.db.__seed('hot_board', [{ _id: 'building', at: ago(10 * 60 * 1000) }])
 

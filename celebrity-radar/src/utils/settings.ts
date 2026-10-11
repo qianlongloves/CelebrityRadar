@@ -44,17 +44,16 @@ const LEGACY_KEYS = [
 ]
 
 /**
- * 供应商偏好键位（2026-10-08）。存的是 config/public.ts 里 llm.providers 的某个 id；
- * 未选择时（或选中的供应商已从清单里移除）由 utils/llm.ts 回落到 providers[0]，
- * 故写入时不校验 —— 合法性只在使用点裁决一次。
+ * 历史键位：模型供应商偏好（2026-10-08）。2026-10-11 起大模型统一走微信云开发 AI、
+ * 供应商维度整体移除，端上**已不再读它**（utils/llm.ts 只读档位）—— 键位与读写函数保留，
+ * 只为不动存量用户的配置结构（云端 SETTINGS_KEYS 也照旧含它，免去一次迁移）。
  */
 const PROVIDER_KEY = 'settings:llm_provider'
 
 /**
  * 档位偏好键位（2026-10-08）。存的是**档位标识**（fast / standard / reason），不是模型名 ——
- * 这是刻意的：换供应商时模型名整组都要换（qwen3.8-flash ↔ glm-4.7-flash），若存模型名，
- * 用户切一家就得重选一次档位，还会让「上次选的那档」在另一家失效。
- * 存档位标识则「切到哪家都还是我选的那一档」（见「我的」页文案）。合法性同上。
+ * 这是刻意的：具体模型名只有云端知道（llm.config.js 的 TIERS），端上既不持有也不上报它，
+ * 所以「换任何部署配置都不必让用户重选档位」。合法性只在使用点裁决一次（utils/llm.ts）。
  */
 const TIER_KEY = 'settings:llm_tier'
 
@@ -92,13 +91,13 @@ function localKeyOf(key: string): string {
   return local
 }
 
-/** 读取用户选择的供应商 id；未选过返回 null */
+/** 读取历史「模型供应商」偏好（2026-10-11 起端上不再据此裁决档位，仅为保留键位与联调） */
 export function getPreferredProvider(): string | null {
   const v = Taro.getStorageSync<string>(PROVIDER_KEY)
   return typeof v === 'string' && v ? v : null
 }
 
-/** 记住用户选择的供应商 id；传 null / 空串表示清除该偏好（回落默认供应商） */
+/** 写历史「模型供应商」偏好；传 null / 空串表示清除（同上：保留键位，端上不再读） */
 export function setPreferredProvider(provider: string | null): void {
   applyLocal(PROVIDER_KEY, provider)
   pushUserSetting('llm_provider', provider || null)
@@ -227,7 +226,7 @@ export function settingLocalKeyMap(): Record<string, string> {
 }
 
 /**
- * 清除全部本机设置（历史遗留密钥 + 供应商 / 档位偏好 + 促销条关闭记忆），
+ * 清除全部本机设置（历史遗留密钥 + 供应商（历史键位）/ 生成档位偏好 + 促销条关闭记忆），
  * 「清空我的数据」时调用。
  *
  * 云端那份也一并复位成默认值：只清本机的话，下次登录 hydrate 会把旧偏好拉回来 ——

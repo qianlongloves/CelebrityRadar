@@ -5,7 +5,7 @@
  *
  * `users.settings` 这个字段一直存在（见 `cloudfunctions/dbInit/schema.js` 的 users.fields），
  * 但**从来没有人写过它** —— 首登只写一句 `settings: {}`，之后全项目再无一处更新。
- * 真正生效的偏好（模型供应商 / 档位）躺在本机 storage 里，于是「换台手机就回到出厂设置」，
+ * 真正生效的偏好（生成档位）躺在本机 storage 里，于是「换台手机就回到出厂设置」，
  * 而云端读同一行时看到的是 `{}`，谁也说不清缺的键该是什么。
  * 默认值因此有了**第二个隐含真源**：端上插行时写一份，读的时候各自再猜一份。
  *
@@ -69,15 +69,17 @@ export const SETTINGS_KEYS = ['llm_provider', 'llm_tier'] as const
 
 /**
  * 每个配置项的默认值。`null` = 「没选过」，读取方自行回落到它自己的首个选项
- * （供应商回落 `providers[0]`、档位回落该家的极速版，见 `utils/llm.ts`）。
+ * （档位回落 `publicConfig.llm.tier` 那一档，见 `utils/llm.ts`）。
  *
  * ⚠ 键名与 `SETTINGS_KEYS` **必须一一对应**（用例逐字比对，少一个就红）：
  * 缺了键的默认值，ensure 就不知道该补什么，那个配置项会永远停在「缺失」。
  *
  * 口径说明：
- *   llm_provider  模型供应商 id（`config/public.ts` 的 llm.providers 里的 id）
+ *   llm_provider  历史键位（2026-10-08 引入的「模型供应商」；2026-10-11 起供应商维度整体移除）。
+ *                 换成云开发 AI 后只剩一家，端上**已不再读它** —— 保留键位只为不动存量用户的
+ *                 配置结构（见 utils/settings.ts）
  *   llm_tier      档位标识（fast / standard / reason），**不是模型名** ——
- *                 存模型名会使「换供应商后上次选的档位失效」（见 utils/settings.ts）
+ *                 具体模型名只有云端知道（llm.config.js 的 TIERS），端上不持有也不上报
  */
 export const DEFAULT_USER_SETTINGS = {
   llm_provider: null,

@@ -1,9 +1,9 @@
 {
   "name": "hotBoardRefresh",
   "version": "1.0.0",
-  "description": "热门名人榜每日生产：分域联网检索 + 大模型结构化，落 hot_board 供端上只读",
+  "description": "热门名人榜每日生产：分域联网检索 + 云开发 AI 结构化，落 hot_board 供端上只读",
   "main": "index.js",
   "dependencies": {
-    "wx-server-sdk": "~2.6.3"
+    "wx-server-sdk": "^4.0.1"
   }
 }

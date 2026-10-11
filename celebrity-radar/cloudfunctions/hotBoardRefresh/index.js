@@ -4,8 +4,8 @@
  * 触发：定时触发器（cloudbaserc.json 的 triggers，默认每天 06:30）。
  * 环境变量（控制台 → 云函数 → hotBoardRefresh → 配置 → 环境变量）：
  *   BOCHA_API_KEY   博查检索 key（与 aiProxy / notifyFollowUpdates 共用同一枚）
- *   大模型 key 的变量名随供应商而变（DEEPSEEK_API_KEY / QWEN_API_KEY / …），
- *   由同目录 llm.config.js 决定 —— 换一家只改那张表 + LLM_PROVIDER（与 aiProxy 用同一家）。
+ *   大模型：**无 key** —— 2026-10-11 起统一走微信云开发 AI（cloud.ai，需 wx-server-sdk ≥ 4.0.1），
+ *   用哪一档、哪个模型由同目录 llm.config.js 的档位表决定（与 aiProxy 用同一张表、同一份副本）。
  *
  * 为什么必须放在云端而不是端上生成：
  * 1. 榜单是**全局运营位**，一天一份、所有人看同一份。端上生成 = 每个用户各生成一次，
@@ -29,7 +29,7 @@
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
-/* 供应商注册表 + 解析（换一家改它，不改本文件）。⚠ 与 aiProxy 目录下的副本逐字一致 */
+/* 档位表 + 解析（换模型改它，不改本文件）。⚠ 与 aiProxy 目录下的副本逐字一致 */
 const { resolveLlm } = require('./llm.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
@@ -398,27 +398,35 @@ function halfPunct(ch) {
   return half === undefined ? ch : half
 }
 
+/**
+ * 调云开发 AI（cloud.ai）取一次完整正文（定时任务侧）。
+ *
+ * ⚠ 与 aiProxy 的 callCloudAi 是**各自独立的两份**（两个云函数各自打包，不跨目录 require），
+ * 改一处别忘了另一处。差别只在：这边不需要 finish_reason（cron 失败只静默保留旧榜单、
+ * 没有端上那套重试放大），故用更简单的 generateText —— 少一层流的处理，也少一个实测点。
+ * 已知遗留（与改造前一致）：这里没做「空正文 + finish_reason='length'」的确定性分流，
+ * 只统一抛「大模型返回为空」（见文件头的遗留说明）。
+ */
 async function askLlm(llm, system, user) {
-  const res = await postJson(
-    `${String(llm.baseUrl || '').replace(/\/+$/, '')}/chat/completions`,
-    { Authorization: `Bearer ${llm.apiKey}` },
-    {
-      model: llm.model,
-      stream: false,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ],
-      ...(llm.extraBody || {})
-    },
-    LLM_TIMEOUT_MS
-  )
-  if (res.status < 200 || res.status >= 300) {
-    throw new Error(`大模型 HTTP ${res.status}：${String(JSON.stringify(res.data)).slice(0, 200)}`)
-  }
-  const choices = res.data && res.data.choices
-  const content = choices && choices[0] && choices[0].message && choices[0].message.content
-  if (typeof content !== 'string' || !content.trim()) throw new Error('大模型返回为空')
+  const res = await cloud
+    .ai()
+    .createModel(llm.modelGroup)
+    .generateText(
+      {
+        model: llm.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user }
+        ],
+        /* max_tokens 不在 SDK 文档定义里，会随请求体透传（理由见 llm.config.js 的 chatMaxTokens 段） */
+        max_tokens: llm.chatMaxTokens,
+        ...(llm.extraBody || {})
+      },
+      { timeout: LLM_TIMEOUT_MS }
+    )
+  if (res && res.error) throw new Error(`云开发 AI 报错：${String(JSON.stringify(res.error)).slice(0, 200)}`)
+  const content = res && typeof res.text === 'string' ? res.text : ''
+  if (!content.trim()) throw new Error('大模型返回为空')
   return content
 }
 
@@ -574,16 +582,17 @@ exports.main = async (event) => {
   }
 
   const bochaKey = readEnv('BOCHA_API_KEY')
-  /* 供应商 / 端点 / key / 模型由 llm.config.js 统一裁决（与 aiProxy 同一张表、同一份副本） */
+  /* 档位 / 模型由 llm.config.js 统一裁决（与 aiProxy 同一张表、同一份副本） */
   const llm = resolveLlm(event)
-  const llmKey = llm.apiKey
-  if (!bochaKey || !llmKey || !llm.baseUrl) {
-    /* 未配置不是错误：函数可能先于密钥上线部署，静默跳过即可（不产生失败告警） */
+  /* 大模型侧不再有 key 可检，改为检 SDK 能力（cloud.ai 是否就位）—— 与 aiProxy 的同类判断同源 */
+  const llmReady = typeof cloud.ai === 'function'
+  if (!bochaKey || !llmReady) {
+    /* 未配置不是错误：函数可能先于依赖上线部署，静默跳过即可（不产生失败告警） */
     return {
       ok: false,
       skipped:
-        '缺少环境变量：' +
-        [!bochaKey && 'BOCHA_API_KEY', !llmKey && llm.apiKeyEnv, !llm.baseUrl && 'LLM_BASE_URL']
+        '缺少前置条件：' +
+        [!bochaKey && 'BOCHA_API_KEY', !llmReady && '云开发 AI（wx-server-sdk ≥ 4.0.1）']
           .filter(Boolean)
           .join(' / ')
     }

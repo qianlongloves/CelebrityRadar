@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { publicConfig } from '@/config/public'
-import type { LlmProvider, LlmTier } from '@/config/public'
-import { getPreferredProvider, getPreferredTier } from './settings'
+import type { LlmTier } from '@/config/public'
+import { getPreferredTier } from './settings'
 import { diagLog } from './cloud-diagnostics'
 import { debugRaw } from './debug'
 import { callCloudFunction, cloudTimeoutHint, isCloudConfigured } from './cloud'
@@ -17,12 +17,13 @@ import { readMemberState } from './member'
  * 理由见下方 chatOnce 上方的说明。search.ts 的博查通道同步做了同样的收敛，
  * 全项目只剩一种模式，用户不必理解「该填 key 还是靠平台」。
  *
- * 端点走 **OpenAI 兼容协议**：CloudBase 不托管大模型，由 aiProxy 拼 /chat/completions。
- * 用哪家、用哪一档由 resolveChatSelection() 统一裁决（M7-4 / 2026-10-08 供应商自选）：
- * 本机偏好（「我的 → 模型供应商 / 生成档位」所选）优先，否则回落 publicConfig.llm.provider
- * 与他家的 fast 档。两个值都随请求带给云函数，由**云端**那家的 key 代打
- * （云函数只在端上没带 / 带了不认识的 id 时才用 LLM_PROVIDER 兜底，见 llm.config.js 的 resolveLlm）。
- * 取非流式完整响应：少一层聚合、失败语义更清晰。
+ * 端点：云端走**微信云开发 AI**（cloud.ai），端上只上报**档位**（fast / standard / reason）——
+ * 端上既不持有 key、也不知道具体模型名（见 cloudfunctions/aiProxy 的 handleChat / llm.config.js）。
+ * 用哪一档由 resolveChatSelection() 统一裁决（2026-10-11 起供应商维度整体移除）：
+ * 本机偏好（「我的 → 生成档位」所选）优先，否则回落 publicConfig.llm.tier 那一档；
+ * 会员专属档位对非会员回落到 fast 档。云函数只在端上没带 / 带了不认识的档位时才用 LLM_TIER 兜底。
+ * 取非流式完整响应（云函数侧用 streamText 双流取回正文与 finish_reason，端上仍是完整正文）：
+ * 少一层聚合、失败语义更清晰。
  * JSON 的提取与解析见下方 parseModelJson（2026-10-10 重写：字符串感知扫描 + 畸形修复 +
  * 三类失败分流），上层拿到的仍是「校验通过的 data」，解析层的行为对调用方透明。
  */
@@ -143,109 +144,71 @@ function errText(err: unknown): string {
 
 /**
  * 是否有可用大模型通道。只剩云函数代理一条，故这里只反映「云环境 ID 配了没」——
- * 函数是否真部署好、所选供应商的 key 环境变量是否真配了，只有调一次才知道。
+ * 函数是否真部署好、云开发 AI 是否已开通，只有调一次才知道。
  * 调用方用它避免「明明能用却被前置判断拦下」，真失败由 chatOnce 的返回值兜住。
  */
 export function hasLlmChannel(): boolean {
   return isCloudConfigured
 }
 
-/** 一次生成实际会用的「供应商 + 档位 + 模型名」（设置页展示与请求取值共用同一份判定） */
+/** 一次生成实际会用的「档位」（设置页展示与请求取值共用同一份判定） */
 export interface ChatSelection {
-  /** 供应商 id（config/public.ts 的 llm.providers 里的某个 id） */
-  provider: string
-  /** 该供应商的展示名（设置页显示「当前」用） */
-  providerLabel: string
   /** 档位标识：fast / standard / reason */
   tier: string
   /** 档位展示名：极速版 / 标准版 / 深度推理 */
   tierLabel: string
-  /** 实际会带给云函数的模型名 */
-  model: string
-  /** 该模型是否会员专属（true 且非会员时，上面几项已是**回落**后的结果，不是用户选的那个） */
+  /** 该档是否会员专属（true 且非会员时，上面两项已是**回落**后的结果，不是用户选的那个） */
   memberOnly: boolean
 }
 
-/** 按 id 取供应商；找不到（没选过 / 已被运营下线）返回默认那家（providers[0]） */
-function pickProvider(id: string | null): LlmProvider {
-  const hit = id !== null ? publicConfig.llm.providers.find((p) => p.id === id) : undefined
-  return (hit ?? publicConfig.llm.providers[0]) as LlmProvider
-}
-
 /**
- * 当前生效的「供应商 + 档位」（M7-4「模型选择」，2026-10-08 起由用户自选供应商），同步版：
+ * 当前生效的「档位」（2026-10-11 起供应商维度整体移除，端上只选档），同步版：
  * 设置页展示与请求取值共用同一判定。
  *
- * 顺序：本机偏好（「我的 → 模型供应商 / 生成档位」里选的）→ 公共配置默认值
- * （llm.provider + 他家的 fast 档）。用户选的档位存的是**档位标识**而不是模型名，
- * 所以换供应商时档位跟着走（通义千问标准版 → 智谱标准版），不必让用户重选一次。
+ * 顺序：本机偏好（「我的 → 生成档位」里选的 tier）→ 公共配置默认档（llm.tier）。
+ * 用户选的存的是**档位标识**（fast / standard / reason），不是模型名 ——
+ * 端上连模型名都不知道，具体模型名由云端 llm.config.js 按档位决定。
  *
- * 四道关卡：
- *   ① 供应商偏好只有在仍存在于 llm.providers 清单里时才生效 —— 运营把某家下线后
+ * 三道关卡：
+ *   ① 档位偏好只有在仍存在于 llm.models 清单里时才生效 —— 运营改名或下架某档后
  *      （或用户装的是另一份配置），设备上残留的旧选择不能再被带上，否则会稳定地生成失败
- *      且用户看不出为什么；档位偏好同理（找不到就回落该家的 fast 档）；
- *   ② 那家必须真的有这个档位：清单里没有该 tier 时回落 fast 档（fast 档是每家的兜底，
- *      config/public.ts 里约定它恒为 memberOnly=false）；
- *   ③ 标了 memberOnly 的档位只有会员能用（「质」权益，2026-10-07）—— 非会员一律回落该家
- *      的 fast 档，这样「设置页显示哪档 = 实际用哪档」的承诺对免费用户同样成立；
- *   ④ 会员态由**调用方传入**：本函数必须同步（设置页要同步渲染），而读库是异步的，
+ *      且用户看不出为什么；
+ *   ② 标了 memberOnly 的档位只有会员能用（「质」权益，2026-10-07）—— 非会员一律回落
+ *      fast 档，这样「设置页显示哪档 = 实际用哪档」的承诺对免费用户同样成立；
+ *   ③ 会员态由**调用方传入**：本函数必须同步（设置页要同步渲染），而读库是异步的，
  *      调用方各自已在同一份数据上判过会员（设置页用配额卡那次读数、chatViaPlatform 用
  *      readMemberState），这里不再多读一次库。
  *
  * ⚠ 端上这一层只管「展示与请求值」，是**可被改包绕过**的；真正的闸门在云函数 aiProxy
- * （llm.config.js 的 memberOnlyModels，非会员请求强模型会被静默降级），两处口径必须一致。
+ * （llm.config.js 的 TIERS.memberOnly，非会员请求会员档会被静默降级），两处口径必须一致。
  */
 export function resolveChatSelection(member: boolean): ChatSelection {
-  const provider = pickProvider(getPreferredProvider())
-  const tiers = provider.models as readonly LlmTier[]
+  const tiers = publicConfig.llm.models as readonly LlmTier[]
   const fallback = tiers[0]
   const wanted = getPreferredTier()
   const hit = (wanted !== null ? tiers.find((m) => m.tier === wanted) : undefined) ?? fallback
   const usable = hit.memberOnly && !member ? fallback : hit
   return {
-    provider: provider.id,
-    providerLabel: provider.label,
     tier: usable.tier,
     tierLabel: usable.label,
-    model: usable.id,
     memberOnly: usable.memberOnly
   }
 }
 
 /**
- * 当前生效的模型名（只要模型名时的入口；与 resolveChatSelection 同源，判定逻辑不重复一份）。
- * 保留它是因为「档位」是 2026-10-08 才引入的概念 —— 少数只关心模型名的调用方不必跟着改。
- */
-export function resolveChatModel(member: boolean): string {
-  return resolveChatSelection(member).model
-}
-
-/**
- * 一次读库拿「供应商 + 模型名」：供应商与模型档位由本机偏好 + 会员态裁决
+ * 一次读库拿「本次生成用哪一档」：档位由本机偏好 + 会员态裁决
  * （resolveChatSelection 必须同步，故会员态在函数内读出再传入）。
  *
  * 这里多一次 users 读是刻意的：请求值和设置页展示必须出自同一套判定，
  * 否则会出现「设置页写着极速版、实际发的是深度推理」这种查不出来的错位。
- * 读库失败按非会员处理（readMemberState 的口径）—— 宁可这一次降级，也不给非会员放行强模型。
+ * 读库失败按非会员处理（readMemberState 的口径）—— 宁可这一次降级，也不给非会员放行会员档。
  *
- * 2026-10-08：不再往请求体里带 deep（输出上限对所有人一样，见 aiProxy 的 chatMaxTokens）——
- * 会员态在这里只剩「选哪一档模型」这一个用途，云函数那边的会员闸门照旧拦模型档位。
- *
- * 占位模型名（REPLACE_ME）视为不可用，返回 null 交给云函数退回它自己的常量
- * （只对模型名做这个兜底：供应商 id 认不出时 cloud 侧自会回落它自己的默认家）。
+ * 不再往请求体里带 deep（输出上限对所有人一样，见 aiProxy 的 chatMaxTokens）；
+ * 端上也不再上报模型名 —— 只带 tier，具体模型由云端 llm.config.js 按档位（+ 环境变量覆盖）决定。
  */
-export async function resolveChatTarget(): Promise<{
-  provider: string
-  model: string | null
-}> {
+export async function resolveChatTarget(): Promise<{ tier: string }> {
   const member = (await readMemberState()).member
-  const sel = resolveChatSelection(member)
-  return { provider: sel.provider, model: !sel.model || sel.model.includes('REPLACE_ME') ? null : sel.model }
-}
-
-/** 取模型名（只关心模型时的入口；与 resolveChatTarget 同源，判定逻辑不重复一份） */
-export async function getChatModel(): Promise<string | null> {
-  return (await resolveChatTarget()).model
+  return { tier: resolveChatSelection(member).tier }
 }
 
 /*
@@ -267,10 +230,10 @@ export async function getChatModel(): Promise<string | null> {
  * 于是「未就绪」不能再静默降级，必须变成一句能照着操作的报错（见下方两个分支）。
  */
 async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): Promise<ChatAttempt> {
-  const { provider, model } = await resolveChatTarget()
+  const { tier } = await resolveChatTarget()
   const startedAt = Date.now()
   /*
-   * 调试打印：本次调用的**完整入参**（供应商 / 模型 / purpose / system 与 user 两条消息）。
+   * 调试打印：本次调用的**完整入参**（档位 / purpose / system 与 user 两条消息）。
    *
    * 与下方 `llm:proxy`（返回）配对 —— 排查「这份报告为什么长这样」时只有返回不够：
    * 同一句返回可能是提示词不同、模型档位不同、或 purpose 让它走了另一个额度池。
@@ -280,18 +243,17 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
    * 开关是 `config/local.ts` 的 `debug.rawIoLog`（默认 false）：**不改变任何行为**，
    * 只影响控制台噪音。
    */
-  debugRaw('llm:proxy:req', { provider, model, purpose, messages })
+  debugRaw('llm:proxy:req', { tier, purpose, messages })
   let res: ProxyChatResult | null
   try {
     res = (await callCloudFunction('aiProxy', {
       action: 'chat',
       /*
-       * 供应商与模型名都取自同一次判定（resolveChatTarget）：用户选的供应商在这里生效，
-       * 由云函数用**那家**的环境变量 key 代打（端上不持有任何 key）。
-       * 云函数只在端上没带、或带了个它不认识的 id 时才用它的 LLM_PROVIDER 兜底（见 llm.config.js）。
+       * 档位取自同一次判定（resolveChatTarget）：用户在「我的」页选的档在这里生效，
+       * 由云函数按档位决定具体模型并走云开发 AI 代打（端上不持有任何 key、也不知道模型名）。
+       * 云函数只在端上没带、或带了个它不认识的档位时才用它的 LLM_TIER 兜底（见 llm.config.js）。
        */
-      provider,
-      model: model ?? undefined,
+      tier,
       /*
        * purpose 决定云端闸门按哪一池算上限（见 aiProxy/quota.config.js）：报告生成与
        * AI 提问是两个独立额度池，云端判上限时必须知道这一趟属于哪一池。
@@ -341,7 +303,7 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
       diagLog('warn', 'llm', `平台大模型通道未就绪：${why}`)
       return {
         ok: false,
-        error: `平台大模型通道未就绪：${why}（需部署 aiProxy 并配置大模型环境变量，见 llm.config.js）`,
+        error: `平台大模型通道未就绪：${why}（需部署 aiProxy，且 wx-server-sdk ≥ 4.0.1 以支持云开发 AI，见 llm.config.js）`,
         retryable: false
       }
     }

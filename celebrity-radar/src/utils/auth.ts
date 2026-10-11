@@ -18,7 +18,7 @@ export interface UserRow {
   nickname: string | null
   avatar_url: string | null
   /**
-   * 个性化配置（模型供应商 / 档位）。**真源是云端这一列**，端上只读、不直写：
+   * 个性化配置（生成档位）。**真源是云端这一列**，端上只读、不直写：
    * 改配置一律走云函数 userInit 的 set（见 utils/settings.ts 文件头）。
    * 允许的键与默认值在 config/user-defaults.ts，那是唯一真源。
    */

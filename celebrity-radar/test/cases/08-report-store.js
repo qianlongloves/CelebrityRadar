@@ -36,7 +36,6 @@ const DAY_MS = 86400000
 function loadProxy({ openid = 'u1' } = {}) {
   env.resetAll()
   process.env.BOCHA_API_KEY = 'bocha-test'
-  process.env.QWEN_API_KEY = 'llm-test'
   const db = env.db.database()
   const fakeSdk = {
     DYNAMIC_CURRENT_ENV: 'test-env',

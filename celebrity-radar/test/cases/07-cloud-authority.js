@@ -44,6 +44,8 @@ const cfgSrc = read(QUOTA_CONFIG)
 const schemaSrc = read(SCHEMA)
 
 const cfg = require(QUOTA_CONFIG)
+/** 云端档位表（模型名 / memberOnly 的真源）：断言一律按它取，不写死模型名 */
+const TIERS = require(LLM_CONFIG).TIERS
 
 const DAY_MS = 86400000
 const quotaKey = () => `u1#${cfg.todayKey()}`
@@ -112,7 +114,7 @@ describe('A3 test 探针要口令', () => {
 
   it('逐档实测：把「极速版」的思考字数报出来（档位标签只描述期望，不描述行为）', async () => {
     /*
-     * 桩：第一档（免费档 qwen3.8-flash）返回 120 字 reasoning_content 且正文为空 ——
+     * 桩：第一档（免费档 fast）返回 120 字 reasoning_content 且正文为空 ——
      * 这正是线上那份报错的形状（思考把 max_tokens 吃光、正文一个字都没轮到）；
      * 后两档正常回正文、无 reasoning。
      */
@@ -130,16 +132,16 @@ describe('A3 test 探针要口令', () => {
       const res = await fn.main({ action: 'test', token: 'secret', models: true })
 
       eq(calls.length, 5, '博查 + 当前档 + 三档逐测')
-      eq(res.models.length, 3, '一家三档都要测到')
-      eq(res.models[0].model, 'qwen3.8-flash')
-      eq(res.models[0].tier, 'free', 'defaultModel 就是免费档')
+      eq(res.models.length, 3, '三档都要测到（驱动源是云端 TIERS，不是写死的名单）')
+      eq(res.models[0].model, TIERS.fast.model)
+      eq(res.models[0].tier, 'fast', '档位标识原样回报（就是端上请求里带的那个 tier）')
       eq(res.models[0].reasoningChars, 120)
       eq(res.models[0].chars, 0)
       ok(/思考模型/.test(res.models[0].verdict), `结论要直接可读：${res.models[0].verdict}`)
       eq(res.models[1].reasoningChars, 0)
       ok(/无思考/.test(res.models[1].verdict), `不带思考的档要认出来：${res.models[1].verdict}`)
-      eq(res.models[2].model, 'qwen3.8-max')
-      eq(res.models[2].tier, 'member')
+      eq(res.models[2].model, TIERS.reason.model)
+      eq(res.models[2].tier, 'reason')
     } finally {
       delete process.env.AI_PROXY_TEST_TOKEN
     }
@@ -164,7 +166,7 @@ describe('A3 test 探针要口令', () => {
   it('probeModels：探表外的候选名，非 2xx 必须带上游原话（否则只知道一个状态码）', async () => {
     /*
      * 桩：三个候选 —— 一个不思考（可用）、一个思考、一个上游 400。
-     * 这正是 deepseek 家的真实形状：表里三个名字全不合用，要换档就得能探**表外**的名字；
+     * 表外的名字（云开发 AI 上临时冒出来的新模型）要能探得到：改档位表前先用它确认可用性；
      * 而那次 400 光看状态码分不清「模型名不存在」还是「参数不认」，故必须带上游原话。
      */
     const h = fakeHttps([
@@ -203,42 +205,23 @@ describe('A3 test 探针要口令', () => {
     }
   })
 
-  it('listModels：GET /models 列出上游模型名（回答「换哪一档」的前置问题）', async () => {
-    const h = fakeHttps([
-      searchOk(3),
-      chatOk('正常'),
-      {
-        status: 200,
-        data: { object: 'list', data: [{ id: 'qwen3.8-flash' }, { id: 'qwen3.8-max' }] }
-      }
-    ])
+  it('listModels：退化为列出云端档位表（云开发 AI 没有 /models 端点，故不再触达上游）', async () => {
+    const h = fakeHttps([searchOk(3), chatOk('正常')])
     const { fn, calls } = loadProxy({ https: h })
 
     process.env.AI_PROXY_TEST_TOKEN = 'secret'
     try {
       const res = await fn.main({ action: 'test', token: 'secret', listModels: true })
 
-      eq(calls.length, 3, '默认两条 + 清单一次')
-      ok(calls[2].path.endsWith('/models'), `走的是 OpenAI 兼容端点的 /models，实际 ${calls[2].path}`)
+      eq(calls.length, 2, '默认两条（博查 + 当前档）；清单是本地档位表，不产生第三次请求')
+      ok(
+        !calls.some((c) => String(c.path).endsWith('/models')),
+        '云开发 AI 不走 OpenAI 兼容端点，不该再有 /models 请求'
+      )
       eq(res.modelList.ok, true)
-      deepEq(res.modelList.models, ['qwen3.8-flash', 'qwen3.8-max'])
+      deepEq(res.modelList.models, [TIERS.fast.model, TIERS.standard.model, TIERS.reason.model])
+      eq(res.modelList.tiers.length, 3, '每档的 tier / model / memberOnly 都要回报（这就是「换档」的对照表）')
       eq(res.models, null, '没要求逐档就不探（两个开关互不牵连）')
-    } finally {
-      delete process.env.AI_PROXY_TEST_TOKEN
-    }
-  })
-
-  it('清单形状认不出来时回片段，不硬凑空数组（「一个模型都没有」是另一个结论）', async () => {
-    const h = fakeHttps([searchOk(3), chatOk('正常'), { status: 200, data: { weird: 'shape' } }])
-    const { fn } = loadProxy({ https: h })
-
-    process.env.AI_PROXY_TEST_TOKEN = 'secret'
-    try {
-      const res = await fn.main({ action: 'test', token: 'secret', listModels: true })
-
-      eq(res.modelList.ok, false)
-      ok(/未识别的清单结构/.test(res.modelList.detail), res.modelList.detail)
-      deepEq(res.modelList.models, [])
     } finally {
       delete process.env.AI_PROXY_TEST_TOKEN
     }
@@ -292,6 +275,15 @@ describe('B8 云端闸门与端上同源', () => {
 
 /* ==================== ②  行为级：把 aiProxy 真跑一遍（假上游） ==================== */
 
+/** 桩里的响应体可能直接是 JSON 字符串（假 https 分支已 parse 过，这里补一次） */
+function safeJson(raw) {
+  try {
+    return JSON.parse(raw)
+  } catch (e) {
+    return {}
+  }
+}
+
 /** 假上游：按顺序吐出预置响应，并记下每次请求体 */
 function fakeHttps(responses) {
   const calls = []
@@ -331,7 +323,73 @@ function fakeHttps(responses) {
       return req
     }
   }
-  return { module, calls }
+  /*
+   * 云开发 AI 通道（2026-10-11 起大模型不再走 https，改走 wx-server-sdk 的 cloud.ai）：
+   * 与检索用的假 https **共用同一个响应队列** —— 两边都按调用顺序 shift()，所以预置数组的顺序
+   * 就是真实调用顺序（现有用例本来就是按真实顺序排的）。请求体也照进 calls（path 标 'cloud.ai'），
+   * 于是 calls[i].body.model 这类断言逐字可用。响应形状与 https 分支共用同一套 chatOk / 空正文桩：
+   * 这里从 data.choices[0].message 读正文与 reasoning_content、从 choice 读 finish_reason。
+   *
+   * 非 2xx（或 body 里带 error）一律抛错 —— 与真实 SDK 行为一致（它把非 2xx 包成异常），
+   * 由 aiProxy 的 classifyAiError 按 err.status 归类；message 里带上状态码与上游原话，
+   * 好让「402 Insufficient Balance」这类断言仍能读到关键信息。
+   */
+  const finish = (payload) => {
+    calls.push({ path: 'cloud.ai', body: payload, modelGroup: payload && payload.__modelGroup })
+    const r = responses.length ? responses.shift() : { status: 200, data: {} }
+    const body = typeof r.data === 'string' ? safeJson(r.data) : r.data
+    const status = r.status || 0
+    const upstreamError = body && body.error
+    if (status >= 400 || upstreamError) {
+      const detail =
+        (upstreamError && (upstreamError.message || upstreamError.code)) ||
+        (typeof body.message === 'string' && body.message) ||
+        ''
+      const err = new Error(`${status || 'upstream'}${detail ? ` ${detail}` : ''}`)
+      err.status = status
+      err.statusCode = status
+      throw err
+    }
+    const choice = (body.choices && body.choices[0]) || {}
+    const message = choice.message || {}
+    const content = typeof message.content === 'string' ? message.content : ''
+    const reasoning = typeof message.reasoning_content === 'string' ? message.reasoning_content : ''
+    const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : ''
+    return { content, reasoning, finishReason }
+  }
+  const ai = () => ({
+    createModel: (modelGroup) => ({
+      async streamText(payload) {
+        const payloadWithGroup = Object.assign({}, payload, { __modelGroup: modelGroup })
+        const { content, reasoning, finishReason } = finish(payloadWithGroup)
+        return {
+          textStream: (async function* () {
+            if (content) yield content
+          })(),
+          dataStream: (async function* () {
+            yield {
+              choices: [
+                {
+                  delta: Object.assign(
+                    {},
+                    content ? { content } : {},
+                    reasoning ? { reasoning_content: reasoning } : {}
+                  ),
+                  finish_reason: finishReason
+                }
+              ],
+              usage: { total_tokens: 1 }
+            }
+          })()
+        }
+      },
+      async generateText(payload) {
+        const { content } = finish(Object.assign({}, payload, { __modelGroup: modelGroup }))
+        return { text: content, usage: { total_tokens: 1 } }
+      }
+    })
+  })
+  return { module, calls, ai }
 }
 
 const chatOk = (content = '{"ok":true}') => ({
@@ -355,23 +413,22 @@ const searchOk = (n = 3) => ({
   }
 })
 
-/** 清掉一切可能干扰的 LLM_* 覆写与联调开关，只留两把「key」 */
+/** 清掉一切可能干扰的档位覆写与探针开关，只留检索 key（大模型已统一走云开发 AI，无 key 可配） */
 function clearLlmEnv() {
   for (const k of [
-    'LLM_PROVIDER',
-    'LLM_MODEL',
-    'LLM_BASE_URL',
-    'LLM_API_KEY',
+    'LLM_TIER',
+    'CLOUD_AI_MODEL_FAST',
+    'CLOUD_AI_MODEL_STANDARD',
+    'CLOUD_AI_MODEL_REASON',
     'AI_PROXY_TEST_TOKEN',
     cfg.QUOTA_GUARD_ENV
   ]) {
     delete process.env[k]
   }
   process.env.BOCHA_API_KEY = 'bocha-test'
-  process.env.QWEN_API_KEY = 'llm-test'
 }
 
-/** 加载 aiProxy 源码：wx-server-sdk → harness 内存 DB，https → 假上游 */
+/** 加载 aiProxy 源码：wx-server-sdk → harness 内存 DB（含云开发 AI 假实现），https → 假上游 */
 function loadProxy({ openid = 'u1', https } = {}) {
   env.resetAll()
   clearLlmEnv()
@@ -380,6 +437,8 @@ function loadProxy({ openid = 'u1', https } = {}) {
     DYNAMIC_CURRENT_ENV: 'test-env',
     init() {},
     database: () => db,
+    /* cloud.ai 是函数（2026-10-11 改造）：大模型调用全部走这条，假的实现在 fakeHttps 里 */
+    ai: () => https.ai(),
     getWXContext: () => (openid ? { OPENID: openid } : {})
   }
   const orig = Module.prototype.require
@@ -422,8 +481,7 @@ function loadGuard({ openid = 'u1' } = {}) {
 
 const CHAT = {
   action: 'chat',
-  provider: 'qwen',
-  model: 'qwen3.8-flash',
+  tier: 'fast',
   purpose: 'generate',
   messages: [
     { role: 'system', content: 'S' },
@@ -437,13 +495,13 @@ describe('aiProxy 模型档位（会员闸门）', () => {
     const h = fakeHttps([chatOk()])
     const { fn, calls } = loadProxy({ https: h })
 
-    const res = await chat(fn, { model: 'qwen3.7-plus' })
+    const res = await chat(fn, { tier: 'standard' })
 
     eq(res.ok, true, '降级而不是报错：不因一次残留偏好打断生成')
     eq(res.downgraded, true)
-    eq(res.model, 'qwen3.8-flash')
+    eq(res.model, TIERS.fast.model)
     eq(calls.length, 1)
-    eq(calls[0].body.model, 'qwen3.8-flash', '代价最高的那一档不能被白用')
+    eq(calls[0].body.model, TIERS.fast.model, '代价最高的那一档不能被白用')
   })
 
   it('memberships 里有未过期的会员：档位放行', async () => {
@@ -451,12 +509,12 @@ describe('aiProxy 模型档位（会员闸门）', () => {
     const { fn, calls } = loadProxy({ https: h })
     env.db.__seed('memberships', [memberRow()])
 
-    const res = await chat(fn, { model: 'qwen3.7-plus' })
+    const res = await chat(fn, { tier: 'standard' })
 
     eq(res.ok, true)
     eq(res.downgraded, false)
-    eq(res.model, 'qwen3.7-plus')
-    eq(calls[0].body.model, 'qwen3.7-plus')
+    eq(res.model, TIERS.standard.model)
+    eq(calls[0].body.model, TIERS.standard.model)
   })
 
   it('memberships 过期的会员：按非会员降级', async () => {
@@ -464,7 +522,7 @@ describe('aiProxy 模型档位（会员闸门）', () => {
     const { fn } = loadProxy({ https: h })
     env.db.__seed('memberships', [memberRow({ expires_at: new Date(Date.now() - DAY_MS).toISOString() })])
 
-    const res = await chat(fn, { model: 'qwen3.7-plus' })
+    const res = await chat(fn, { tier: 'standard' })
 
     eq(res.downgraded, true, '只认 expires_at，过期即非会员')
   })
@@ -480,10 +538,10 @@ describe('aiProxy 模型档位（会员闸门）', () => {
       }
     ])
 
-    const res = await chat(fn, { model: 'qwen3.7-plus' })
+    const res = await chat(fn, { tier: 'standard' })
 
     eq(res.downgraded, true, '若这里是 false，说明云端又回去读端上可写的镜像了')
-    eq(res.model, 'qwen3.8-flash')
+    eq(res.model, TIERS.fast.model)
   })
 
   it('端上传来的会员标记一律不作数（改包者最容易走的一步）', async () => {
@@ -498,7 +556,7 @@ describe('aiProxy 模型档位（会员闸门）', () => {
     const { fn } = loadProxy({ https: h })
 
     const res = await chat(fn, {
-      model: 'qwen3.7-plus',
+      tier: 'standard',
       member: true,
       isMember: true,
       memberOverride: 'monthly',
@@ -506,49 +564,42 @@ describe('aiProxy 模型档位（会员闸门）', () => {
     })
 
     eq(res.downgraded, true, '只有 memberships 里有未过期行才算会员')
-    eq(res.model, 'qwen3.8-flash')
+    eq(res.model, TIERS.fast.model)
   })
 
-  it('端上清单里的每一家、每一档各走一遍：会员放行，非会员降级到**那一家**的免费档', async () => {
+  it('档位表里的每一档各走一遍：会员放行，非会员降级到免费档', async () => {
     /*
-     * 只测 deepseek 会漏掉两类漂移，而它们都要用户切过去才暴露：
-     *   · 表里某一家漏配 memberOnlyModels ⇒ 那家的会员档对所有人免费开放（唯一会白花钱的方向）；
-     *   · 某一家的 defaultModel 不是它自己的免费档 ⇒ 降级落到别家模型名上，必然失败。
-     * 故驱动源取**端上清单**（用户真能切到的那些家），而不是把四家硬编码一遍。
+     * 只测标准档会漏掉两类漂移，而它们都要用户切过去才暴露：
+     *   · 云端某档漏配 memberOnly ⇒ 那一档对所有人免费开放（唯一会白花钱的方向）；
+     *   · 免费档自己标了 memberOnly ⇒ 降级落到一个会员档上，非会员每次请求都失败。
+     * 故驱动源取**端上档位清单**（用户真能切到的那些档），并顺带核对两端 memberOnly 同值。
      */
-    const cloud = require(LLM_CONFIG).PROVIDERS
-    const listed = env.load('config/public').publicConfig.llm.providers.map((p) => p.id)
-    ok(listed.length > 1, '端上应列出多家供应商，否则本用例覆盖不到「切家」这一半')
+    const cloud = require(LLM_CONFIG).TIERS
+    const listed = env.load('config/public').publicConfig.llm.models
+    ok(listed.length > 1, '端上应列出多档，否则本用例覆盖不到「切档」这一半')
 
-    for (const id of listed) {
-      const conf = cloud[id]
-      ok(conf, `端上列了 ${id}，云函数表里却没有它 —— 用户切过去会落到别家去`)
-      const paid = (conf.memberOnlyModels || [])[0]
-      ok(paid, `${id} 的会员档清单是空的：那这一家的所有档位都对免费用户开放`)
-      ok(conf.defaultModel, `${id} 缺 defaultModel：降级时无处可落`)
+    for (const t of listed) {
+      const conf = cloud[t.tier]
+      ok(conf, `端上列了 ${t.tier}，云函数档位表里却没有它 —— 用户切过去会落到默认档去`)
+      eq(conf.memberOnly, t.memberOnly, `${t.tier}：端上与云端的会员闸门口径必须同值`)
+      ok(conf.model, `${t.tier} 缺 model：云端不知道这一档该发哪个模型名`)
 
-      /* clearLlmEnv 只配了默认那家的 key，其余几家在这里补上（只进 process.env，不入库） */
-      process.env[conf.apiKeyEnv] = 'llm-test'
-      try {
-        /* ① 会员：请求哪一档就发哪一档 —— 「切换档位」真正生效的那一半 */
-        const paidProxy = loadProxy({ https: fakeHttps([chatOk()]) })
-        env.db.__seed('memberships', [memberRow()])
-        const paidRes = await chat(paidProxy.fn, { provider: id, model: paid })
+      /* ① 会员：请求哪一档就发哪一档 —— 「切换档位」真正生效的那一半 */
+      const paidProxy = loadProxy({ https: fakeHttps([chatOk()]) })
+      env.db.__seed('memberships', [memberRow()])
+      const paidRes = await chat(paidProxy.fn, { tier: t.tier })
 
-        eq(paidRes.downgraded, false, `${id} 的会员档对会员必须放行（显示哪档 = 实际用哪档）`)
-        eq(paidRes.model, paid, `${id}：回执里的模型名要是用户选的那档`)
-        eq(paidProxy.calls[0].body.model, paid, `${id}：发给上游的也要是那一档`)
+      eq(paidRes.downgraded, false, `${t.tier} 的会员档对会员必须放行（显示哪档 = 实际用哪档）`)
+      eq(paidRes.model, conf.model, `${t.tier}：回执里的模型名要是这一档配的`)
+      eq(paidProxy.calls[0].body.model, conf.model, `${t.tier}：发给上游的也要是这一档`)
 
-        /* ② 非会员：降级必须落回**这一家的**免费档，不能串到别家 */
-        const freeProxy = loadProxy({ https: fakeHttps([chatOk()]) })
-        const freeRes = await chat(freeProxy.fn, { provider: id, model: paid })
+      /* ② 非会员：免费档自己必须放行；会员档必须降级回落 fast 档 */
+      const freeProxy = loadProxy({ https: fakeHttps([chatOk()]) })
+      const freeRes = await chat(freeProxy.fn, { tier: t.tier })
 
-        eq(freeRes.downgraded, true, `${id}：非会员请求会员档必须降级`)
-        eq(freeRes.model, conf.defaultModel, `${id}：降级要落回它自己的免费档`)
-        eq(freeProxy.calls[0].body.model, conf.defaultModel, '代价最高的那一档不能被白用')
-      } finally {
-        delete process.env[conf.apiKeyEnv]
-      }
+      eq(freeRes.downgraded, !!conf.memberOnly, `${t.tier}：非会员请求会员档才降级，免费档不该降级`)
+      eq(freeRes.model, t.memberOnly ? TIERS.fast.model : conf.model, '非会员只能落到免费档')
+      eq(freeProxy.calls[0].body.model, freeRes.model, '代价最高的那一档不能被白用')
     }
   })
 
@@ -803,9 +854,9 @@ describe('aiProxy 云端报文打印（AI_PROXY_RAW_LOG）', () => {
 
   it('会员档被降级时同时报「请求的」与「实际用的」（档位没生效的唯一线索）', async () => {
     /*
-     * 本机反馈：「切到深度推理，发出去的还是 qwen3.8-flash」—— 看不出为什么。
+     * 本机反馈：「切到深度推理，发出去的还是极速版的模型」—— 看不出为什么。
      * 根因是 handleChat 的会员闸门：端上按 users.membership 镜像放行，而云端读 memberships
-     * 权威表 ⇒ 判为非会员 ⇒ model 换成该家的 defaultModel（免费档）。
+     * 权威表 ⇒ 判为非会员 ⇒ model 换成兜底的 fast 档。
      * 只打最终 model 的话，这条日志反而让人以为「档位切换没接上」，故三个字段必须一起报。
      */
     process.env.AI_PROXY_RAW_LOG = 'on'
@@ -817,8 +868,7 @@ describe('aiProxy 云端报文打印（AI_PROXY_RAW_LOG）', () => {
         capture(() =>
           fn.main({
             action: 'chat',
-            provider: 'qwen',
-            model: 'qwen3.8-max',
+            tier: 'reason',
             messages: [{ role: 'user', content: 'hi' }]
           })
         )
@@ -826,7 +876,7 @@ describe('aiProxy 云端报文打印（AI_PROXY_RAW_LOG）', () => {
 
       const req = rawLines(lines).find((l) => l.includes('[raw:chat:req]'))
       ok(req, '要有请求日志')
-      ok(req.includes('"requested":"qwen3.8-max"'), `要报出端上要的那一档：${req}`)
+      ok(req.includes(`"requested":"${TIERS.reason.model}"`), `要报出端上要的那一档：${req}`)
       ok(req.includes('"downgraded":true'), `要报出发生了降级：${req}`)
     } finally {
       delete process.env.AI_PROXY_RAW_LOG
@@ -1705,6 +1755,8 @@ function loadScheduled(name, https) {
     DYNAMIC_CURRENT_ENV: 'test-env',
     init() {},
     database: () => db,
+    /* 云开发 AI：hotBoardRefresh 生成热榜解读走这条（见 fakeHttps 里的 ai 假实现） */
+    ai: () => https.ai(),
     /* 定时触发没有调用方 openid —— 这正是 P0-21 那道调用方闸门的通过条件 */
     getWXContext: () => ({})
   }
@@ -1786,15 +1838,16 @@ describe('P2-22 定时任务：每人订阅上限的云侧兜底', () => {
   })
 })
 
-describe('模型档位：三处口径不许漂（端上清单 / 云函数表 / 部署变量）', () => {
+describe('模型档位：三处口径不许漂（端上清单 / 云函数档位表 / 部署变量）', () => {
   /*
-   * 「用户切了供应商、切了档位，云端到底用哪一档」由三份东西共同决定，而它们全是**手工同步**的：
-   *   ① src/config/public.ts                    —— 用户看得到、点得到的清单（我的 → 生成模型）
-   *   ② {aiProxy,hotBoardRefresh}/llm.config.js  —— 云端裁决表（memberOnlyModels 就是计费闸门）
-   *   ③ cloudbaserc.json 的 envVariables         —— 部署时注入的 key
+   * 「用户切了档位，云端到底用哪一档」由两份东西共同决定，而它们全是**手工同步**的：
+   *   ① src/config/public.ts                     —— 用户看得到、点得到的档位清单（我的 → 生成档位）
+   *   ② {aiProxy,hotBoardRefresh}/llm.config.js  —— 云端裁决表（memberOnly 就是计费闸门）
    * 任何一处漂了都不会报错，只会变成「切了没效果」（端上放行 / 云端不认，或认不出那一档）
-   * 或「白送贵档」（云端清单漏了一档 = 对所有人开放）。这三条是「切换档位正常」的最小充分条件，
-   * 而且都是本地一次 `npm test` 就能验的 —— 不必等真机、真云、真会员。
+   * 或「白送贵档」（云端漏标 memberOnly = 对所有人开放）。2026-10-11 起还多守一条：
+   * **部署文件里不该再出现任何厂商 key** —— 换成云开发 AI 后 key 由云开发环境承担，
+   * 出现旧 key 说明还有人在用直连形态。这些都是本地一次 `npm test` 就能验的，
+   * 不必等真机、真云、真会员。
    */
   const HOT_LLM = path.join(CLOUD, 'hotBoardRefresh', 'llm.config.js')
 
@@ -1806,53 +1859,42 @@ describe('模型档位：三处口径不许漂（端上清单 / 云函数表 / �
     )
   })
 
-  it('端上每一家的每一档，云端表里都认得出来（认得出来，计费闸门才拦得住）', () => {
+  it('端上每一档，云端档位表里都认得出来（认得出来，计费闸门才拦得住）', () => {
     env.resetAll()
-    const providers = env.load('config/public').publicConfig.llm.providers
-    const cloud = require(LLM_CONFIG).PROVIDERS
+    const tiers = env.load('config/public').publicConfig.llm.models
+    const cloud = require(LLM_CONFIG).TIERS
     ok(
-      Array.isArray(providers) && providers.length > 1,
-      `端上清单读不到（拿到的是 ${JSON.stringify(providers)}），先确认 publicConfig.llm.providers 的结构`
+      Array.isArray(tiers) && tiers.length > 1,
+      `端上清单读不到（拿到的是 ${JSON.stringify(tiers)}），先确认 publicConfig.llm.models 的结构`
     )
 
-    for (const p of providers) {
-      const conf = cloud[p.id]
-      ok(conf, `端上有 ${p.id}，云端表里却没有它 —— 用户切过去会落到别家去`)
-
-      const free = p.models.filter((m) => !m.memberOnly).map((m) => m.id)
-      const paid = p.models.filter((m) => m.memberOnly).map((m) => m.id)
-
-      eq(conf.defaultModel, free[0], `${p.id}：云端的默认档要与端上「极速版」是同一个模型`)
-      eq(
-        (conf.memberOnlyModels || []).slice().sort().join('|'),
-        paid.slice().sort().join('|'),
-        `${p.id}：云端的计费档清单要与端上标了 memberOnly 的档完全吻合（少了 = 白送贵档）`
-      )
-      /* 免费档若同时出现在计费清单里，非会员连默认档都保不住（表现为「一片都降级」） */
-      notOk(
-        (conf.memberOnlyModels || []).indexOf(conf.defaultModel) >= 0,
-        `${p.id}：默认档不能算会员档，否则非会员连降级后的那一档都拿不到`
-      )
+    for (const t of tiers) {
+      const conf = cloud[t.tier]
+      ok(conf, `端上有 ${t.tier}，云端表里却没有它 —— 用户切过去会落到默认档去`)
+      eq(conf.memberOnly, t.memberOnly, `${t.tier}：端上与云端的会员闸门口径必须同值（云端那份才是闸门）`)
+      ok(conf.model, `${t.tier}：云端这一档没有模型名，生成时发不出请求`)
     }
+    /* 兜底档必须是免费档：非会员每次请求都落它，标成会员档会让非会员「一片都降级」 */
+    eq(cloud.fast.memberOnly, false, 'fast 是兜底档，不能算会员档')
+    eq(
+      require(LLM_CONFIG).DEFAULT_TIER,
+      env.load('config/public').publicConfig.llm.tier,
+      '端上默认档要与云端 DEFAULT_TIER 同值（端上没带档位时云端按它兜底）'
+    )
   })
 
-  it('cloudbaserc.json 给每一家都注入了 key（漏一家 = 切过去必报「未配置额度」）', () => {
-    env.resetAll()
-    const providers = env.load('config/public').publicConfig.llm.providers
-    const cloud = require(LLM_CONFIG).PROVIDERS
+  it('cloudbaserc.json 不再注入任何厂商 key（换成云开发 AI 后 key 由云开发环境承担）', () => {
     const rc = JSON.parse(read(path.join(ROOT, 'cloudbaserc.json')))
-    const ai = (rc.functions || []).filter((f) => f.name === 'aiProxy')[0]
-    ok(ai, 'cloudbaserc.json 里找不到 aiProxy')
-
-    for (const p of providers) {
-      const name = cloud[p.id].apiKeyEnv
-      const val = (ai.envVariables || {})[name]
-      ok(val, `aiProxy 少了 ${name}：用户切到 ${p.id} 只会拿到「未配置额度」，不是模型回答`)
-      eq(
-        val,
-        `{{env.${name}}}`,
-        `${name} 要从部署环境取，别把 key 明文写进仓库（cloudbaserc.json 是入库文件）`
-      )
+    for (const name of ['aiProxy', 'hotBoardRefresh']) {
+      const fn = (rc.functions || []).filter((f) => f.name === name)[0]
+      ok(fn, `cloudbaserc.json 里找不到 ${name}`)
+      const vars = fn.envVariables || {}
+      for (const k of ['QWEN_API_KEY', 'ZHIPU_API_KEY', 'OPENAI_API_KEY', 'LLM_PROVIDER']) {
+        notOk(k in vars, `${name} 不该再有 ${k}：大模型已统一走云开发 AI，key 由云开发环境承担`)
+      }
     }
+    /* 检索 key 仍在（那部分没改） */
+    const ai = (rc.functions || []).filter((f) => f.name === 'aiProxy')[0]
+    ok((ai.envVariables || {}).BOCHA_API_KEY, '检索 key 照旧从部署环境注入')
   })
 })

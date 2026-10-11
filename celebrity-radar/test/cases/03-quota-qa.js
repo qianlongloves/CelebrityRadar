@@ -1538,13 +1538,12 @@ describe('提问流程 utils/qa#askReport', () => {
 describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）', () => {
   const cfg = (load) => load('config/public').publicConfig
 
-  /** 默认供应商的会员专属档位：id / 档位标识都取自公共配置（写死会在运营调整清单时变成假失败） */
+  /** 会员专属档位：档位标识取自公共配置（写死会在运营调整清单时变成假失败） */
   const memberOnlyTier = (load) => {
     const m = cfg(load).llm.models.find((x) => x.memberOnly)
     ok(m, '前提：公共配置里应有 memberOnly 档位，否则本组用例失去意义')
     return m
   }
-  const memberOnlyModel = (load) => memberOnlyTier(load).id
 
   const seedMember = (db) =>
     db.__seed('users', [
@@ -1566,32 +1565,28 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
 
   it('模型闸门：非会员即使本机选了会员档也回落默认（设置页显示哪档 = 实际用哪档）', () => {
     const { load } = fresh()
-    const preferred = memberOnlyModel(load)
+    const preferred = memberOnlyTier(load).tier
     /* 本机存的是**档位标识**（fast / standard / reason），不是模型名 —— 见 utils/settings.ts */
-    load('utils/settings').setPreferredTier(memberOnlyTier(load).tier)
+    load('utils/settings').setPreferredTier(preferred)
 
-    eq(load('utils/llm').resolveChatModel(true), preferred, '会员应能用该档')
+    eq(load('utils/llm').resolveChatSelection(true).tier, preferred, '会员应能用该档')
     eq(
-      load('utils/llm').resolveChatModel(false),
-      cfg(load).llm.model,
-      '非会员必须回落默认模型（设备上残留的旧选择也要被忽略）'
+      load('utils/llm').resolveChatSelection(false).tier,
+      cfg(load).llm.tier,
+      '非会员必须回落默认档（设备上残留的旧选择也要被忽略）'
     )
   })
 
   it('模型闸门：偏好已从清单移除时回落默认（旧选择不能稳定生成失败）', () => {
     const { load } = fresh()
     load('utils/settings').setPreferredTier('已下架的档位')
+    /* 供应商键位仍留在 storage 里（历史遗留，见 utils/settings.ts），但端上已不再读它 —— 塞脏值也不该影响档位裁决 */
     load('utils/settings').setPreferredProvider('已下线的供应商')
-    eq(load('utils/llm').resolveChatModel(true), cfg(load).llm.model)
-    eq(load('utils/llm').resolveChatModel(false), cfg(load).llm.model)
-    eq(
-      load('utils/llm').resolveChatSelection(true).provider,
-      cfg(load).llm.provider,
-      '认不出的供应商 id 要回落默认那家，而不是把 id 原样带给云函数'
-    )
+    eq(load('utils/llm').resolveChatSelection(true).tier, cfg(load).llm.tier)
+    eq(load('utils/llm').resolveChatSelection(false).tier, cfg(load).llm.tier)
   })
 
-  it('供应商自选：换家不换档（存的档位标识跟着走），且 provider 随请求带给云函数', async () => {
+  it('档位随请求带给云函数：端上不再上报模型名/供应商，会员档仍按会员放行', async () => {
     const { db, load } = fresh()
     let seen = null
     env.registerCloudFn('aiProxy', (data) => {
@@ -1600,25 +1595,20 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
     })
     const settings = load('utils/settings')
     const llm = load('utils/llm')
-    const providers = cfg(load).llm.providers
-    ok(providers.length >= 2, '前提：至少有两家可选供应商，否则本用例失去意义')
 
-    /* 免费用户切到第二家：模型名整组换成那家的，且请求带的是那家的 id（云端据此取 key） */
-    const other = providers[1]
-    settings.setPreferredProvider(other.id)
+    /* 免费用户：请求只带档位，不含 model / provider（端上不再知道模型名，供应商维度已移除） */
     await llm.chatText('S', 'U')
-    eq(seen.provider, other.id, '用户选的那家必须随请求带给云函数（key 由云端按它去取）')
-    eq(seen.model, other.models[0].id, '免费用户切到哪家都只有那家的极速版')
-    eq(llm.resolveChatSelection(false).providerLabel, other.label)
+    eq(seen.tier, cfg(load).llm.tier, '默认档位要随请求带给云函数')
+    notOk(Object.prototype.hasOwnProperty.call(seen, 'model'), '端上不再上报模型名（模型名由云端按档位决定）')
+    notOk(Object.prototype.hasOwnProperty.call(seen, 'provider'), '端上不再上报供应商（供应商维度已移除）')
 
-    /* 会员选标准档后再切家：档位不变，只是换成那家的标准版 */
+    /* 会员选了会员档：请求带的是用户选的那一档标识，且设置页展示与实际请求同源 */
     seedMember(db)
-    settings.setPreferredTier(other.models[1].tier)
-    eq(llm.resolveChatSelection(true).model, other.models[1].id)
-    settings.setPreferredProvider(providers[0].id)
-    const after = llm.resolveChatSelection(true)
-    eq(after.tier, other.models[1].tier, '换供应商不该把用户的档位重置回极速版')
-    eq(after.model, providers[0].models[1].id, '首选那家也得到对应的标准版')
+    const preferred = memberOnlyTier(load).tier
+    settings.setPreferredTier(preferred)
+    await llm.chatText('S', 'U')
+    eq(seen.tier, preferred, '会员选的档位要随请求带给云函数')
+    eq(llm.resolveChatSelection(true).tier, preferred, '设置页展示与实际请求必须同源')
   })
 
   it('输出上限：请求体里不再出现 deep（上限对所有请求一样，不再是会员权益）', async () => {
@@ -1631,7 +1621,7 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
 
     await load('utils/llm').chatText('S', 'U')
     notOk(Object.prototype.hasOwnProperty.call(seen, 'deep'), '免费版不该带 deep')
-    eq(seen.model, cfg(load).llm.model)
+    eq(seen.tier, cfg(load).llm.tier)
 
     seedMember(db)
     load('utils/settings').setPreferredTier(memberOnlyTier(load).tier)
@@ -1640,7 +1630,7 @@ describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）
       Object.prototype.hasOwnProperty.call(seen, 'deep'),
       '会员也不再带 deep：输出上限是「这轮要写多长」的客观需求，截断会让整份报告降级（见 aiProxy 的 chatMaxTokens）'
     )
-    eq(seen.model, memberOnlyModel(load), '会员闸门照旧：模型档位仍按会员放行')
+    eq(seen.tier, memberOnlyTier(load).tier, '会员闸门照旧：模型档位仍按会员放行')
   })
 
   it('会员段落的提示词只往会员的 system 末尾追加，免费提示词逐字节不变', async () => {

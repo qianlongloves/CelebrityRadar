@@ -70,9 +70,9 @@ export const FREE_REFRESH_COOLDOWN_HOURS = MEMBER_BENEFITS.freeRefreshCooldownHo
 /**
  * 权益说明（会员入口与配额卡展示）。
  * ⚠ 与 MEMBER_BENEFITS 一一对应：改表必须同步改这里，否则页面承诺与实际额度不符。
- * 首条「标准版 / 深度推理模型」不对应本文件的数字，而对应 publicConfig.llm.providers 里各家的
- * memberOnly 列（端上锁 + 云函数 aiProxy 校验）。档位标签三家统一（极速版 / 标准版 / 深度推理），
- * 故文案不必随供应商增删而改；但改了 memberOnly 列要回来对一遍文案。
+ * 首条「标准版 / 深度推理模型」不对应本文件的数字，而对应 publicConfig.llm.models 的
+ * memberOnly 列（端上锁 + 云函数 aiProxy 校验）。档位标签唯一且稳定（极速版 / 标准版 / 深度推理），
+ * 故文案不必随档位调整而改；但改了 memberOnly 列要回来对一遍文案。
  */
 export const MEMBER_BENEFIT_POINTS: Array<{ title: string; note: string }> = [
   {
