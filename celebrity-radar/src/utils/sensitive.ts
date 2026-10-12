@@ -7,6 +7,7 @@
  * - 人物维度：SENSITIVE_NAMES 随发版维护（云端不下发，避免自身成为可探测接口）
  * - 失败策略（§六.7）：误拦可接受（用户可反馈），漏拦由第二级 LLM 兜底（disambiguate 拒答）
  */
+import { RESTRICTED_SEARCH_ALLOWED } from './debug'
 
 /** 涉政涉军关键词（查询串包含即拦截） */
 const SENSITIVE_KEYWORDS: string[] = [
@@ -24,6 +25,11 @@ const SENSITIVE_NAMES: string[] = [
 
 /** 第一级拦截：命中返回 true（调用方直接展示拒答态，禁止发起网络请求） */
 export function isSensitiveQuery(query: string): boolean {
+  /*
+   * 边界测试开关（默认 false）：见 utils/debug.ts#RESTRICTED_SEARCH_ALLOWED。
+   * 放开时这里整体短路 —— 它只是让**端上**不再拦截，云端 contentCheck 仍会拦涉政内容。
+   */
+  if (RESTRICTED_SEARCH_ALLOWED) return false
   const q = query.trim()
   if (!q) return false
   if (SENSITIVE_NAMES.some((n) => n && (q === n || q.includes(n)))) return true

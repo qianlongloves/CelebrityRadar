@@ -2,6 +2,8 @@ import { z } from 'zod'
 import { DOMAIN_CODES, DOMAIN_META, DomainCode, domainLabel, sanitizeDomain } from '@/config/domains'
 import { chatJSON, ChatJSONResult } from './llm'
 import { diagLog } from './cloud-diagnostics'
+/* 边界测试开关：打开时「涉政涉军 → refused」那条规则不拼进提示词（见 utils/debug.ts） */
+import { RESTRICTED_SEARCH_ALLOWED } from './debug'
 
 /** 消歧候选（§1.6：领域 + 国籍 + 一句代表事件）。领域自 2026-10-12 起可为自创短串 */
 export interface PersonCandidate {
@@ -35,13 +37,20 @@ const DisambiguationSchema = z.union([
   })
 ])
 
+/**
+ * 涉政涉军的拒答规则（第二级拦截）。**边界测试**时由 debug.allowRestrictedSearch 跳过
+ * （见 utils/debug.ts）—— 放开只影响这条提示词，云端 contentCheck 仍会拦涉政内容。
+ */
+const REFUSE_RULE =
+  '3. 若该名字对应政治、军事类人物，或存在此类同名人物，直接返回 {"refused": true}，不要返回任何候选。'
+
 /** 敏感过滤第二级（LLM 兜底）与消歧共用一套提示词（§六.7） */
 const BASE_RULES = [
   '你是名人消歧助手。用户输入一个名字，你返回同名公众人物的候选列表，供用户选择具体是哪一位。',
   '规则：',
   `1. 只收录真实存在的公众名人（${DOMAIN_TEXT_LIST}等领域）。`,
   `2. 每位候选字段：name（惯用名）、domain（优先从 ${DOMAIN_HINT_LIST} 中选，都不贴切时可自创一个 2~6 字的中文领域短词）、brief（一句话身份或代表事件，30 字内）。`,
-  '3. 若该名字对应政治、军事类人物，或存在此类同名人物，直接返回 {"refused": true}，不要返回任何候选。',
+  ...(RESTRICTED_SEARCH_ALLOWED ? [] : [REFUSE_RULE]),
   '4. 若查无此公众名人，返回 {"refused": false, "candidates": []}。',
   '5. 只输出 JSON，不要输出任何其他文字。'
 ]

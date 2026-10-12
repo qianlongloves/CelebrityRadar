@@ -4,6 +4,8 @@ import { FocusCode } from '@/config/filters'
 import { chatJSON, chatText, ChatJSONResult } from './llm'
 import { setCooldown } from './cooldown'
 import { diagLog } from './cloud-diagnostics'
+/* 边界测试开关：打开时第 14 条（敏感人物拒答）不拼进提示词（见 utils/debug.ts） */
+import { RESTRICTED_SEARCH_ALLOWED } from './debug'
 import { cleanText, clipText } from './text'
 import {
   REPORT_BUDGET,
@@ -639,8 +641,13 @@ const SYSTEM_SHARED_REALTIME = [
    * 第 14 条（敏感人物拒答）从下面那份要求池里**提到了这里**：它和 1 一样是全局条，
    * 拆批之后只要有**任何一批**返回 {"refused": true}，整份报告就按拒答处理（见 buildReport），
    * 所以它必须出现在每一批里，不能只挂在某一批上（挂在某一批 = 另外三批会照常写敏感内容）。
+   *
+   * 边界测试时由 debug.allowRestrictedSearch 整条跳过（见 utils/debug.ts）—— 放开只影响
+   * 这条提示词，云端 contentCheck 仍会拦涉政内容。
    */
-  '14. 若素材显示该人物属政治、军事类敏感人物，仅返回 {"refused": true}。'
+  ...(RESTRICTED_SEARCH_ALLOWED
+    ? []
+    : ['14. 若素材显示该人物属政治、军事类敏感人物，仅返回 {"refused": true}。'])
 ].join('\n')
 
 /*

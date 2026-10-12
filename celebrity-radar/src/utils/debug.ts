@@ -47,6 +47,24 @@ export const COOLDOWN_DISABLED = publicConfig.debug.disableCooldown
 export const RAW_IO_LOG = publicConfig.debug.rawIoLog
 
 /**
+ * 放开「限制类检索」的三层拦截（涉政涉军）—— **只用于边界测试，上线必须 false**（2026-10-12）。
+ *
+ * 打开后：① utils/sensitive.ts 的本地静态拦截短路；② 消歧提示词里「政治 / 军事类人物 →
+ * refused」那条规则不再拼接；③ 报告提示词第 14 条同样不拼。
+ *
+ * ⚠ 两点必须一起记住：**打开它不等于「不限制搜索」**（云端 contentCheck 仍会拦涉政内容），
+ *   以及它**绝不能**变成云端下发 —— 那等于给线上留一个可探测的后门。
+ * 下面的启动告警是刻意的：调试行为不该在事后被误当成线上表现。
+ */
+export const RESTRICTED_SEARCH_ALLOWED = publicConfig.debug.allowRestrictedSearch
+
+if (RESTRICTED_SEARCH_ALLOWED) {
+  console.warn(
+    '[debug] 限制类检索已放开（allowRestrictedSearch=true）：仅用于边界测试，上线前必须改回 false'
+  )
+}
+
+/**
  * 打印上游原始报文。
  *
  * 传对象本身而不是 JSON.stringify 后的字符串：微信开发者工具的 Console 会把对象

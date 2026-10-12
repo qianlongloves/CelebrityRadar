@@ -477,6 +477,15 @@ export default function MemberPage() {
           </View>
 
           <View className='page-member__notes'>
+            {/*
+              计费口径（2026-10-12 用户要求「扣减规则写进会员介绍」）。
+              刻意**不重复额度一览里的数字**（那一块就在上面，重复写作是此前删掉一条的原因），
+              只讲用户最容易踩到、而且对他有利的两条事实 —— 它们都是代码里的硬口径：
+              `consume` 在报告落库之后才执行；缓存命中的报告在配额检查**之前**就返回了。
+            */}
+            <Text className='page-member__note'>
+              · 只有「发起生成并成功出报告」才计数；查看已生成的报告、以及生成不达标或失败，都不计数
+            </Text>
             <Text className='page-member__note'>· 支付由微信支付完成，成功后会员立即生效（个别情况延迟几秒）</Text>
             <Text className='page-member__note'>· 同一账号可反复续费，剩余时长按购买天数顺延累加</Text>
             {/*

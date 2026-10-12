@@ -69,6 +69,20 @@ export interface LocalDebugFlags {
   disableRefreshQuota: boolean
   disableCooldown: boolean
   rawIoLog: boolean
+  /**
+   * 放开「限制类检索」的三层拦截 —— **只用于边界测试，上线必须 false**（2026-10-12 新增）。
+   *
+   * 三层分别是：
+   *   ① utils/sensitive.ts 的本地静态拦截（涉政涉军关键词，命中即拒且**不发任何请求**）；
+   *   ② 消歧提示词里「政治、军事类人物 → refused」那条规则（utils/disambiguate.ts）；
+   *   ③ 报告提示词第 14 条（素材显示属政治 / 军事类敏感人物 → 整份拒答，utils/report.ts）。
+   *
+   * ⚠ 打开它**不等于**「不限制搜索」：云端 `contentCheck`（security.msgSecCheck）仍会拦涉政内容，
+   *   这里只是让提示词不再主动拒答。它只该在开发版 / 体验版用来摸边界。
+   * ⚠ **绝不能**做成云端下发或服务端开关 —— 那等于给线上留一个可探测的后门
+   *   （与 dbInit 的 DB_ADMIN_TOKEN、aiProxy 探针的 fail-closed 同一口径）。
+   */
+  allowRestrictedSearch: boolean
   /*
    * 这里**刻意没有**「强制会员身份」开关（曾名 memberOverride，2026-10-10 移除）。
    *
@@ -147,6 +161,7 @@ export const localConfig: LocalConfig = {
     disableAskQuota: false,
     disableRefreshQuota: false,
     disableCooldown: false,
-    rawIoLog: false
+    rawIoLog: false,
+    allowRestrictedSearch: false
   }
 }
