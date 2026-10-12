@@ -174,7 +174,15 @@ function load(rel) {
  */
 function setDebugFlags(patch) {
   const config = require(path.join(BUILD, 'config/public'))
-  Object.assign(config.publicConfig.debug, patch)
+  /*
+   * 「限制类检索」的放开开关**一律先强制关回 false**（2026-10-12 补）。
+   *
+   * 它与其它 debug 开关不是一类：disable* 只影响闸门是否拦，而这个会**改掉本地拦截与两处提示词**
+   * —— 而用例断言的恰恰是那几层拦截的逻辑（sensitive 命中、消歧/报告提示词里的拒答规则）。
+   * 若跟随本机 local.ts，谁为了摸边界把它打开，整套用例就会莫名其妙变红（正是本函数要防的事，
+   * 见上方注释）。要测「放开后的行为」时，在 patch 里显式传 `allowRestrictedSearch: true` 覆盖即可。
+   */
+  Object.assign(config.publicConfig.debug, { allowRestrictedSearch: false }, patch)
   return config.publicConfig.debug
 }
 
