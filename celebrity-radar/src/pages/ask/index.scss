@@ -11,6 +11,9 @@
   &__picker {
     /* card 自带外边距；这里只收敛底部间距，避免与下方会话头部之间空太多 */
     margin-bottom: 6rpx;
+    /* 网格化后选人区会随分组变高：不让它被 flex 压缩（压缩会把卡片内容裁掉），
+       余下高度交给会话面板 flex:1 —— 展开全部是用户的主动选择，版面代价由它自己承担。 */
+    flex-shrink: 0;
   }
 
   /* 标题行（O-26 瘦身）：字号降一档、下间距收紧。
@@ -42,31 +45,46 @@
     color: $text-3;
   }
 
-  &__people {
-    width: 100%;
-    white-space: nowrap;
+  /* 分组（2026-10-12）：最近看过 / 我的关注 / 搜索加入，各一组纵向铺开。
+     原先是一条横滑卡片带 —— 候选到十几位时只能靠左右滑找人，而且两类人混在一起、
+     看不出某位为什么在列表里。分组后来源一目了然，也把「最近看过优先」显式化。 */
+  &__group {
+    margin-top: 6rpx;
   }
 
-  &__people-inner {
+  &__group-title {
+    display: block;
+    margin-bottom: 6rpx;
+    color: $text-3;
+    font-size: 20rpx;
+  }
+
+  &__grid {
     display: flex;
-    gap: 12rpx;
-    padding-bottom: 4rpx;
+    flex-wrap: wrap;
+  }
+
+  /* 每行 4 个：宽度写死 25%，卡片之间的间距靠 person 的外边距做 ——
+     避开 calc() / gap 在不同基础库上的差异，也不必依赖全局 box-sizing。 */
+  &__cell {
+    width: 25%;
+    display: flex;
   }
 
   /* 选人卡片：头像 + 名字 + 「多久前生成 · 素材条数」。
-     原来是纯文字胶囊，横滑时很难区分（同名 / 名字相近尤其明显），也看不出报告有多旧；
-     换成卡片后首字头像 + 领域色一眼可辨，副行直接给出「这份语料有多新」这个关键信息。
+     首字头像 + 领域色一眼可辨（同名 / 名字相近时尤其有用），副行给出「这份语料有多新」。
 
-     O-26 瘦身：180 → 152rpx（一屏多露出一张）、内边距 16 → 10rpx、头像 48 → 40rpx，
-     整条矮约 20rpx。卡片本身是「多点一下就选完」的过渡控件，不必按正文卡片的规格做。 */
+     2026-10-12 网格化：从横滑定宽卡片（152rpx）改为「每行 4 张、随格宽自适应」——
+     宽度交给 flex（cell 25% + person flex:1 + 外边距留缝），竖排信息仍是头像 / 名字 / 副行三行。 */
   &__person {
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 4rpx;
-    flex-shrink: 0;
-    width: 152rpx;
-    padding: 10rpx;
+    margin: 0 4rpx 12rpx;
+    padding: 12rpx 6rpx;
     border: 2rpx solid $line;
     border-radius: $radius-md;
     background: #fff;
@@ -130,6 +148,96 @@
       color: $brand;
       font-weight: 600;
     }
+  }
+
+  /* 联想推荐（2026-10-12）：输入时按热门榜补全，胶囊式平铺、可换行。
+     只列本机候选里没有的人 —— 本机已有的在下方网格里，不重复。 */
+  &__suggest {
+    margin-bottom: 10rpx;
+  }
+
+  &__suggest-title {
+    display: block;
+    margin-bottom: 6rpx;
+    color: $text-3;
+    font-size: 20rpx;
+  }
+
+  &__suggest-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8rpx;
+  }
+
+  &__suggest-item {
+    display: flex;
+    align-items: center;
+    gap: 6rpx;
+    padding: 6rpx 14rpx;
+    border: 2rpx solid $line;
+    border-radius: 999rpx;
+    background: #fff;
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  &__suggest-name {
+    color: $text-1;
+    font-size: 24rpx;
+    font-weight: 600;
+  }
+
+  &__suggest-tag {
+    color: $text-3;
+    font-size: 18rpx;
+  }
+
+  /* 「直接向 AI 提问」兜底出口（未接触过的人）：虚线描边与候选卡片区分开 ——
+     它不是一个候选人，而是一个动作，样式上必须一眼看出差别。 */
+  &__direct {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12rpx;
+    margin-bottom: 10rpx;
+    padding: 12rpx 16rpx;
+    border: 2rpx dashed $brand;
+    border-radius: $radius-md;
+    background: rgba(95, 51, 225, 0.05);
+
+    &--tap {
+      opacity: 0.75;
+    }
+  }
+
+  &__direct-text {
+    color: $brand;
+    font-size: 24rpx;
+    font-weight: 600;
+  }
+
+  &__direct-hint {
+    flex-shrink: 0;
+    color: $text-3;
+    font-size: 18rpx;
+  }
+
+  /* 折叠时底部的「展开全部 / 收起」 */
+  &__more {
+    display: flex;
+    justify-content: center;
+    padding-top: 2rpx;
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  &__more-text {
+    color: $brand;
+    font-size: 22rpx;
   }
 
   /* 候选较多时的过滤框（见 pages/ask 的 FILTER_FROM） */
