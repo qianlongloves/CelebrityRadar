@@ -65,6 +65,10 @@
  */
 const cloud = require('wx-server-sdk')
 const https = require('https')
+/* 头像图常见 http 源（不少国内站点仍是 http），故两个模块都要：见 downloadImage 的协议选择 */
+const http = require('http')
+/* 头像存云存储时用它的 sha1 给 personKey 编个短名（见 portraitCloudPath） */
+const crypto = require('crypto')
 /*
  * 厂商 × 质量档 × 能力槽注册表 + 解析（换模型改它，不改本文件）。⚠ 与 hotBoardRefresh 目录下的副本逐字一致。
  * VENDORS / QUALITIES / vendorCatalog 本身也要导入：模型探针要列出**全部槽位**的模型名，
@@ -544,6 +548,13 @@ const PORTRAIT_MAX_BYTES = 3 * 1024 * 1024
 const PORTRAIT_TIMEOUT_MS = 8000
 /** 人物图的最小边：小于这个尺寸的基本是图标 / 缩略图，不该当头像 */
 const PORTRAIT_MIN_SIDE = 150
+/**
+ * 可接受的最小体积（字节）。这条判据**只能用字节数**：占位图 / 装饰图（如 1×1 的 sg_trans.gif，
+ * 只有 49 字节）的宽高与 Content-Type 都像正经图片，元信息拦不住，必须拿到内容才认得出来。
+ */
+const PORTRAIT_MIN_BYTES = 5000
+/** 每路检索最多试几张候选：为了跳过占位图要往后看，但不必把整页候选全下完 */
+const PORTRAIT_TRY_MAX = 3
 
 const trimStr = (v) => String(v == null ? '' : v).trim()
 
@@ -594,7 +605,49 @@ function pickPortrait(list, name) {
   }
   scored.sort((a, b) => b.score - a.score)
   /* 诊断信息随返回值带出：排障时一眼分辨「上游没图」与「被规则筛掉」（见本函数上方注释） */
-  return { picked: scored[0] || null, total: Array.isArray(list) ? list.length : 0, rejected: rejected.slice(0, 3) }
+  return { candidates: scored, total: Array.isArray(list) ? list.length : 0, rejected: rejected.slice(0, 3) }
+}
+
+/**
+ * 下载并落库一张候选图；**不可用就返回 null**（调用方继续试下一张）。
+ *
+ * 为什么要有这道「试下一张」：博查的图片结果里混着占位图与装饰图 —— 实测遇到过
+ * `sg_trans.gif`（49 字节的 1×1 透明图），它宽高与 Content-Type 都像正经图片，光看元信息拦不住；
+ * 这种图画在头像位上等于**空白头像，比首字还差**。判据只能是拿到字节后的体积。
+ */
+async function storePortraitImage(personKey, name, cand) {
+  let got = null
+  try {
+    got = await downloadImage(cand.url, PORTRAIT_TIMEOUT_MS)
+  } catch (err) {
+    return null
+  }
+  if (got.buffer.length < PORTRAIT_MIN_BYTES) return null
+
+  /* 实际类型缺失（极少）时退回博查给的 encodingFormat，再兜底 jpg */
+  const kind = got.type || cand.fmt
+  const suffix = /png/.test(kind) ? 'png' : /gif/.test(kind) ? 'gif' : /webp/.test(kind) ? 'webp' : 'jpg'
+
+  const up = await cloud.uploadFile({
+    cloudPath: portraitCloudPath(personKey, suffix),
+    fileContent: got.buffer
+  })
+  const fileId = (up && up.fileID) || ''
+  if (!fileId) return null
+
+  await db.collection('person_assets').doc(personKey).set({
+    data: {
+      person_key: personKey,
+      name,
+      avatar_file_id: fileId,
+      source_url: cand.url,
+      width: cand.w,
+      height: cand.h,
+      bytes: got.buffer.length,
+      updated_at: new Date().toISOString()
+    }
+  })
+  return { fileId, url: cand.url, bytes: got.buffer.length }
 }
 
 /** 下载一张图（限时 / 限量 / 限类型）：只给头像用，故不重试 —— 没有头像远好过拖死一次调用 */
@@ -613,8 +666,15 @@ function downloadImage(url, timeoutMs) {
         resolve(v)
       }
     }
+    /*
+     * 协议必须按 URL 选模块（2026-10-12 实测踩到）：博查的图片结果里有相当一部分是 `http://`
+     * （国内不少站点仍是 http），拿 `https.get` 去请求 http 会直接抛
+     * `ERR_INVALID_PROTOCOL: Protocol "http:" not supported` —— 而且这是个**未捕获异常**，
+     * 会把整个云函数调用打成失败。两条路都备着，各自走对的模块。
+     */
+    const mod = url.startsWith('http://') ? http : https
     try {
-      const req = https.get(url, { timeout: timeoutMs }, (res) => {
+      const req = mod.get(url, { timeout: timeoutMs }, (res) => {
         const type = String(res.headers['content-type'] || '')
         if (res.statusCode !== 200) {
           res.resume()
@@ -649,6 +709,21 @@ function downloadImage(url, timeoutMs) {
 }
 
 /**
+ * 头像在云存储里的路径：`portraits/<sha1(personKey) 前 16 位>.<ext>`。
+ *
+ * 为什么不用人名直接拼路径：personKey 是中文（「周杰伦#ent」），拼进去会被逐字替换成一串下划线
+ * （`portraits/____ent-….jpg`）—— 控制台里看不出是谁，也和别的文件区分不开。
+ * 为什么**不掺时间戳**：掺了就变成「每取一次图多一个对象」，人工重取会留下孤儿文件；
+ * 这个路径对同一 personKey 是确定性的，重新上传即**覆盖**（CloudBase 的 uploadFile 允许覆盖），
+ * 存储里始终只有一份。扩展名参与路径，故「先 jpg 后 png」这种极少见的情况会留一个旧文件 ——
+ * 那只有人工重取才发生，代价可忽略（需要的话用 person_assets.source_url 定位）。
+ */
+function portraitCloudPath(personKey, ext) {
+  const digest = crypto.createHash('sha1').update(personKey).digest('hex').slice(0, 16)
+  return `portraits/${digest}.${ext}`
+}
+
+/**
  * action:'portrait' —— 取一个人的头像/照片，存云存储，写 person_assets（每人一条）。
  * 返回 `{ ok, fileId, cached? }`。**失败不抛错**（回 ok:false），让端上静默回退到「首字头像」——
  * 一张图取不到，不该影响任何主流程。
@@ -674,7 +749,6 @@ async function handlePortrait(event) {
    * 两次都没有可用图，才认「这个人就是没有图」——并把每次的候选数带回去，便于排障。
    */
   const attempts = []
-  let picked = null
   for (const q of [`${name} 照片`, name]) {
     const params = { query: q, freshness: 'oneMonth', summary: true, count: 5 }
     const res = await postJson(BOCHA_ENDPOINT, { Authorization: `Bearer ${key}` }, params, TIMEOUT_MS)
@@ -687,36 +761,15 @@ async function handlePortrait(event) {
     const images = ((res.data || {}).data || {}).images || {}
     const pick = pickPortrait(images.value, name)
     attempts.push({ q, candidates: pick.total, rejected: pick.rejected })
-    if (pick.picked) {
-      picked = pick.picked
-      break
+
+    /* 按打分顺序逐张试，取到第一张「真图」即返回：占位图 / 下载失败 / 过小的一律跳过
+       （判定与理由见 storePortraitImage）。异常整段兜住 —— 头像绝不该把一次调用打成失败。 */
+    for (const cand of pick.candidates.slice(0, PORTRAIT_TRY_MAX)) {
+      const stored = await storePortraitImage(personKey, name, cand).catch(() => null)
+      if (stored) return { ok: true, fileId: stored.fileId, source: stored.url, bytes: stored.bytes }
     }
   }
-  if (!picked) return { ok: false, error: '博查没有返回可用图片', attempts }
-
-  const got = await downloadImage(picked.url, PORTRAIT_TIMEOUT_MS)
-  const suffix = picked.fmt === 'image/png' ? 'png' : 'jpg'
-  const safeKey = personKey.replace(/[^0-9a-zA-Z]/g, '_').slice(0, 60)
-  const up = await cloud.uploadFile({
-    cloudPath: `portraits/${safeKey}-${Date.now()}.${suffix}`,
-    fileContent: got.buffer
-  })
-  const fileId = (up && up.fileID) || ''
-  if (!fileId) return { ok: false, error: '云存储未返回 fileID' }
-
-  await db.collection('person_assets').doc(personKey).set({
-    data: {
-      person_key: personKey,
-      name,
-      avatar_file_id: fileId,
-      source_url: picked.url,
-      width: picked.w,
-      height: picked.h,
-      bytes: got.buffer.length,
-      updated_at: new Date().toISOString()
-    }
-  })
-  return { ok: true, fileId, source: picked.url, bytes: got.buffer.length }
+  return { ok: false, error: '博查返回的图片都不可用（占位图 / 下载失败 / 过小）', attempts }
 }
 
 /**
