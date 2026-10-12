@@ -8,6 +8,7 @@ import { FOCUS_META, FocusCode, isFocusCode } from '@/config/filters'
 import EmptyState from '@/components/empty-state'
 import NoticeClose from '@/components/notice-close'
 import QuoteDetail from '@/components/quote-detail'
+import PersonAvatar from '@/components/person-avatar'
 import ReportLoading, { ReportRefreshing } from '@/components/report-loading'
 import {
   getOrBuildReport,
@@ -37,6 +38,7 @@ import {
 import { isFollowed, toggleFollow } from '@/utils/follows'
 import { isMonitored, listPersonWatches, monitorPerson, unmonitorPerson } from '@/utils/risk-watch'
 import { addHistory } from '@/utils/history'
+import { ensurePortrait, readPortraits } from '@/utils/portrait'
 import {
   dismissPromo,
   isPromoDismissed,
@@ -618,9 +620,17 @@ export default function ReportPage() {
       setRelated([])
       return
     }
+    /*
+     * 报告就绪即异步补图（backfill）：不管是刚生成的还是读到的老缓存，首次打开都会
+     * fire-and-forget 取一次真图；不 await、不阻塞渲染，失败静默（ensurePortrait 自身不抛）。
+     */
+    void ensurePortrait(rep.personKey, rep.name)
     let alive = true
     void loadRelated(rep).then((rows) => {
-      if (alive) setRelated(rows)
+      if (!alive) return
+      setRelated(rows)
+      /* 延伸阅读是一组人：一次批量读预热内存缓存，避免每行各打一次云函数 */
+      if (rows.length > 0) void readPortraits(rows.map((r) => r.personKey))
     })
     return () => {
       alive = false
@@ -1226,8 +1236,17 @@ export default function ReportPage() {
      * （下拉刷新、返回顶部都依赖它），为一个目录条换容器不值当。offsetTop 留一点，
      * 让卡片标题不贴着屏幕顶端。跳转失败不做提示 —— 目标一定存在（目录与卡片条件同源），
      * 失败只可能是页面正在重渲染。
+     *
+     * ⚠ 必须等「目录收起」这一帧落到视图层之后再去量锚点（2026-10-12 修「跳转位置不对」）：
+     * 目录展开时那一整块胶囊列表就在目标节的**上方**，而 setState 是异步的 ——
+     * 在同一个函数里紧接着调 pageScrollTo，量到的仍是**展开态**的 offsetTop；
+     * 等目录收起、上方内容整体上移一整块目录的高度之后，页面就停在目标的**下方**，
+     * 表现为「点了目录，却落到下面一节/中间位置」。nextTick 在本帧渲染落到视图层后触发，
+     * 此时量到的才是收起后的真实位置。
      */
-    Taro.pageScrollTo({ selector: `#${id}`, offsetTop: -12, duration: 260 }).catch(() => {})
+    Taro.nextTick(() => {
+      Taro.pageScrollTo({ selector: `#${id}`, offsetTop: -12, duration: 260 }).catch(() => {})
+    })
   }, [])
 
   /*
@@ -1322,12 +1341,14 @@ export default function ReportPage() {
           </View>
 
           <View className='page-report__ident'>
-            {/* 人物头像：平台没有名人真实头像素材（LLM 也不产图），全项目统一用
-                「领域色渐变 + 姓名首字」占位，这里与 person-card / 主页保持一致。
-                白色描边是为了在紫色横幅上把头像和背景分开。 */}
-            <View className={`page-report__avatar page-report__avatar--${domainStyleCode(domain)}`}>
-              {report.name.slice(0, 1)}
-            </View>
+            {/* 人物头像：有真图（云端博查照片）就画照片，没有仍回落「领域色渐变 + 姓名首字」
+                （见 components/person-avatar）。白色描边是为了在紫色横幅上把头像和背景分开。 */}
+            <PersonAvatar
+              personKey={report.personKey}
+              name={report.name}
+              domain={domain}
+              className={`page-report__avatar page-report__avatar--${domainStyleCode(domain)}`}
+            />
             {/* 名字行 = 名字 + 领域。不换行且 overflow:hidden：名字过长时收省略号让位。
                 领域跟在名字后面而不是另起一行 —— 它是名字的定语，两三个字，值得花这点宽度。 */}
             <View className='page-report__name-row'>
@@ -2547,9 +2568,12 @@ export default function ReportPage() {
                   hoverClass='page-report__related-item--tap'
                   onClick={() => Taro.navigateTo({ url: reportSharePath(r.personKey) })}
                 >
-                  <View className={`page-report__related-avatar page-report__related-avatar--${domainStyleCode(r.domain)}`}>
-                    {r.name.slice(0, 1)}
-                  </View>
+                  <PersonAvatar
+                    personKey={r.personKey}
+                    name={r.name}
+                    domain={r.domain}
+                    className={`page-report__related-avatar page-report__related-avatar--${domainStyleCode(r.domain)}`}
+                  />
                   <View className='page-report__related-main'>
                     <Text className='page-report__related-name'>{r.name}</Text>
                     <Text className='page-report__related-words'>{`共同话题：${r.shared.join(' / ')}`}</Text>

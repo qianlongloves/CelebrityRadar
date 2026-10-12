@@ -1,11 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Taro, { useDidShow, usePullDownRefresh } from '@tarojs/taro'
 import { View, Text, Picker } from '@tarojs/components'
 import EmptyState from '@/components/empty-state'
 import NoticeClose from '@/components/notice-close'
 import Skeleton from '@/components/skeleton'
+import PersonAvatar from '@/components/person-avatar'
 import { listFollows, FollowRow } from '@/utils/follows'
 import { getFeedDetails, refreshAllFeeds } from '@/utils/cache'
+import { readPortraits } from '@/utils/portrait'
 import { NewsItem } from '@/utils/search'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { fromNow, sameDay8 } from '@/utils/time'
@@ -211,6 +213,12 @@ export default function Feed() {
   const shown = personFilter ? entries.filter((e) => e.personKey === personFilter) : entries
   const filterName = follows.find((f) => f.person_key === personFilter)?.name ?? ''
 
+  /* 真图预热：关注流一屏多条动态（同一人可能多条），去重后一次批量读把这些人拉进缓存 */
+  useEffect(() => {
+    const keys = Array.from(new Set(entries.map((e) => e.personKey)))
+    if (keys.length > 0) void readPortraits(keys)
+  }, [entries])
+
   return (
     <View className='page-feed glow-page'>
       {loading && <Skeleton variant='feed' rows={3} withStats />}
@@ -325,9 +333,12 @@ export default function Feed() {
             >
               <View className='page-feed__item-head'>
                 <View className='page-feed__item-person'>
-                  <View className={`page-feed__item-icon page-feed__item-icon--${domainStyleCode(e.domain)}`}>
-                    {e.personName.slice(0, 1)}
-                  </View>
+                  <PersonAvatar
+                    personKey={e.personKey}
+                    name={e.personName}
+                    domain={e.domain}
+                    className={`page-feed__item-icon page-feed__item-icon--${domainStyleCode(e.domain)}`}
+                  />
                   <View className='page-feed__item-person-info'>
                     <Text className='page-feed__item-name'>{e.personName}</Text>
                     <Text className='page-feed__item-domain'>

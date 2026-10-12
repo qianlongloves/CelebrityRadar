@@ -5,9 +5,11 @@ import { View, Text } from '@tarojs/components'
 import Skeleton from '@/components/skeleton'
 import EmptyState from '@/components/empty-state'
 import SharePoster from '@/components/share-poster'
+import PersonAvatar from '@/components/person-avatar'
 import { QuoteCardInput } from '@/utils/share-card'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { getCachedReports } from '@/utils/cache'
+import { readPortraits } from '@/utils/portrait'
 import {
   listFavorites,
   removeFavorite,
@@ -136,6 +138,11 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
     void load()
   }, [load, reloadKey])
 
+  /* 真图预热：收藏列表一屏多人，一次批量读把全部人拉进缓存，避免逐卡各打一次云函数 */
+  useEffect(() => {
+    if (favorites.length > 0) void readPortraits(favorites.map((f) => f.person_key))
+  }, [favorites])
+
   /**
    * 下拉刷新。
    *
@@ -183,18 +190,22 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
     favFilter === 'all' ? favorites : favorites.filter((f) => f.type === favFilter)
 
   /**
-   * 名人头像。全项目没有真实头像素材，统一用「姓名首字 + 领域色」（与 person-card、
-   * 报告页、头像出图同一套色）。取不到首字时用「?」占位 —— 那说明这行的 name 丢了，
-   * 渲染一个空圆只会让人以为样式坏了，不如明示「这里本该是头像」。
+   * 名人头像：有真图就画照片，没有回落「姓名首字 + 领域色」（见 components/person-avatar）。
+   * 姓名都丢了（老脏数据）时不取真图 —— 定位不到人只会白打一次云调用，
+   * 直接退回「?」并明示「这里本该是头像」，而不是渲染一个空圆让人以为样式坏了。
    */
   const renderAvatar = (f: FavoriteRow, domain: string) => {
-    const initial = (f.name ?? '').trim().slice(0, 1)
+    const name = (f.name ?? '').trim()
+    if (!name) {
+      return <View className='favorites-view__avatar favorites-view__avatar--unknown'>?</View>
+    }
     return (
-      <View
-        className={`favorites-view__avatar favorites-view__avatar--${initial ? domainStyleCode(domain) : 'unknown'}`}
-      >
-        {initial || '?'}
-      </View>
+      <PersonAvatar
+        personKey={f.person_key}
+        name={name}
+        domain={domain}
+        className={`favorites-view__avatar favorites-view__avatar--${domainStyleCode(domain)}`}
+      />
     )
   }
 

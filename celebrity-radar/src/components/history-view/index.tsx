@@ -3,9 +3,11 @@ import Taro from '@tarojs/taro'
 import { ScrollView, View, Text } from '@tarojs/components'
 import Skeleton from '@/components/skeleton'
 import EmptyState from '@/components/empty-state'
+import PersonAvatar from '@/components/person-avatar'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { getCachedReports } from '@/utils/cache'
 import { listHistory, clearHistory, HistoryRow, HISTORY_LIMIT } from '@/utils/history'
+import { readPortraits } from '@/utils/portrait'
 import { fromNow, isStaleReport } from '@/utils/time'
 import './index.scss'
 
@@ -90,6 +92,12 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
     }
   }, [history])
 
+  /* 真图预热：历史页有「继续看」与流水两处列表，一次批量读把全部人拉进缓存，避免逐行云调用 */
+  useEffect(() => {
+    const keys = [...recent.map((c) => c.personKey), ...history.map((h) => h.person_key)]
+    if (keys.length > 0) void readPortraits(keys)
+  }, [recent, history])
+
   const openPerson = (personKey: string) => {
     Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}` })
   }
@@ -161,9 +169,12 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
                 hoverClass='history-view__continue-card--tap'
                 onClick={() => openPerson(c.personKey)}
               >
-                <View className={`history-view__continue-avatar history-view__continue-avatar--${domainStyleCode(c.domain)}`}>
-                  {c.name.slice(0, 1)}
-                </View>
+                <PersonAvatar
+                  personKey={c.personKey}
+                  name={c.name}
+                  domain={c.domain}
+                  className={`history-view__continue-avatar history-view__continue-avatar--${domainStyleCode(c.domain)}`}
+                />
                 <Text className='history-view__continue-name'>{c.name}</Text>
                 <Text
                   className={`history-view__continue-age${
@@ -189,9 +200,12 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
             onClick={() => openPerson(h.person_key)}
           >
             <View className='history-view__row'>
-              <View className={`history-view__icon history-view__icon--${domainStyleCode(domain)}`}>
-                {h.name.slice(0, 1)}
-              </View>
+              <PersonAvatar
+                personKey={h.person_key}
+                name={h.name}
+                domain={domain}
+                className={`history-view__icon history-view__icon--${domainStyleCode(domain)}`}
+              />
               <View className='history-view__row-info'>
                 <Text className='history-view__row-name'>{h.name}</Text>
                 <Text className='text-tertiary'>{domainLabel(domain)}</Text>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Taro, { useDidShow, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text, ScrollView, Image } from '@tarojs/components'
 import { AtSearchBar, AtButton } from 'taro-ui'
@@ -13,10 +13,12 @@ import {
   summarizeFilters
 } from '@/config/filters'
 import PersonCard, { PersonInfo } from '@/components/person-card'
+import PersonAvatar from '@/components/person-avatar'
 import EmptyState from '@/components/empty-state'
 import { useAuth } from '@/stores/auth'
 import { HOT_PERSONS, HotPerson } from '@/config/hot'
 import { loadHotBoard } from '@/utils/hot-board'
+import { readPortraits } from '@/utils/portrait'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
 import { track } from '@/utils/events'
@@ -271,6 +273,16 @@ export default function Index() {
   const hotDomains = DOMAIN_CODES.filter((d) => board.some((p) => p.domain === d))
   const hotWords = board.slice(0, HOT_WORD_COUNT)
 
+  /*
+   * 真图预热：今日名人 + 热门榜是一屏多人的场景，逐个取图就是十几次云调用；
+   * 这里一次批量读全部拉进内存缓存（只读 person_assets，不触发云端取图），卡片随即同步命中。
+   */
+  const heroKey = buildPersonKey(hero.name, hero.domain)
+  const hotKeys = useMemo(() => board.map((p) => buildPersonKey(p.name, p.domain)), [board])
+  useEffect(() => {
+    void readPortraits([heroKey, ...hotKeys])
+  }, [heroKey, hotKeys])
+
   return (
     <View className='page-index glow-page safe-tab'>
       {/* 问候区（头像 + 昵称 + 右侧「关注流 / 周报 / 关键词预警 / 消息」四个图标入口，点击头像进「我的」） */}
@@ -325,7 +337,13 @@ export default function Index() {
             className={`page-index__hero-avatar page-index__hero-avatar--${domainStyleCode(hero.domain)}`}
             onClick={() => openPerson(hero.name, hero.domain)}
           >
-            {hero.name.slice(0, 1)}
+            {/* 真图铺满圆（渐变/描边留在外层 hero-avatar 上，⟳ 换一位也要留在外层） */}
+            <PersonAvatar
+              personKey={heroKey}
+              name={hero.name}
+              domain={hero.domain}
+              className='page-index__hero-photo'
+            />
             <View
               className='page-index__hero-shuffle'
               onClick={(e) => {

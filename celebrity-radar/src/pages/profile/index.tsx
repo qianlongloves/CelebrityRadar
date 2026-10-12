@@ -3,6 +3,7 @@ import Taro, { useDidShow, useRouter, useShareAppMessage, useShareTimeline } fro
 import { View, Text } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
 import Skeleton from '@/components/skeleton'
+import PersonAvatar from '@/components/person-avatar'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
 import QuoteDetail from '@/components/quote-detail'
@@ -159,14 +160,14 @@ export default function Profile() {
     <View className='page-profile safe-bottom'>
       <View className='card page-profile__info'>
         <View className='page-profile__row'>
-          <View className='page-profile__avatar'>{name.slice(0, 1)}</View>
+          <PersonAvatar personKey={personKey} name={name} domain={domain} className='page-profile__avatar' />
           <View className='page-profile__meta'>
             <View className='page-profile__name-row'>
               <Text className='page-profile__name'>{name}</Text>
               <View className={`chip chip--${domainStyleCode(domain)}`}>{domainLabel(domain)}</View>
             </View>
             <View className='text-tertiary'>
-              {report ? `报告生成于 ${fromNow(report.generatedAt)}` : '公开信息整理 · 头像为占位'}
+              {report ? `报告生成于 ${fromNow(report.generatedAt)}` : '公开信息整理'}
             </View>
           </View>
         </View>

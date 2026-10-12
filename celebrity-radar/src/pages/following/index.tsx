@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Taro, { useDidShow, usePullDownRefresh } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
 import EmptyState from '@/components/empty-state'
 import Skeleton from '@/components/skeleton'
+import PersonAvatar from '@/components/person-avatar'
 import { listFollows, unfollow, FollowRow } from '@/utils/follows'
 import { loadFollowWatches, FollowWatch, WATCH_LIMIT } from '@/utils/watch'
 import { useAuth } from '@/stores/auth'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
+import { readPortraits } from '@/utils/portrait'
 import { fromNow } from '@/utils/time'
 import './index.scss'
 
@@ -71,6 +73,11 @@ export default function Following() {
 
   const newCount = rows.filter((r) => watches[r.person_key]?.hasNew).length
   const visible = onlyNew ? rows.filter((r) => watches[r.person_key]?.hasNew) : rows
+
+  /* 真图预热：关注列表一屏多人，一次批量读把全部人拉进缓存，避免逐行各打一次云函数 */
+  useEffect(() => {
+    if (rows.length > 0) void readPortraits(rows.map((r) => r.person_key))
+  }, [rows])
 
   /** 一行内的活动描述；变化数据还没到时退回原有的关注时间，不留空白 */
   const activityText = (row: FollowRow, w?: FollowWatch): string => {
@@ -140,9 +147,12 @@ export default function Following() {
                 className='card page-following__item'
                 onClick={() => openPerson(r.person_key)}
               >
-                <View className={`page-following__icon page-following__icon--${domainStyleCode(domain)}`}>
-                  {r.name.slice(0, 1)}
-                </View>
+                <PersonAvatar
+                  personKey={r.person_key}
+                  name={r.name}
+                  domain={domain}
+                  className={`page-following__icon page-following__icon--${domainStyleCode(domain)}`}
+                />
                 <View className='page-following__info'>
                   <View className='page-following__title'>
                     <Text className='page-following__name'>{r.name}</Text>

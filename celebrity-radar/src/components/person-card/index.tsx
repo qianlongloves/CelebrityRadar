@@ -1,6 +1,7 @@
 import { View, Text } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
 import { domainLabel, domainStyleCode } from '@/config/domains'
+import PersonAvatar from '@/components/person-avatar'
 import './index.scss'
 
 export interface PersonInfo {
@@ -54,7 +55,12 @@ export default function PersonCard({
   const styleCode = domainStyleCode(person.domain)
   return (
     <View className='person-card' onClick={() => onClick?.(person)}>
-      <View className={`person-card__avatar person-card__avatar--${styleCode}`}>{person.name.slice(0, 1)}</View>
+      <PersonAvatar
+        personKey={person.personKey}
+        name={person.name}
+        domain={person.domain}
+        className={`person-card__avatar person-card__avatar--${styleCode}`}
+      />
       <View className='person-card__main'>
         <View className='person-card__name-row'>
           <Text className='person-card__name'>{person.name}</Text>

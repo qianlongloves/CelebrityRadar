@@ -520,6 +520,205 @@ function postJson(target, headers, payload, timeoutMs) {
   return sendJson('POST', target, headers, payload, timeoutMs)
 }
 
+/* ═════════════ 头像 / 照片（2026-10-12） ═════════════
+ *
+ * 为什么要它：全站的名人头像一直是「领域色渐变 + 姓名首字」伪造的 —— 报告页横幅、
+ * 人物卡、名人主页都一样。而博查 web-search 的响应里**本来就带图片**
+ * （`data.images.value`，字段有 contentUrl / thumbnailUrl / name / width / height 等），
+ * 此前 probeOf 只是把条数与字段名数出来、从未用过 —— 所以这里零新增上游端点。
+ *
+ * 两个关键取舍：
+ *   ① **存云存储、不把远端 URL 直接喂给端上**：小程序 <Image> 加载 https 图要求该域名在
+ *      「downloadFile 合法域名」里，而素材来自任意媒体、不可能逐一登记；云存储 fileID
+ *      （cloud://）走 wx.cloud、不受白名单限制。与 utils/share-card.ts「不下载任何网络图」
+ *      的取向一致 —— 代价由云端付一次，端上此后零成本。
+ *   ② **每人只取一次**（person_assets 按 personKey 缓存）：一次调用 = 一次博查 + 一次存储写。
+ *      客户端在报告**生成成功之后**再调（不压在 60s 生成预算上，见 src/utils/portrait.ts）。
+ *
+ * 不做身份闸门：与 `action:'search'` 同级（那同样是一个不带闸门的付费上游调用），且本动作
+ * 只接收 personKey + 姓名、**不接受客户端给的任何 URL** —— 落库内容完全派生自服务端自己
+ * 检索到的图，故不存在「客户端伪造共享缓存」的风险（对比 P0-2 的 report_cache）。
+ * 日后若要收紧，在 handlePortrait 开头加一句 openid 判空即可。
+ */
+const PORTRAIT_MAX_BYTES = 3 * 1024 * 1024
+const PORTRAIT_TIMEOUT_MS = 8000
+/** 人物图的最小边：小于这个尺寸的基本是图标 / 缩略图，不该当头像 */
+const PORTRAIT_MIN_SIDE = 150
+
+const trimStr = (v) => String(v == null ? '' : v).trim()
+
+/** 读缓存的头像行（集合不存在 / 读失败一律当「没有」，让调用方去取图） */
+async function readPortraitRow(personKey) {
+  try {
+    const res = await db.collection('person_assets').where({ _id: personKey }).limit(1).get()
+    const row = (res && res.data && res.data[0]) || null
+    return row && row.avatar_file_id ? row : null
+  } catch (err) {
+    return null
+  }
+}
+
+/**
+ * 从博查图片结果里挑一张最像「本人照片」的。
+ *
+ * 排序先看「标题/宿主页是否含人名」、再看尺寸：图片结果里常见台标、海报、无关配图，
+ * 尺寸大并不等于就是本人；含名字的那一张通常是百科或人物页主图。
+ *
+ * ⚠ 判据刻意宽松：博查返回的 contentUrl 常见 `http://`（不少国内站点仍是 http），
+ * 宽高也可能缺字段。这里**只硬拒**「不是 http(s)」与「明确小于最小边」，
+ * 其余交给打分排序 —— 宁可给一张不完美的图，也不要因为一条过严的规则导致「永远没有头像」
+ * （留空会让端上一直显示首字头像，而排障时看不出是「上游没图」还是「被我们的规则筛掉了」）。
+ */
+function pickPortrait(list, name) {
+  const scored = []
+  const rejected = []
+  for (const it of Array.isArray(list) ? list.slice(0, 12) : []) {
+    const url = trimStr(it && (it.contentUrl || it.thumbnailUrl))
+    if (!/^https?:\/\//i.test(url)) {
+      rejected.push(`url=${url.slice(0, 40)}`)
+      continue
+    }
+    const w = Number(it && it.width) || 0
+    const h = Number(it && it.height) || 0
+    if (w && h && Math.max(w, h) < PORTRAIT_MIN_SIDE) {
+      rejected.push(`${w}x${h}`)
+      continue
+    }
+    const fmt = trimStr(it && it.encodingFormat).toLowerCase()
+    const title = `${trimStr(it && it.name)} ${trimStr(it && it.hostPageUrl)}`
+    let score = 0
+    if (name && title.includes(name)) score += 100
+    if (fmt === 'image/jpeg' || fmt === 'image/jpg' || fmt === 'image/png') score += 10
+    score += Math.min(50, Math.round((w * h) / 40000)) /* 尺寸只作次要权重 */
+    scored.push({ url, w, h, fmt, score })
+  }
+  scored.sort((a, b) => b.score - a.score)
+  /* 诊断信息随返回值带出：排障时一眼分辨「上游没图」与「被规则筛掉」（见本函数上方注释） */
+  return { picked: scored[0] || null, total: Array.isArray(list) ? list.length : 0, rejected: rejected.slice(0, 3) }
+}
+
+/** 下载一张图（限时 / 限量 / 限类型）：只给头像用，故不重试 —— 没有头像远好过拖死一次调用 */
+function downloadImage(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (e) => {
+      if (!settled) {
+        settled = true
+        reject(e)
+      }
+    }
+    const ok = (v) => {
+      if (!settled) {
+        settled = true
+        resolve(v)
+      }
+    }
+    try {
+      const req = https.get(url, { timeout: timeoutMs }, (res) => {
+        const type = String(res.headers['content-type'] || '')
+        if (res.statusCode !== 200) {
+          res.resume()
+          return fail(new Error(`图片返回 ${res.statusCode}`))
+        }
+        if (!/^image\//.test(type)) {
+          res.resume()
+          return fail(new Error(`不是图片类型：${type}`))
+        }
+        const chunks = []
+        let size = 0
+        res.on('data', (c) => {
+          size += c.length
+          if (size > PORTRAIT_MAX_BYTES) {
+            req.destroy()
+            return fail(new Error('图片超过体积上限'))
+          }
+          chunks.push(c)
+        })
+        res.on('end', () => ok({ buffer: Buffer.concat(chunks), type }))
+        res.on('error', fail)
+      })
+      req.on('timeout', () => {
+        req.destroy()
+        fail(new Error('图片下载超时'))
+      })
+      req.on('error', fail)
+    } catch (err) {
+      fail(err)
+    }
+  })
+}
+
+/**
+ * action:'portrait' —— 取一个人的头像/照片，存云存储，写 person_assets（每人一条）。
+ * 返回 `{ ok, fileId, cached? }`。**失败不抛错**（回 ok:false），让端上静默回退到「首字头像」——
+ * 一张图取不到，不该影响任何主流程。
+ */
+async function handlePortrait(event) {
+  const personKey = trimStr(event.personKey)
+  const name = trimStr(event.name)
+  if (!personKey || !name) return { ok: false, error: '缺少 personKey / name' }
+  if (personKey.length > 120 || name.length > 40) return { ok: false, error: 'personKey / name 过长' }
+
+  const cached = await readPortraitRow(personKey)
+  if (cached) return { ok: true, fileId: cached.avatar_file_id, cached: true }
+
+  const key = readEnv('BOCHA_API_KEY')
+  if (!key) return { ok: false, error: '未配置 BOCHA_API_KEY' }
+
+  /*
+   * 参数刻意与主检索那次**逐字对齐**（query / freshness / summary / count 四件套）：
+   * 实测发现少传 `freshness` 时博查**不回 images 块**（2026-10-12，candidates=0），
+   * 这一点上游文档没写，只能靠「与已知可用的一次保持同参」来兜。
+   *
+   * 两次尝试：「名字 + 照片」偏人物图，取不到再退回名字本身（新闻流里也常带人物图）。
+   * 两次都没有可用图，才认「这个人就是没有图」——并把每次的候选数带回去，便于排障。
+   */
+  const attempts = []
+  let picked = null
+  for (const q of [`${name} 照片`, name]) {
+    const params = { query: q, freshness: 'oneMonth', summary: true, count: 5 }
+    const res = await postJson(BOCHA_ENDPOINT, { Authorization: `Bearer ${key}` }, params, TIMEOUT_MS)
+    if (!res || res.status !== 200) {
+      attempts.push({ q, error: `博查返回 ${(res && res.status) || '无响应'}` })
+      continue
+    }
+    /* ⚠ sendJson 返回的是 `{ status, data }`（data = 已解析的响应体），**不是** body —— 
+       写成 res.body 会静默拿到 undefined，症状是「博查明明有图、却永远 candidates:0」 */
+    const images = ((res.data || {}).data || {}).images || {}
+    const pick = pickPortrait(images.value, name)
+    attempts.push({ q, candidates: pick.total, rejected: pick.rejected })
+    if (pick.picked) {
+      picked = pick.picked
+      break
+    }
+  }
+  if (!picked) return { ok: false, error: '博查没有返回可用图片', attempts }
+
+  const got = await downloadImage(picked.url, PORTRAIT_TIMEOUT_MS)
+  const suffix = picked.fmt === 'image/png' ? 'png' : 'jpg'
+  const safeKey = personKey.replace(/[^0-9a-zA-Z]/g, '_').slice(0, 60)
+  const up = await cloud.uploadFile({
+    cloudPath: `portraits/${safeKey}-${Date.now()}.${suffix}`,
+    fileContent: got.buffer
+  })
+  const fileId = (up && up.fileID) || ''
+  if (!fileId) return { ok: false, error: '云存储未返回 fileID' }
+
+  await db.collection('person_assets').doc(personKey).set({
+    data: {
+      person_key: personKey,
+      name,
+      avatar_file_id: fileId,
+      source_url: picked.url,
+      width: picked.w,
+      height: picked.h,
+      bytes: got.buffer.length,
+      updated_at: new Date().toISOString()
+    }
+  })
+  return { ok: true, fileId, source: picked.url, bytes: got.buffer.length }
+}
+
 /**
  * GET 封装：2026-10-11 改造后**已无调用方**（原本只给「列上游 /models 清单」用，
  * 而云开发 AI 没有这个端点）。保留它是因为 sendJson 的 GET 分支还在这里，
@@ -1712,10 +1911,12 @@ exports.main = async (event) => {
   if (action === 'vendors') return handleVendors()
   /* 共享缓存写口（P0-2）：不需要口令，但要求登录身份，且 op 会过写口自己的限速 */
   if (action === 'report') return handleReportStore(event || {})
+  /* 头像 / 照片（2026-10-12）：从博查图片结果里挑一张存进云存储，写 person_assets 缓存 */
+  if (action === 'portrait') return handlePortrait(event || {})
   if (action !== 'test') {
     return {
       ok: false,
-      error: `未知 action：${action}（支持 test / vendors / search / chat / generate / aux / report）`
+      error: `未知 action：${action}（支持 test / vendors / search / chat / generate / aux / report / portrait）`
     }
   }
 

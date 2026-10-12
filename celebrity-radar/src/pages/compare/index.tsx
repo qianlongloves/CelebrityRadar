@@ -8,11 +8,13 @@ import { buildComparison, describeComparison, CompareSide, CompareResult } from 
 import type { Report } from '@/utils/report'
 import { isFollowed, listFollows, toggleFollow } from '@/utils/follows'
 import { listHistory } from '@/utils/history'
+import { readPortraits } from '@/utils/portrait'
 import { readMemberState } from '@/utils/member'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { track } from '@/utils/events'
 import PersonCard, { PersonInfo } from '@/components/person-card'
+import PersonAvatar from '@/components/person-avatar'
 import QaPanel from '@/components/qa-panel'
 import EmptyState from '@/components/empty-state'
 import Skeleton from '@/components/skeleton'
@@ -214,6 +216,18 @@ export default function Compare() {
     }
   }, [baseKey])
 
+  /* 真图预热：候选名单一屏多人，一次批量读拉进缓存，避免逐卡各打一次云函数 */
+  useEffect(() => {
+    if (candidates.length > 0) void readPortraits(candidates.map((c) => c.personKey))
+  }, [candidates])
+
+  /* 搜索结果同理：候选一出来就批量预热，卡片随即同步命中 */
+  useEffect(() => {
+    if (search.phase === 'candidates') {
+      void readPortraits(search.candidates.map((c) => buildPersonKey(c.name, c.domain)))
+    }
+  }, [search])
+
   /** 选定对手：有缓存就直接对比，没有则先告诉用户「要花一次额度」，由 TA 决定 */
   const pickRival = useCallback(
     async (c: Candidate) => {
@@ -346,6 +360,8 @@ export default function Compare() {
     }
     let alive = true
     const keys = [result.a.personKey, result.b.personKey]
+    /* 对比双方也就两个人：顺手批量预热真图，省掉两次云调用 */
+    void readPortraits(keys)
     void Promise.all(keys.map((k) => isFollowed(k))).then((flags) => {
       if (!alive) return
       setFollowed({ [keys[0]]: flags[0] ?? false, [keys[1]]: flags[1] ?? false })
@@ -499,17 +515,23 @@ export default function Compare() {
           <View className='card'>
             <View className='page-compare__pair'>
               <View className='page-compare__side'>
-                <View className={`page-compare__avatar page-compare__avatar--${domainStyleCode(result.a.domain)}`}>
-                  {result.a.name.slice(0, 1)}
-                </View>
+                <PersonAvatar
+                  personKey={result.a.personKey}
+                  name={result.a.name}
+                  domain={result.a.domain}
+                  className={`page-compare__avatar page-compare__avatar--${domainStyleCode(result.a.domain)}`}
+                />
                 <Text className='page-compare__name'>{result.a.name}</Text>
                 <View className={`chip chip--${domainStyleCode(result.a.domain)}`}>{result.a.domainLabel}</View>
               </View>
               <View className='page-compare__vs'>VS</View>
               <View className='page-compare__side'>
-                <View className={`page-compare__avatar page-compare__avatar--${domainStyleCode(result.b.domain)}`}>
-                  {result.b.name.slice(0, 1)}
-                </View>
+                <PersonAvatar
+                  personKey={result.b.personKey}
+                  name={result.b.name}
+                  domain={result.b.domain}
+                  className={`page-compare__avatar page-compare__avatar--${domainStyleCode(result.b.domain)}`}
+                />
                 <Text className='page-compare__name'>{result.b.name}</Text>
                 <View className={`chip chip--${domainStyleCode(result.b.domain)}`}>{result.b.domainLabel}</View>
               </View>

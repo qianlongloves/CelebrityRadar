@@ -424,6 +424,33 @@ const collections = [
         supports: 'listRiskSignals()：按人取信号、新的在前'
       })
     ]
+  },
+  {
+    name: 'person_assets',
+    /*
+     * 人物素材（目前只有头像/照片）：_id = personKey，云函数写、端上只读。
+     *
+     * 为什么不塞进 report_cache.report：报告是**按批生成、一次落库**的大对象，
+     * 而头像要「生成之后再补、失败了也不影响报告」；两者生命周期不同（报告刷新会重写整篇，
+     * 头像却该长期复用）。独立一张表也让端上多处的列表页能**单独读**这一个人物素材，
+     * 不必为了一个头像去拉整份报告。
+     */
+    purpose: '人物素材（头像/照片，_id = personKey）：云函数 aiProxy(action:portrait) 写、端上只读',
+    acl: ACL.publicReadOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('person_key', 'string', { required: true }),
+      f('name', 'string', { required: true }),
+      /* 云存储 fileID（cloud://…）：<Image src> 可直接用，且不受 downloadFile 合法域名限制 */
+      f('avatar_file_id', 'string', { required: true }),
+      /* 图片来源页（排障用：一眼看出这张图是从哪一站抓的） */
+      f('source_url', 'string?', { def: null }),
+      f('width', 'number', { def: 0 }),
+      f('height', 'number', { def: 0 }),
+      f('bytes', 'number', { def: 0 }),
+      f('updated_at', 'string', { required: true })
+    ],
+    indexes: []
   }
 ]
 

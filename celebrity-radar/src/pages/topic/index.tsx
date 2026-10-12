@@ -13,6 +13,8 @@ import type { Report } from '@/utils/report'
 import QuoteDetail from '@/components/quote-detail'
 import EmptyState from '@/components/empty-state'
 import Skeleton from '@/components/skeleton'
+import PersonAvatar from '@/components/person-avatar'
+import { readPortraits } from '@/utils/portrait'
 import './index.scss'
 
 /**
@@ -82,6 +84,11 @@ export default function Topic() {
       alive = false
     }
   }, [topic, anchorKey, from, usable])
+
+  /* 真图预热：主题成员是一组人，一次批量读把全部人拉进缓存，避免逐行各打一次云函数 */
+  useEffect(() => {
+    if (digest && digest.members.length > 0) void readPortraits(digest.members.map((m) => m.personKey))
+  }, [digest])
 
   useShareAppMessage(() => ({
     /* 主题不可用时不给「「」大家都在怎么讲」这种半截标题，退回页面名 */
@@ -168,9 +175,12 @@ export default function Topic() {
             hoverClass='page-topic__member--tap'
             onClick={() => goReport(m.personKey)}
           >
-            <View className={`page-topic__avatar page-topic__avatar--${domainStyleCode(m.domain)}`}>
-              {m.name.slice(0, 1)}
-            </View>
+            <PersonAvatar
+              personKey={m.personKey}
+              name={m.name}
+              domain={m.domain}
+              className={`page-topic__avatar page-topic__avatar--${domainStyleCode(m.domain)}`}
+            />
             <View className='page-topic__member-main'>
               <View className='page-topic__member-head'>
                 <Text className='page-topic__member-name'>{m.name}</Text>

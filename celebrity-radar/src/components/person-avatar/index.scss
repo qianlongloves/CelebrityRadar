@@ -1,0 +1,34 @@
+@import '../../styles/variables.scss';
+
+/*
+  名人头像（共享）—— **只有不传 className 的独立用法才会命中本文件**。
+
+  各页头像的尺寸/圆角/描边/配色都写在各页 SCSS 里（圆形渐变 / 实色圆 / 圆角方 / 半透明），
+  组件通过 className 原样透传，故本文件不参与那些场景，也就不会覆盖各页既有尺寸。
+  这里只兜底一个「无站点类名」时的默认外观：88rpx 圆形 + 领域渐变 + 首字。
+*/
+.person-avatar {
+  flex-shrink: 0;
+  width: 88rpx;
+  height: 88rpx;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 36rpx;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+  &--internet { background: linear-gradient(135deg, #67e8f9, $domain-internet); }
+  &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+  &--finance { background: linear-gradient(135deg, #fcd34d, $domain-finance); }
+  &--auto { background: linear-gradient(135deg, #a5b4fc, $domain-auto); }
+  &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+  &--art { background: linear-gradient(135deg, #d8b4fe, $domain-art); }
+  &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+  &--health { background: linear-gradient(135deg, #fda4af, $domain-health); }
+  &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+  &--edu { background: linear-gradient(135deg, #5eead4, $domain-edu); }
+  &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
+}
