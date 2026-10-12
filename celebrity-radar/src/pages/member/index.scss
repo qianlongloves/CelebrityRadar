@@ -300,6 +300,47 @@
     }
   }
 
+  /* ===== 订单入口（会员专属，卡片区末尾一行） =====
+     与「我的」页的会员入口同一套行式按钮：左标题 + 右箭头，整行可点。
+     放在档位卡与说明之间：选完档位/续完费，紧接着就是「我之前的订单呢」。 */
+  &__orders {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20rpx;
+
+    &--tap {
+      opacity: 0.85;
+    }
+  }
+
+  &__orders-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__orders-title {
+    display: block;
+    font-size: 28rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__orders-note {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__orders-arrow {
+    flex-shrink: 0;
+    font-size: 40rpx;
+    line-height: 1;
+    color: $text-3;
+  }
+
   /* ===== 说明（支付与口径，小字，不抢视线） ===== */
   &__notes {
     margin: 24rpx 40rpx 0;

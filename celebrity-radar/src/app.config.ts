@@ -23,6 +23,8 @@ export default defineAppConfig({
     'pages/qa/index',
     /* 会员中心（「我的」页会员卡进入：权益对比 + 档位选择 + 吸底支付，见 pages/member） */
     'pages/member/index',
+    /* 我的订单（会员中心进入，仅会员可见：支付记录 + 开通状态，见 pages/orders） */
+    'pages/orders/index',
     /* 关键词舆情预警（消息中心入口 / 预警推送落点：订阅管理 + 预警列表，见 pages/alerts） */
     'pages/alerts/index',
     /* 主题知识库（报告页词云词条进入：把已缓存报告按话题重新编目，见 pages/topic + utils/topic-digest） */

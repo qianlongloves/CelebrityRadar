@@ -57,6 +57,33 @@ export const FALLBACK_MEMBERSHIP_PLANS: MembershipPlan[] = PLANS.map((p) => ({
   badge: p.badge
 }))
 
+/**
+ * 档位 → 等级标识（emoji + 名称）。2026-10-12 从会员中心抽到这里做**共享出口**。
+ *
+ * 只认 PLANS 里那三个**持久化 id**（monthly / quarterly / annual，见 config/benefits.ts）——
+ * 不能用名字或价格来判断，那些都会变。未知 id（历史数据或以后新增档位）一律回落
+ * 「会员」/「⭐」，既不把原始 id 露给用户看（'quarterly' 对用户没有意义），
+ * 也避免以后加档位时漏改一处而显示不全。
+ *
+ * 为什么抽出来：会员中心顶部卡片与「我的订单」列表都要按同一份 id→名称渲染。
+ * 两处各放一份映射必然漂移 —— 改一处、漏一处不会报错，只会静默显示不一致。
+ */
+const PLAN_LEVEL_META: Record<string, { emoji: string; label: string }> = {
+  monthly: { emoji: '🥈', label: '月度会员' },
+  quarterly: { emoji: '🥇', label: '季度会员' },
+  annual: { emoji: '👑', label: '年度会员' }
+}
+
+/** 档位 → 等级 emoji（非会员 / 未知档位回落 ⭐） */
+export function planEmojiOf(plan: string | null): string {
+  return (plan && PLAN_LEVEL_META[plan]?.emoji) || '⭐'
+}
+
+/** 档位 → 等级名（非会员 / 未知档位回落「会员」） */
+export function planLabelOf(plan: string | null): string {
+  return (plan && PLAN_LEVEL_META[plan]?.label) || '会员'
+}
+
 /** 套餐清单的本机缓存（随「清空我的数据」一并清理） */
 const PLAN_CACHE_KEY = 'member_plans'
 

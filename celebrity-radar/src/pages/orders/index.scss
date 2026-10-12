@@ -1,0 +1,110 @@
+@import '../../styles/variables.scss';
+
+/* 我的订单（会员中心入口，仅会员可见）：每条订单一张卡，档位 + 状态 + 金额 + 下单时间。
+   卡片沿用全局 .card；这里只加订单特有的排版与状态配色。 */
+.page-orders {
+  padding: 8rpx 0 32rpx;
+
+  /* ===== 订单卡 ===== */
+  &__item {
+    /* 卡片里是「一行摘要 + 一行金额 + 小字」，比默认 padding 略紧 */
+    padding: 24rpx 28rpx;
+  }
+
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+  }
+
+  &__plan {
+    flex: 1;
+    min-width: 0;
+    font-size: 28rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  /* 状态胶囊：底色 + 文字色随语义走（已生效=绿、发货中=品牌紫、待支付=橙、其余=灰）。
+     颜色不是装饰 —— 一眼扫过去就能分出「成了 / 在开通 / 还没付」。 */
+  &__status {
+    flex-shrink: 0;
+    padding: 4rpx 18rpx;
+    border-radius: 999rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+    background: $bg;
+
+    &--paid {
+      color: $success;
+      background: rgba(16, 185, 129, 0.12);
+    }
+
+    &--granting {
+      color: $brand;
+      background: $brand-weak;
+    }
+
+    &--pending {
+      color: $accent-orange;
+      background: $accent-orange-bg;
+    }
+
+    &--refunded {
+      color: $text-2;
+      background: $bg;
+    }
+
+    &--failed {
+      color: $text-3;
+      background: $bg;
+    }
+  }
+
+  &__line {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-top: 16rpx;
+  }
+
+  &__amount {
+    font-size: 34rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__time {
+    flex-shrink: 0;
+  }
+
+  /* 状态解释（目前只有 granting 会出）：暖色小字，说明「已付款、正在开通」 */
+  &__note {
+    display: block;
+    margin-top: 14rpx;
+    padding: 12rpx 16rpx;
+    border-radius: $radius-sm;
+    background: $brand-weak;
+    font-size: 22rpx;
+    line-height: 1.55;
+    color: $brand-dark;
+  }
+
+  /* 订单号：小字，只放后 8 位，给需要核对的人一个凭据 */
+  &__no {
+    display: block;
+    margin-top: 14rpx;
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  /* ===== 降级提示（读库失败 / 未登录） ===== */
+  &__hint {
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+}

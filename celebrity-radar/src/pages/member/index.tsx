@@ -29,6 +29,8 @@ import {
   FALLBACK_MEMBERSHIP_PLANS,
   buyMembership,
   fetchMembershipPlans,
+  planEmojiOf,
+  planLabelOf,
   planNote
 } from '@/utils/pay'
 import type { BuyResult, MembershipPlan } from '@/utils/pay'
@@ -255,6 +257,13 @@ function pickDefault(plans: MembershipPlan[]): string {
   return (plans.find((p) => p.badge !== '') ?? plans[0])?.id ?? ''
 }
 
+/**
+ * 会员等级标识（2026-10-12 用户要求）：顶部卡片按当前生效的档位显示等级名 + 一枚 emoji。
+ *
+ * 映射（plan id → emoji / 名称，未知档位回落「会员」）已抽到 utils/pay.ts 的
+ * `planEmojiOf` / `planLabelOf` —— 「我的订单」列表要用同一份口径，两处各放一份必然漂移。
+ */
+
 export default function MemberPage() {
   const { userId } = useAuth()
   /** 会员状态：null = 读取中（按免费版渲染，不在读取期间给「已开通」的错误暗示） */
@@ -362,11 +371,18 @@ export default function MemberPage() {
     }
   }
 
+  /* 当前等级（非会员 / 未知档位回落「会员」）：顶部卡片的标题就是它 —— 会员一眼看到自己买的是哪一档 */
+  const levelEmoji = planEmojiOf(member?.plan ?? null)
+  const levelLabel = planLabelOf(member?.plan ?? null)
+
   return (
     <View className='page-member'>
       <View className='page-member__hero'>
         <View className='page-member__hero-head'>
-          <Text className='page-member__hero-title'>名人雷达会员</Text>
+          {/* 名称位显示当前等级（emoji + 档位名）；未登录/未开通时仍是产品名，不假装已是用户权益 */}
+          <Text className='page-member__hero-title'>
+            {!loading && isMember ? `${levelEmoji} ${levelLabel}` : '名人雷达会员'}
+          </Text>
           <Text className={`page-member__hero-tag${isMember ? ' page-member__hero-tag--on' : ''}`}>
             {loading ? '读取中' : isMember ? `会员 · 剩 ${member?.daysLeft ?? 0} 天` : '免费版'}
           </Text>
@@ -475,6 +491,26 @@ export default function MemberPage() {
               )
             })}
           </View>
+
+          {/*
+            订单入口（2026-10-12 新增）。**只对会员可见**：没下过单的人进去只有空态，
+            而「支付成功后开通中」这类疑问本来就只发生在已经付过钱的会员身上 ——
+            与其让所有人看着一个点进去没东西的入口，不如让它只出现在真正有订单的人那里。
+            非会员走上面的「选择档位」下单，不需要这条路径。
+          */}
+          {isMember && (
+            <View
+              className='card page-member__orders'
+              hoverClass='page-member__orders--tap'
+              onClick={() => Taro.navigateTo({ url: '/pages/orders/index' })}
+            >
+              <View className='page-member__orders-main'>
+                <Text className='page-member__orders-title'>查看我的订单</Text>
+                <Text className='page-member__orders-note'>支付记录与开通状态（发货中通常几秒内生效）</Text>
+              </View>
+              <Text className='page-member__orders-arrow'>›</Text>
+            </View>
+          )}
 
           <View className='page-member__notes'>
             {/*
