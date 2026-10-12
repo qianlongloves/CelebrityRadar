@@ -1416,6 +1416,7 @@ describe('报告目录 utils/report-toc', () => {
     'sec-risk',
     'sec-member',
     'sec-peers',
+    'sec-affiliation',
     'sec-stance',
     'sec-timeline',
     'sec-glossary'
@@ -1431,7 +1432,7 @@ describe('报告目录 utils/report-toc', () => {
       verdict: { summary: 's', positioning: 'p' }
     })
 
-  it('完整报告 + 会员：17 节齐、顺序与卡片一致', () => {
+  it('完整报告 + 会员：18 节齐、顺序与卡片一致', () => {
     const toc = buildReportToc(fullReport(), { member: true, hasOverview: true })
     deepEq(toc.map((s) => s.id), FULL_ORDER)
   })
@@ -1449,12 +1450,13 @@ describe('报告目录 utils/report-toc', () => {
     'sec-endorsement',
     'sec-member',
     'sec-peers',
+    'sec-affiliation',
     'sec-stance',
     'sec-glossary'
   ]
   const FREE_ORDER = FULL_ORDER.filter((id) => !MEMBER_ONLY_ORDER.includes(id))
 
-  it('免费用户只列免费档那几节：会员档 6 节一个都不进目录', () => {
+  it('免费用户只列免费档那几节：会员档 7 节一个都不进目录', () => {
     const toc = buildReportToc(fullReport(), { member: false, hasOverview: true })
     deepEq(toc.map((s) => s.id), FREE_ORDER)
     for (const id of MEMBER_ONLY_ORDER) notOk(toc.some((s) => s.id === id), `免费目录不该有 ${id}`)
@@ -1469,7 +1471,7 @@ describe('报告目录 utils/report-toc', () => {
     deepEq(REPORT_TEMPLATE.map((s) => s.id), FULL_ORDER)
     eq(FREE_TOC_COUNT + MEMBER_TOC_COUNT, TEMPLATE_SIZE)
     eq(MEMBER_TOC_COUNT, MEMBER_ONLY_ORDER.length)
-    deepEq(memberOnlyTocLabels(), ['商业速览', '商业合作', '会员专享', '同领域坐标', '立场与舆情', '名词解释'])
+    deepEq(memberOnlyTocLabels(), ['商业速览', '商业合作', '会员专享', '同领域坐标', '企业关联', '立场与舆情', '名词解释'])
     for (const s of REPORT_TEMPLATE) ok(s.tier === 'free' || s.tier === 'member', `档位异常：${s.id}`)
     for (const s of REPORT_TEMPLATE) eq(typeof s.visible, 'function', `${s.id} 缺可见性条件`)
   })
@@ -1674,7 +1676,7 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
        同领域坐标也是会员档），页面必须同步加 member 门槛；反之 timeline 仍在免费档（周报依赖），
        前面不该出现 member。两侧一错开的症状是「目录里不列、页面却有卡」或「目录列了却点不到」，
        且只在免费账号上出现。 */
-    for (const id of ['sec-peers', 'sec-stance', 'sec-endorsement', 'sec-glossary']) {
+    for (const id of ['sec-peers', 'sec-affiliation', 'sec-stance', 'sec-endorsement', 'sec-glossary']) {
       ok(
         /* 窗口 100：商业合作与代言的卡前面是「member && report.endorsements && !report.degraded &&」，
            比别的卡多一个字段判空，60 字窗口不够（它仍要求门槛与 id 同处一段表达式，不会误命中别处） */

@@ -359,6 +359,21 @@ describe('P0-2 写口：落库校验', () => {
     )
   })
 
+  it('企业关联（affiliations）也算会员段：非会员提交带 affiliations 的报告被拒（四个口径必须一致）', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [lockRow()])
+    const res = await callStore(fn, {
+      op: 'save',
+      personKey: 'A#tech',
+      report: report({ affiliations: [{ name: '某影业', kind: 'company', note: '创始人兼董事长', basis: '媒体A' }] })
+    })
+    eq(
+      res.kind,
+      'auth',
+      'affiliations 是 2026-10-12 新增的会员段：端上 hasMemberContent / 写口 / quotaGuard 必须同口径'
+    )
+  })
+
   it('report.personKey 与目标行不一致：拒绝', async () => {
     const fn = loadProxy()
     env.db.__seed('report_cache', [lockRow()])

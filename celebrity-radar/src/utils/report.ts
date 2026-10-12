@@ -186,29 +186,17 @@ const ProfileItemSchema = z.object({
 
 /**
  * 关系类别：枚举而不是自由文本 —— 自由文本会让同一段关系在两次生成里叫「合作」「合作方」
- * 「合作伙伴」三个名字，UI 就再也给不出稳定标签。档位之外的一律归 other，不硬凑语义。
- *
- * 2026-10-12 由四档扩到七档：关系图谱此前只有「人-人」维度，而「关联企业 / 合作方 / 参股」
- * 这类**机构关系**（谁创办的、给谁代言的母公司、持了哪家的股）恰恰是决策向的硬信息。
- * 不另立字段（并入关系图谱），故在这里补 company / partner / equity 三档来承载它们。
+ * 「合作伙伴」三个名字，UI 就再也给不出稳定标签。四档之外的一律归 other，不硬凑语义。
  */
-const RelationKindEnum = z.enum([
-  'cooperate',
-  'mentor',
-  'rival',
-  'company',
-  'partner',
-  'equity',
-  'other'
-])
+const RelationKindEnum = z.enum(['cooperate', 'mentor', 'rival', 'other'])
 
 const RelationSchema = z.object({
-  /** 对方名称：人名，或企业 / 品牌 / 机构名（见 relation 档位） */
+  /** 对方姓名 */
   name: looseStr(),
   /* 同上：模型写「合作」「亦师亦友」时回落 other（sanitize 的 normRelation 也会再归一一次），
      而不是让整份报告在这一条上直接失败 */
   relation: RelationKindEnum.catch('other'),
-  /** 一句话说明这段关系；关系本身已由 relation 说清时可空串（企业类建议写清职务 / 持股比例） */
+  /** 一句话说明这段关系；关系本身已由 relation 说清时可空串 */
   note: looseStr(),
   basis: looseStr()
 })
@@ -229,6 +217,23 @@ const EndorsementSchema = z.object({
   /** 类别：endorse 代言 / collab 联名或商务合作 / title 商业头衔或任职 / other；由 sanitize 归一 */
   kind: looseStr(),
   /** 一句说明：是什么合作、什么时候（说不清就空串） */
+  note: looseStr(),
+  basis: looseStr()
+})
+
+/**
+ * 关联企业 / 合作方 / 参股的一条（2026-10-12，**会员专属**）。
+ *
+ * 与 profile / relations 同为**事实**字段：basis 指不出素材的条目不落库（那道闸门在 sanitize）。
+ * 结构上与 endorsements 相近（具名实体 + kind + 一句说明），差别是它记的是**本人与机构的关联**
+ * （创办 / 任职 / 合作 / 持股），而非商业代言；kind 由 sanitize 归一（认不出的折 other）。
+ */
+const AffiliationSchema = z.object({
+  /** 企业 / 品牌 / 机构名（写清是谁，不得用「某公司」这类泛指） */
+  name: looseStr(),
+  /** 类别：company 关联企业 / partner 合作方 / equity 参股 / other；由 sanitize 归一 */
+  kind: looseStr(),
+  /** 一句说明：可写职务或持股比例（说不清就空串） */
   note: looseStr(),
   basis: looseStr()
 })
@@ -281,6 +286,8 @@ const REPORT_FIELDS = {
   conflicts: z.array(ConflictSchema).optional().catch(undefined),
   /* 同领域坐标（2026-10-12，会员专享）：同上，不声明就等于白要 */
   peers: z.array(PeerSchema).optional().catch(undefined),
+  /* 关联企业 / 合作方 / 参股（2026-10-12，会员专享）：同上，不声明就等于白要（会被 zod 静默丢掉） */
+  affiliations: z.array(AffiliationSchema).optional().catch(undefined),
   /* 第二批（免费可见）：五段结构化事实字段，随提示词一起要。
      同样必须先声明 —— zod 的非严格对象会把未声明的键静默丢弃。
      一律 .catch([]) 而不是 .default([])：模型把它们写成对象 / 字符串时也只是这一段为空，
@@ -399,6 +406,17 @@ export interface Peer {
   gap: string
 }
 
+/**
+ * 关联企业 / 合作方 / 参股的一条（2026-10-12，会员专享）：具名机构 + 类别 + 说明 + 出处。
+ * 与 relations / endorsements 同为事实字段：name 或 basis 为空即整条剔除，kind 由 sanitize 归一。
+ */
+export interface Affiliation {
+  name: string
+  kind: string
+  note: string
+  basis: string
+}
+
 /** sanitizeReport 的输入形态（宽松：字段可能缺失，内部归一） */
 export interface LlmReportFields {
   intro?: string
@@ -413,6 +431,8 @@ export interface LlmReportFields {
   conflicts?: Array<{ topic?: string; a?: string; b?: string }>
   /* 同领域坐标（2026-10-12，会员专享）：同上，宽松形态由 sanitize 归一 */
   peers?: Array<{ name?: string; gap?: string }>
+  /* 关联企业 / 合作方 / 参股（2026-10-12，会员专享）：同上，宽松形态由 sanitize 归一 */
+  affiliations?: Array<{ name?: string; kind?: string; note?: string; basis?: string }>
   /* 第二批（免费可见）：宽松形态，字段可能缺失或非字符串，由 sanitize 内部归一 */
   profile?: Array<{ label?: string; value?: string; basis?: string }>
   relations?: Array<{ name?: string; relation?: string; note?: string; basis?: string }>
@@ -472,6 +492,13 @@ export interface Report {
    * 但报告是全局共享缓存，**UI 同样必须再判一次会员态**（与 memberNotes / conflicts 各自判空）。
    */
   peers?: Peer[]
+  /**
+   * 关联企业 / 合作方 / 参股（2026-10-12 新增，会员专享）：具名机构 + 类别 + 说明 + 出处，最多 4 条。
+   *
+   * 与 memberNotes 同一套闸门：只在会员提示词里请求、免费报告恒无此字段（整段为空也不落键），
+   * 但报告是全局共享缓存，**UI 同样必须再判一次会员态**。
+   */
+  affiliations?: Affiliation[]
   /**
    * 第二批（免费可见）：结构化人物档案 —— 一眼看清 who 的锚点，替代把身份信息全塞在
    * intro 那段散文里。每条都带 basis（媒体名），故每条都能回到一篇素材去核对。
@@ -665,7 +692,7 @@ const REPORT_RULES_REALTIME = [
    * 不是白名单 —— 素材里真正重要的字段不在常用集里时，仍然要能写出来。
    */
   `9. profile：结构化人物档案 ${REPORT_QUOTAS.profileMin}~${REPORT_FIELD_LIMITS.profileMax} 条（尽量给到 ${REPORT_QUOTAS.profileTarget} 条），用来让人一眼看清「是谁」，每条字段：label(字段名，8 字内；优先从这几个常用字段里选：职业、出生年份、出生地、代表作、主要成就、所属机构、活跃领域 —— 都不合适才自拟)、value(40 字内)、basis(这条事实出自的素材，写法见开头「出处（basis）写法」)。**每条都必须能在素材里找到依据，找不到的整条不要写**；不要用常识去补全素材里没有的信息（那是编造，不是补充）。`,
-  `10. relations：与本人有公开关系的**人或机构**，最多 ${REPORT_FIELD_LIMITS.relationMax} 条，每条字段：name(对方名称：人名，或企业 / 品牌 / 机构名)、relation(只能是 cooperate/mentor/rival/company/partner/equity/other，依次表示合作、师承、对手、关联企业、合作方、参股、其他)、note(一句话说明这段关系，40 字内；企业类写清职务或持股比例等具体信息，说不清就填空串)、basis(关系出自的素材，写法见开头)。**机构关系（company / partner / equity）是本次重点**：本人创办或任职的公司、公开的代际/商业合作方、公开披露的持股或参股，都要写出来。关系必须是素材里**明确写到**的（同台合作、师徒、公开竞争、创办或任职某公司、公开持股、具名商业合作等），不得由「同框」「同公司」「同时出现」推测；只有单方提及也不写。`,
+  `10. relations：与本人有公开关系的人，最多 ${REPORT_FIELD_LIMITS.relationMax} 条，每条字段：name(对方姓名)、relation(只能是 cooperate/mentor/rival/other，依次表示合作、师承、对手、其他)、note(一句话说明这段关系，说不清就填空串)、basis(关系出自的素材，写法见开头)。关系必须是素材里**明确写到**的（同台合作、师徒、公开竞争等），不得由「同框」「同公司」「同时出现」推测；只有单方提及也不写。`,
   /*
    * 商业合作与代言（2026-10-12 取代原「后续关注」）：素材里**具名**的商业关系才是信息 ——
    * 「与某品牌有合作」这类不指名的不写。它与 profile / relations 是同一类事实字段：
@@ -806,15 +833,15 @@ export const REPORT_BATCHES: ReportBatch[] = TOC_GROUPS.map((group) => ({
 }))
 
 /**
- * 承载会员段的那一批要额外产出的两个键（就是 MEMBER_HINT_REALTIME 里额外要的那两段）。
+ * 承载会员段的那一批要额外产出的会员键（就是 MEMBER_HINT_REALTIME 里额外要的那几段）。
  * 与 BATCH_SPEC.judgement.fields 分开放：免费与会员共用同一份 BATCH_SPEC，
  * 「这次要不要会员段」是**本次调用**的属性（谁在生成），不是这一批的静态属性。
  */
-const MEMBER_FIELDS = ['memberNotes', 'conflicts', 'peers']
+const MEMBER_FIELDS = ['memberNotes', 'conflicts', 'peers', 'affiliations']
 
 /**
- * 本批在这次调用下的**实际字段清单**：免费档 = 批的静态清单；会员档且本批承载会员段时追加两个会员键。
- * 只给解析契约与落库用（提示词里那两段由 MEMBER_HINT_REALTIME 末尾点名，理由见 buildReportSystem）。
+ * 本批在这次调用下的**实际字段清单**：免费档 = 批的静态清单；会员档且本批承载会员段时追加那几个会员键。
+ * 只给解析契约与落库用（提示词里那几段由 MEMBER_HINT_REALTIME 末尾点名，理由见 buildReportSystem）。
  */
 export function batchFields(batch: ReportBatch, member: boolean): string[] {
   return member && batch.memberFields ? [...batch.fields, ...MEMBER_FIELDS] : batch.fields
@@ -877,10 +904,10 @@ export const FIELD_OUTPUT_ESTIMATE: Record<string, { count: number; chars: numbe
       OUTPUT_EST_BASIS_CHARS
   },
   relations: {
-    count: REPORT_FIELD_LIMITS.relationMax, // 第 10 条：最多 relationMax 条（人 + 机构）
+    count: REPORT_FIELD_LIMITS.relationMax, // 第 10 条：最多 relationMax 条
     chars:
       REPORT_FIELD_LIMITS.relationNameChars +
-      8 /* 关系词（「关联企业」）*/ +
+      8 /* 关系词（「合作」）*/ +
       REPORT_FIELD_LIMITS.relationNoteChars +
       OUTPUT_EST_BASIS_CHARS
   },
@@ -936,6 +963,15 @@ export const FIELD_OUTPUT_ESTIMATE: Record<string, { count: number; chars: numbe
     // 同领域坐标：每条一个具名对象 + 一条具体差异（不带到出处字段，差异本身要可核对）
     count: REPORT_FIELD_LIMITS.peerMax,
     chars: REPORT_FIELD_LIMITS.peerNameChars + REPORT_FIELD_LIMITS.peerGapChars
+  },
+  affiliations: {
+    // 关联企业 / 合作方 / 参股（会员专享）：每条机构名 + 类别词（「关联企业」）+ 说明 + 出处
+    count: REPORT_FIELD_LIMITS.affiliationMax,
+    chars:
+      REPORT_FIELD_LIMITS.affiliationNameChars +
+      8 /* 类别词（「关联企业」）*/ +
+      REPORT_FIELD_LIMITS.affiliationNoteChars +
+      OUTPUT_EST_BASIS_CHARS
   },
   /* 细节与延伸（detail） */
   timeline: {
@@ -1066,13 +1102,14 @@ export function buildReportSystem(batch: ReportBatch, focus: FocusCode, member: 
  * 不另起一套提示词（见 buildReportSystem）。
  */
 const MEMBER_HINT_REALTIME = [
-  '会员补充要求：额外输出 memberNotes、conflicts 与 peers（**无素材支撑就留空**，不得为了凑数而编）。',
+  '会员补充要求：额外输出 memberNotes、conflicts、peers 与 affiliations（**无素材支撑就留空**，不得为了凑数而编）。',
   'memberNotes 含两段文字，两段都要**具体、可核对，禁止套话**。',
   'compare（与同领域其他公众人物的差异或相对位置，2~3 句）：比较对象**必须具名**（写清是谁，须出自素材）；差异必须落到**具体可核对的事实**（作品、奖项、数据、事件、路径），**禁止「行业新锐」「代表人物」「更有影响力」「值得关注」这类评价套话**。素材里没有可具名的比较对象时，改写「该名人的辨识度 / 独特点」，同样要落到素材里的具体事实；**写不出具体事实就填空串**（禁止用套话占位）。',
   'risk（**面向未来**的风险提示，即接下来值得留意什么；措辞中性、就事论事、不做人身评价）：必须落到素材里**已经出现的前兆**（如被调查、合作方解约、卷入诉讼、税务问题）并写清具体是什么，**禁止「注意合规风险」「注意舆情」「存在不确定因素」这类泛话**；**已经发生的争议与回应属于免费段 controversies，不要在这里复述**；**素材里没有可指认的前兆就填空串**。',
   `conflicts：素材之间**互相矛盾**的地方（同一件事两边说法不一致、关键数字对不上、一方否认另一方的说法），最多 ${REPORT_FIELD_LIMITS.conflictMax} 条，每条字段：topic(争点，12 字内)、a(一方说法，写清是哪家媒体、说了什么)、b(另一方说法，同 a)。两方都必须真实存在于素材中，不得自己想象一个对立面；素材里没有矛盾就留空数组。`,
   `peers（同领域坐标，最多 ${REPORT_FIELD_LIMITS.peerMax} 条）：列出与 TA 处于同一领域、可具名的 2~3 位公众人物，并写清**具体差异**。每条字段：name(对方姓名，写清是谁，不得用「同期艺人」这类泛指)、gap(与 TA 的差异，1~2 句，${REPORT_FIELD_LIMITS.peerGapChars} 字内，必须落到**可核对的事实**：作品、奖项、数据、路径，并指明是谁高谁低 / 谁偏哪个方向)。**禁止「行业新锐」「更有影响力」「值得关注」这类没有锚点的评价**；找不到可具名的对象或写不出具体差异就留空数组。`,
-  '格式追加：{"memberNotes":{"compare":string,"risk":string},"conflicts":[{"topic":string,"a":string,"b":string}],"peers":[{"name":string,"gap":string}]}'
+  `affiliations（关联企业 / 合作方 / 参股，最多 ${REPORT_FIELD_LIMITS.affiliationMax} 条）：列出本人与**机构**的公开关联 —— 本人创办或任职的公司、公开的商业合作方、公开披露的持股或参股。每条字段：name(企业 / 品牌 / 机构名，写清是谁，不得用「某公司」这类泛指)、kind(只能是 company/partner/equity/other，依次表示关联企业、合作方、参股、其他)、note(一句说明，可写职务或持股比例，${REPORT_FIELD_LIMITS.affiliationNoteChars} 字内；说不清就填空串)、basis(素材，写法见开头)。必须是素材里**明确写到**的关联，不得由「同框」「同公司」推测；找不到这样的机构就留空数组。`,
+  '格式追加：{"memberNotes":{"compare":string,"risk":string},"conflicts":[{"topic":string,"a":string,"b":string}],"peers":[{"name":string,"gap":string}],"affiliations":[{"name":string,"kind":string,"note":string,"basis":string}]}'
 ].join('\n')
 
 /** 降级纯文本提示词（结构化 JSON 两次失败后，§5.4 用例 9） */
@@ -1260,6 +1297,12 @@ const TIMELINE_EVENT_CHARS = REPORT_FIELD_LIMITS.timelineEventChars
 const ENDORSE_MAX = REPORT_FIELD_LIMITS.endorseMax
 const ENDORSE_BRAND_CHARS = REPORT_FIELD_LIMITS.endorseBrandChars
 const ENDORSE_NOTE_CHARS = REPORT_FIELD_LIMITS.endorseNoteChars
+
+/* 关联企业 / 合作方 / 参股（2026-10-12，会员专享）：与 endorsements 同为「具名实体 + kind + 说明」
+   的事实字段，basis 指不出素材的条目不落库；整段为空数组时不落键（同 peers / conflicts）。 */
+const AFFILIATION_MAX = REPORT_FIELD_LIMITS.affiliationMax
+const AFFILIATION_NAME_CHARS = REPORT_FIELD_LIMITS.affiliationNameChars
+const AFFILIATION_NOTE_CHARS = REPORT_FIELD_LIMITS.affiliationNoteChars
 
 const GLOSSARY_MAX = REPORT_FIELD_LIMITS.glossaryMax
 const GLOSSARY_TERM_CHARS = REPORT_FIELD_LIMITS.glossaryTermChars
@@ -2021,6 +2064,9 @@ function strictSourceOf(
  * 6. conflicts 是会员专享段落，缺任一侧的条目剔除（只有一方在说话不叫分歧）
  * 6b. peers（同领域坐标，会员专享，2026-10-12）：name 或 gap 为空即整条剔除
  *     （具名对象与具体差异缺一不可，避免「行业新锐」这类无锚点条目落库）；空数组则不落键
+ * 6c. affiliations（关联企业 / 合作方 / 参股，会员专享，2026-10-12）：事实字段，name 或 basis
+ *     为空即整条剔除（同 relations / endorsements 那道闸门）；kind 由 normAffiliationKind 归一；
+ *     空数组则不落键（同 memberNotes / conflicts / peers）
  * 7. 第二批（profile / relations / endorsements / controversies）：basis 必须是**真素材**，
  *    指不出出处就整条剔除（事实字段没有「据公开资料」这个出口，理由见 strictSourceOf）；
  *    各段另有条数与长度上限；**空数组也落库**（区别于「键不存在」= 这份报告没要过这段，
@@ -2067,20 +2113,17 @@ export function sanitizeReport(
   const normStance = (s?: string): 'positive' | 'neutral' | 'negative' | 'mixed' =>
     s === 'positive' || s === 'negative' || s === 'mixed' ? s : 'neutral'
 
-  /*
-   * 关系类别归一：七档之外（含模型自造的「粉丝」「亦师亦友」）一律 other —— 不硬猜进某一档。
-   * 机构三档（company / partner / equity）与提示词第 10 条同源，改一处必须改另一处。
-   */
-  const normRelation = (
-    r?: string
-  ): 'cooperate' | 'mentor' | 'rival' | 'company' | 'partner' | 'equity' | 'other' =>
-    r === 'cooperate' || r === 'mentor' || r === 'rival' || r === 'company' || r === 'partner' || r === 'equity'
-      ? r
-      : 'other'
+  /* 关系类别归一：四档之外（含模型自造的词）一律 other —— 不硬把「亦师亦友」猜进某一档 */
+  const normRelation = (r?: string): 'cooperate' | 'mentor' | 'rival' | 'other' =>
+    r === 'cooperate' || r === 'mentor' || r === 'rival' ? r : 'other'
 
   /* 商业合作类别归一：四档之外（含模型自造的词）一律 other —— 与 normRelation 同一写法 */
   const normEndorseKind = (k?: string): 'endorse' | 'collab' | 'title' | 'other' =>
     k === 'endorse' || k === 'collab' || k === 'title' ? k : 'other'
+
+  /* 企业关联类别归一：四档之外（含模型自造的词）一律 other —— 与 normRelation 同一写法 */
+  const normAffiliationKind = (k?: string): 'company' | 'partner' | 'equity' | 'other' =>
+    k === 'company' || k === 'partner' || k === 'equity' ? k : 'other'
 
   /* 事实类出处：无素材兜底时收敛成「据公开资料」保留（无素材可点回），否则走严格校验（无出处整条剔除） */
   const factSourceOf = (basis: string | undefined): string =>
@@ -2225,6 +2268,21 @@ export function sanitizeReport(
     }))
     .filter((p) => p.name !== '' && p.gap !== '')
     .slice(0, PEER_MAX)
+
+  /*
+   * 企业关联（2026-10-12，会员专享）：与 relations / endorsements 同一套事实字段骨架 ——
+   * 去空 + 收敛长度 → 用 factSourceOf 求「必须为真素材」的出处 → 指不出出处（或无名）就整条剔除 → 截条数。
+   * 与 memberNotes / conflicts / peers 同一套落库口径：**整段为空数组时不落键**（见返回值处）。
+   */
+  const affiliations = (llm.affiliations ?? [])
+    .map((a) => ({
+      name: clipText(a.name, AFFILIATION_NAME_CHARS),
+      kind: normAffiliationKind(a.kind),
+      note: clipText(a.note, AFFILIATION_NOTE_CHARS),
+      basis: factSourceOf(a.basis)
+    }))
+    .filter((a) => a.name !== '' && a.basis !== '')
+    .slice(0, AFFILIATION_MAX)
 
   /*
    * 第二批（免费可见的五段事实字段）：四段的骨架完全一样 ——
@@ -2388,6 +2446,7 @@ export function sanitizeReport(
     controversies: controversies.length,
     conflicts: conflicts.length,
     peers: peers.length,
+    affiliations: affiliations.length,
     memberNotes: memberNotes ? 1 : 0,
     verdict: verdict ? 1 : 0,
     reputation: reputation ? 1 : 0,
@@ -2412,6 +2471,7 @@ export function sanitizeReport(
     ...(memberNotes ? { memberNotes } : {}),
     ...(conflicts.length > 0 ? { conflicts } : {}),
     ...(peers.length > 0 ? { peers } : {}),
+    ...(affiliations.length > 0 ? { affiliations } : {}),
     /*
      * 第二批五段：**空数组也落库**（2026-10-08 改）。
      *
@@ -2460,7 +2520,7 @@ export const SHORTFALL_MIN_FACTS = REPORT_SOURCE.shortfallMinFacts
  *   1. degraded —— 结构化输出两次失败，只剩一段纯文本，这不是报告；
  *   2. 简介 / AI 点评缺任一 —— 这两段是报告的骨架，缺了读起来就是残的；
  *   3. 实质条目 < SHORTFALL_MIN_FACTS —— 只有骨架没有事实，同样是残的；
- *   4. 会员档生成却没有任何专享段落（memberNotes / conflicts）—— 会员权益没兑现
+ *   4. 会员档生成却没有任何专享段落（memberNotes / conflicts / peers / affiliations）—— 会员权益没兑现
  *      （检索不到素材是常见原因），这一份也不该收钱。免费读者不判这一条。
  *
  * ⚠ 刻意**不**判「人物档案 / 关系图谱 / 时间线」为空（P1，2026-10-10「达标判定与用户在意
@@ -2524,7 +2584,8 @@ export function shortfallVerdict(
       (report.memberNotes?.compare.trim() ? 1 : 0) +
       (report.memberNotes?.risk.trim() ? 1 : 0) +
       (report.conflicts?.length ?? 0) +
-      (report.peers?.length ?? 0)
+      (report.peers?.length ?? 0) +
+      (report.affiliations?.length ?? 0)
     if (own === 0) {
       return { reason: '会员档生成，但没有任何会员专享段落', retryable: enoughMaterial }
     }

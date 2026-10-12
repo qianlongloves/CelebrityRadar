@@ -202,8 +202,8 @@ const ready = (report: Report) => !report.degraded
  *
  * ⚠ 与提示词的关系：模板只决定**渲染哪几节**（以及免费读者看到哪些，见 pages/report 的
  *   `member` 门槛），不改变报告的生成本身 —— 报告仍是全局共享缓存（personKey 唯一键，
- *   免费/会员同读一份）。数据上**只对会员生成**的是 memberNotes / conflicts / peers
- *   三段（见 utils/member.ts#stripMemberSections 与 utils/report.ts 的 MEMBER_HINT_REALTIME）。
+ *   免费/会员同读一份）。数据上**只对会员生成**的是 memberNotes / conflicts / peers / affiliations
+ *   四段（见 utils/member.ts#stripMemberSections 与 utils/report.ts 的 MEMBER_HINT_REALTIME）。
  */
 export const REPORT_TEMPLATE: ReportTemplateSection[] = [
   /* ── 基本档案：先回答「是谁」。
@@ -247,6 +247,12 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
    * 它与 sec-member 同组、紧邻，构成连续的 judgement 会员段；字段 peers 只在会员提示词里出现。
    */
   { id: 'sec-peers', label: '同领域坐标', tier: 'member', group: 'judgement', visible: ready },
+  /*
+   * 企业关联（会员档，2026-10-12 新增）：关联企业 / 合作方 / 参股 —— 人-机构维度的硬信息。
+   * 与 sec-peers 同组、紧邻，构成连续的 judgement 会员段；字段 affiliations 只在会员提示词里出现
+   * （见 utils/report.ts 的 MEMBER_HINT_REALTIME）。
+   */
+  { id: 'sec-affiliation', label: '企业关联', tier: 'member', group: 'judgement', visible: ready },
   /*
    * ── 立场与舆情（2026-10-12 起为会员档）：「大众怎么看 TA」本是判断类，故留在判断组。
    * 移入会员档只是**呈现**上不再给免费用户出卡；数据仍在免费批次里生成 ——

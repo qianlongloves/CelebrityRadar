@@ -154,7 +154,8 @@ function isMembershipActive(m) {
 /**
  * 与端上同源：utils/cache.ts#hasMemberBlocks → utils/member.ts#hasMemberContent。
  * 口径是「**实际存在**的会员专属内容」：memberNotes 的两段文字任一非空，
- * 或 conflicts 非空数组，或 peers（同领域坐标，2026-10-12）非空数组。
+ * 或 conflicts 非空数组，或 peers（同领域坐标，2026-10-12）非空数组，
+ * 或 affiliations（企业关联，2026-10-12）非空数组。
  * 空壳（字段在但内容全空）不算 —— 端上把这个口径同时用于「是否算会员版」与 UI 展示。
  */
 function hasMemberBlocks(report) {
@@ -162,7 +163,8 @@ function hasMemberBlocks(report) {
   const notes = report.memberNotes
   if (notes && (notes.compare || notes.risk)) return true
   if (Array.isArray(report.conflicts) && report.conflicts.length > 0) return true
-  return Array.isArray(report.peers) && report.peers.length > 0
+  if (Array.isArray(report.peers) && report.peers.length > 0) return true
+  return Array.isArray(report.affiliations) && report.affiliations.length > 0
 }
 
 /**

@@ -69,7 +69,8 @@ module.exports = function createReportStore(deps) {
   /**
    * 产物是否带会员专属内容。**口径须与端上 utils/member.ts#hasMemberContent 一致**：
    * 两者都取「真值」（空串 / undefined / 空数组算不存在），判定范围为
-   * memberNotes 两段文字 / conflicts 非空数组 / **peers（同领域坐标，2026-10-12）非空数组**。
+   * memberNotes 两段文字 / conflicts 非空数组 / peers（同领域坐标，2026-10-12）非空数组 /
+   * **affiliations（企业关联，2026-10-12）非空数组**。
    *
    * ⚠ 这里曾经写成 `str(mn.compare)`（trim 后判空），与端上的真值判定**不等价**：
    * 一份 `compare: '   '`（纯空白）端上认为「有会员段」、云端认为「没有」，于是
@@ -83,7 +84,9 @@ module.exports = function createReportStore(deps) {
     const cf = report && report.conflicts
     if (Array.isArray(cf) && cf.length > 0) return true
     const pr = report && report.peers
-    return Array.isArray(pr) && pr.length > 0
+    if (Array.isArray(pr) && pr.length > 0) return true
+    const af = report && report.affiliations
+    return Array.isArray(af) && af.length > 0
   }
 
   /**

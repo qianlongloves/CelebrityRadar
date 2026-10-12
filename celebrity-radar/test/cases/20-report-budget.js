@@ -198,9 +198,9 @@ describe('模板 → 批次的字段：一份手写映射，得有校验兜着',
     const report = load('utils/report')
 
     const memberOnly = report.REPORT_FIELD_KEYS.filter(
-      (k) => k === 'memberNotes' || k === 'conflicts' || k === 'peers'
+      (k) => k === 'memberNotes' || k === 'conflicts' || k === 'peers' || k === 'affiliations'
     )
-    ok(memberOnly.length === 3, '前提：会员专属字段应为 memberNotes / conflicts / peers（新增会员段时同步这里）')
+    ok(memberOnly.length === 4, '前提：会员专属字段应为 memberNotes / conflicts / peers / affiliations（新增会员段时同步这里）')
     for (const batch of report.REPORT_BATCHES) {
       const free = report.batchFields(batch, false)
       const paid = report.batchFields(batch, true)

@@ -52,8 +52,9 @@ export function clampSample(text: string, max: number = SAMPLE_CLAMP): string {
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
 /**
- * 报告 → 示例段落。只认这三段，其余字段一律不看（示例卡不是报告预览）。
- * 信源分歧只取第一条：这一段的重点是「素材自己会对不上」这件事，不是分歧条数。
+ * 报告 → 示例段落。只认这几段（memberNotes 两段 / conflicts / affiliations），其余字段一律不看
+ * （示例卡不是报告预览）。信源分歧与企业关联各只取第一条：这一段的重点是「素材自己会对不上 / 本人
+ * 与机构有关联」这件事本身，不是条数。
  */
 function buildBlocks(report: any): MemberSampleBlock[] {
   const blocks: MemberSampleBlock[] = []
@@ -69,6 +70,18 @@ function buildBlocks(report: any): MemberSampleBlock[] {
   const sides = [a !== '' ? `一方：${a}` : '', b !== '' ? `另一方：${b}` : ''].filter((s) => s !== '')
   if (sides.length > 0) {
     blocks.push({ label: '信源分歧', text: clampSample([topic, ...sides].filter((s) => s !== '').join(' · ')) })
+  }
+
+  /* 企业关联（2026-10-12，会员专享）：与信源分歧同为结构化段，只取第一条。
+     kind 是英文枚举（company / partner / equity），示例卡里不展示，只摆机构名与说明。 */
+  const firstAff = Array.isArray(report?.affiliations) ? report.affiliations[0] : null
+  const affName = str(firstAff?.name)
+  const affNote = str(firstAff?.note)
+  if (affName !== '') {
+    blocks.push({
+      label: '企业关联',
+      text: clampSample([affName, affNote].filter((s) => s !== '').join(' · '))
+    })
   }
   return blocks
 }

@@ -109,15 +109,21 @@ const STANCE_META: Record<string, { label: string; cls: string }> = {
 /**
  * 关系图谱的类别标签（第二批）。枚举在 utils/report.ts 的 RelationKindEnum 里归一 ——
  * 认不出的值在那里就被折成 other，故这里兜底也写「其他」，两边口径一致。
- * 档位一律用同一套中性样式（不因「对手」染红）：报告只陈述关系，关系本身没有褒贬。
- *
- * 2026-10-12 扩到七档：前四档是人-人，后三档是**机构关系**（关联企业 / 合作方 / 参股）——
- * 「谁创办的、给谁代言的母公司、持了哪家的股」这类硬信息此前无处可写。
+ * 四档标签一律用同一套中性样式（不因「对手」染红）：报告只陈述关系，关系本身没有褒贬。
  */
 const RELATION_META: Record<string, string> = {
   cooperate: '合作',
   mentor: '师承',
   rival: '对手',
+  other: '其他'
+}
+
+/**
+ * 企业关联的类别标签（2026-10-12，会员专享）。枚举在 utils/report.ts 的 sanitize 里归一
+ * （normAffiliationKind）—— 认不出的值在那里折成 other，故这里兜底也写「其他」。
+ * 四档一律中性样式：报告只陈列素材里写到的机构关联，不对关联本身作评价。
+ */
+const AFFILIATION_META: Record<string, string> = {
   company: '关联企业',
   partner: '合作方',
   equity: '参股',
@@ -1794,15 +1800,14 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/* 关系图谱（第二批）：**人 + 机构**两个维度。关系必须是素材里明确写到的，
-              故这里的依据与档案同规格；七档关系标签一律中性配色，不因「对手」染色。
-              机构三档（关联企业 / 合作方 / 参股）由 2026-10-12 并入，不另立卡片。 */}
+          {/* 关系图谱（第二批）：人-人维度。关系必须是素材里明确写到的，
+              故这里的依据与档案同规格；四档关系标签一律中性配色，不因「对手」染色。 */}
           {report.relations && (
             <View id='sec-relations' className='card'>
               <View className='card-title'>关系图谱</View>
               {report.relations.length === 0 && (
                 <Text className='page-report__empty'>
-                  本次生成时，素材里没有明确写到的人物关系或机构关联（不做「同框即关系」一类推测）。
+                  本次生成时，素材里没有明确写到的人物关系（不做「同框即关系」一类推测）。
                 </Text>
               )}
               {report.relations.length > 0 && (
@@ -1818,9 +1823,7 @@ export default function ReportPage() {
                   }))}
                 />
               )}
-              <Text className='page-report__entry-foot'>
-                人物关系与机构关联（企业 / 合作方 / 参股）均出自素材的明确记载，不做「同框即关系」一类推测。
-              </Text>
+              <Text className='page-report__entry-foot'>关系出自素材的明确记载，不做「同框即关系」一类推测。</Text>
             </View>
           )}
 
@@ -2323,6 +2326,38 @@ export default function ReportPage() {
                   <Text className='page-report__entry-text'>{p.gap}</Text>
                 </View>
               ))}
+            </View>
+          )}
+
+          {/*
+            企业关联（2026-10-12 新增，会员专享）：关联企业 / 合作方 / 参股，结构化条目。
+            与「关系图谱」的分工：那张卡是**人-人**关系而且免费可见，这一节只放**人-机构**关联，
+            字段 affiliations 只在会员提示词里出现 —— 每条机构名 + 类别 + 说明 + 出处，
+            素材里指不出出处的条目在数据层（utils/report.ts#sanitizeReport）就已被整条剔除。
+            与 sec-peers / sec-member 同一套闸门（会员 + 非降级简版），故缺这个键时要出说明卡。
+          */}
+          {member && !report.degraded && (
+            <View id='sec-affiliation' className='card page-report__vip-card'>
+              <View className='card-title'>会员专享 · 企业关联</View>
+              {(!report.affiliations || report.affiliations.length === 0) && (
+                <Text className='page-report__empty'>
+                  本次生成时，素材里没有明确写到的关联企业 / 合作方 / 参股（只有同框、同公司这类线索的条目不收录）。
+                </Text>
+              )}
+              {report.affiliations && report.affiliations.length > 0 && (
+                <SectionTable
+                  columns={['名称', '类别', '说明']}
+                  rows={report.affiliations.map((a) => ({
+                    cells: [
+                      a.name,
+                      <Text className='page-report__entry-tag'>{AFFILIATION_META[a.kind] ?? '其他'}</Text>,
+                      a.note
+                    ],
+                    basis: a.basis
+                  }))}
+                />
+              )}
+              <Text className='page-report__entry-foot'>机构关联出自素材的明确记载，不做推测。</Text>
             </View>
           )}
 

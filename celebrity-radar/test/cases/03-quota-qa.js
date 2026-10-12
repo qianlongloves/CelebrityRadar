@@ -2513,29 +2513,75 @@ describe('报告第二批（人物档案 / 关系图谱 / 商业合作 / 名词�
     deepEq(r.controversies.map((x) => x.topic), ['番位'], '争议同样必须有真出处')
   })
 
-  it('关系类别认不出的一律归 other；素材没写公开回应就留空串，不替素材写「暂无回应」', () => {
+  it('关系类别归一为四档；素材没写公开回应就留空串，不替素材写「暂无回应」', () => {
     const news = distinct(1)
     const r = sanitize(
       {
         relations: [
           { name: '乙', relation: '粉丝', note: '', basis: news[0].url },
           { name: '丙', relation: 'mentor', note: '', basis: news[0].url },
-          { name: '丁', relation: '', note: '', basis: news[0].url },
-          /* 机构三档（2026-10-12 并入关系图谱）必须原样留下，不能被折成 other */
-          { name: '戊', relation: 'company', note: '创始人兼董事长', basis: news[0].url },
-          { name: '己', relation: 'equity', note: '持股 5%', basis: news[0].url }
+          { name: '丁', relation: '', note: '', basis: news[0].url }
         ],
         controversies: [{ topic: '缺席', claim: '缺席路演', basis: news[0].url }]
       },
       news
     )
 
-    deepEq(
-      r.relations.map((x) => x.relation),
-      ['other', 'mentor', 'other', 'company', 'equity'],
-      '枚举外（含缺失）一律 other，不硬猜进某一档；机构三档原样保留'
-    )
+    deepEq(r.relations.map((x) => x.relation), ['other', 'mentor', 'other'], '四档之外（含缺失）一律 other，不硬猜进某一档')
     eq(r.controversies[0].response, '', '「暂无回应」是我们替素材下的结论，素材没说就不写')
+  })
+
+  it('企业关联（会员专享）：kind 归一；无名 / 无出处的整条剔除；空数组不落库；条数与字数有上限', () => {
+    const news = distinct(1)
+
+    /* kind 由 sanitize 归一：company/partner/equity 原样保留，其余（含自造词、缺失）一律 other */
+    const kinds = sanitize(
+      {
+        affiliations: [
+          { name: '甲公司', kind: 'company', note: '创始人兼董事长', basis: news[0].url },
+          { name: '乙基金', kind: 'equity', note: '持股 5%', basis: news[0].url },
+          { name: '丙品牌', kind: '合作', note: '', basis: news[0].url },
+          { name: '丁公司', kind: '', note: '', basis: news[0].url }
+        ]
+      },
+      news
+    )
+    deepEq(
+      kinds.affiliations.map((a) => a.kind),
+      ['company', 'equity', 'other', 'other'],
+      'company/partner/equity 原样保留，其余（含缺失）一律 other'
+    )
+
+    /* 事实字段：name 或 basis 为空即整条剔除，且不接受「据公开资料」与编造的出处 */
+    const dropped = sanitize(
+      {
+        affiliations: [
+          { name: '', kind: 'company', note: 'x', basis: news[0].url },
+          { name: '戊公司', kind: 'company', note: 'x', basis: '' },
+          { name: '己公司', kind: 'company', note: 'x', basis: 'https://编造的.example/x' },
+          { name: '庚公司', kind: 'company', note: 'x', basis: news[0].url }
+        ]
+      },
+      news
+    )
+    deepEq(dropped.affiliations.map((a) => a.name), ['庚公司'], '无名的、无出处的、编造出处的整条剔除')
+
+    /* 空数组不落键（与 memberNotes / conflicts / peers 同一口径）：免费报告恒无此段 */
+    eq(sanitize({ affiliations: [] }, news).affiliations, undefined, '整段为空时不落库')
+
+    const many = sanitize(
+      {
+        affiliations: Array.from({ length: 8 }, (_, i) => ({
+          name: `机构${i}`,
+          kind: 'company',
+          note: '说明'.repeat(40),
+          basis: news[0].url
+        }))
+      },
+      news
+    )
+    eq(many.affiliations.length, 4, '企业关联条数上限')
+    eq(many.affiliations[0].note.length, 40, '说明收敛长度')
   })
 
   it('五段各有条数与长度上限；全空也落库（空数组 =「本次确实没有」，UI 据此出卡并写明原因）', () => {
@@ -2553,7 +2599,7 @@ describe('报告第二批（人物档案 / 关系图谱 / 商业合作 / 名词�
 
     eq(many.profile.length, 6, '档案条数上限')
     eq(many.profile[0].value.length, 40, '档案值收敛长度')
-    eq(many.relations.length, 6, '关系条数上限（人 + 机构共 6 条，上限受 identity 批预算约束）')
+    eq(many.relations.length, 5, '关系条数上限')
     eq(many.relations[0].note.length, 40, '关系说明收敛长度')
     eq(many.endorsements.length, 3, '商业合作条数上限')
     eq(many.endorsements[0].note.length, 40, '说明收敛长度')

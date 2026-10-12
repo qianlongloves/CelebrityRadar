@@ -269,6 +269,11 @@ interface MemberFielded {
    * （只在会员提示词里请求）。促销条列不下它（单行 18 字预算），但判定口径必须算上它。
    */
   peers?: Array<{ name?: string }>
+  /**
+   * 关联企业 / 合作方 / 参股（2026-10-12）：同 peers —— 会员生成才会有的字段，
+   * 促销条列不下（18 字预算），但判定口径（hasMemberContent / stripMemberSections）必须算上它。
+   */
+  affiliations?: Array<{ name?: string }>
 }
 
 /** 报告里**实际**存在的专享段落（顺序固定，缺的跳过；空串按不存在处理） */
@@ -281,20 +286,22 @@ export function presentSections(report: MemberFielded | null | undefined): strin
 }
 
 /**
- * 报告里是否存在**会员专属内容** —— 三段文字段（memberNotes / conflicts）**或**结构化段 peers。
+ * 报告里是否存在**会员专属内容** —— 三段文字段（memberNotes / conflicts）**或**结构化段
+ * peers / affiliations。
  *
  * 与 presentSections 的分工（2026-10-12 拆开）：
  *   · presentSections 给的是**能写进促销条的名字** —— 那条是单行、18 字预算（见 03 用例），
- *     列不下第四段，故只列三段文字段；
+ *     列不下后面的结构化段，故只列三段文字段；
  *   · 本函数是**判定口径** —— 「剥除免费读者拿到的会员内容」（stripMemberSections）与
  *     「只升不降 / 会员补齐免计费复核」（端上 utils/cache.ts#hasMemberBlocks、云端
  *     aiProxy/report-store.js 与 quotaGuard）三处共用它。
- * 两件事一旦混用：要么促销条撑爆单行被裁成「信…」，要么 peers 漏在免费对象里
+ * 两件事一旦混用：要么促销条撑爆单行被裁成「信…」，要么 peers / affiliations 漏在免费对象里
  * （免费读者拿到的对象里本不该有会员生成的字段）。
  */
 export function hasMemberContent(report: MemberFielded | null | undefined): boolean {
   if (presentSections(report).length > 0) return true
-  return Array.isArray(report?.peers) && report.peers.length > 0
+  if (Array.isArray(report?.peers) && report.peers.length > 0) return true
+  return Array.isArray(report?.affiliations) && report.affiliations.length > 0
 }
 
 /**
@@ -309,6 +316,7 @@ export function hasMemberContent(report: MemberFielded | null | undefined): bool
  *   它的价值是让「非会员拿到的对象里没有会员段」成为不变式，UI 侧从此不必再各自判一次。
  *   2026-10-12：剔除范围加上 peers（同领域坐标）—— 它也是会员生成才会有的字段，
  *   留在免费对象里就破坏了这条不变式（判定统一走 hasMemberContent）。
+ *   2026-10-12：再加上 affiliations（企业关联），同上。
  *
  * 无会员内容时**返回原对象**（引用相等）：绝大多数报告走这条，不产生拷贝、不读任何库 ——
  * 这是调用方可以放心到处调它的前提（见 utils/cache.ts#exposeReport 的快路径）。
@@ -319,6 +327,7 @@ export function stripMemberSections<T extends MemberFielded>(report: T): T {
   delete copy.memberNotes
   delete copy.conflicts
   delete copy.peers
+  delete copy.affiliations
   return copy
 }
 
