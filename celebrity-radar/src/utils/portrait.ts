@@ -1,6 +1,7 @@
 import Taro from '@tarojs/taro'
 import { table } from './db'
 import { callCloudFunction } from './cloud'
+import { parsePersonKey } from '@/config/domains'
 import { diagLog } from './cloud-diagnostics'
 
 /**
@@ -126,12 +127,47 @@ export async function readPortraits(personKeys: string[]): Promise<Map<string, s
     return result
   }
 
+  const found = new Set<string>()
   for (const row of (data as PersonAssetRow[] | null) ?? []) {
     const key = row.person_key || row.id
     const fileId = row.avatar_file_id
     if (!key || typeof fileId !== 'string' || !fileId) continue
     remember(key, fileId)
     result.set(key, fileId)
+    found.add(key)
+  }
+
+  /*
+   * 名字回退（Task A，2026-10-12）：`person_assets` 同样以 personKey 为主键，
+   * 而 personKey 会因同一人被不同入口写成两个领域而分叉 —— 此时按 id 精确查必然落空。
+   * 对仍未命中的 key，改用「名字」再查一次：命中即按**请求方的 key** 记进缓存（组件用的正是它），
+   * 头像因此不再因 key 分叉而缺失，也避免组件随后 ensurePortrait 在旧 key 上再写出一行新头像。
+   * 本次只读、失败静默；取图本就在渲染之外（fire-and-forget），不阻塞页面。
+   */
+  const stillMissing = missing.filter((k) => !found.has(k))
+  if (stillMissing.length > 0) {
+    const requestedKeyByName = new Map<string, string>()
+    const names: string[] = []
+    for (const k of stillMissing) {
+      const name = parsePersonKey(k)?.name
+      if (!name || requestedKeyByName.has(name)) continue
+      requestedKeyByName.set(name, k)
+      names.push(name)
+    }
+    if (names.length > 0) {
+      const byName = await table('person_assets').select('*').in('name', names)
+      if (byName.error) {
+        diagLog('warn', 'db', `person_assets 按名字回退失败：${byName.error.message}`)
+      } else {
+        for (const row of (byName.data as PersonAssetRow[] | null) ?? []) {
+          const fileId = row.avatar_file_id
+          const requested = row.name ? requestedKeyByName.get(row.name) : undefined
+          if (!requested || typeof fileId !== 'string' || !fileId) continue
+          remember(requested, fileId)
+          result.set(requested, fileId)
+        }
+      }
+    }
   }
   return result
 }

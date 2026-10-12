@@ -64,7 +64,7 @@ function matchDoc(doc, where) {
     if (where.op === 'or') return where.val.some((w) => matchDoc(doc, w))
     throw new Error(`mock 不支持的顶层指令：${where.op}`)
   }
-  return Object.entries(where).every(([field, c]) => matchVal(doc[field], c))
+  return Object.entries(where).every(([field, c]) => matchVal(readPath(doc, field), c))
 }
 
 /**

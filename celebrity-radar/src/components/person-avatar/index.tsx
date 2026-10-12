@@ -28,6 +28,13 @@ interface PersonAvatarProps {
  * 名人头像（共享）。有真图（云存储 fileID）就画照片，没有就**逐字复用今天的占位**：
  * `View` + `--{领域码}` 渐变类 + 姓名首字。取图在挂载时 fire-and-forget，
  * 不设 loading、不阻塞渲染，晚到的 fileID 由 portrait.ts 的订阅通知本组件重绘。
+ *
+ * 【2026-10-12 结构性尺寸保证】照片**永远**画在一个与占位盒同尺寸的外层盒里，而不是把站点类名
+ * 直接挂到 `<Image>` 上：小程序 `<Image>` 默认尺寸是 320×240px，若某处站点类名没写死宽高，
+ * 照片就会顶着这个默认尺寸撑破布局（报告页整页左右可滑动的根因之一）。
+ * 现在外层盒始终是那个「原来的占位 View」（站点类名/尺寸**原样**挂在它身上），`<Image>` 只是它的
+ * 子元素、由 `person-avatar__img` 保证 100%×100% 铺满 —— 于是「照片必须与占位盒同尺寸」变成结构约束，
+ * 不再依赖每个调用点都恰好把宽高写全。
  */
 export default function PersonAvatar({ personKey, name, domain, className, size }: PersonAvatarProps) {
   /* 首帧就同步读缓存：命中直接出图，避免「先闪一下占位再跳照片」 */
@@ -50,14 +57,17 @@ export default function PersonAvatar({ personKey, name, domain, className, size 
 
   const cls = className ?? `person-avatar person-avatar--${domainStyleCode(domain)}`
   const style = size ? { width: size, height: size } : undefined
+  const hasPhoto = !!(personKey && fileId)
 
-  if (personKey && fileId) {
-    /* 圆形/圆角由站点类名的 border-radius 给出，aspectFill 保证照片裁满盒子不拉伸 */
-    return <Image className={cls} style={style} src={fileId} mode='aspectFill' />
-  }
   return (
-    <View className={cls} style={style}>
-      {name.slice(0, 1)}
+    <View className={`${cls} person-avatar__box`} style={style}>
+      {hasPhoto ? (
+        /* 圆形/圆角由外层站点类名的 border-radius 给出（__box 的 overflow:hidden 负责裁剪），
+           aspectFill 保证照片裁满盒子不拉伸 */
+        <Image className='person-avatar__img' src={fileId} mode='aspectFill' />
+      ) : (
+        name.slice(0, 1)
+      )}
     </View>
   )
 }

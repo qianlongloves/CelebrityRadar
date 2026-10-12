@@ -19,6 +19,25 @@
   align-items: center;
   justify-content: center;
 
+  /*
+    外层盒（站点的头像类名 + 本类一起挂在它上面）。overflow:hidden 把照片裁进站点类名给出的
+    圆 / 圆角里 —— 照片是盒子的子元素，圆形只能靠父级裁剪，不能指望 <Image> 自己圆角。
+  */
+  &__box {
+    overflow: hidden;
+  }
+
+  /*
+    真图：铺满外层盒。**宽高都用百分比**，于是照片尺寸恒等于占位盒尺寸，与小程序 <Image>
+    默认的 320×240px 无关（这正是「照片与占位盒同尺寸」的结构性保证，见 index.tsx 头注释）。
+    display:block 去掉内联元素基线留白，避免盒底多出一条缝。
+  */
+  &__img {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
   &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
   &--internet { background: linear-gradient(135deg, #67e8f9, $domain-internet); }
   &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }

@@ -8,6 +8,7 @@ import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
 import QuoteDetail from '@/components/quote-detail'
 import { getCachedReport } from '@/utils/cache'
+import { readPortraits } from '@/utils/portrait'
 import { quoteCopyText } from '@/utils/quote-check'
 import { Report } from '@/utils/report'
 import { isFollowed, toggleFollow } from '@/utils/follows'
@@ -59,6 +60,12 @@ export default function Profile() {
 
   const load = async () => {
     setLoading(true)
+    /*
+     * 真图读取侧预热（Task A）：URL 里的 personKey 可能是旧领域，person_assets 查不到 —— 这里
+     * 先按名字批量读一次（readPortraits 内部会按名字回退），命中即写进内存缓存，挂载的头像随即画出；
+     * fire-and-forget，不阻塞报告加载，也不会抛错。
+     */
+    void readPortraits([personKey])
     const [r, f] = await Promise.all([getCachedReport(personKey), isFollowed(personKey)])
     setReport(r)
     setFollowed(f)

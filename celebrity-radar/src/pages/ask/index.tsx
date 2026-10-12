@@ -12,6 +12,7 @@ import { listFollows } from '@/utils/follows'
 import { listRecentHistory } from '@/utils/history'
 import { loadHotBoard } from '@/utils/hot-board'
 import { readMemberState } from '@/utils/member'
+import { resolvePersonKey } from '@/utils/person-index'
 import type { Report } from '@/utils/report'
 import { personShareTitle, reportSharePath } from '@/utils/share'
 import { useTabBarSync } from '@/utils/tabbar'
@@ -210,12 +211,14 @@ export default function AskPage() {
    *
    * 刻意不接名人库检索：本页没有「任意名人搜索」这条云通道，而直连模式本来就不需要报告 ——
    * 用户打什么名字就拿它当 subject 去问，落地即直连。这样「未接触过的人」也有了入口，
-   * 又不必新增一次检索往返。domain 一律 other：无报告时 personKey 只用于配色与去重。
+   * 又不必新增一次检索往返。personKey 只用于配色与去重 —— 先按名字归一到「已有报告的那份 key」，
+   * 名字查不到报告时才回落 `名字#other`（domain 一律 other）。
    */
-  const askDirectly = useCallback((text: string) => {
+  const askDirectly = useCallback(async (text: string) => {
     const name = text.trim()
     if (!name) return
-    const personKey = `${name}#other`
+    /* 先按名字归一到「已有报告的那份 key」（Task C）：否则直连会与同名报告分叉出第二种领域 */
+    const personKey = await resolvePersonKey(name, 'other')
     setTargets((prev) =>
       prev.some((t) => t.personKey === personKey)
         ? prev

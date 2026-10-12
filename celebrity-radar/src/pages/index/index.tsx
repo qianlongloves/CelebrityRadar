@@ -25,6 +25,7 @@ import { track } from '@/utils/events'
 import { exploreRandomPerson, pickRandomPerson, todayPerson } from '@/utils/explore'
 import { listRecentHistory, HistoryRow } from '@/utils/history'
 import { listFollows, toggleFollow } from '@/utils/follows'
+import { resolvePersonKey } from '@/utils/person-index'
 import { loadMessages } from '@/utils/messages'
 import { personShareTitle, reportSharePath } from '@/utils/share'
 import { useTabBarSync } from '@/utils/tabbar'
@@ -213,8 +214,9 @@ export default function Index() {
     setState({ phase: 'candidates', candidates: res.data.candidates })
   }
 
-  const openPerson = (name: string, domain: string) => {
-    const personKey = buildPersonKey(name, domain)
+  /* 生成 personKey 前先按名字归一到「已有报告的那份 key」（Task C）：避免同一个人被本入口分叉出第二种领域 */
+  const openPerson = async (name: string, domain: string) => {
+    const personKey = await resolvePersonKey(name, domain)
     track('disambiguate_selected', { personKey, focus })
     Taro.navigateTo({
       url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}&focus=${focus}`

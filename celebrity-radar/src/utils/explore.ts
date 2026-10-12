@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { buildPersonKey, DOMAIN_CODES, DOMAIN_META, sanitizeDomain } from '@/config/domains'
 import { HOT_PERSONS } from '@/config/hot'
 import { chatJSON } from './llm'
+import { resolvePersonKey } from './person-index'
 import { diagLog } from './cloud-diagnostics'
 
 /** 热门池唯一来源 = config/hot.ts（发现页热门卡片 / 今日名人 / 静态兜底共用） */
@@ -39,9 +40,10 @@ export function todayPerson(): PersonPick {
   return pickRandomPerson(Math.floor(Date.now() / 86400000))
 }
 
-/** 打开报告页（personKey 统一出口） */
-export function openPerson(pick: PersonPick): void {
-  Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(pick.personKey)}` })
+/** 打开报告页（personKey 统一出口）。跳转前按名字归一到「已有报告的那份 key」（Task C，2026-10-12） */
+export async function openPerson(pick: PersonPick): Promise<void> {
+  const personKey = await resolvePersonKey(pick.name, pick.domain)
+  Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}` })
 }
 
 /** AI 选题的输出契约：只认「是谁」和「哪个领域」，多余字段一律忽略 */

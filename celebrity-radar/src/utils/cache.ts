@@ -48,6 +48,8 @@ import {
 } from './report-store'
 import { REFRESH_QUOTA_DISABLED } from './debug'
 import { diagLog } from './cloud-diagnostics'
+/* 名字回退（Task A，2026-10-12）：同一个人可能被不同入口写成两行 personKey，读取侧按名字归一 */
+import { resolvePersonKey, rememberPerson } from './person-index'
 import type { ReportCacheRow, FeedCacheRow, RefreshQuotaRow } from '@/types/db'
 
 /**
@@ -593,14 +595,21 @@ async function waitForReady(personKey: string): Promise<Report | null> {
  * 显示真实进度；命中缓存 / 排队等待等**不产生**进度的路径不会回调（那些路径本就没有「生成」可播报）。
  */
 export async function getOrBuildReport(
-  personKey: string,
+  personKeyParam: string,
   opts: { force?: boolean; focus?: FocusCode; onProgress?: (p: ReportProgress) => void } = {}
 ): Promise<ReportOutcome> {
   const focus = opts.focus ?? 'all'
   const userId = useAuth.getState().userId ?? 'anonymous'
-  const parsed = parsePersonKey(personKey)
+  /*
+   * personKey 用 `let`：名字回退（Task A）命中另一个 key 时会把后续流程整体切到那个 key，
+   * 于是「读」与「写」都落在同一份规范 key 上，不再由本入口分叉出第二种领域。
+   * 参数另用 personKeyParam 承接，函数体内所有引用仍写作 personKey（改动面最小）。
+   */
+  let personKey = personKeyParam
+  let parsed = parsePersonKey(personKey)
   if (!parsed) return { kind: 'error', message: `非法 personKey：${personKey}` }
-  const { name, domain } = parsed
+  let name = parsed.name
+  let domain = parsed.domain
 
   // 0. 缓存命中优先（随用随查）：已生成的报告读取零成本，不受冷却影响。
   //    冷却检查后置到第 1.5 步，只拦「重新生成」，不拦「看已有报告」。
@@ -621,6 +630,37 @@ export async function getOrBuildReport(
       report: shown.report,
       fromCache: true,
       memberLocked: shown.locked
+    }
+  }
+
+  /**
+   * 名字回退（Task A，2026-10-12）：本 key 没有可用报告时，按名字找回「最新那一份」的 personKey。
+   *
+   * 只在这里（缓存**落空**时）做，是为了既解决存量分叉、又不给常态读取加任何一次查询：
+   * 命中自己 key 的报告时上面已返回，根本走不到这里；只有「查不到」才付出这一次查询 + storage 记忆
+   * （见 utils/person-index.ts），随后命中即不再查。
+   *
+   * `altKey !== personKey` 才处理：相等说明连名字回退也只找到本 key（或压根没有），维持原行为。
+   * 命中另一 key 时把整个流程切到那个 key（读与写都落到同一份规范 key），并把映射记住；
+   * 非 force 直接当缓存命中交回（**不计数**，与现状一致）；force（用户点刷新）则继续按该 key 重新生成，
+   * 从根上避免这次刷新又写出一行新的分叉。
+   */
+  if (!isUsable(row)) {
+    const altKey = await resolvePersonKey(name, domain)
+    if (altKey !== personKey) {
+      const altRow = await getRow(altKey)
+      if (isUsable(altRow)) {
+        personKey = altKey
+        row = altRow
+        parsed = parsePersonKey(personKey) ?? parsed
+        name = parsed.name
+        domain = parsed.domain
+        if (!opts.force) {
+          track('report_hit_cache', { personKey })
+          const shown = await exposeReport(altRow.report)
+          return { kind: 'report', report: shown.report, fromCache: true, memberLocked: shown.locked }
+        }
+      }
     }
   }
 
@@ -1064,6 +1104,13 @@ export async function getOrBuildReport(
       const saved = await saveReady(personKey, report, materialCount, userId)
 
       /*
+       * 落库成功即记住「这个名字的最新 personKey」（Task A，2026-10-12）：此后各入口按名字找人
+       * 都会命中这一份，不再各自分叉出第二种领域。仅落库成功才记（saved === 'saved'）——
+       * kept / failed 时缓存里那份并未改变，记住旧 key 反而可能把索引指偏。
+       */
+      if (saved === 'saved') rememberPerson(name, personKey)
+
+      /*
        * saveReady 内部仍独立判一次同一份守卫（兜底）：正常路径下走不到这里 —— 上面已提前
        * 交回既有版本；真落到这里说明「快照」与「落库」之间那一行被换过（构建超时被他人抢占）。
        * 那种情况同样以「保住会员版」为准，交回缓存里的那一版。
@@ -1150,7 +1197,20 @@ async function writeFeedCache(personKey: string, items: NewsItem[]): Promise<boo
 /** 只读缓存（不触发生成、不抢锁）：名人主页 / 关注流用 */
 export async function getCachedReport(personKey: string): Promise<Report | null> {
   const row = await getRow(personKey)
-  if (row?.state !== 'ready' || !row.report) return null
+  if (row?.state !== 'ready' || !row.report) {
+    /*
+     * 名字回退（Task A）：本 key 查不到（存量分叉里名人主页正是这种情况 —— 它按 URL 里的
+     * personKey 读，而那可能是第三种领域、压根没有这一行）时，按名字找回最新那一份。
+     * 命中另一 key 才替换；否则维持 null（与「确实没有」同口径，端上行为不变）。
+     */
+    const parsed = parsePersonKey(personKey)
+    if (!parsed) return null
+    const altKey = await resolvePersonKey(parsed.name, parsed.domain)
+    if (altKey === personKey) return null
+    const altRow = await getRow(altKey)
+    if (altRow?.state !== 'ready' || !altRow.report) return null
+    return (await exposeReport(altRow.report)).report
+  }
   /*
    * 只读路径同样按读者身份过滤（批 1）：调用方（关注流概览 / 名人主页）虽只用得到 heat、
    * generatedAt 这类公开字段，但**问答页会把报告正文当上下文喂给模型** —— 那是一条能问出
@@ -1186,6 +1246,27 @@ export async function getCachedReports(personKeys: string[]): Promise<Array<Repo
     const row = byId.get(k)
     return row?.state === 'ready' && row.report ? row.report : null
   })
+
+  /*
+   * 名字回退（Task A）：批内有 key 落空时，按名字找回「最新那一份」（同 getCachedReport 的口径）。
+   * 只对落空项付出查询 —— 命中项零额外开销；结果写回同一位置，数组仍与入参一一对应。
+   */
+  const missIdx: number[] = []
+  ready.forEach((r, i) => {
+    if (!r && personKeys[i]) missIdx.push(i)
+  })
+  if (missIdx.length > 0) {
+    await Promise.all(
+      missIdx.map(async (i) => {
+        const parsed = parsePersonKey(personKeys[i])
+        if (!parsed) return
+        const altKey = await resolvePersonKey(parsed.name, parsed.domain)
+        if (altKey === personKeys[i]) return
+        const altRow = await getRow(altKey)
+        if (altRow?.state === 'ready' && altRow.report) ready[i] = altRow.report
+      })
+    )
+  }
 
   /*
    * 批量路径只读**一次**身份（批 1）：只要其中任何一份藏着会员段就值得这一次读，

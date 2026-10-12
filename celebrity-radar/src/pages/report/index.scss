@@ -30,6 +30,18 @@
 }
 
 .page-report {
+  /*
+    兜底（2026-10-12）：报告页曾「整页可左右滑动、内容看起来不居中、左右都留空隙」——
+    典型的某个元素宽度超过屏宽导致的横向溢出。真正的原因已按以下逐一修掉：
+      · 头像照片按占位盒尺寸画（components/person-avatar 的结构性保证），不再顶着 <Image> 默认 320×240px；
+      · SectionTable 的短列 flex-basis 之和 + 间距 ≤ 卡片内宽（630rpx），长文本一律 word-break；
+      · basis 出处（__point-basis / __entry-basis / __table-basis）补齐 word-break，长 URL 不再撑宽。
+    这里再补一道横向兜底**防回归**，但它只是保险丝，不是修复本身，不能替代上面的真修。
+  */
+  width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
+
   /* ===== 头部紫色横幅（2026-10-09 重排：身份带 / 状态行 / 操作行 三段）=====
      结构见 pages/report/index.tsx 里该块的注释。这里只记三条布局口径：
        · 三段是**纵向流**，宽度各自吃满（不再共享一条 flex 行，故没有窄栏争宽度的老问题）；
@@ -418,6 +430,8 @@
     font-size: 22rpx;
     line-height: 1.5;
     color: $text-3;
+    /* 出处可能夹长 URL / 无空格英文串（模型从素材原样复制），必须允许断词，否则撑破卡片与整页 */
+    word-break: break-word;
   }
 
   /*
@@ -1265,6 +1279,8 @@
     font-size: 20rpx;
     line-height: 1.5;
     color: $text-3;
+    /* 与 __point-basis 同款：出处里的长 URL / 长英文串不折行会溢出（见 __table-basis） */
+    word-break: break-word;
   }
 
   /* ===== 语录主题：主题词 + 条数 + 代表原文（比语录卡低一级的字号，避免喧宾夺主） ===== */

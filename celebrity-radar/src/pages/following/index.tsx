@@ -8,6 +8,7 @@ import { listFollows, unfollow, FollowRow } from '@/utils/follows'
 import { loadFollowWatches, FollowWatch, WATCH_LIMIT } from '@/utils/watch'
 import { useAuth } from '@/stores/auth'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
+import { resolvePersonKey } from '@/utils/person-index'
 import { readPortraits } from '@/utils/portrait'
 import { fromNow } from '@/utils/time'
 import './index.scss'
@@ -52,8 +53,11 @@ export default function Following() {
   })
 
   /* 与「关注流」一致：点击进名人主页（那里能看动态 / 名言，也能再次取关） */
-  const openPerson = (personKey: string) => {
-    Taro.navigateTo({ url: `/pages/profile/index?personKey=${encodeURIComponent(personKey)}` })
+  const openPerson = async (personKey: string) => {
+    /* 跳转前按名字归一到「已有报告的那份 key」（Task C）：关注里存的 key 可能是旧领域，免得主页查不到最新报告 */
+    const parsed = parsePersonKey(personKey)
+    const key = parsed ? await resolvePersonKey(parsed.name, parsed.domain) : personKey
+    Taro.navigateTo({ url: `/pages/profile/index?personKey=${encodeURIComponent(key)}` })
   }
 
   const onUnfollow = async (personKey: string, name: string) => {
