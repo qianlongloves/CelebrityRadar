@@ -144,6 +144,8 @@ function resetData() {
   taroOverrides.clear()
   /* 已注册的云函数是测试脚手架，不属于被测状态：不清会让上一用例注入的替身泄漏到下一用例 */
   cloudFns.clear()
+  /* 开关的「显式指定」状态同样不该泄漏到下一用例（见 load 里的强制回 false） */
+  restrictedFlagPinned = false
 }
 
 /** 覆盖某个 Taro API 的返回值（**必须在 load 业务模块之后、调用它之前设置**，见 taroOverrides） */
@@ -156,8 +158,23 @@ function resetAll() {
   resetModules()
 }
 
+/** 「限制类检索」开关是否被某个用例**显式指定**过（显式指定后 load() 不再强制回 false） */
+let restrictedFlagPinned = false
+
 /** 加载编译后的 src 模块，如 load('utils/time') */
 function load(rel) {
+  /*
+   * 「限制类检索」的放开开关在**加载任何模块之前**强制关回 false（2026-10-12 补）。
+   *
+   * 它和别的 debug 开关不是一类：disable* 只决定闸门拦不拦，而它会**改掉本地拦截与两处提示词**，
+   * 而用例断言的正是那几层逻辑（sensitive 命中、消歧与报告提示词里的拒答规则）。
+   * 之所以必须放在 load 里而不是只放 setDebugFlags：不少用例（如 01-pure）直接在 load 里
+   * 读模块、根本不覆盖开关，于是本机 local.ts 为摸边界打开它就会让整套用例忽红忽绿。
+   * 要测「放开后的行为」的用例，先 setDebugFlags({ allowRestrictedSearch: true }) 即可固定。
+   */
+  if (!restrictedFlagPinned) {
+    require(path.join(BUILD, 'config/public')).publicConfig.debug.allowRestrictedSearch = false
+  }
   return require(path.join(BUILD, rel))
 }
 
@@ -182,6 +199,9 @@ function setDebugFlags(patch) {
    * 若跟随本机 local.ts，谁为了摸边界把它打开，整套用例就会莫名其妙变红（正是本函数要防的事，
    * 见上方注释）。要测「放开后的行为」时，在 patch 里显式传 `allowRestrictedSearch: true` 覆盖即可。
    */
+  if (patch && Object.prototype.hasOwnProperty.call(patch, 'allowRestrictedSearch')) {
+    restrictedFlagPinned = true
+  }
   Object.assign(config.publicConfig.debug, { allowRestrictedSearch: false }, patch)
   return config.publicConfig.debug
 }
