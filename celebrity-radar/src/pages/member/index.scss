@@ -54,6 +54,13 @@
     color: rgba(255, 255, 255, 0.88);
   }
 
+  /* 有效期放到标题右侧时用（见 tsx）：抹掉独占一行的 block 与上边距，改为不收缩的右对齐 */
+  &__hero-sub--right {
+    margin-top: 0;
+    flex-shrink: 0;
+    text-align: right;
+  }
+
   /* ===== 区块标题 ===== */
   &__section {
     display: block;

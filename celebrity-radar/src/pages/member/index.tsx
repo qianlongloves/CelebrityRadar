@@ -389,14 +389,25 @@ export default function MemberPage() {
           <Text className='page-member__hero-title'>
             {!loading && isMember ? `${levelEmoji} ${levelLabel}` : '名人雷达会员'}
           </Text>
+          {/*
+            有效期放在标题**右侧**（2026-10-12 修「右侧看着空」）：它原先独占第二行，
+            而标题那行右边没有任何东西 —— 一张卡两行、右边全空，观感就是「空」。
+            挪到同一行后左名称右有效期，一行把宽度用满，也不再需要第二行。
+          */}
+          {!loading && isMember && !!member?.expiresAt && (
+            <Text className='page-member__hero-sub page-member__hero-sub--right'>
+              {`有效期至 ${formatDay(member.expiresAt)}`}
+            </Text>
+          )}
         </View>
-        <Text className='page-member__hero-sub'>
-          {loading
-            ? '正在读取你的会员状态…'
-            : isMember && member?.expiresAt
-              ? `有效期至 ${formatDay(member.expiresAt)}`
+        {/* 非会员 / 还没读到时没有有效期可放右侧，仍用第二行说明状态（否则这张卡是空的） */}
+        {(loading || !isMember || !member?.expiresAt) && (
+          <Text className='page-member__hero-sub'>
+            {loading
+              ? '正在读取你的会员状态…'
               : `免费版每日可主动生成 ${FREE_DAILY_GENERATE_LIMIT} 次，会员每日 ${MEMBER_DAILY_GENERATE_LIMIT} 次`}
-        </Text>
+          </Text>
+        )}
       </View>
 
       {loading ? (
