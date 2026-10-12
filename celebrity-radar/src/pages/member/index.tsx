@@ -29,8 +29,6 @@ import {
   FALLBACK_MEMBERSHIP_PLANS,
   buyMembership,
   fetchMembershipPlans,
-  planEmojiOf,
-  planLabelOf,
   planNote
 } from '@/utils/pay'
 import type { BuyResult, MembershipPlan } from '@/utils/pay'
@@ -371,27 +369,19 @@ export default function MemberPage() {
     }
   }
 
-  /* 当前等级（非会员 / 未知档位回落「会员」）：顶部卡片的标题就是它 —— 会员一眼看到自己买的是哪一档 */
-  const levelEmoji = planEmojiOf(member?.plan ?? null)
-  const levelLabel = planLabelOf(member?.plan ?? null)
-
   return (
     <View className='page-member'>
+      {/*
+        顶部卡片（2026-10-12 用户要求：**除有效期外的文字全部删掉**）。
+        撤掉的有三样：等级名（含 emoji）、右侧状态标（会员 · 剩 N 天 / 免费版）、以及加载中的产品名 ——
+        卡片上只剩一行「有效期至 X」。非会员没有有效期，那一行仍显示免费版额度：否则这张卡会是全空的。
+      */}
       <View className='page-member__hero'>
-        <View className='page-member__hero-head'>
-          {/* 名称位显示当前等级（emoji + 档位名）；未登录/未开通时仍是产品名，不假装已是用户权益 */}
-          <Text className='page-member__hero-title'>
-            {!loading && isMember ? `${levelEmoji} ${levelLabel}` : '名人雷达会员'}
-          </Text>
-          <Text className={`page-member__hero-tag${isMember ? ' page-member__hero-tag--on' : ''}`}>
-            {loading ? '读取中' : isMember ? `会员 · 剩 ${member?.daysLeft ?? 0} 天` : '免费版'}
-          </Text>
-        </View>
         <Text className='page-member__hero-sub'>
           {loading
             ? '正在读取你的会员状态…'
             : isMember && member?.expiresAt
-              ? `有效期至 ${formatDay(member.expiresAt)}；到期前续费按天顺延，不浪费剩余时长`
+              ? `有效期至 ${formatDay(member.expiresAt)}`
               : `免费版每日可主动生成 ${FREE_DAILY_GENERATE_LIMIT} 次，会员每日 ${MEMBER_DAILY_GENERATE_LIMIT} 次`}
         </Text>
       </View>
@@ -402,6 +392,26 @@ export default function MemberPage() {
         </View>
       ) : (
         <>
+          {/*
+            订单入口（2026-10-12 新增；同日移到**页面第二张卡**的位置）。
+            **只对会员可见**：没下过单的人进去只有空态，而「支付成功后开通中」这类疑问本来就只发生在
+            已经付过钱的会员身上 —— 与其让所有人看着一个点进去没东西的入口，不如让它只出现在
+            真正有订单的人那里。非会员走下面的「选择档位」下单，不需要这条路径。
+          */}
+          {isMember && (
+            <View
+              className='card page-member__orders'
+              hoverClass='page-member__orders--tap'
+              onClick={() => Taro.navigateTo({ url: '/pages/orders/index' })}
+            >
+              <View className='page-member__orders-main'>
+                <Text className='page-member__orders-title'>查看我的订单</Text>
+                <Text className='page-member__orders-note'>支付记录与开通状态（发货中通常几秒内生效）</Text>
+              </View>
+              <Text className='page-member__orders-arrow'>›</Text>
+            </View>
+          )}
+
           <View className='card page-member__compare'>
             <Text className='page-member__section'>免费版 vs 会员</Text>
             <View className='page-member__row page-member__row--head'>
@@ -491,26 +501,6 @@ export default function MemberPage() {
               )
             })}
           </View>
-
-          {/*
-            订单入口（2026-10-12 新增）。**只对会员可见**：没下过单的人进去只有空态，
-            而「支付成功后开通中」这类疑问本来就只发生在已经付过钱的会员身上 ——
-            与其让所有人看着一个点进去没东西的入口，不如让它只出现在真正有订单的人那里。
-            非会员走上面的「选择档位」下单，不需要这条路径。
-          */}
-          {isMember && (
-            <View
-              className='card page-member__orders'
-              hoverClass='page-member__orders--tap'
-              onClick={() => Taro.navigateTo({ url: '/pages/orders/index' })}
-            >
-              <View className='page-member__orders-main'>
-                <Text className='page-member__orders-title'>查看我的订单</Text>
-                <Text className='page-member__orders-note'>支付记录与开通状态（发货中通常几秒内生效）</Text>
-              </View>
-              <Text className='page-member__orders-arrow'>›</Text>
-            </View>
-          )}
 
           <View className='page-member__notes'>
             {/*
