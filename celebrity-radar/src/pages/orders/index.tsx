@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Taro, { usePullDownRefresh } from '@tarojs/taro'
 import { Text, View } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
@@ -32,8 +32,14 @@ interface OrderRow {
   id: string
   plan: string
   amountFen: number
+  days: number
   status: string
   createdAt: string
+  paidAt: string
+  grantedAt: string
+  transactionId: string
+  refundedAt: string
+  refundReason: string
 }
 
 /**
@@ -74,11 +80,6 @@ function formatYuan(fen: number): string {
   return Number.isFinite(fen) ? (fen / 100).toFixed(2) : '0.00'
 }
 
-/** 订单号：只显示后 8 位 —— 完整号对用户没有意义，长串还会把布局挤出去 */
-function shortOrderNo(id: string): string {
-  return id ? `…${id.slice(-8)}` : '—'
-}
-
 /** 下单时间：不可解析时留空（宁可空着，也不显示 dayjs 的 'Invalid Date'） */
 function timeText(iso: string): string {
   return iso && Number.isFinite(Date.parse(iso)) ? formatDate(iso) : ''
@@ -97,10 +98,26 @@ function toOrder(raw: Record<string, unknown>): OrderRow {
     id: String(raw.id ?? raw._id ?? ''),
     plan: String(raw.plan ?? ''),
     amountFen: Number(raw.amount_fen ?? 0),
+    days: Number(raw.days ?? 0),
     status: String(raw.status ?? ''),
-    createdAt: String(raw.created_at ?? '')
+    createdAt: String(raw.created_at ?? ''),
+    paidAt: String(raw.paid_at ?? ''),
+    grantedAt: String(raw.granted_at ?? ''),
+    transactionId: String(raw.transaction_id ?? ''),
+    refundedAt: String(raw.refunded_at ?? ''),
+    refundReason: String(raw.refund_reason ?? '')
   }
 }
+
+/**
+ * 明细区**折叠阈值**（px）：超过这个高度就默认收起、并在卡底给一个「展开明细」。
+ *
+ * 为什么按实测高度而不是「固定藏几行」：不同订单的明细行数本来就不一样
+ * （待支付单没有支付/发货时间，退款单多两行），写死「藏后 N 行」必然在某些单上
+ * 藏了不该藏的、或漏藏。这里在渲染后用 createSelectorQuery 量一次真实高度，
+ * 只有真的超了才折叠 —— 与用户说的「超出高度折叠」逐字一致。
+ */
+const DETAIL_MAX_PX = 132
 
 export default function OrdersPage() {
   const [loading, setLoading] = useState(true)
@@ -159,6 +176,42 @@ export default function OrdersPage() {
     Taro.stopPullDownRefresh()
   })
 
+  /**
+   * 明细折叠状态（orderId → 是否收起）。
+   *
+   * 初值刻意是「全展开」：先按真实内容渲染一次，量完高度再决定谁需要收起 ——
+   * 反过来（先全收起再展开）会让本来不超高的单也闪一下。
+   * 键**存在**（true/false）即表示这张卡的明细超过阈值、需要常驻一个展开/收起按钮；
+   * 键不存在 = 明细本来就短，既不限高也不给按钮。
+   */
+  const [folded, setFolded] = useState<Record<string, boolean>>({})
+  /** 已经量过的那批订单（按 id 串起来）：量过就不重复量，避免每次展开/收起又触发一轮测量 */
+  const measured = useRef('')
+
+  useEffect(() => {
+    if (loading || orders.length === 0) return
+    const stamp = orders.map((o) => o.id).join('|')
+    if (measured.current === stamp) return
+    measured.current = stamp
+    /*
+     * 量一次明细区的真实高度，只把超阈值的卡默认收起（口径见 DETAIL_MAX_PX）。
+     * selectAll 的返回**与渲染顺序一致**，所以按 orders 的下标对齐即可 ——
+     * 不给每张卡各写一个 id 选择器（订单号含大写字母与数字，拼选择器更容易写错）。
+     */
+    Taro.createSelectorQuery()
+      .selectAll('.page-orders__detail')
+      .boundingClientRect()
+      .exec((res) => {
+        const rects = (res && res[0]) as Array<{ height?: number }> | undefined
+        if (!rects || rects.length !== orders.length) return
+        const next: Record<string, boolean> = {}
+        rects.forEach((r, i) => {
+          if (r && (r.height ?? 0) > DETAIL_MAX_PX) next[orders[i].id] = true
+        })
+        if (Object.keys(next).length > 0) setFolded(next)
+      })
+  }, [loading, orders])
+
   return (
     <View className='page-orders'>
       {loading ? (
@@ -177,6 +230,24 @@ export default function OrdersPage() {
         <>
           {orders.map((o) => {
             const note = STATUS_NOTE[o.status]
+            const isFolded = !!folded[o.id]
+            /*
+             * 明细行：只列这条订单**确实有值**的字段（没有的整行不渲染）。
+             * 不铺一排「—」的原因：待支付单没有支付/发货时间，退款单多两行 ——
+             * 一律渲染会让人以为「字段丢了」，而不是「这件事还没发生」。
+             */
+            const details: Array<[string, string]> = (
+              [
+                ['订单号', o.id],
+                ['时长', o.days > 0 ? `${o.days} 天` : ''],
+                ['下单时间', timeText(o.createdAt)],
+                ['支付时间', timeText(o.paidAt)],
+                ['开通时间', timeText(o.grantedAt)],
+                ['交易号', o.transactionId],
+                ['退款时间', timeText(o.refundedAt)],
+                ['退款原因', o.refundReason]
+              ] as Array<[string, string]>
+            ).filter(([, value]) => value !== '')
             return (
               <View key={o.id} className='card page-orders__item'>
                 <View className='page-orders__head'>
@@ -192,7 +263,30 @@ export default function OrdersPage() {
                   <Text className='text-tertiary page-orders__time'>{timeText(o.createdAt)}</Text>
                 </View>
                 {!!note && <Text className='page-orders__note'>{note}</Text>}
-                <Text className='page-orders__no'>{`订单号 ${shortOrderNo(o.id)}`}</Text>
+
+                {/* 明细区：超过阈值才限高（阈值口径见 DETAIL_MAX_PX），按钮只在需要时出现 */}
+                <View
+                  className={`page-orders__detail${isFolded ? ' page-orders__detail--fold' : ''}`}
+                  style={isFolded ? { maxHeight: `${DETAIL_MAX_PX}px` } : undefined}
+                >
+                  {details.map(([label, value]) => (
+                    <View key={label} className='page-orders__detail-row'>
+                      <Text className='page-orders__detail-label'>{label}</Text>
+                      <Text className='page-orders__detail-value'>{value}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                {folded[o.id] !== undefined && (
+                  <Text
+                    className='page-orders__toggle'
+                    onClick={() =>
+                      setFolded((prev) => Object.assign({}, prev, { [o.id]: !prev[o.id] }))
+                    }
+                  >
+                    {isFolded ? '展开明细 ▾' : '收起明细 ▴'}
+                  </Text>
+                )}
               </View>
             )
           })}
