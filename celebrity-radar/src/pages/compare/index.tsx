@@ -674,7 +674,7 @@ export default function Compare() {
           {base && rival && (
             <View className='card page-compare__qa'>
               <View className='card-title'>对比问答</View>
-              <QaPanel report={base} withReport={rival} member={member} safeBottom={false} />
+              <QaPanel report={base} name={base.name} withReport={rival} member={member} safeBottom={false} />
             </View>
           )}
 

@@ -1571,6 +1571,133 @@ describe('提问流程 utils/qa#askReport', () => {
   })
 })
 
+/* --------------------------------------- 直连提问 askDirect（2026-10-12） */
+
+/*
+ * 「没有报告也能问」：直连模式把「人物/话题 + 问题」直接交给大模型，用「联网检索 + 模型自身知识」
+ * 作答。下面钉住四件事：短校验、必须以 'ask' 池调用、检索为空仍能作答、以及受控放开后的提示词口径。
+ */
+describe('直连提问 utils/qa#askDirect', () => {
+  /** 博查原始条目（字段名与云函数回传一致：name / summary / siteName / datePublished） */
+  const webItems = (n = 2) =>
+    Array.from({ length: n }, (_, i) => ({
+      name: `直连报道${i}`,
+      summary: `直连正文${i}`,
+      url: `https://example.com/direct${i}`,
+      siteName: `直连网媒${i}`,
+      datePublished: '2026-10-09T09:00:00.000Z'
+    }))
+
+  /** 机审放行 + 检索回传 items + 模型成功；`box` 收集两次 aiProxy 的入参供断言 */
+  const online = (items, box, content = '这是直连回答') => {
+    env.registerCloudFn('contentCheck', () => ({ ok: true, suggest: 'pass' }))
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action === 'search') {
+        box.search = data
+        return { ok: true, pages: items }
+      }
+      box.chat = data
+      return { ok: true, content, model: 'qwen3.8-flash' }
+    })
+  }
+
+  const mirrorCount = () => (env.storage.get(USAGE_KEY) || {}).count || 0
+
+  it('空问题 / 超长问题直接拒绝，不消耗额度也不调模型', async () => {
+    const { load } = fresh()
+    login('u1')
+    let called = false
+    env.registerCloudFn('contentCheck', () => ({ ok: true, suggest: 'pass' }))
+    env.registerCloudFn('aiProxy', () => { called = true; return { ok: true, content: 'x' } })
+    const { askDirect, QA_MAX_QUESTION } = load('utils/qa')
+
+    const empty = await askDirect('雷军', '   ')
+    eq(empty.ok, false)
+    ok(empty.error.includes('请输入问题'), `实际：${empty.error}`)
+
+    const long = await askDirect('雷军', '问'.repeat(QA_MAX_QUESTION + 1))
+    eq(long.ok, false)
+    ok(long.error.includes('过长'), `实际：${long.error}`)
+
+    notOk(called, '被拦下的提问不该调用模型')
+    eq(mirrorCount(), 0)
+  })
+
+  it('正常路径：以 ask 池调用（action=chat / purpose=ask），成功才计数并埋点 direct', async () => {
+    const { db, load } = fresh()
+    login('u1')
+    const box = {}
+    online(webItems(2), box)
+
+    const res = await load('utils/qa').askDirect('雷军', 'TA 最近有什么动态？')
+    eq(res.ok, true)
+    eq(res.text, '这是直连回答')
+    eq(box.chat.action, 'chat', '直连提问必须走提问池的路由（chat），不能混进生成池')
+    eq(box.chat.purpose, 'ask', 'purpose=ask 才对得上云端提问额度池')
+    eq(mirrorCount(), 1, '成功提问应 +1')
+
+    /* 检索式 = 名人 + 问题；资料条数与编号写进 user prompt，[n] 从 1 连续编号 */
+    eq(box.search.query, '雷军 TA 最近有什么动态？')
+    const userPrompt = box.chat.messages[1].content
+    ok(userPrompt.includes('名人/话题：雷军'), `实际：${userPrompt.slice(0, 40)}`)
+    ok(userPrompt.includes('资料条数：2'), `实际：${userPrompt.slice(0, 40)}`)
+    eq(res.sources.length, 2)
+    deepEq(res.sources.map((p) => p.no), [1, 2], '直连态联网片段从 [1] 开始编号')
+    eq(res.sources[0].kind, 'web')
+    ok(box.chat.messages[0].content.includes('没有'), 'system 须说明本次没有报告素材')
+    ok(box.chat.messages[0].content.includes('报告素材'), 'system 须说明本次没有报告素材')
+
+    await new Promise((r) => setTimeout(r, 0))
+    const ev = db.__dump('events').find((e) => e.event === 'report_qa_ask')
+    eq(ev.props.direct, true, '埋点须标出这是直连（没有报告语料）')
+    eq(ev.props.subject, '雷军')
+    eq(ev.props.web, 2)
+  })
+
+  it('检索为空时仍能作答（不因「无素材」报错）—— 这正是它相对 askReport 的意义', async () => {
+    const { load } = fresh()
+    login('u1')
+    const box = {}
+    online([], box)
+
+    const res = await load('utils/qa').askDirect('某位还没报告的人', 'TA 是谁？')
+    eq(res.ok, true, '没有检索结果也必须给出回答')
+    deepEq(res.sources, [], '没有联网结果时 sources 为空')
+    ok(box.chat.messages[1].content.includes('（本次没有检索到结果）'), '空《资料》要有占位行')
+  })
+})
+
+/* --------------------------------- 受控放开「只依据素材」口径（2026-10-12） */
+
+/*
+ * 与直连模式配套：有报告时也允许模型在资料不足时补自身知识，但必须逐处标注来源类型。
+ * 下面钉住提示词口径本身 —— 放开的是「能不能用已有常识」，不是「能不能编」。
+ */
+describe('提示词口径：受控放开模型知识（2026-10-12）', () => {
+  const captureSystem = async () => {
+    const { load } = fresh()
+    login('u1')
+    let seen = null
+    env.registerCloudFn('contentCheck', () => ({ ok: true, suggest: 'pass' }))
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action === 'search') return { ok: true, pages: [] }
+      seen = data
+      return { ok: true, content: '回答' }
+    })
+    const res = await load('utils/qa').askReports([mkReport({ intro: '简介' })], '有什么动态？')
+    eq(res.ok, true)
+    return seen.messages[0].content
+  }
+
+  it('system 含「（模型知识，未必准确）」，且第 1 条不再含绝对措辞', async () => {
+    const system = await captureSystem()
+    ok(system.includes('（模型知识，未必准确）'), '放开后 system 必须给出模型知识的标注措辞')
+    ok(system.includes('可以补充你已确知的公开常识'), '第 1 条应允许在资料不足时补充模型自身知识')
+    notOk(system.includes('一律不得使用'), '第 1 条不应再保留「一律不得使用」这种绝对措辞')
+    ok(system.includes('不得仅凭记忆断言'), '涉及可能变化的事实须禁止凭记忆断言')
+  })
+})
+
 /* ------------------------- 会员深度模式 O-11（闸门 / 会员段落 / 热度） */
 
 describe('会员深度模式 O-11（模型闸门 / memberNotes / 热度口径）', () => {

@@ -124,6 +124,12 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+
+    /* 无报告的人：用品牌色把「直连」标出来，与旁边「多久前生成 · N 条」一眼可分 */
+    &--direct {
+      color: $brand;
+      font-weight: 600;
+    }
   }
 
   /* 候选较多时的过滤框（见 pages/ask 的 FILTER_FROM） */

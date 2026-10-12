@@ -37,7 +37,9 @@ import type { Report } from './report'
  *    utils/member.ts 的每日问答额度（免费版 / 会员各一档），**计数在云端**
  *    （`ask_quota`，走云函数 `quotaGuard` 的 `ask` 类），用尽时文案带升级引导。
  * 2. **不许编**：prompt 里把「公开报道」「AI 判定」「联网检索」三类资料标开，并要求资料不足时直说
- *    「报告里没有」—— 报告页已经写过「AI 生成，仅供参考」，问答不能比它更松。
+ *    「报告里没有」。2026-10-12 **受控放开**：允许在资料不足时补模型自身知识，但必须逐处标注
+ *    「（模型知识，未必准确）」，且严禁编造具体数字 / 日期 / 言论 / 作品名 / 代言 / 争议 ——
+ *    放开的只是「能不能用已有常识」，不是「能不能编」。
  * 3. **机审前置**：用户提问是全项目**唯一**的用户自由文本，送检点就复用既有的
  *    `checkUserText`（云函数 `contentCheck`），命中违规才拦（fail-open 于服务端故障）。
  */
@@ -363,10 +365,21 @@ function askQueryOf(reports: Report[], question: string): string {
  *    不去撞这一趟，省一个往返，也免得把冷却时间继续往后推。
  */
 async function webPassagesOf(reports: Report[], question: string, baseNo: number): Promise<QaPassage[]> {
+  return webPassagesOfQuery(askQueryOf(reports, question), baseNo)
+}
+
+/**
+ * 联网检索的通用实现：检索式由调用方给，**不依赖 reports**（直连模式复用同一口径）。
+ *
+ * 三条取舍与 webPassagesOf 完全一致：通道未就绪 / 搜索冷却中直接跳过；失败一律降级为空数组；
+ * 检索不通只是「这次没有联网补充」，绝不因此让问答失败 —— 直连模式下它更是**唯一**的《资料》来源，
+ * 空数组意味着「纯靠模型知识作答」，仍要给出回答（这正是 askDirect 相对 askReports 的意义）。
+ */
+async function webPassagesOfQuery(query: string, baseNo: number): Promise<QaPassage[]> {
   if (!hasSearchChannel()) return []
   if (cooldownRemainingMs('search') > 0) return []
   try {
-    const items = await searchForAsk(askQueryOf(reports, question))
+    const items = await searchForAsk(query)
     if (!items || items.length === 0) return []
     return items.slice(0, QA_WEB_MAX).map((item, i) => toWebPassage(item, baseNo + i + 1))
   } catch (err) {
@@ -503,9 +516,9 @@ const QA_SYSTEM = [
   '你是「名人雷达」小程序里的资料问答助手。用户针对某位公众名人提问，你只能依据随后给出的《资料》回答。',
   '',
   '硬性约束（违反即为错误回答）：',
-  '1. 只使用《资料》里的信息。资料之外的知识、印象、传闻一律不得使用，也不得推测补全。',
+  '1. 优先使用《资料》里的信息。资料不足以回答时，可以补充你已确知的公开常识，但这类内容必须紧跟标注「（模型知识，未必准确）」；绝不可用模型知识编造具体的数字、日期、言论、作品名、代言或争议。',
   '2. 资料条目已标注类型：【公开报道】是可核对的媒体素材，可直接陈述；【AI 判定】是平台模型此前给出的点评与话题倾向，引用时必须写明「报告点评认为」，不得当作事实；【联网检索】是提问时刻实时搜到的公开报道，用法见《资料》之后的那段补充说明。',
-  '3. 资料不足以回答问题时，直接说明「这份报告里没有相关信息」，并可建议用户回报告页点「刷新最新」再问；不得编造人名、数字、时间、言论。',
+  '3. 资料不足以回答问题时，先说明「这份报告里没有相关信息」；如仍能作答，可用标注过的模型知识补充，不得编造人名、数字、时间、言论。',
   '4. 涉及评价、预测、立场的问题，不替名人下定论，也不做褒贬；只陈述资料里出现的说法与报道。',
   '5. 不输出任何网址或链接（原文可在报告页点来源查看）。',
   '6. 用简体中文回答，200 字以内，必要时用短句分条，不要复述全部资料。',
@@ -550,6 +563,40 @@ const QA_SYSTEM_WEB_EXTRA = [
   '检索结果未必与问题相关：不相关的条目不使用，也不必提及。若检索没有返回结果，按第 3 条照常说明资料不足。'
 ].join('\n')
 
+/**
+ * 模型自身知识的补充说明（2026-10-12，受控放开「只依据素材」口径）。
+ *
+ * 与 QA_SYSTEM_WEB_EXTRA 同风格：独立一段、不占编号（改编号会把 QA_SYSTEM 与
+ * QA_SYSTEM_MULTI_EXTRA 里的「第 N 条」引用一起带偏）。三句话各管一件事：
+ * ① 明确允许补模型知识 —— 不写，模型只会回「报告里没有」，用户最想知道的常识答不上来；
+ * ② 强制标注来源类型 —— 不标就无法区分「出自素材」与「出自记忆」，前者可核对、后者可能过时；
+ * ③ 可能随时间变化的事实禁止凭记忆断言 —— 近况 / 票房 / 代言 / 争议这类问题，记忆里的值
+ *    多半已过期，凭它作答比说「资料不足」更糟。
+ */
+const QA_SYSTEM_KNOWLEDGE_EXTRA = [
+  '',
+  '【关于《资料》之外的模型自身知识】',
+  '资料不足以回答时，可以补充你已确知的公开常识，但这类内容必须紧跟标注「（模型知识，未必准确）」。',
+  '涉及可能随时间变化的事实（近况、票房、代言、争议等），不得仅凭记忆断言；资料里没有就说明资料不足。'
+].join('\n')
+
+/**
+ * 「本次没有该人物报告」的直连模式 system（2026-10-12）。
+ *
+ * 与 QA_SYSTEM 的差别只在语料来源：那边是「报告素材 + 联网检索」，这边只有提问时刻的联网检索，
+ * 所以没有「报告里没有」这个说法，改为「资料不足时可用模型知识补充（须标注）」。
+ * 其余口径完全对齐 QA_SYSTEM：不替当事人下定论、不编造、[n] 引用、200 字以内。
+ */
+const QA_SYSTEM_DIRECT = [
+  '你是「名人雷达」的 AI 助手。本次**没有**该人物/话题的报告素材。',
+  '你可以依据随后《资料》里的联网检索结果，以及你已确知的公开常识作答；资料不足时也可以用模型知识补充，但这部分必须紧跟标注「（模型知识，未必准确）」。',
+  '严禁编造具体的数字、日期、言论、作品名、代言或争议。',
+  '涉及评价、预测、立场时，不替当事人下定论，也不做褒贬。',
+  '不输出任何网址或链接。',
+  '用简体中文回答，200 字以内，必要时用短句分条。',
+  '引用《资料》时在相应句子末尾标注条目编号，写成 [2] 或 [1][3]；只标真正用到的条目，不要标未使用的编号。'
+].join('\n')
+
 function buildUserPrompt(reports: Report[], picked: QaPassage[], question: string): string {
   const multi = reports.length > 1
   const stamp = reports
@@ -573,6 +620,24 @@ function buildUserPrompt(reports: Report[], picked: QaPassage[], question: strin
   ]
   const body = picked.map(renderPassage)
   /* 问题也要过净化（P2-16）：手打的内容同样能带出我们的结构标记 */
+  return [...head, ...body, '', '《用户问题》', unmaskStructure(question.trim()), '', '请依据上述约束作答：'].join(
+    '\n'
+  )
+}
+
+/**
+ * 直连模式的 user prompt（2026-10-12）：没有报告，故没有「报告生成时间 / 谁的报告」这些头，
+ * 只报「提问时刻联网检索到的资料条数」。无检索结果时写一行占位，让模型知道《资料》是空的
+ * —— 空《资料》段与「忘了贴资料」在模型眼里没区别，写一行「本次没有检索到结果」才不含糊。
+ */
+function buildDirectPrompt(subject: string, web: QaPassage[], question: string): string {
+  const head = [
+    `名人/话题：${subject}`,
+    `资料条数：${web.length}（提问时刻联网检索）`,
+    '',
+    '《资料》'
+  ]
+  const body = web.length > 0 ? web.map(renderPassage) : ['（本次没有检索到结果）']
   return [...head, ...body, '', '《用户问题》', unmaskStructure(question.trim()), '', '请依据上述约束作答：'].join(
     '\n'
   )
@@ -856,6 +921,22 @@ export function suggestCompareQuestions(a: Report, b: Report): string[] {
   return out.slice(0, 4)
 }
 
+/**
+ * 直连模式的建议问题（2026-10-12）：没有报告可依，只能给一组**通用**问题。
+ *
+ * 与有报告时的建议问题（全部由报告里确实存在的段落生成）不同，这里不预设任何结论、
+ * 也不假设这位名人有什么素材 —— 四条覆盖「动态 / 作品 / 争议 / 领域」这四个用户最常问的方向，
+ * 由模型在直连作答时自行说明资料是否够用。
+ */
+export function suggestDirectQuestions(_name: string): string[] {
+  return [
+    'TA 最近有什么公开动态？',
+    'TA 的代表作品有哪些？',
+    'TA 有过什么争议或风波？',
+    'TA 主要活跃在哪个领域？'
+  ]
+}
+
 /** 回答正文的分段结果：普通文字 / 一组资料编号（渲染成可点的小标签） */
 export type QaAnswerSegment = { kind: 'text'; text: string } | { kind: 'cite'; nos: number[] }
 
@@ -964,7 +1045,8 @@ export async function askReports(reports: Report[], question: string): Promise<Q
   const system = [
     QA_SYSTEM_GUARD,
     many ? `${QA_SYSTEM}\n${QA_SYSTEM_MULTI_EXTRA}` : QA_SYSTEM,
-    web.length > 0 ? QA_SYSTEM_WEB_EXTRA : ''
+    web.length > 0 ? QA_SYSTEM_WEB_EXTRA : '',
+    QA_SYSTEM_KNOWLEDGE_EXTRA
   ]
     .filter(Boolean)
     .join('\n')
@@ -993,4 +1075,56 @@ export async function askReports(reports: Report[], question: string): Promise<Q
 /** 单份报告提问（报告页 / 提问页用）：等价于 askReports([report], question) */
 export async function askReport(report: Report, question: string): Promise<QaResult> {
   return askReports([report], question)
+}
+
+/**
+ * 直连提问（2026-10-12）：**没有该人物报告**时，把「人物/话题 + 问题」直接交给大模型，
+ * 用「联网检索结果 + 模型自身知识」作答，并在界面上标注「未基于报告素材」。
+ *
+ * 与 askReports 的关系：守卫顺序、计费口径、冷却口径**逐条对齐**（先短校验、再冷却闸门、
+ * 再机审、最后联网与调模型），差别只在两点 ——
+ * ① 素材来源：没有报告，`《资料》` 只有提问时刻的联网检索；
+ * ② 不要求检索必须有结果：检索为空也照样作答（纯模型知识），这正是它相对 askReports
+ *    「无素材就报错」的意义所在 —— 没有报告的人也能问。
+ */
+export async function askDirect(subject: string, question: string): Promise<QaResult> {
+  const q = question.trim()
+  if (!q) return { ok: false, error: '请输入问题' }
+  if (q.length > QA_MAX_QUESTION) return { ok: false, error: `问题过长，请控制在 ${QA_MAX_QUESTION} 字以内` }
+
+  /* 冷却闸门放在最前，与 askReports 同一口径（见那里的注释）：值得等的失败才进冷却 */
+  const coolLeft = cooldownMinutesLeft('llm')
+  if (coolLeft > 0) {
+    return { ok: false, error: `AI 服务限流冷却中（约 ${coolLeft} 分钟），稍后再试` }
+  }
+
+  /* 机审前置：问题会作为检索关键词发出去，命中违规的提问不该先被第三方检索一遍 */
+  const suggest = await checkUserText(q)
+  if (suggest !== 'pass') return { ok: false, error: '含不合规内容，请修改后再提问' }
+
+  /* 检索式 = 名人/话题 + 问题：直连没有报告语料，姓名前缀 + 问题本身就是全部的检索信息。
+     baseNo 传 0：直连没有报告片段占号，联网条目从 [1] 开始连续编号（口径同报告模式的 baseNo 语义）。 */
+  const web = await webPassagesOfQuery(`${subject} ${q}`.trim(), 0)
+
+  const system = [QA_SYSTEM_GUARD, QA_SYSTEM_DIRECT].join('\n')
+  /* purpose='ask'：与 askReports 同落提问池，不能落到生成池 */
+  const asked = await chatText(system, buildDirectPrompt(subject, web, q), 'ask')
+  if (!asked.ok) {
+    /* 与 askReports 同一套冷却口径：只有限流 / 网络 / 上游 5xx 才值得让用户等 */
+    const rateLimited = /频繁|429/.test(asked.error)
+    if (asked.retryable || rateLimited) setCooldown('llm')
+    return { ok: false, error: asked.error }
+  }
+
+  await noteQaUsed()
+  /* 埋点单开一条直连口径：`direct` 标出这次没有报告语料，`web` 记检索条数（成本可回溯）。
+     `chars` 与报告路径同名同义 —— 同一个事件名下的字段必须一致，否则按 `chars` 汇总时
+     会把直连提问漏掉。 */
+  track('report_qa_ask', {
+    subject,
+    direct: true,
+    chars: q.length,
+    web: web.length || undefined
+  })
+  return { ok: true, text: asked.text, sources: web }
 }

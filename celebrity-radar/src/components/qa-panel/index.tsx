@@ -6,6 +6,7 @@ import { MEMBER_DAILY_ASK_LIMIT } from '@/utils/member'
 import NoticeClose from '@/components/notice-close'
 import {
   QA_MAX_QUESTION,
+  askDirect,
   askReports,
   checkQaGate,
   clearQaAttempt,
@@ -17,6 +18,7 @@ import {
   refreshQaUsage,
   splitCitations,
   suggestCompareQuestions,
+  suggestDirectQuestions,
   suggestQuestions
 } from '@/utils/qa'
 import type { QaPassage, QaUsage } from '@/utils/qa'
@@ -41,7 +43,16 @@ import './index.scss'
  */
 
 interface Props {
-  report: Report
+  /**
+   * 提问对象的报告。**没有报告时可以为空**（2026-10-12 直连模式）：此时面板改用 `name` 直连大模型
+   * 作答（见 utils/qa.ts#askDirect），界面会标注「未基于报告素材」。
+   */
+  report?: Report
+  /**
+   * 提问对象姓名 / 话题名（**直连态必用**）。
+   * 有报告时通常与 report.name 一致，但仍显式传入 —— 直连态没有 report 可取名。
+   */
+  name: string
   /**
    * 第二位名人（O-18 对比问答）：带上它就切到「多人语料」——
    * 语料变成两份报告合并编号、建议问题换成对比向、提示词多一条「别把两人搞混」的约束。
@@ -94,6 +105,7 @@ const COUNT_HINT_FROM = Math.floor(QA_MAX_QUESTION * 0.8)
 
 export default function QaPanel({
   report,
+  name,
   withReport,
   member,
   safeBottom = true,
@@ -138,8 +150,18 @@ export default function QaPanel({
     }
   }, [member])
 
-  /* 语料来源（O-18）：带第二份报告就是两份，否则仍是单份 —— 单份路径逐条行为不变 */
-  const reports = useMemo(() => (withReport ? [report, withReport] : [report]), [report, withReport])
+  /**
+   * 直连态（2026-10-12）：没有报告、也不是对比 → 用 `name` 直连大模型作答（不生成报告）。
+   * 对比态（有 withReport）必定带主报告，故 `!report && !withReport` 才是直连。
+   */
+  const direct = !report && !withReport
+
+  /* 语料来源（O-18）：带第二份报告就是两份，否则仍是单份 —— 单份路径逐条行为不变；直连态为空 */
+  const reports = useMemo(() => {
+    if (report && withReport) return [report, withReport]
+    if (report) return [report]
+    return []
+  }, [report, withReport])
   const multi = reports.length > 1
   /**
    * 这次提问会不会同时走一路联网检索（2026-10-08，见 utils/qa.ts 的联网补充）。
@@ -147,15 +169,24 @@ export default function QaPanel({
    * 通道未就绪时那句提示自己消失，而不是让用户以为在联网、实则只读了报告。
    */
   const web = useMemo(() => isWebSearchOn(), [])
-  /** 会话身份：任一位换人就清空会话（多人的顺序即「主 / 客」，不参与比较） */
-  const sessionKey = useMemo(() => reports.map((r) => r.personKey).join('+'), [reports])
-
-  const corpusOk = useMemo(() => hasQaCorpusMany(reports), [reports])
-  const suggestions = useMemo(
-    () => (withReport ? suggestCompareQuestions(report, withReport) : suggestQuestions(report)),
-    [report, withReport]
+  /** 会话身份：任一位换人就清空会话；直连态没有 personKey，用姓名 */
+  const sessionKey = useMemo(
+    () => (direct ? name : reports.map((r) => r.personKey).join('+')),
+    [direct, name, reports]
   )
-  /** 两份报告合计的素材条数（多人时头部要一个能一眼看懂的量级） */
+
+  /*
+   * 直连态没有报告可判，一律视为「有可用素材」—— 否则 `corpusOk` 会把输入框禁掉，
+   * 直连模式就永远发不出问题（而它恰恰是为「没有报告的人」准备的）。
+   */
+  const corpusOk = useMemo(() => (direct ? true : hasQaCorpusMany(reports)), [direct, reports])
+  const suggestions = useMemo(() => {
+    if (direct) return suggestDirectQuestions(name)
+    if (report && withReport) return suggestCompareQuestions(report, withReport)
+    if (report) return suggestQuestions(report)
+    return []
+  }, [direct, name, report, withReport])
+  /** 两份报告合计的素材条数（多人时头部要一个能一眼看懂的量级）；直连态无报告，恒为 0 */
   const totalItems = useMemo(
     () => reports.reduce((n, r) => n + (r.coverage?.items ?? r.dynamics.length), 0),
     [reports]
@@ -222,7 +253,7 @@ export default function QaPanel({
         setBubbles((prev) => [...prev, { id: mine, role: 'user', text: question }])
         noteQaAttempt()
 
-        const res = await askReports(reports, question)
+        const res = direct ? await askDirect(name, question) : await askReports(reports, question)
 
         setAsking(false)
         /*
@@ -242,7 +273,7 @@ export default function QaPanel({
         busy.current = false
       }
     },
-    [input, member, reports]
+    [input, member, reports, direct, name]
   )
 
   const canSend = corpusOk && input.trim() !== '' && !asking
@@ -297,10 +328,12 @@ export default function QaPanel({
    * 多人模式不渲染这个入口，而不是随便挑一份 —— 跳过去用户会以为看的就是刚才回答依据的报告。
    */
   const gotoReport = useCallback(() => {
+    /* 直连态没有报告可跳（头部也不渲染这个入口），这里返回即兜底 */
+    if (!report) return
     void Taro.navigateTo({
       url: `/pages/report/index?personKey=${encodeURIComponent(report.personKey)}`
     })
-  }, [report.personKey])
+  }, [report])
 
   /**
    * 打开一条引用来源：每个结论都能追溯到具体素材，是这个问答最该有的底气。
@@ -336,15 +369,27 @@ export default function QaPanel({
     <View className={`qa-panel${safeBottom ? '' : ' qa-panel--no-safe-bottom'}${compact ? ' qa-panel--compact' : ''}`}>
       <View className='card qa-panel__head'>
         {/* 报告名是回报告页的入口：问出兴趣之后，下一步一定是「看完整份报告」 */}
-        {multi ? (
+        {report && withReport ? (
           <View className='qa-panel__head-main'>
             <View className='qa-panel__name-row qa-panel__name-row--wrap'>
-              <Text className='qa-panel__name'>{`${report.name} × ${withReport?.name ?? ''}`}</Text>
+              <Text className='qa-panel__name'>{`${report.name} × ${withReport.name}`}</Text>
               <Text className='qa-panel__jump'>对比</Text>
             </View>
             {!compact && <Text className='qa-panel__meta'>{`合计素材 ${totalItems} 条`}</Text>}
           </View>
-        ) : (
+        ) : direct ? (
+          /*
+           * 直连态（2026-10-12）：没有报告可跳，因此不显示「报告生成时间 / 素材 N 条」（那会误导成
+           * 「有报告」），只把「这是直连大模型、未基于报告素材」说到明处 —— compact 与普通态都要说，
+           * 否则用户会把模型的自身知识当成报告里的事实。
+           */
+          <View className='qa-panel__head-main'>
+            <View className='qa-panel__name-row'>
+              <Text className='qa-panel__name'>{name}</Text>
+            </View>
+            <Text className='qa-panel__meta'>直连大模型作答 · 未基于报告素材</Text>
+          </View>
+        ) : report ? (
           <View className='qa-panel__head-main' hoverClass='qa-panel__head-main--tap' onClick={gotoReport}>
             <View className='qa-panel__name-row'>
               <Text className='qa-panel__name'>{report.name}</Text>
@@ -358,7 +403,7 @@ export default function QaPanel({
               </Text>
             )}
           </View>
-        )}
+        ) : null}
         <Text className='qa-panel__left'>{usageLabel}</Text>
       </View>
 
@@ -370,7 +415,7 @@ export default function QaPanel({
         与界面有没有声明这句话无关 —— 去掉的只是文案，不是这条口径。
       */}
 
-      {staleSource && (
+      {staleSource && report && (
         <View
           className='qa-panel__stale'
           hoverClass='qa-panel__stale--tap'
@@ -415,8 +460,8 @@ export default function QaPanel({
         {bubbles.map((b) => (
           <View key={b.id} id={`qa-msg-${b.id}`} className={`qa-panel__row qa-panel__row--${b.role}`}>
             <View className={`qa-panel__msg${b.error ? ' qa-panel__msg--error' : ''}`}>
-              {b.role === 'ai' && !b.error && b.sources && b.sources.length > 0 ? (
-                <AnswerBody bubble={b} onCite={openSource} />
+              {b.role === 'ai' && !b.error && (direct || (b.sources && b.sources.length > 0)) ? (
+                <AnswerBody bubble={b} onCite={openSource} direct={direct} />
               ) : (
                 <Text className='qa-panel__msg-text'>{b.text}</Text>
               )}
@@ -428,7 +473,9 @@ export default function QaPanel({
           <View className='qa-panel__row'>
             <View className='qa-panel__msg qa-panel__msg--thinking'>
               <Text className='qa-panel__msg-text'>
-                {`${multi ? '正在翻阅两份报告' : '正在翻阅这份报告'}${web ? '并联网检索' : ''}…`}
+                {direct
+                  ? '正在联网检索并作答…'
+                  : `${multi ? '正在翻阅两份报告' : '正在翻阅这份报告'}${web ? '并联网检索' : ''}…`}
               </Text>
             </View>
           </View>
@@ -467,7 +514,11 @@ export default function QaPanel({
           value={input}
           maxlength={QA_MAX_QUESTION}
           placeholder={
-            multi ? `就这两位各自的报道提问` : `就 ${report.name} 的报道与言论提问`
+            direct
+              ? `就 ${name} 提问（未基于报告素材）`
+              : multi
+                ? `就这两位各自的报道提问`
+                : `就 ${report?.name ?? name} 的报道与言论提问`
           }
           confirmType='send'
           disabled={!corpusOk || asking}
@@ -496,8 +547,18 @@ export default function QaPanel({
  * 正文里的 [n] 是 QA_SYSTEM 第 7 条要求模型标出来的，这里只负责把它变成可点标签：
  * 点一下看到「这句话出自哪条采访 / 报道」，长按气泡整段复制（用户常要粘到别处）。
  * 模型没标编号时不硬凑 —— 改成「依据 N 条素材作答」；编一个假编号比不给来源更糟。
+ * 直连态（`direct`，无报告素材）的来源行必须说清「未基于报告素材」—— 否则会出现
+ * 「直连大模型作答」的头部与「依据 N 条报告素材作答」的来源行自相矛盾。
  */
-function AnswerBody({ bubble, onCite }: { bubble: Bubble; onCite: (p: QaPassage) => void }) {
+function AnswerBody({
+  bubble,
+  onCite,
+  direct
+}: {
+  bubble: Bubble
+  onCite: (p: QaPassage) => void
+  direct: boolean
+}) {
   const sources = bubble.sources ?? []
   const segments = useMemo(
     () => splitCitations(bubble.text, sources.length),
@@ -556,7 +617,13 @@ function AnswerBody({ bubble, onCite }: { bubble: Bubble; onCite: (p: QaPassage)
             </View>
           ))
         ) : (
-          <Text className='qa-panel__src-none'>{`依据 ${sources.length} 条报告素材作答`}</Text>
+          <Text className='qa-panel__src-none'>
+            {direct
+              ? sources.length > 0
+                ? `未基于报告素材 · 依据 ${sources.length} 条联网检索作答`
+                : '未基于报告素材 · 由大模型直接作答'
+              : `依据 ${sources.length} 条报告素材作答`}
+          </Text>
         )}
       </View>
     </>

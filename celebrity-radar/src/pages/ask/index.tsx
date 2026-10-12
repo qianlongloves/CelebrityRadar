@@ -31,9 +31,10 @@ import './index.scss'
  * 共享读的、不写 history，所以「关注了但没点进过报告页」的人此前根本不进候选。
  *
  * 探测名单本身就是云读代价，所以两头都截断（最近查看 8 位 + 关注补齐至 20 位）；
- * 查不到报告的人自动略过，不进选人条。
+ * **没有缓存报告的人不再略过**（2026-10-12 起）：他们照样进选人条、标一个「直连」标记，
+ * 选中后由 QaPanel 直连大模型作答（不生成报告）—— 「没有报告就不能问」这条旧限制已放开。
  *
- * 一个都没有时给空态，但「未登录」与「登录了确实没有报告」是两种原因，文案必须分开写
+ * 一个都没有时给空态，但「未登录」与「登录了确实没有可提问对象」是两种原因，文案必须分开写
  * —— 本页绝不代用户触发生成（那是 30 秒的重操作）。
  *
  * 额度口径：每日提问上限是会员权益（免费版 / 会员两档，见 utils/member.ts），
@@ -59,13 +60,23 @@ const FILTER_FROM = 5
 
 type Phase = 'loading' | 'ready' | 'empty'
 
+/**
+ * 提问候选：`report` 为 null 表示本机还没有该人的缓存报告 —— 选中后走 QaPanel 的直连模式
+ * （直连大模型，不生成报告）；有报告则照旧用报告素材作答。
+ */
+interface AskTarget {
+  personKey: string
+  name: string
+  report: Report | null
+}
+
 export default function AskPage() {
   useTabBarSync()
 
   const { userId } = useAuth()
 
   const [phase, setPhase] = useState<Phase>('loading')
-  const [targets, setTargets] = useState<Report[]>([])
+  const [targets, setTargets] = useState<AskTarget[]>([])
   const [activeKey, setActiveKey] = useState('')
   const [member, setMember] = useState(false)
   /* 选人条的过滤词（够长才出现输入框，见下面的 visible） */
@@ -93,13 +104,21 @@ export default function AskPage() {
       if (keys.length >= MAX_TARGETS) break
     }
 
-    const found = (await getCachedReports(keys)).filter((r): r is Report => !!r)
+    const found = await getCachedReports(keys)
+    /*
+     * 逐位造候选：`getCachedReports` 的返回与入参**按下标对齐**（见 utils/cache.ts）。
+     * 姓名优先取缓存报告里的，其次从 personKey 解析（无报告时 report 为 null），最后兜底 key 本身。
+     */
+    const list: AskTarget[] = keys.map((key, i) => {
+      const report = found[i] ?? null
+      return { personKey: key, name: report?.name || parsePersonKey(key)?.name || key, report }
+    })
 
     setMember(state.member)
-    setTargets(found)
-    /* 尽量留在用户原来的选择上；该人已不在候选里（缓存过期）才退回第一位 */
-    setActiveKey((prev) => (found.some((r) => r.personKey === prev) ? prev : found[0]?.personKey ?? ''))
-    setPhase(found.length > 0 ? 'ready' : 'empty')
+    setTargets(list)
+    /* 尽量留在用户原来的选择上；该人已不在候选里才退回第一位 */
+    setActiveKey((prev) => (list.some((t) => t.personKey === prev) ? prev : list[0]?.personKey ?? ''))
+    setPhase(list.length > 0 ? 'ready' : 'empty')
   }, [])
 
   /* 每次切回本页都重算：可能刚生成完一份新报告，也可能刚买完会员 */
@@ -115,8 +134,7 @@ export default function AskPage() {
   /**
    * 关注多了以后选人条会很长，横滑找人很费劲 —— 超过 5 位才出现过滤框
    * （只有两三个人时多一个输入框纯属占地方）。
-   * 只在**本机已有报告的这批人**里过滤：本页不做云搜索，「没有报告」的人本来就问不了，
-   * 让用户搜到一个点不动的结果比搜不到更糟。
+   * 只在**已在本机出现过的那批人**（recent ∪ follows）里过滤：本页不做云搜索。
    */
   const visible = useMemo(() => {
     const kw = filter.trim().toLowerCase()
@@ -135,7 +153,7 @@ export default function AskPage() {
    * 标题与报告页 / 名人主页 / 发现页同源（utils/share.ts）。
    */
   const shareTarget = useMemo(() => {
-    if (active) return { personKey: active.personKey, name: active.name, report: active }
+    if (active) return { personKey: active.personKey, name: active.name, report: active.report }
     const pick = todayPerson()
     return { personKey: pick.personKey, name: pick.name, report: null }
   }, [active])
@@ -158,17 +176,18 @@ export default function AskPage() {
 
       {/*
         空态必须分两种原因：未登录时 utils/history.ts 直接返回空数组（历史是云端的，
-        没有身份就没有归属），若还写「先去生成一份报告」，用户按指引走会先撞上登录流程 ——
+        没有身份就没有归属），若还写「先去查看或关注一些人」，用户按指引走会先撞上登录流程 ——
         指引与真实原因不符，第一次点进底栏第二格的人会以为功能坏了。
+        （2026-10-12 起：没有报告的人也能直连提问，故空态不再要求「先有一份报告」。）
       */}
       {phase === 'empty' && (
         <EmptyState
           icon={userId ? '💬' : '🔐'}
-          title={userId ? '还没有可以提问的名人' : '登录后才能提问'}
+          title={userId ? '本机还没有可提问的对象' : '登录后才能提问'}
           desc={
             userId
-              ? 'AI 提问只依据已生成的报告素材回答。先去生成一份报告，TA 就会出现在这里。'
-              : 'AI 提问依据你生成过的报告作答。先登录，再生成一份报告，就能在这里选人提问。'
+              ? '先去查看或关注一些人，TA 就会出现在这里；有没有报告都可以提问。'
+              : '提问需要先登录。登录后查看或关注一些人，就能在这里选人提问。'
           }
           actionText={userId ? '去发现名人' : '去登录'}
           onAction={() => Taro.switchTab({ url: userId ? '/pages/index/index' : '/pages/mine/index' })}
@@ -180,10 +199,9 @@ export default function AskPage() {
           <View className='card page-ask__picker'>
             <View className='page-ask__picker-head'>
               <Text className='page-ask__picker-title'>选一位名人提问</Text>
-              {/* 「不消耗生成额度」原先独占一行写在卡片底部（O-26 收进这里）：
-                  它是选人前最该知道的一句话，但为它单独占一行要把人卡和会话区一起挤下去 */}
+              {/* 额度口径与报告页同一说法（utils/member.ts 的提问池）：说清两个池的名字，避免被读成「问了也扣生成额度」 */}
               <Text className='page-ask__picker-count'>
-                {`${targets.length} 位有报告 · 提问不消耗生成额度`}
+                {`${targets.length} 位可提问 · 只计「每日提问次数」，不占「报告生成次数」`}
               </Text>
             </View>
 
@@ -191,7 +209,7 @@ export default function AskPage() {
               <Input
                 className='page-ask__filter'
                 value={filter}
-                placeholder='搜索已生成报告的名人'
+                placeholder='搜索可提问的名人'
                 confirmType='search'
                 onInput={(e) => setFilter(e.detail.value)}
               />
@@ -217,15 +235,18 @@ export default function AskPage() {
                       {t.name.slice(0, 1)}
                     </View>
                     <Text className='page-ask__person-name'>{t.name}</Text>
-                    <Text className='page-ask__person-meta'>{`${fromNow(t.generatedAt)} · ${
-                      t.coverage?.items ?? t.dynamics.length
-                    } 条`}</Text>
+                    {/* 有报告：给出「多久前生成 · 素材 N 条」；无报告：只标「直连」，不再编一个素材条数 */}
+                    {t.report ? (
+                      <Text className='page-ask__person-meta'>{`${fromNow(t.report.generatedAt)} · ${
+                        t.report.coverage?.items ?? t.report.dynamics.length
+                      } 条`}</Text>
+                    ) : (
+                      <Text className='page-ask__person-meta page-ask__person-meta--direct'>直连</Text>
+                    )}
                   </View>
                 ))}
 
-                {visible.length === 0 && (
-                  <Text className='page-ask__none'>没有匹配的名人；本页只能问已生成过报告的人</Text>
-                )}
+                {visible.length === 0 && <Text className='page-ask__none'>没有匹配的名人</Text>}
               </View>
             </ScrollView>
 
@@ -233,8 +254,9 @@ export default function AskPage() {
 
           {/* safeBottom=false：本页根容器带了 .safe-tab（已含 env(safe-area-inset-bottom)），
               面板再让一次安全区会让输入框下方多出一整条空白
-              compact：本页正上方就是选人条，面板头部不必再复述「多久前生成 · 素材 N 条」（O-26） */}
-          <QaPanel report={active} member={member} safeBottom={false} compact />
+              compact：本页正上方就是选人条，面板头部不必再复述「多久前生成 · 素材 N 条」（O-26）
+              report 为 null 时（该人无缓存报告）走面板的直连模式，用 name 直连大模型作答 */}
+          <QaPanel report={active.report ?? undefined} name={active.name} member={member} safeBottom={false} compact />
         </>
       )}
     </View>

@@ -78,7 +78,7 @@ export default function QaPage() {
         />
       )}
 
-      {phase === 'ready' && report && <QaPanel report={report} member={member} />}
+      {phase === 'ready' && report && <QaPanel report={report} name={report.name} member={member} />}
     </View>
   )
 }

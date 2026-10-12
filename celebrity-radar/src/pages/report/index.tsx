@@ -1422,8 +1422,10 @@ export default function ReportPage() {
       {/*
         AI 问答入口（M4-8）：原先放在页面最底部（读完报告才看得到），用户反馈「找不到」，
         故提到首屏 —— 紧跟人物横幅与会员促销条之后，仍在首屏之内，是第一眼能看到的动作之一。
-        问答只读已缓存报告、不消耗生成次数（见 utils/qa.ts 三条硬口径），文案里明说，
-        否则用户会担心「问一句是不是又花掉一次生成」。
+        问答只读已缓存报告、不消耗生成次数（见 utils/qa.ts 三条硬口径）。
+        ⚠ 文案（2026-10-12 用户反馈「有歧义」）：原先只写「不消耗生成次数」，而面板头部又有
+        「今日还可问 N 次」，两处并列时读起来像「不消耗生成、却消耗提问」的矛盾句。两个额度池
+        本就不同（生成池 / 提问池），文案必须把**两个池的名字都写出来并各自定性**，歧义即消。
       */}
       {report && (
         <View
@@ -1433,7 +1435,7 @@ export default function ReportPage() {
         >
           <View className='page-report__ask-main'>
             <Text className='page-report__ask-text'>向 AI 提问</Text>
-            <Text className='page-report__ask-desc'>就这份报告继续追问 · 不消耗生成次数</Text>
+            <Text className='page-report__ask-desc'>就这份报告继续追问 · 只计「每日提问次数」，不占「报告生成次数」</Text>
           </View>
           <Text className='page-report__ask-arrow'>→</Text>
         </View>
