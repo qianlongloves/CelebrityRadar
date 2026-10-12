@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import Taro, { useDidShow, useRouter, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
@@ -85,6 +86,14 @@ const SENTIMENT_META: Record<string, { label: string; cls: string }> = {
  * 故不足 3 条时不改图、只把口径说清 —— 渲染层不替用户改数据，只交代它有多可信。
  */
 const SENTIMENT_MIN_SAMPLE = 3
+
+/**
+ * 「近期动态」里那张「报道时间分布」柱状图的最小样本量：低于它整图不渲染。
+ *
+ * 1~2 根柱子读不出「分布」，画出来只是两三条孤零零的柱子 —— 反倒像页面缺了一块；
+ * 不足 3 条有日期的动态时，这张卡保持原样（只有列表），不做半张图。
+ */
+const DYN_CHART_MIN_SAMPLE = 3
 
 /**
  * 话题态度标签（M4-4）。措辞刻意区别于上面那组 —— 动态标的是单条报道的**情绪**，
@@ -252,6 +261,59 @@ function computeDiff(next: Report, prev: Report): RefreshDiff {
     heatDelta: next.heat - prev.heat,
     prevAt: prev.generatedAt
   }
+}
+
+/**
+ * 卡内小表格（2026-10-12）：小程序没有 <table>，用 flex 行拼一张「迷你表」。
+ *
+ * 三层排版沿用本页事实卡既有语言（主行 → 说明 → 依据），只把「主行」拆成若干**成列**的单元格：
+ * 表头一行列名（小、灰），下面每条一行；出处（basis）单独铺满一整行压在单元格下方 ——
+ * 出处往往是一整句媒体来源，塞进窄列会折成两三行、把列对齐撑散，铺满一行后它读起来
+ * 就像这条数据的脚注（与 __entry-basis 同一位置）。
+ *
+ * 列宽：短列用固定 flex-basis 保成列（不定宽则右侧值凑不成一列），**最后一列**吃满剩余宽度
+ * 并允许长文本折行 —— 卡片内任何一格都不得溢出（SCSS 里统一 word-break）。
+ */
+function SectionTable({
+  columns,
+  rows
+}: {
+  columns: string[]
+  rows: Array<{ cells: ReactNode[]; basis?: string }>
+}) {
+  return (
+    <View className='page-report__table'>
+      <View className='page-report__table-head'>
+        {columns.map((col, i) => (
+          <View
+            key={i}
+            className={`page-report__table-cell page-report__table-cell--head${
+              i === columns.length - 1 ? ' page-report__table-cell--grow' : ''
+            }`}
+          >
+            {col}
+          </View>
+        ))}
+      </View>
+      {rows.map((row, ri) => (
+        <View key={ri} className='page-report__table-row'>
+          <View className='page-report__table-cells'>
+            {row.cells.map((cell, ci) => (
+              <View
+                key={ci}
+                className={`page-report__table-cell${
+                  ci === row.cells.length - 1 ? ' page-report__table-cell--grow' : ''
+                }`}
+              >
+                {cell}
+              </View>
+            ))}
+          </View>
+          {!!row.basis && <View className='page-report__table-basis'>依据：{row.basis}</View>}
+        </View>
+      ))}
+    </View>
+  )
 }
 
 export default function ReportPage() {
@@ -888,6 +950,29 @@ export default function ReportPage() {
     const negative = dyn.filter((d) => d.sentiment === 'negative').length
     return { positive, negative, neutral: dyn.length - positive - negative, total: dyn.length }
   })()
+
+  /**
+   * 报道时间分布（2026-10-12）：把「近期动态」按**月份**聚合成柱状图的数据（纯本地计数）。
+   *
+   * 只统计带日期的动态（date.slice(0,7) 必须形如 YYYY-MM）：宁可这 N 条不算进图，
+   * 也不堆进一个无标签的空桶 —— 那根柱子只会被读成数据脏点。日期是模型从素材原样复制的
+   * YYYY-MM-DD，字符串序即时间序（与时间线同一套口径），故这里只排序、不解析日期。
+   *
+   * 只留最近 ≤6 个月：动态窗口本就约 30 天，柱数再多只是把每根挤细。dated 是有日期动态的
+   * 总数（用于「不足 3 条不画图」的判定），max 是这些桶里的最大值（纵轴归一用）。
+   */
+  const monthBuckets = useMemo(() => {
+    const byMonth = new Map<string, number>()
+    for (const d of report?.dynamics ?? []) {
+      const ym = (d.date || '').slice(0, 7)
+      if (!/^\d{4}-\d{2}$/.test(ym)) continue
+      byMonth.set(ym, (byMonth.get(ym) ?? 0) + 1)
+    }
+    const all = [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).slice(-6)
+    const dated = [...byMonth.values()].reduce((sum, n) => sum + n, 0)
+    const max = all.reduce((m, [, n]) => Math.max(m, n), 0)
+    return { all, dated, max }
+  }, [report])
 
   /**
    * 话题态度（M4-4 剩余项）：模型对 2~4 个近期热点的舆论倾向判断。
@@ -1699,15 +1784,12 @@ export default function ReportPage() {
                   本次生成时，素材里没有可确认的身份信息 —— 指不出出处的信息一律不收录，这一卡宁缺毋滥。
                 </Text>
               )}
-              {report.profile.map((p, i) => (
-                <View key={`${i}-${p.label}`} className='page-report__entry'>
-                  <View className='page-report__entry-head'>
-                    <Text className='page-report__entry-label'>{p.label}</Text>
-                    <Text className='page-report__entry-value'>{p.value}</Text>
-                  </View>
-                  <Text className='page-report__entry-basis'>依据：{p.basis}</Text>
-                </View>
-              ))}
+              {report.profile.length > 0 && (
+                <SectionTable
+                  columns={['字段', '内容']}
+                  rows={report.profile.map((p) => ({ cells: [p.label, p.value], basis: p.basis }))}
+                />
+              )}
               <Text className='page-report__entry-foot'>每条档案均出自本报告收录的素材，找不到出处的信息不收录。</Text>
             </View>
           )}
@@ -1723,16 +1805,19 @@ export default function ReportPage() {
                   本次生成时，素材里没有明确写到的人物关系或机构关联（不做「同框即关系」一类推测）。
                 </Text>
               )}
-              {report.relations.map((r, i) => (
-                <View key={`${i}-${r.name}`} className='page-report__entry'>
-                  <View className='page-report__entry-head'>
-                    <Text className='page-report__entry-name'>{r.name}</Text>
-                    <Text className='page-report__entry-tag'>{RELATION_META[r.relation] ?? '其他'}</Text>
-                  </View>
-                  {r.note !== '' && <Text className='page-report__entry-text'>{r.note}</Text>}
-                  <Text className='page-report__entry-basis'>依据：{r.basis}</Text>
-                </View>
-              ))}
+              {report.relations.length > 0 && (
+                <SectionTable
+                  columns={['名称', '关系', '说明']}
+                  rows={report.relations.map((r) => ({
+                    cells: [
+                      r.name,
+                      <Text className='page-report__entry-tag'>{RELATION_META[r.relation] ?? '其他'}</Text>,
+                      r.note
+                    ],
+                    basis: r.basis
+                  }))}
+                />
+              )}
               <Text className='page-report__entry-foot'>
                 人物关系与机构关联（企业 / 合作方 / 参股）均出自素材的明确记载，不做「同框即关系」一类推测。
               </Text>
@@ -1815,16 +1900,19 @@ export default function ReportPage() {
                   本次生成时，素材里没有可确认的具名商业合作或代言（只写素材明确写到的，不作推测）。
                 </Text>
               )}
-              {report.endorsements.map((e, i) => (
-                <View key={`${i}-${e.brand}`} className='page-report__entry'>
-                  <View className='page-report__entry-head'>
-                    <Text className='page-report__entry-name'>{e.brand}</Text>
-                    <Text className='page-report__entry-tag'>{ENDORSE_META[e.kind] ?? '其他'}</Text>
-                  </View>
-                  {e.note !== '' && <Text className='page-report__entry-text'>{e.note}</Text>}
-                  <Text className='page-report__entry-basis'>依据：{e.basis}</Text>
-                </View>
-              ))}
+              {report.endorsements.length > 0 && (
+                <SectionTable
+                  columns={['品牌', '类别', '说明']}
+                  rows={report.endorsements.map((e) => ({
+                    cells: [
+                      e.brand,
+                      <Text className='page-report__entry-tag'>{ENDORSE_META[e.kind] ?? '其他'}</Text>,
+                      e.note
+                    ],
+                    basis: e.basis
+                  }))}
+                />
+              )}
               <Text className='page-report__entry-foot'>
                 只写素材中明确提到的商业合作与代言，不由「同框 / 同场活动」推测。
               </Text>
@@ -1842,6 +1930,58 @@ export default function ReportPage() {
                 <Text className='page-report__empty'>
                   本次生成时，素材里没有可确认的近期动态。情绪走势、词云等统计都以此卡为数据源，故随之不展示。
                 </Text>
+              )}
+              {/* 两张小图都只用本卡的数据（dynamics），纯 CSS 自绘、不引图表库、不额外取数：
+                  免费用户也能看。降级简版整卡不渲染（外层条件），两张图随之消失。 */}
+              {monthBuckets.dated >= DYN_CHART_MIN_SAMPLE && (
+                <View className='page-report__chart'>
+                  <Text className='page-report__chart-title'>报道时间分布</Text>
+                  <View className='page-report__bars'>
+                    {monthBuckets.all.map(([ym, n]) => (
+                      <View key={ym} className='page-report__bar-col'>
+                        <Text className='page-report__bar-count'>{n}</Text>
+                        <View className='page-report__bar-track'>
+                          <View
+                            className='page-report__bar'
+                            style={{ height: `${Math.round((n / monthBuckets.max) * 100)}%` }}
+                          />
+                        </View>
+                        <Text className='page-report__bar-month'>{ym.slice(5, 7)}月</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+              {sentimentStats && (
+                <View className='page-report__chart'>
+                  <Text className='page-report__chart-title'>情绪构成</Text>
+                  {/* 三段按条数占比铺开，配色沿用「近期动态」逐条情绪标签（__sentiment 三色）。 */}
+                  <View className='page-report__sent-bar'>
+                    {sentimentStats.positive > 0 && (
+                      <View
+                        className='page-report__sent-seg page-report__sent-seg--positive'
+                        style={{ flex: sentimentStats.positive }}
+                      />
+                    )}
+                    {sentimentStats.neutral > 0 && (
+                      <View
+                        className='page-report__sent-seg page-report__sent-seg--neutral'
+                        style={{ flex: sentimentStats.neutral }}
+                      />
+                    )}
+                    {sentimentStats.negative > 0 && (
+                      <View
+                        className='page-report__sent-seg page-report__sent-seg--negative'
+                        style={{ flex: sentimentStats.negative }}
+                      />
+                    )}
+                  </View>
+                  <View className='page-report__sent-legend'>
+                    <Text className='page-report__sent-legend-item'>积极 {sentimentStats.positive}</Text>
+                    <Text className='page-report__sent-legend-item'>中性 {sentimentStats.neutral}</Text>
+                    <Text className='page-report__sent-legend-item'>消极 {sentimentStats.negative}</Text>
+                  </View>
+                </View>
               )}
               {dynamicsView.map((d, i) => {
                 const domain = hostOf(d.url)

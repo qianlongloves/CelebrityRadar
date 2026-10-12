@@ -1,5 +1,34 @@
 @import '../../styles/variables.scss';
 
+/* ===== 动画（2026-10-12）：只动 opacity / transform / 宽度，且「终态即刻可达」=====
+   三条 keyframes 的 to 帧都是元素的**自然态**（不透明、原始尺寸），配合 fill-mode: both ——
+   动画不被 webview 支持时元素就停在自然态（可见），绝不会因为动画没跑而留一片空白。
+   @keyframes 放顶层（不进 .page-report）：既能被卡内各处复用，也不受嵌套选择器影响。 */
+
+/* 卡片入场：淡入 + 轻微上移（列表卡按兄弟次序错峰，见下方 .card 规则）。 */
+@keyframes report-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(16rpx);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 柱状图的柱子：从底部长起（transform-origin 在 SCSS 里设成 bottom）。 */
+@keyframes report-bar-grow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+/* 情绪构成条：从左向右展开（只缩放整条，不逐段改宽度，避免触发布局回流）。 */
+@keyframes report-bar-expand {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
 .page-report {
   /* ===== 头部紫色横幅（2026-10-09 重排：身份带 / 状态行 / 操作行 三段）=====
      结构见 pages/report/index.tsx 里该块的注释。这里只记三条布局口径：
@@ -1706,6 +1735,166 @@
 
     .at-button {
       flex: 1;
+    }
+  }
+
+  /* ===== 卡内小表格（人物档案 / 关系图谱 / 商业合作与代言）：flex 行拼的迷你表 =====
+     短列用固定 flex-basis 保成列（不定宽则右侧值凑不成一列），最后一列 flex:1 吃满剩余宽度。
+     所有单元格允许折行（word-break），保证长文本在卡内换行而不溢出卡片。 */
+  &__table {
+    margin-top: 4rpx;
+  }
+
+  &__table-head {
+    display: flex;
+    gap: 16rpx;
+    padding-bottom: 12rpx;
+    border-bottom: 1rpx solid $line;
+  }
+
+  &__table-row {
+    padding: 16rpx 0;
+    border-bottom: 1rpx solid $line;
+
+    &:last-child {
+      border-bottom: none;
+      padding-bottom: 4rpx;
+    }
+  }
+
+  &__table-cells {
+    display: flex;
+    align-items: flex-start;
+    gap: 16rpx;
+  }
+
+  &__table-cell {
+    flex: 0 0 150rpx;
+    min-width: 0;
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+    word-break: break-word;
+
+    /* 表头：小、灰、不抢内容 */
+    &--head {
+      font-size: 22rpx;
+      color: $text-3;
+    }
+
+    /* 最后一列吃满剩余宽度，也是唯一承载长文本的列 */
+    &--grow {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+
+  /* 出处：铺满一整行压在单元格下方，与 __entry-basis 同一套「小、灰」附注语言 */
+  &__table-basis {
+    margin-top: 6rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+    word-break: break-word;
+  }
+
+  /* ===== 「近期动态」里两张纯 CSS 小图（报道时间分布 / 情绪构成）===== */
+  &__chart {
+    margin: 12rpx 0 20rpx;
+  }
+
+  &__chart-title {
+    display: block;
+    font-size: 22rpx;
+    color: $text-3;
+    margin-bottom: 12rpx;
+  }
+
+  /* 柱状图：每根柱的高度 = 当月条数占最大值百分比（内联给出），柱底对齐、柱顶标数量、
+     柱下标月份。柱子用 scaleY 从 0 长起（transform-origin: bottom），只动 transform。 */
+  &__bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 16rpx;
+  }
+
+  &__bar-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6rpx;
+  }
+
+  &__bar-count {
+    font-size: 20rpx;
+    color: $text-2;
+    line-height: 1;
+  }
+
+  &__bar-track {
+    width: 100%;
+    height: 120rpx;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  &__bar {
+    width: 100%;
+    border-radius: 8rpx 8rpx 0 0;
+    background: linear-gradient(180deg, $brand-soft 0%, $brand 100%);
+    transform-origin: bottom;
+    animation: report-bar-grow 320ms ease-out both;
+  }
+
+  &__bar-month {
+    font-size: 20rpx;
+    color: $text-3;
+    line-height: 1;
+  }
+
+  /* 情绪构成条：水平堆叠比例条 + 图例，配色沿用「近期动态」逐条情绪标签（__sentiment 三色）。
+     整条从左向右展开（scaleX），不逐段改宽度 —— 避免触发布局回流。 */
+  &__sent-bar {
+    display: flex;
+    height: 22rpx;
+    margin-top: 12rpx;
+    border-radius: 999rpx;
+    overflow: hidden;
+    background: $bg;
+    transform-origin: left center;
+    animation: report-bar-expand 320ms ease-out both;
+  }
+
+  &__sent-seg {
+    height: 100%;
+
+    &--positive { background: $success; }
+    &--neutral { background: $brand-soft; }
+    &--negative { background: $accent-orange; }
+  }
+
+  &__sent-legend {
+    display: flex;
+    gap: 24rpx;
+    margin-top: 12rpx;
+  }
+
+  &__sent-legend-item {
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  /* ===== 卡片入场动画：淡入 + 轻微上移，按兄弟次序逐卡错峰（≈24ms，总跨度压在 300ms 内）。
+     只动 opacity / transform（不触发布局），且终态即自然态 —— 动画不被支持时卡片照常显示。 */
+  .card {
+    animation: report-card-in 280ms ease-out both;
+
+    @for $i from 1 through 12 {
+      &:nth-child(#{$i}) {
+        animation-delay: #{($i - 1) * 24}ms;
+      }
     }
   }
 }
