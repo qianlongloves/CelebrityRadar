@@ -95,15 +95,66 @@ function deletePath(doc, path) {
   if (parent && typeof parent === 'object') delete parent[parts[parts.length - 1]]
 }
 
+/* ---------- update 的**嵌套展开**语义（2026-10-12 补，线上 P0 暴露后回填） ----------
+ *
+ * 真实 SDK 的 `update({data})` 会把「值是普通对象」的那个键**展开成点号路径**再下发
+ * （`{membership:{plan}}` → `$set:{'membership.plan':…}`）。两个后果必须由 mock 复刻，
+ * 否则测出来的是另一回事：
+ *   ① 展开是**合并**而不是整块替换 —— 目标对象里原有的其他键会被保留；
+ *   ② 目标字段若是 `null`（如 schema 里 `def: null` 的 users.membership），往 null 里建子字段
+ *      会被库拒绝（`Cannot create field …`）。这正是 2026-10-12 线上暴露的那条 P0：
+ *      payCallback 用 `{membership:{…}}` 写镜像，用户首次购买前 membership 恰是 null
+ *      ⇒ 发货在「写镜像」这一步必失败 ⇒ 付了钱永远拿不到界面上的会员态。
+ *      要整块替换必须显式写 `_.set(…)`（下面 applyUpdate 已支持该指令）。
+ */
+
+/** 是否为「会被 SDK 展开」的普通对象（排除数组、指令、Date 等宿主对象） */
+function isPlainObject(v) {
+  if (v === null || typeof v !== 'object' || Array.isArray(v) || isCmd(v)) return false
+  const proto = Object.getPrototypeOf(v)
+  return proto === Object.prototype || proto === null
+}
+
+/** 按点路径赋值；中途遇到 null / 非对象即抛错（复刻库的 Cannot create field） */
+function setStrict(doc, path, v) {
+  const parts = path.split('.')
+  let cur = doc
+  for (let i = 0; i < parts.length - 1; i++) {
+    const k = parts[i]
+    const next = cur[k]
+    if (next === undefined) cur[k] = {}
+    else if (next === null || typeof next !== 'object' || Array.isArray(next)) {
+      throw Object.assign(
+        new Error(`mock: Cannot create field '${parts[i + 1]}' in element {${k}: ${JSON.stringify(next)}}`),
+        { errCode: -502001 }
+      )
+    }
+    cur = cur[k]
+  }
+  cur[parts[parts.length - 1]] = v
+}
+
+/** 展开一个键值（普通对象递归展开成点号路径，其余按点路径落值） */
+function applyField(doc, key, value) {
+  if (isPlainObject(value)) {
+    for (const [k, v] of Object.entries(value)) applyField(doc, `${key}.${k}`, v)
+    return
+  }
+  setStrict(doc, key, value)
+}
+
 function applyUpdate(doc, data) {
   for (const [k, v] of Object.entries(data)) {
     if (isCmd(v) && v.op === 'inc') {
       const cur = readPath(doc, k)
-      setPath(doc, k, (typeof cur === 'number' ? cur : 0) + v.val)
+      setStrict(doc, k, (typeof cur === 'number' ? cur : 0) + v.val)
     } else if (isCmd(v) && v.op === 'remove') {
       deletePath(doc, k)
+    } else if (isCmd(v) && v.op === 'set') {
+      /* `_.set(v)` = 整块替换该字段（不展开）—— 对 null / 对象 / 缺失三种状态都成立 */
+      setStrict(doc, k, v.val)
     } else {
-      setPath(doc, k, v)
+      applyField(doc, k, v)
     }
   }
 }

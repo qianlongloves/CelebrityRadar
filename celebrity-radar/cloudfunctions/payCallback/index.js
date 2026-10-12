@@ -155,20 +155,30 @@ async function writeMembership(openid, m) {
   await db.collection('memberships').doc(openid).set({ data })
 }
 
-/** 写端上镜像（users.membership）：只给界面读；写不进去必须抛错让微信重试 */
+/**
+ * 写端上镜像（users.membership）：只给界面读；写不进去必须抛错让微信重试。
+ *
+ * ⚠ `membership` 必须用 `_.set(...)` **整块替换**，不能直接传对象（P0，2026-10-12 线上暴露）：
+ * 微信云数据库的 `update({data})` 会把嵌套对象**展开成点号路径**（＝ `$set: {'membership.plan': …}`），
+ * 而 `membership` 在首次购买前是 `null`（schema 的 def 就是 null）—— 往 null 里创建子字段，
+ * MongoDB 直接报 `Cannot create field 'expires_at' in element {membership: null}`。
+ * 症状：权威行写成功、镜像写失败 → 函数抛错 → 微信重试 → 每次都在同一步失败，
+ * **首次购买的用户永远拿不到界面上的会员态**（云端闸门却已按会员放行，界面与权限对不上）。
+ * `_.set` 是「整体替换该字段」的语义，对 null / 对象 / 缺失三种状态都成立。
+ */
 async function writeMirror(rowId, openid, m) {
   const upd = await db
     .collection('users')
     .doc(rowId)
     .update({
       data: {
-        membership: {
+        membership: _.set({
           plan: m.plan,
           expires_at: m.expires_at,
           /* 幂等标记：同一订单只发一次货 */
           last_order_id: m.last_order_id,
           updated_at: new Date().toISOString()
-        }
+        })
       }
     })
   if (updatedOf(upd) === 0) throw new Error(`会员镜像写入未生效（openid=${openid}）`)
