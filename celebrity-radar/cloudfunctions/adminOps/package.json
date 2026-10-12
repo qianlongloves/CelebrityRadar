@@ -1,0 +1,9 @@
+{
+  "name": "adminOps",
+  "version": "1.0.0",
+  "description": "运营 / 排障统一入口：环境自检、用户全景（会员权威 vs 镜像）、配额重置、报告锁恢复，并代理 payCallback 的会员写口",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

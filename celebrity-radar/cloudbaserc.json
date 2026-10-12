@@ -146,6 +146,16 @@
       }
     },
     {
+      "name": "adminOps",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "ADMIN_OPS_TOKEN": "{{env.ADMIN_OPS_TOKEN}}",
+        "PAY_ADMIN_TOKEN": "{{env.PAY_ADMIN_TOKEN}}"
+      }
+    },
+    {
       "name": "userInit",
       "timeout": 60,
       "runtime": "Nodejs16.13",
