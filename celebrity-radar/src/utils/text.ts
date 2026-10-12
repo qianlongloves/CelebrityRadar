@@ -99,14 +99,21 @@ function dropLoneSurrogates(s: string): string {
  * 万一连字符串迭代都没有（极老引擎），`Array.from` 会按码元切，最坏等于没改，不会更糟。
  */
 function splitGraphemes(s: string): string[] {
-  const Seg = (
-    Intl as unknown as {
-      Segmenter?: new (
-        locale?: string,
-        opts?: { granularity: string }
-      ) => { segment: (text: string) => Iterable<{ segment: string }> }
-    }
-  ).Segmenter
+  /*
+   * ⚠ 先探**全局** `Intl` 是否存在。小程序容器（部分 iOS / 旧基础库）根本不暴露 `Intl`，
+   * 旧写法直接取 `Intl.Segmenter` 会抛 `ReferenceError: Intl is not defined` ——
+   * 而这条路径在报告落库链上（clipText），一抛就是整份报告生成失败
+   * （2026-10-12 线上「免费用户生成报错 intl is not defined」的根因）。
+   * 探不到就落到下面的码点路径，契约不变。
+   */
+  type SegmenterCtor = new (
+    locale?: string,
+    opts?: { granularity: string }
+  ) => { segment: (text: string) => Iterable<{ segment: string }> }
+  const Seg =
+    typeof Intl !== 'undefined'
+      ? (Intl as unknown as { Segmenter?: SegmenterCtor }).Segmenter
+      : undefined
   if (typeof Seg === 'function') {
     try {
       return Array.from(new Seg('zh', { granularity: 'grapheme' }).segment(s), (g) => g.segment)

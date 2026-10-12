@@ -55,6 +55,23 @@ describe('文本卫生 utils/text', () => {
     ok(!hasLoneSurrogate(out))
   })
 
+  it('clipText：容器没有 Intl 全局时也不能抛（部分 iOS / 旧基础库）', () => {
+    /* 真实故障（2026-10-12「免费用户生成报错 intl is not defined」）：小程序容器不暴露
+       `Intl`，旧实现直接取 `Intl.Segmenter` 会抛 ReferenceError，整份报告生成挂在这一行。
+       这里临时抹掉全局 Intl，断言仍按码点降级、不留孤立代理项。 */
+    const saved = Object.getOwnPropertyDescriptor(globalThis, 'Intl')
+    try {
+      Object.defineProperty(globalThis, 'Intl', { value: undefined, configurable: true, writable: true })
+      eq(clipText('这是一段中文摘要', 4), '这是一段')
+      const out = clipText('😀😀😀', 2)
+      eq(out, '😀😀')
+      ok(!hasLoneSurrogate(out))
+    } finally {
+      if (saved) Object.defineProperty(globalThis, 'Intl', saved)
+      else delete globalThis.Intl
+    }
+  })
+
   it('cleanText：ZWJ / ZWNJ 不算「零宽垃圾」，必须留着（emoji 组合靠它）', () => {
     /* 这一条是被一次真实失败逼出来的：零宽过滤的范围一开始把 U+200D 也圈了进去，
        👨‍👩‍👧 于是被清成三个独立的人 —— 看着还是「有几个人」，但已经不是那个人了 */
