@@ -186,17 +186,29 @@ const ProfileItemSchema = z.object({
 
 /**
  * 关系类别：枚举而不是自由文本 —— 自由文本会让同一段关系在两次生成里叫「合作」「合作方」
- * 「合作伙伴」三个名字，UI 就再也给不出稳定标签。四档之外的一律归 other，不硬凑语义。
+ * 「合作伙伴」三个名字，UI 就再也给不出稳定标签。档位之外的一律归 other，不硬凑语义。
+ *
+ * 2026-10-12 由四档扩到七档：关系图谱此前只有「人-人」维度，而「关联企业 / 合作方 / 参股」
+ * 这类**机构关系**（谁创办的、给谁代言的母公司、持了哪家的股）恰恰是决策向的硬信息。
+ * 不另立字段（并入关系图谱），故在这里补 company / partner / equity 三档来承载它们。
  */
-const RelationKindEnum = z.enum(['cooperate', 'mentor', 'rival', 'other'])
+const RelationKindEnum = z.enum([
+  'cooperate',
+  'mentor',
+  'rival',
+  'company',
+  'partner',
+  'equity',
+  'other'
+])
 
 const RelationSchema = z.object({
-  /** 对方姓名 */
+  /** 对方名称：人名，或企业 / 品牌 / 机构名（见 relation 档位） */
   name: looseStr(),
   /* 同上：模型写「合作」「亦师亦友」时回落 other（sanitize 的 normRelation 也会再归一一次），
      而不是让整份报告在这一条上直接失败 */
   relation: RelationKindEnum.catch('other'),
-  /** 一句话说明这段关系；关系本身已由 relation 说清时可空串 */
+  /** 一句话说明这段关系；关系本身已由 relation 说清时可空串（企业类建议写清职务 / 持股比例） */
   note: looseStr(),
   basis: looseStr()
 })
@@ -653,7 +665,7 @@ const REPORT_RULES_REALTIME = [
    * 不是白名单 —— 素材里真正重要的字段不在常用集里时，仍然要能写出来。
    */
   `9. profile：结构化人物档案 ${REPORT_QUOTAS.profileMin}~${REPORT_FIELD_LIMITS.profileMax} 条（尽量给到 ${REPORT_QUOTAS.profileTarget} 条），用来让人一眼看清「是谁」，每条字段：label(字段名，8 字内；优先从这几个常用字段里选：职业、出生年份、出生地、代表作、主要成就、所属机构、活跃领域 —— 都不合适才自拟)、value(40 字内)、basis(这条事实出自的素材，写法见开头「出处（basis）写法」)。**每条都必须能在素材里找到依据，找不到的整条不要写**；不要用常识去补全素材里没有的信息（那是编造，不是补充）。`,
-  `10. relations：与本人有公开关系的人，最多 ${REPORT_FIELD_LIMITS.relationMax} 条，每条字段：name(对方姓名)、relation(只能是 cooperate/mentor/rival/other，依次表示合作、师承、对手、其他)、note(一句话说明这段关系，说不清就填空串)、basis(关系出自的素材，写法见开头)。关系必须是素材里**明确写到**的（同台合作、师徒、公开竞争等），不得由「同框」「同公司」「同时出现」推测；只有单方提及也不写。`,
+  `10. relations：与本人有公开关系的**人或机构**，最多 ${REPORT_FIELD_LIMITS.relationMax} 条，每条字段：name(对方名称：人名，或企业 / 品牌 / 机构名)、relation(只能是 cooperate/mentor/rival/company/partner/equity/other，依次表示合作、师承、对手、关联企业、合作方、参股、其他)、note(一句话说明这段关系，40 字内；企业类写清职务或持股比例等具体信息，说不清就填空串)、basis(关系出自的素材，写法见开头)。**机构关系（company / partner / equity）是本次重点**：本人创办或任职的公司、公开的代际/商业合作方、公开披露的持股或参股，都要写出来。关系必须是素材里**明确写到**的（同台合作、师徒、公开竞争、创办或任职某公司、公开持股、具名商业合作等），不得由「同框」「同公司」「同时出现」推测；只有单方提及也不写。`,
   /*
    * 商业合作与代言（2026-10-12 取代原「后续关注」）：素材里**具名**的商业关系才是信息 ——
    * 「与某品牌有合作」这类不指名的不写。它与 profile / relations 是同一类事实字段：
@@ -865,10 +877,10 @@ export const FIELD_OUTPUT_ESTIMATE: Record<string, { count: number; chars: numbe
       OUTPUT_EST_BASIS_CHARS
   },
   relations: {
-    count: REPORT_FIELD_LIMITS.relationMax, // 第 10 条：最多 5 条
+    count: REPORT_FIELD_LIMITS.relationMax, // 第 10 条：最多 relationMax 条（人 + 机构）
     chars:
       REPORT_FIELD_LIMITS.relationNameChars +
-      8 /* 关系词（「导演」）*/ +
+      8 /* 关系词（「关联企业」）*/ +
       REPORT_FIELD_LIMITS.relationNoteChars +
       OUTPUT_EST_BASIS_CHARS
   },
@@ -2055,9 +2067,16 @@ export function sanitizeReport(
   const normStance = (s?: string): 'positive' | 'neutral' | 'negative' | 'mixed' =>
     s === 'positive' || s === 'negative' || s === 'mixed' ? s : 'neutral'
 
-  /* 关系类别归一：四档之外（含模型自造的词）一律 other —— 不硬把「亦师亦友」猜进某一档 */
-  const normRelation = (r?: string): 'cooperate' | 'mentor' | 'rival' | 'other' =>
-    r === 'cooperate' || r === 'mentor' || r === 'rival' ? r : 'other'
+  /*
+   * 关系类别归一：七档之外（含模型自造的「粉丝」「亦师亦友」）一律 other —— 不硬猜进某一档。
+   * 机构三档（company / partner / equity）与提示词第 10 条同源，改一处必须改另一处。
+   */
+  const normRelation = (
+    r?: string
+  ): 'cooperate' | 'mentor' | 'rival' | 'company' | 'partner' | 'equity' | 'other' =>
+    r === 'cooperate' || r === 'mentor' || r === 'rival' || r === 'company' || r === 'partner' || r === 'equity'
+      ? r
+      : 'other'
 
   /* 商业合作类别归一：四档之外（含模型自造的词）一律 other —— 与 normRelation 同一写法 */
   const normEndorseKind = (k?: string): 'endorse' | 'collab' | 'title' | 'other' =>

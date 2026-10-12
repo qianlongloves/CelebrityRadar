@@ -100,12 +100,18 @@ const STANCE_META: Record<string, { label: string; cls: string }> = {
 /**
  * 关系图谱的类别标签（第二批）。枚举在 utils/report.ts 的 RelationKindEnum 里归一 ——
  * 认不出的值在那里就被折成 other，故这里兜底也写「其他」，两边口径一致。
- * 四档标签一律用同一套中性样式（不因「对手」染红）：报告只陈述关系，关系本身没有褒贬。
+ * 档位一律用同一套中性样式（不因「对手」染红）：报告只陈述关系，关系本身没有褒贬。
+ *
+ * 2026-10-12 扩到七档：前四档是人-人，后三档是**机构关系**（关联企业 / 合作方 / 参股）——
+ * 「谁创办的、给谁代言的母公司、持了哪家的股」这类硬信息此前无处可写。
  */
 const RELATION_META: Record<string, string> = {
   cooperate: '合作',
   mentor: '师承',
   rival: '对手',
+  company: '关联企业',
+  partner: '合作方',
+  equity: '参股',
   other: '其他'
 }
 
@@ -1705,14 +1711,15 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/* 关系图谱（第二批）：人-人维度。关系必须是素材里明确写到的，
-              故这里的依据与档案同规格；四档关系标签一律中性配色，不因「对手」染色。 */}
+          {/* 关系图谱（第二批）：**人 + 机构**两个维度。关系必须是素材里明确写到的，
+              故这里的依据与档案同规格；七档关系标签一律中性配色，不因「对手」染色。
+              机构三档（关联企业 / 合作方 / 参股）由 2026-10-12 并入，不另立卡片。 */}
           {report.relations && (
             <View id='sec-relations' className='card'>
               <View className='card-title'>关系图谱</View>
               {report.relations.length === 0 && (
                 <Text className='page-report__empty'>
-                  本次生成时，素材里没有明确写到的人物关系（不做「同框即关系」一类推测）。
+                  本次生成时，素材里没有明确写到的人物关系或机构关联（不做「同框即关系」一类推测）。
                 </Text>
               )}
               {report.relations.map((r, i) => (
@@ -1725,7 +1732,9 @@ export default function ReportPage() {
                   <Text className='page-report__entry-basis'>依据：{r.basis}</Text>
                 </View>
               ))}
-              <Text className='page-report__entry-foot'>关系出自素材的明确记载，不做「同框即关系」一类推测。</Text>
+              <Text className='page-report__entry-foot'>
+                人物关系与机构关联（企业 / 合作方 / 参股）均出自素材的明确记载，不做「同框即关系」一类推测。
+              </Text>
             </View>
           )}
 

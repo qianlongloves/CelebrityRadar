@@ -2513,21 +2513,28 @@ describe('报告第二批（人物档案 / 关系图谱 / 商业合作 / 名词�
     deepEq(r.controversies.map((x) => x.topic), ['番位'], '争议同样必须有真出处')
   })
 
-  it('关系类别归一为四档；素材没写公开回应就留空串，不替素材写「暂无回应」', () => {
+  it('关系类别认不出的一律归 other；素材没写公开回应就留空串，不替素材写「暂无回应」', () => {
     const news = distinct(1)
     const r = sanitize(
       {
         relations: [
           { name: '乙', relation: '粉丝', note: '', basis: news[0].url },
           { name: '丙', relation: 'mentor', note: '', basis: news[0].url },
-          { name: '丁', relation: '', note: '', basis: news[0].url }
+          { name: '丁', relation: '', note: '', basis: news[0].url },
+          /* 机构三档（2026-10-12 并入关系图谱）必须原样留下，不能被折成 other */
+          { name: '戊', relation: 'company', note: '创始人兼董事长', basis: news[0].url },
+          { name: '己', relation: 'equity', note: '持股 5%', basis: news[0].url }
         ],
         controversies: [{ topic: '缺席', claim: '缺席路演', basis: news[0].url }]
       },
       news
     )
 
-    deepEq(r.relations.map((x) => x.relation), ['other', 'mentor', 'other'], '四档之外（含缺失）一律 other，不硬猜进某一档')
+    deepEq(
+      r.relations.map((x) => x.relation),
+      ['other', 'mentor', 'other', 'company', 'equity'],
+      '枚举外（含缺失）一律 other，不硬猜进某一档；机构三档原样保留'
+    )
     eq(r.controversies[0].response, '', '「暂无回应」是我们替素材下的结论，素材没说就不写')
   })
 
@@ -2546,7 +2553,7 @@ describe('报告第二批（人物档案 / 关系图谱 / 商业合作 / 名词�
 
     eq(many.profile.length, 6, '档案条数上限')
     eq(many.profile[0].value.length, 40, '档案值收敛长度')
-    eq(many.relations.length, 5, '关系条数上限')
+    eq(many.relations.length, 6, '关系条数上限（人 + 机构共 6 条，上限受 identity 批预算约束）')
     eq(many.relations[0].note.length, 40, '关系说明收敛长度')
     eq(many.endorsements.length, 3, '商业合作条数上限')
     eq(many.endorsements[0].note.length, 40, '说明收敛长度')

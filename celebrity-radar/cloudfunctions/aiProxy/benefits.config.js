@@ -93,7 +93,7 @@ module.exports = {
     "profileMax": 6,
     "profileLabelChars": 8,
     "profileValueChars": 40,
-    "relationMax": 5,
+    "relationMax": 6,
     "relationNameChars": 20,
     "relationNoteChars": 40,
     "timelineMax": 8,
