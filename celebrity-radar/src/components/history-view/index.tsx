@@ -3,7 +3,7 @@ import Taro from '@tarojs/taro'
 import { ScrollView, View, Text } from '@tarojs/components'
 import Skeleton from '@/components/skeleton'
 import EmptyState from '@/components/empty-state'
-import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { getCachedReports } from '@/utils/cache'
 import { listHistory, clearHistory, HistoryRow, HISTORY_LIMIT } from '@/utils/history'
 import { fromNow, isStaleReport } from '@/utils/time'
@@ -20,7 +20,8 @@ const CONTINUE_MAX = 3
 interface ContinueCard {
   personKey: string
   name: string
-  domain: DomainCode
+  /** 领域（自由短串，2026-10-12 领域自由化） */
+  domain: string
   /** 缓存报告的生成时间（'' = 该人没有可用缓存） */
   generatedAt: string
   /** 是否已陈旧（≥ STALE_REPORT_DAYS 天，见 utils/time） */
@@ -77,7 +78,7 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
           return {
             personKey: h.person_key,
             name: h.name,
-            domain: (parsePersonKey(h.person_key)?.domain ?? 'other') as DomainCode,
+            domain: parsePersonKey(h.person_key)?.domain ?? 'other',
             generatedAt,
             stale: isStaleReport(generatedAt)
           }
@@ -160,7 +161,7 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
                 hoverClass='history-view__continue-card--tap'
                 onClick={() => openPerson(c.personKey)}
               >
-                <View className={`history-view__continue-avatar history-view__continue-avatar--${c.domain}`}>
+                <View className={`history-view__continue-avatar history-view__continue-avatar--${domainStyleCode(c.domain)}`}>
                   {c.name.slice(0, 1)}
                 </View>
                 <Text className='history-view__continue-name'>{c.name}</Text>
@@ -180,7 +181,7 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
       )}
 
       {history.map((h) => {
-        const domain = (parsePersonKey(h.person_key)?.domain ?? 'other') as DomainCode
+        const domain = parsePersonKey(h.person_key)?.domain ?? 'other'
         return (
           <View
             key={h.id}
@@ -188,12 +189,12 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
             onClick={() => openPerson(h.person_key)}
           >
             <View className='history-view__row'>
-              <View className={`history-view__icon history-view__icon--${domain}`}>
+              <View className={`history-view__icon history-view__icon--${domainStyleCode(domain)}`}>
                 {h.name.slice(0, 1)}
               </View>
               <View className='history-view__row-info'>
                 <Text className='history-view__row-name'>{h.name}</Text>
-                <Text className='text-tertiary'>{DOMAIN_META[domain].label}</Text>
+                <Text className='text-tertiary'>{domainLabel(domain)}</Text>
               </View>
               <Text className='history-view__time'>{fromNow(h.ts)}</Text>
             </View>

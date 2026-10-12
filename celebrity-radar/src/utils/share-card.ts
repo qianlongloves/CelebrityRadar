@@ -1,5 +1,5 @@
 import Taro from '@tarojs/taro'
-import { DOMAIN_META, DomainCode } from '@/config/domains'
+import { domainLabel, domainStyleCode, DomainCode } from '@/config/domains'
 import { diagLog } from './cloud-diagnostics'
 
 /**
@@ -227,9 +227,9 @@ function paintBrandBg(ctx: Ctx2D, w: number, h: number): void {
   ctx.fillRect(0, 0, w, h)
 }
 
-/** 头像：领域色底 + 姓名首字（与 person-card / 报告页同一套占位约定） */
-function paintAvatar(ctx: Ctx2D, x: number, y: number, size: number, name: string, domain: DomainCode): void {
-  ctx.fillStyle = DOMAIN_COLOR[domain] ?? COLOR.ink2
+/** 头像：领域色底 + 姓名首字（与 person-card / 报告页同一套占位约定）。领域放宽为自由串，配色经 domainStyleCode 兜底 */
+function paintAvatar(ctx: Ctx2D, x: number, y: number, size: number, name: string, domain: string): void {
+  ctx.fillStyle = DOMAIN_COLOR[domainStyleCode(domain)] ?? COLOR.ink2
   ctx.beginPath()
   ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2)
   ctx.fill()
@@ -267,7 +267,8 @@ function paintFooter(ctx: Ctx2D, w: number, h: number): void {
 
 export interface QuoteCardInput {
   name: string
-  domain: DomainCode
+  /** 领域（自由短串）：标签走 domainLabel、配色走 domainStyleCode */
+  domain: string
   text: string
   /** 出处场合（如「2024 年度演讲」），空则回落「公开场合」，与报告页口径一致 */
   context?: string
@@ -291,7 +292,7 @@ export function paintQuoteCard(ctx: Ctx2D, w: number, h: number, d: QuoteCardInp
   ctx.fillText(d.name, PAD + 58, 62)
   const nameW = ctx.measureText(d.name).width
 
-  const label = DOMAIN_META[d.domain]?.label ?? '其他'
+  const label = domainLabel(d.domain)
   ctx.font = '12px sans-serif'
   const chipW = ctx.measureText(label).width + 20
   const chipX = Math.min(PAD + 58 + nameW + 10, w - PAD - chipW)

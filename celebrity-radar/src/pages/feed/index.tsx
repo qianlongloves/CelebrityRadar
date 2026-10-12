@@ -7,7 +7,7 @@ import Skeleton from '@/components/skeleton'
 import { listFollows, FollowRow } from '@/utils/follows'
 import { getFeedDetails, refreshAllFeeds } from '@/utils/cache'
 import { NewsItem } from '@/utils/search'
-import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { fromNow, sameDay8 } from '@/utils/time'
 import './index.scss'
 
@@ -15,7 +15,8 @@ import './index.scss'
 interface FeedEntry extends NewsItem {
   personKey: string
   personName: string
-  domain: DomainCode
+  /** 领域（自由短串，2026-10-12 领域自由化） */
+  domain: string
 }
 
 function sortByDate(a: FeedEntry, b: FeedEntry): number {
@@ -324,13 +325,13 @@ export default function Feed() {
             >
               <View className='page-feed__item-head'>
                 <View className='page-feed__item-person'>
-                  <View className={`page-feed__item-icon page-feed__item-icon--${e.domain}`}>
+                  <View className={`page-feed__item-icon page-feed__item-icon--${domainStyleCode(e.domain)}`}>
                     {e.personName.slice(0, 1)}
                   </View>
                   <View className='page-feed__item-person-info'>
                     <Text className='page-feed__item-name'>{e.personName}</Text>
                     <Text className='page-feed__item-domain'>
-                      {DOMAIN_META[e.domain].label} · {e.source}
+                      {domainLabel(e.domain)} · {e.source}
                     </Text>
                   </View>
                 </View>

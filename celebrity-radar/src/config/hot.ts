@@ -1,5 +1,3 @@
-import { DomainCode } from './domains'
-
 /**
  * 热门运营位（§2.1 M1：MVP 为静态运营位，V1.5 数据化，现由 AI 每日生产）。
  *
@@ -10,7 +8,11 @@ import { DomainCode } from './domains'
  */
 export interface HotPerson {
   name: string
-  domain: DomainCode
+  /**
+   * 领域：静态种子写死 12 个已知码，但榜单可能来自 report_cache（用户查过的自创领域），
+   * 故这里放宽为**自由短串**（2026-10-12 领域自由化）；标签走 domainLabel、配色走 domainStyleCode。
+   */
+  domain: string
   /**
    * 热门指数（0~100），**可选**：只作排序兜底，卡片上不再展示。
    *

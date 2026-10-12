@@ -3,7 +3,7 @@ import Taro, { useDidShow, useRouter, useShareAppMessage, useShareTimeline } fro
 import { View, Text } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
 import Skeleton from '@/components/skeleton'
-import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import EmptyState from '@/components/empty-state'
 import QuoteDetail from '@/components/quote-detail'
 import { getCachedReport } from '@/utils/cache'
@@ -33,7 +33,7 @@ export default function Profile() {
   const personKey = decodeURIComponent(router.params.personKey || '')
   const parsed = parsePersonKey(personKey)
   const name = parsed?.name ?? '名人'
-  const domain: DomainCode = parsed?.domain ?? 'other'
+  const domain = parsed?.domain ?? 'other'
 
   const [loading, setLoading] = useState(true)
   const [report, setReport] = useState<Report | null>(null)
@@ -163,7 +163,7 @@ export default function Profile() {
           <View className='page-profile__meta'>
             <View className='page-profile__name-row'>
               <Text className='page-profile__name'>{name}</Text>
-              <View className={`chip chip--${domain}`}>{DOMAIN_META[domain].label}</View>
+              <View className={`chip chip--${domainStyleCode(domain)}`}>{domainLabel(domain)}</View>
             </View>
             <View className='text-tertiary'>
               {report ? `报告生成于 ${fromNow(report.generatedAt)}` : '公开信息整理 · 头像为占位'}

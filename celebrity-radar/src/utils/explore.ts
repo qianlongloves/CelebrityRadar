@@ -1,12 +1,12 @@
 import Taro from '@tarojs/taro'
 import { z } from 'zod'
-import { buildPersonKey, DOMAIN_CODES, DOMAIN_META, DomainCode } from '@/config/domains'
+import { buildPersonKey, DOMAIN_CODES, DOMAIN_META, sanitizeDomain } from '@/config/domains'
 import { HOT_PERSONS } from '@/config/hot'
 import { chatJSON } from './llm'
 import { diagLog } from './cloud-diagnostics'
 
 /** 热门池唯一来源 = config/hot.ts（发现页热门卡片 / 今日名人 / 静态兜底共用） */
-const FLAT: Array<{ name: string; domain: DomainCode }> = HOT_PERSONS.map(({ name, domain }) => ({ name, domain }))
+const FLAT: Array<{ name: string; domain: string }> = HOT_PERSONS.map(({ name, domain }) => ({ name, domain }))
 
 /**
  * 提示词里的领域清单：从 DOMAIN_CODES 派生，**不写死**。
@@ -17,7 +17,7 @@ const DOMAIN_LIST = DOMAIN_CODES.map((c) => `${c}（${DOMAIN_META[c].label}）`)
 
 export interface PersonPick {
   name: string
-  domain: DomainCode
+  domain: string
   personKey: string
 }
 
@@ -47,7 +47,8 @@ export function openPerson(pick: PersonPick): void {
 /** AI 选题的输出契约：只认「是谁」和「哪个领域」，多余字段一律忽略 */
 const PickSchema = z.object({
   name: z.string().min(1),
-  domain: z.enum(DOMAIN_CODES as [DomainCode, ...DomainCode[]])
+  /* 领域自 2026-10-12 起放宽为自由短串：已知码优先，都不贴切时模型可自创；净化后为空回落 'other' */
+  domain: z.string().transform((s) => sanitizeDomain(s) || 'other')
 })
 
 /**
@@ -62,10 +63,10 @@ async function pickPersonByAi(): Promise<PersonPick | null> {
   const system = [
     '你是名人观察产品的选题助手：随机推荐一位值得关注的公众人物，供系统生成深度观察报告。',
     '规则：',
-    `1. 领域从 ${DOMAIN_LIST} 中选一个，各领域机会大致均等，不要总推企业家或当红艺人。`,
+    `1. 领域从 ${DOMAIN_LIST} 中选一个，各领域机会大致均等，不要总推企业家或当红艺人；若这些领域都不贴切，可自创一个 2~6 字的中文领域短词。`,
     `2. 不要推荐这些高频人物：${HOT_PERSONS.map((p) => p.name).join('、')}。`,
     '3. 必须是真实存在、且近一年有公开报道的公众人物；不要政治、军事类人物。',
-    '4. 输出字段：name（惯用中文名，外籍人物用通行中文译名）、domain（上列之一）。',
+    '4. 输出字段：name（惯用中文名，外籍人物用通行中文译名）、domain（上列之一，或自创的短领域词）。',
     '5. 只输出 JSON，不要输出任何其他文字。'
   ].join('\n')
 

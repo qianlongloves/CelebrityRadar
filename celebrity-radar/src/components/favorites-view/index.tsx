@@ -6,7 +6,7 @@ import Skeleton from '@/components/skeleton'
 import EmptyState from '@/components/empty-state'
 import SharePoster from '@/components/share-poster'
 import { QuoteCardInput } from '@/utils/share-card'
-import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { getCachedReports } from '@/utils/cache'
 import {
   listFavorites,
@@ -187,11 +187,11 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
    * 报告页、头像出图同一套色）。取不到首字时用「?」占位 —— 那说明这行的 name 丢了，
    * 渲染一个空圆只会让人以为样式坏了，不如明示「这里本该是头像」。
    */
-  const renderAvatar = (f: FavoriteRow, domain: DomainCode) => {
+  const renderAvatar = (f: FavoriteRow, domain: string) => {
     const initial = (f.name ?? '').trim().slice(0, 1)
     return (
       <View
-        className={`favorites-view__avatar favorites-view__avatar--${initial ? domain : 'unknown'}`}
+        className={`favorites-view__avatar favorites-view__avatar--${initial ? domainStyleCode(domain) : 'unknown'}`}
       >
         {initial || '?'}
       </View>
@@ -199,7 +199,7 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
   }
 
   /** 姓名下方的元信息行：日期 / 来源 / 领域 / 报告生成时间，类型由右上角胶囊承担 */
-  const metaOf = (f: FavoriteRow, domain: DomainCode): ReactNode => {
+  const metaOf = (f: FavoriteRow, domain: string): ReactNode => {
     const p = f.payload ?? {}
     if (f.type === 'timeline') return String(p.date ?? '')
     if (f.type === 'dynamic') {
@@ -211,7 +211,7 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
          旧的「据公开资料」是兜底值，等于没信息，不占这一行。 */
       const source = String(p.source ?? '')
       const src = source && source !== '据公开资料' ? source : ''
-      return [DOMAIN_META[domain].label, String(p.context || '公开场合'), src]
+      return [domainLabel(domain), String(p.context || '公开场合'), src]
         .filter((x) => x !== '')
         .join(' · ')
     }
@@ -234,7 +234,7 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
     )
   }
 
-  const renderHead = (f: FavoriteRow, domain: DomainCode) => {
+  const renderHead = (f: FavoriteRow, domain: string) => {
     const meta = metaOf(f, domain)
     return (
       <View className='favorites-view__head'>
@@ -375,7 +375,7 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
   )
 
   /** 名言卡入口：把这句话直接做成可转发的图，不必先回报告页找它 */
-  const renderPosterAction = (f: FavoriteRow, domain: DomainCode) => {
+  const renderPosterAction = (f: FavoriteRow, domain: string) => {
     const p = f.payload ?? {}
     return (
       <Text
@@ -432,7 +432,7 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
    * 此前是三条各自拼装的路径，改一次布局要改三处，且报告卡连「整卡可点」都和另两类不一致。
    */
   const renderCard = (f: FavoriteRow) => {
-    const domain = (parsePersonKey(f.person_key)?.domain ?? 'other') as DomainCode
+    const domain = parsePersonKey(f.person_key)?.domain ?? 'other'
     const action =
       f.type === 'quote'
         ? renderPosterAction(f, domain)

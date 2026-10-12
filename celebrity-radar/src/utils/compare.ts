@@ -1,4 +1,4 @@
-import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { domainLabel, parsePersonKey } from '@/config/domains'
 import type { Report } from './report'
 import { extractKeywords, KeywordItem } from './keywords'
 
@@ -18,7 +18,11 @@ import { extractKeywords, KeywordItem } from './keywords'
 export interface CompareSide {
   personKey: string
   name: string
-  domain: DomainCode
+  /**
+   * 领域（自由短串，2026-10-12 领域自由化）：已知码或 AI 自创词。
+   * 拼 CSS 变体类时另走 domainStyleCode，标签走 domainLabel（见 sideOf）。
+   */
+  domain: string
   domainLabel: string
   generatedAt: string
   /** 降级报告（结构化失败后由纯文本兜底）：无动态 / 语录，对比表会标出来 */
@@ -83,7 +87,7 @@ const COMMON_LIMIT = 6
 
 function sideOf(report: Report): CompareSide {
   const parsed = parsePersonKey(report.personKey)
-  const domain: DomainCode = parsed?.domain ?? 'other'
+  const domain = parsed?.domain ?? 'other'
   const sentiment = { positive: 0, neutral: 0, negative: 0, total: report.dynamics.length }
   for (const d of report.dynamics) {
     if (d.sentiment === 'positive') sentiment.positive++
@@ -94,7 +98,7 @@ function sideOf(report: Report): CompareSide {
     personKey: report.personKey,
     name: report.name,
     domain,
-    domainLabel: DOMAIN_META[domain]?.label ?? '其他',
+    domainLabel: domainLabel(domain),
     generatedAt: report.generatedAt,
     degraded: !!report.degraded,
     heat: report.heat,

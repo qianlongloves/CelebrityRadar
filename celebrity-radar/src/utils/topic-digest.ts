@@ -1,4 +1,4 @@
-import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { domainLabel, parsePersonKey } from '@/config/domains'
 import type { Report } from './report'
 import { extractKeywords } from './keywords'
 import { sameTopic } from './compare'
@@ -27,7 +27,8 @@ import { sameTopic } from './compare'
 export interface TopicMember {
   personKey: string
   name: string
-  domain: DomainCode
+  /** 领域（自由短串，2026-10-12 领域自由化）：标签见 domainLabel */
+  domain: string
   domainLabel: string
   /** 该名人报告的热度（§1.6 公式，同一把尺子，可横向比） */
   heat: number
@@ -197,12 +198,12 @@ export function buildTopicDigest(topic: string, reports: Report[]): TopicDigest 
       }
 
       const parsed = parsePersonKey(report.personKey)
-      const domain: DomainCode = parsed?.domain ?? 'other'
+      const domain = parsed?.domain ?? 'other'
       members.push({
         personKey: report.personKey,
         name: report.name,
         domain,
-        domainLabel: DOMAIN_META[domain]?.label ?? '其他',
+        domainLabel: domainLabel(domain),
         heat: report.heat,
         mentions
       })

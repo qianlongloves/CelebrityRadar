@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { DOMAIN_META, DomainCode } from '../config/domains'
+import { domainLabel } from '../config/domains'
 import { SEARCH_COUNTS } from '../config/benefits'
 import { SEARCH_LANES, SearchLaneKey } from './report-toc'
 import { chatJSON } from './llm'
@@ -119,9 +119,9 @@ function buildSystemPrompt(lanes: SearchLaneKey[]): string {
   ].join('\n')
 }
 
-function buildUserMessage(name: string, domain: DomainCode, lanes: SearchLaneKey[]): string {
+function buildUserMessage(name: string, domain: string, lanes: SearchLaneKey[]): string {
   const laneList = lanes.map((k) => `- ${k}：${SEARCH_LANES[k].want}`).join('\n')
-  return [`人物：${name}`, `领域：${DOMAIN_META[domain].label}`, '需要关键词的素材路：', laneList].join('\n')
+  return [`人物：${name}`, `领域：${domainLabel(domain)}`, '需要关键词的素材路：', laneList].join('\n')
 }
 
 /**
@@ -132,7 +132,7 @@ function buildUserMessage(name: string, domain: DomainCode, lanes: SearchLaneKey
  */
 export async function planSearchQueries(
   name: string,
-  domain: DomainCode,
+  domain: string,
   opts: { lanes: SearchLaneKey[] }
 ): Promise<SearchPlan | null> {
   const person = cleanText(name, { markup: true }).trim()

@@ -6,7 +6,7 @@ import Skeleton from '@/components/skeleton'
 import { listFollows, unfollow, FollowRow } from '@/utils/follows'
 import { loadFollowWatches, FollowWatch, WATCH_LIMIT } from '@/utils/watch'
 import { useAuth } from '@/stores/auth'
-import { DOMAIN_META, DomainCode, parsePersonKey } from '@/config/domains'
+import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { fromNow } from '@/utils/time'
 import './index.scss'
 
@@ -132,7 +132,7 @@ export default function Following() {
           )}
 
           {visible.map((r) => {
-            const domain = (parsePersonKey(r.person_key)?.domain ?? 'other') as DomainCode
+            const domain = parsePersonKey(r.person_key)?.domain ?? 'other'
             const w = watches[r.person_key]
             return (
               <View
@@ -140,7 +140,7 @@ export default function Following() {
                 className='card page-following__item'
                 onClick={() => openPerson(r.person_key)}
               >
-                <View className={`page-following__icon page-following__icon--${domain}`}>
+                <View className={`page-following__icon page-following__icon--${domainStyleCode(domain)}`}>
                   {r.name.slice(0, 1)}
                 </View>
                 <View className='page-following__info'>
@@ -149,7 +149,7 @@ export default function Following() {
                     {w?.hasNew && <Text className='page-following__badge'>有新内容</Text>}
                   </View>
                   <Text className='page-following__meta'>
-                    {DOMAIN_META[domain].label}
+                    {domainLabel(domain)}
                     {w && w.heat !== null ? ` · 热度 ${w.heat}` : ''}
                   </Text>
                   <Text className='page-following__time'>{activityText(r, w)}</Text>

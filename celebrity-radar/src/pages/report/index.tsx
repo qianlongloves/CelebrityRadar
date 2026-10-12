@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Taro, { useDidShow, useRouter, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
-import { DOMAIN_COVERAGE_TEXT, DOMAIN_META, DomainCode } from '@/config/domains'
+import { DOMAIN_COVERAGE_TEXT, domainLabel, domainStyleCode } from '@/config/domains'
 import { FOCUS_META, FocusCode, isFocusCode } from '@/config/filters'
 import EmptyState from '@/components/empty-state'
 import NoticeClose from '@/components/notice-close'
@@ -165,7 +165,8 @@ const MISSING_GROUP_LABELS: Record<string, string> = {
 interface RelatedPerson {
   personKey: string
   name: string
-  domain: DomainCode
+  /** 领域（自由短串，2026-10-12 领域自由化） */
+  domain: string
   /** 共同高频话题（最多 3 个，用于说明「为什么把 TA 摆在这里」） */
   shared: string[]
 }
@@ -204,7 +205,7 @@ async function loadRelated(self: Report): Promise<RelatedPerson[]> {
     scored.push({
       personKey: f.person_key,
       name: f.name || other.name,
-      domain: (f.person_key.split('#')[1] || 'other') as DomainCode,
+      domain: f.person_key.split('#')[1] || 'other',
       shared: common.slice(0, 3).map((c) => c.word),
       total: common.length
     })
@@ -394,7 +395,7 @@ export default function ReportPage() {
   const [progress, setProgress] = useState<ReportProgress | null>(null)
 
   const name = personKey.split('#')[0] || '名人'
-  const domain = (personKey.split('#')[1] || 'other') as DomainCode
+  const domain = personKey.split('#')[1] || 'other'
 
   const load = useCallback(
     async (force = false) => {
@@ -1233,14 +1234,14 @@ export default function ReportPage() {
             {/* 人物头像：平台没有名人真实头像素材（LLM 也不产图），全项目统一用
                 「领域色渐变 + 姓名首字」占位，这里与 person-card / 主页保持一致。
                 白色描边是为了在紫色横幅上把头像和背景分开。 */}
-            <View className={`page-report__avatar page-report__avatar--${domain}`}>
+            <View className={`page-report__avatar page-report__avatar--${domainStyleCode(domain)}`}>
               {report.name.slice(0, 1)}
             </View>
             {/* 名字行 = 名字 + 领域。不换行且 overflow:hidden：名字过长时收省略号让位。
                 领域跟在名字后面而不是另起一行 —— 它是名字的定语，两三个字，值得花这点宽度。 */}
             <View className='page-report__name-row'>
               <Text className='page-report__name'>{report.name}</Text>
-              <View className='page-report__banner-chip'>{DOMAIN_META[domain]?.label ?? '其他'}</View>
+              <View className='page-report__banner-chip'>{domainLabel(domain)}</View>
             </View>
           </View>
 
@@ -2371,7 +2372,7 @@ export default function ReportPage() {
                   hoverClass='page-report__related-item--tap'
                   onClick={() => Taro.navigateTo({ url: reportSharePath(r.personKey) })}
                 >
-                  <View className={`page-report__related-avatar page-report__related-avatar--${r.domain}`}>
+                  <View className={`page-report__related-avatar page-report__related-avatar--${domainStyleCode(r.domain)}`}>
                     {r.name.slice(0, 1)}
                   </View>
                   <View className='page-report__related-main'>

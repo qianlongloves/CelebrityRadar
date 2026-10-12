@@ -1,4 +1,4 @@
-import { DOMAIN_META, DomainCode } from '@/config/domains'
+import { domainLabel, sanitizeDomain } from '@/config/domains'
 import { Report } from './report'
 
 /**
@@ -44,12 +44,16 @@ export function reportSharePath(personKey: string, focus?: string): string {
  * 分享标题：`姓名 · 领域`，有报告时再拼一句可核对的简介。
  *
  * @param name 名人姓名（报告未就绪时用路由里解析出来的名字）
- * @param domain 领域码（决定「· 科技」这半句）
+ * @param domain 领域（已知码给中文标签，AI 自创的短词原样展示；决定「· 科技」这半句）
  * @param report 已缓存的报告；为 null 时只出「姓名 · 领域」
  */
-export function personShareTitle(name: string, domain: DomainCode, report?: Report | null): string {
-  const domainLabel = DOMAIN_META[domain]?.label ?? '名人'
-  const head = `${name} · ${domainLabel}`
+export function personShareTitle(name: string, domain: string, report?: Report | null): string {
+  /*
+   * 空 / 非法领域回落「名人」（分享标题里「张三 · 其他」读起来像句病句），
+   * 其余一律走 domainLabel：已知码给中文标签，自创短词原样展示。
+   */
+  const label = sanitizeDomain(domain) === '' ? '名人' : domainLabel(domain)
+  const head = `${name} · ${label}`
   const brief = briefOf(report)
   const title = brief ? `${head}｜${brief}` : head
   return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX)}…` : title

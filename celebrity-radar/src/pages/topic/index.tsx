@@ -6,6 +6,7 @@ import { listFollows } from '@/utils/follows'
 import { listHistory } from '@/utils/history'
 import { listFavorites } from '@/utils/favorites'
 import { describeTopic, buildTopicDigest, TOPIC_MIN_CHARS, TopicDigest } from '@/utils/topic-digest'
+import { domainStyleCode } from '@/config/domains'
 import { openSourceLink } from '@/utils/source-link'
 import { track } from '@/utils/events'
 import type { Report } from '@/utils/report'
@@ -167,13 +168,13 @@ export default function Topic() {
             hoverClass='page-topic__member--tap'
             onClick={() => goReport(m.personKey)}
           >
-            <View className={`page-topic__avatar page-topic__avatar--${m.domain}`}>
+            <View className={`page-topic__avatar page-topic__avatar--${domainStyleCode(m.domain)}`}>
               {m.name.slice(0, 1)}
             </View>
             <View className='page-topic__member-main'>
               <View className='page-topic__member-head'>
                 <Text className='page-topic__member-name'>{m.name}</Text>
-                <View className={`chip chip--${m.domain}`}>{m.domainLabel}</View>
+                <View className={`chip chip--${domainStyleCode(m.domain)}`}>{m.domainLabel}</View>
               </View>
               <Text className='page-topic__member-meta'>{`${m.mentions} 条素材提及 · 报告热度 ${m.heat}`}</Text>
             </View>

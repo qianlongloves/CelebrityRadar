@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, View, Text } from '@tarojs/components'
 import Taro, { useDidShow, useRouter, useShareAppMessage } from '@tarojs/taro'
 import { AtButton, AtSearchBar } from 'taro-ui'
-import { DomainCode, buildPersonKey, isDomainCode, parsePersonKey } from '@/config/domains'
+import { buildPersonKey, domainStyleCode, parsePersonKey, sanitizeDomain } from '@/config/domains'
 import { getCachedReport, getOrBuildReport } from '@/utils/cache'
 import { buildComparison, describeComparison, CompareSide, CompareResult } from '@/utils/compare'
 import type { Report } from '@/utils/report'
@@ -42,7 +42,8 @@ type Phase =
 interface Candidate {
   personKey: string
   name: string
-  domain: DomainCode
+  /** 领域（自由短串，2026-10-12 领域自由化） */
+  domain: string
 }
 
 /**
@@ -76,13 +77,14 @@ const ATTITUDE_LABEL: Record<string, string> = {
 }
 
 /**
- * 领域码：personKey 是权威来源（它本身就由 name#domain 生成，见 config/domains.ts），
- * 行内字段只作兜底 —— 关注表里 domain 是裸 string，直接当 DomainCode 用会在类型上撒谎。
+ * 领域：personKey 是权威来源（它本身就由 name#domain 生成，见 config/domains.ts），
+ * 行内字段只作兜底 —— 关注表里 domain 是裸 string，可能是 AI 自创的自由词（非 12 个已知码）。
+ * 自 2026-10-12 起领域自由化，故这里返回自由短串，不再强行当 DomainCode（拼类名时另走 domainStyleCode）。
  */
-function domainOf(personKey: string, raw?: string): DomainCode {
+function domainOf(personKey: string, raw?: string): string {
   const parsed = parsePersonKey(personKey)
   if (parsed) return parsed.domain
-  return raw && isDomainCode(raw) ? raw : 'other'
+  return sanitizeDomain(raw) || 'other'
 }
 
 /**
@@ -497,19 +499,19 @@ export default function Compare() {
           <View className='card'>
             <View className='page-compare__pair'>
               <View className='page-compare__side'>
-                <View className={`page-compare__avatar page-compare__avatar--${result.a.domain}`}>
+                <View className={`page-compare__avatar page-compare__avatar--${domainStyleCode(result.a.domain)}`}>
                   {result.a.name.slice(0, 1)}
                 </View>
                 <Text className='page-compare__name'>{result.a.name}</Text>
-                <View className={`chip chip--${result.a.domain}`}>{result.a.domainLabel}</View>
+                <View className={`chip chip--${domainStyleCode(result.a.domain)}`}>{result.a.domainLabel}</View>
               </View>
               <View className='page-compare__vs'>VS</View>
               <View className='page-compare__side'>
-                <View className={`page-compare__avatar page-compare__avatar--${result.b.domain}`}>
+                <View className={`page-compare__avatar page-compare__avatar--${domainStyleCode(result.b.domain)}`}>
                   {result.b.name.slice(0, 1)}
                 </View>
                 <Text className='page-compare__name'>{result.b.name}</Text>
-                <View className={`chip chip--${result.b.domain}`}>{result.b.domainLabel}</View>
+                <View className={`chip chip--${domainStyleCode(result.b.domain)}`}>{result.b.domainLabel}</View>
               </View>
             </View>
 

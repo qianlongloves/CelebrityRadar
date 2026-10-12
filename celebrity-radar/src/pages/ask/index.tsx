@@ -4,8 +4,7 @@ import Taro, { useDidShow, useShareAppMessage, useShareTimeline } from '@tarojs/
 import EmptyState from '@/components/empty-state'
 import QaPanel from '@/components/qa-panel'
 import Skeleton from '@/components/skeleton'
-import { buildPersonKey, DOMAIN_META, parsePersonKey } from '@/config/domains'
-import type { DomainCode } from '@/config/domains'
+import { buildPersonKey, domainLabel, parsePersonKey } from '@/config/domains'
 import { useAuth } from '@/stores/auth'
 import { getCachedReports } from '@/utils/cache'
 import { todayPerson } from '@/utils/explore'
@@ -75,7 +74,8 @@ const SUGGEST_MAX = 6
  */
 interface SuggestPerson {
   name: string
-  domain: DomainCode
+  /** 领域（自由短串，2026-10-12 领域自由化） */
+  domain: string
   personKey: string
 }
 
@@ -323,7 +323,7 @@ export default function AskPage() {
                       onClick={() => pickSuggested(p)}
                     >
                       <Text className='page-ask__suggest-name'>{p.name}</Text>
-                      <Text className='page-ask__suggest-tag'>{DOMAIN_META[p.domain].label}</Text>
+                      <Text className='page-ask__suggest-tag'>{domainLabel(p.domain)}</Text>
                     </View>
                   ))}
                 </View>

@@ -1,12 +1,13 @@
 import { View, Text } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
-import { DOMAIN_META, DomainCode } from '@/config/domains'
+import { domainLabel, domainStyleCode } from '@/config/domains'
 import './index.scss'
 
 export interface PersonInfo {
   personKey: string
   name: string
-  domain: DomainCode
+  /** 领域（自由短串，2026-10-12 领域自由化）：标签走 domainLabel、配色走 domainStyleCode */
+  domain: string
   /** 一句代表事件 / 简介（消歧候选用） */
   brief?: string
   /** 动态关键词标签（热门位用） */
@@ -49,14 +50,15 @@ export default function PersonCard({
   followPending,
   iconActions
 }: PersonCardProps) {
-  const meta = DOMAIN_META[person.domain] ?? DOMAIN_META.other
+  /* 领域自由化后：配色 / 变体类统一经 domainStyleCode（未知领域复用 other），标签经 domainLabel（自创词原样展示） */
+  const styleCode = domainStyleCode(person.domain)
   return (
     <View className='person-card' onClick={() => onClick?.(person)}>
-      <View className={`person-card__avatar person-card__avatar--${person.domain}`}>{person.name.slice(0, 1)}</View>
+      <View className={`person-card__avatar person-card__avatar--${styleCode}`}>{person.name.slice(0, 1)}</View>
       <View className='person-card__main'>
         <View className='person-card__name-row'>
           <Text className='person-card__name'>{person.name}</Text>
-          <View className={`chip chip--${person.domain}`}>{meta.label}</View>
+          <View className={`chip chip--${styleCode}`}>{domainLabel(person.domain)}</View>
         </View>
         {(person.tag || person.brief) && (
           <View className='person-card__brief-row'>

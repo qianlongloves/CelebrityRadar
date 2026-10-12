@@ -1,4 +1,4 @@
-import { buildPersonKey, DOMAIN_META, isDomainCode, parsePersonKey } from '@/config/domains'
+import { buildPersonKey, domainLabel, parsePersonKey, sanitizeDomain } from '@/config/domains'
 import { HOT_PERSONS, HotPerson } from '@/config/hot'
 import { callCloudFunction, isCloudConfigured } from './cloud'
 import { diagLog } from './cloud-diagnostics'
@@ -44,14 +44,15 @@ function toAiBoard(row: any): HotPerson[] {
   const out: HotPerson[] = []
   for (const it of raw) {
     const name = typeof it?.name === 'string' ? it.name.trim() : ''
-    const domain = typeof it?.domain === 'string' ? it.domain : ''
-    if (name === '' || !isDomainCode(domain) || seen.has(name)) continue
+    /* 领域自 2026-10-12 起为自由短串：净化后非空即接受（不再限定 12 个已知码） */
+    const domain = sanitizeDomain(it?.domain)
+    if (name === '' || domain === '' || seen.has(name)) continue
     seen.add(name)
     /* 不带 heat：AI 榜单的顺序就是排名，热度条已按需求从卡片上移除 */
     out.push({
       name,
       domain,
-      tag: typeof it?.tag === 'string' ? it.tag.trim() : DOMAIN_META[domain].label,
+      tag: typeof it?.tag === 'string' ? it.tag.trim() : domainLabel(domain),
       trend: typeof it?.trend === 'string' ? it.trend.trim() : ''
     })
   }
@@ -143,7 +144,7 @@ function merge(cloud: CloudCandidate[]): HotPerson[] {
       name: parsed.name,
       domain: parsed.domain,
       heat: c.heat,
-      tag: seed?.tag ?? DOMAIN_META[parsed.domain].label,
+      tag: seed?.tag ?? domainLabel(parsed.domain),
       trend: c.brief !== '' ? c.brief : seed?.trend ?? ''
     })
   }

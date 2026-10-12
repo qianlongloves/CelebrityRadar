@@ -2,7 +2,7 @@ import { useState } from 'react'
 import Taro, { useDidShow, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text, ScrollView, Image } from '@tarojs/components'
 import { AtSearchBar, AtButton } from 'taro-ui'
-import { DOMAIN_CODES, DOMAIN_COVERAGE_TEXT, DOMAIN_META, DomainCode, buildPersonKey } from '@/config/domains'
+import { DOMAIN_CODES, DOMAIN_COVERAGE_TEXT, DomainCode, buildPersonKey, domainLabel, domainStyleCode } from '@/config/domains'
 import {
   DOMAIN_FILTER_CODES,
   DomainFilterCode,
@@ -50,8 +50,8 @@ export default function Index() {
   const [domainHint, setDomainHint] = useState<DomainFilterCode>('all')
   /** 搜索前的关注方向（作用于报告生成侧重） */
   const [focus, setFocus] = useState<FocusCode>('all')
-  /** 候选列表内的领域筛选（结果返回后可用） */
-  const [domainFilter, setDomainFilter] = useState<DomainCode | 'all'>('all')
+  /** 候选列表内的领域筛选（结果返回后可用）。领域自由化后为自由短串，故不限 DomainCode */
+  const [domainFilter, setDomainFilter] = useState<string>('all')
   /** 横幅右侧「今日名人」（同一天稳定，可点 ⟳ 随机换一位） */
   const [hero, setHero] = useState(() => todayPerson())
   /**
@@ -211,7 +211,7 @@ export default function Index() {
     setState({ phase: 'candidates', candidates: res.data.candidates })
   }
 
-  const openPerson = (name: string, domain: DomainCode) => {
+  const openPerson = (name: string, domain: string) => {
     const personKey = buildPersonKey(name, domain)
     track('disambiguate_selected', { personKey, focus })
     Taro.navigateTo({
@@ -322,7 +322,7 @@ export default function Index() {
         {/* 今日名人：点击头像直接看 TA 的报告，点 ⟳ 随机换一位 */}
         <View className='page-index__hero'>
           <View
-            className={`page-index__hero-avatar page-index__hero-avatar--${hero.domain}`}
+            className={`page-index__hero-avatar page-index__hero-avatar--${domainStyleCode(hero.domain)}`}
             onClick={() => openPerson(hero.name, hero.domain)}
           >
             {hero.name.slice(0, 1)}
@@ -337,7 +337,7 @@ export default function Index() {
             </View>
           </View>
           <Text className='page-index__hero-name'>{hero.name}</Text>
-          <Text className='page-index__hero-tag'>{DOMAIN_META[hero.domain].label} · 今日名人</Text>
+          <Text className='page-index__hero-tag'>{domainLabel(hero.domain)} · 今日名人</Text>
         </View>
       </View>
 
@@ -500,7 +500,7 @@ export default function Index() {
                     className={`page-index__filter ${domainFilter === d ? 'page-index__filter--active' : ''}`}
                     onClick={() => setDomainFilter(d)}
                   >
-                    {DOMAIN_META[d].label}
+                    {domainLabel(d)}
                   </View>
                 ))}
               </View>
@@ -592,7 +592,7 @@ export default function Index() {
               className={`page-index__fchip ${hotDomain === d ? 'page-index__fchip--active' : ''}`}
               onClick={() => setHotDomain(d)}
             >
-              {DOMAIN_META[d].label}
+              {domainLabel(d)}
             </View>
           ))}
         </ScrollView>

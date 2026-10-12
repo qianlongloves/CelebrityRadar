@@ -14,6 +14,13 @@
  *   4. `src/utils/explore.ts` / `src/utils/disambiguate.ts` 提示词里的领域枚举（AI 选题 / 消歧）。
  * 另需同步 `test/cases/01-pure.js` 里写死的领域码数量断言。
  *
+ * 【2026-10-12 领域自由化】领域码从「固定 12 值枚举」放宽为**自由短串**：消歧 / 选题时若
+ * 12 个已知领域都不贴切，模型可自创一个短领域词。于是本文件新增两条**唯一出口**：
+ *   · 标签一律走 `domainLabel()`（已知码给中文标签，自创词原样展示，空值回落「其他」）；
+ *   · CSS 变体类一律走 `domainStyleCode()`（未知领域复用中性 `other`，14 处 SCSS 无需新增）。
+ * 再有人直接写 `DOMAIN_META[x].label` / `chip--${domain}`，遇到自由领域就会得到 undefined 或
+ * 无样式的类名 —— 这正是散落各处、漏改即白屏的一类。
+ *
  * 顺序即发现页「行业」筛选 chips 的展示顺序（常见领域在前、长尾在后）。
  */
 export type DomainCode =
@@ -76,21 +83,77 @@ export function isDomainCode(v: string): v is DomainCode {
 }
 
 /**
- * 生成稳定 personKey：名字#领域码（§1.6）。
+ * 自创领域串的长度上限（2026-10-12 领域自由化）。
+ *
+ * 12 是最长已知标签「互联网 / 学术」的两倍余量：够放下「脱口秀 / 建筑设计」这类短词，
+ * 又不至于把一整句描述当成领域塞进 personKey（那会把缓存主键撑成一个短句）。
+ */
+export const DOMAIN_FREE_MAX = 12
+
+/**
+ * 净化领域串（2026-10-12 领域自由化后的**统一入口**）。
+ *
+ * 领域码放宽成「AI 现编的短词」后，它仍会进 personKey 与 URL 参数，所以必须先收口：
+ * 去掉 `#` / `＃`（会让主键切错位）、去掉所有空白、截到 DOMAIN_FREE_MAX 字。
+ * 净化后为空 = 非法，调用方据此回落 'other' / 「其他」。
+ */
+export function sanitizeDomain(raw: unknown): string {
+  const s = raw == null ? '' : String(raw)
+  return s.replace(/[#＃\s]/g, '').slice(0, DOMAIN_FREE_MAX)
+}
+
+/**
+ * 是否为「已处于净化形态」的合法领域串：净化结果与自身一致且非空。
+ * 已知的 12 个领域码也满足（它们本就是干净短串），故这里不区分已知 / 自创。
+ */
+export function isFreeDomain(v: string): boolean {
+  return typeof v === 'string' && v !== '' && sanitizeDomain(v) === v
+}
+
+/**
+ * 领域展示名（**所有标签查询的唯一出口**，不要再写 `DOMAIN_META[x].label`）。
+ *
+ * · 已知领域码 → 其中文标签（科技 / 财经…），与发现页筛选 chips 完全一致；
+ * · AI 自创的自由领域 → **原样展示**（它本就是给人看的短词，翻译只会失真）；
+ * · 空 / 非法 → 回落「其他」，保证任何脏数据都画得出一个标签、不阻断出图。
+ */
+export function domainLabel(code: string): string {
+  return DOMAIN_META[code as DomainCode]?.label ?? (sanitizeDomain(code) || '其他')
+}
+
+/**
+ * 领域对应的 SCSS 变体码（**只在拼 `--<code>` 类名时使用**，标签另走 domainLabel）。
+ *
+ * 自由领域没有自己的颜色 / 背景变体类，统一复用中性色 `other` —— 于是那 14 处 SCSS
+ * 变体块永远不需要为新领域补一行，类名也永远不会拼出一个不存在的样式。
+ */
+export function domainStyleCode(code: string): DomainCode {
+  return isDomainCode(code) ? code : 'other'
+}
+
+/**
+ * 生成稳定 personKey：名字#领域（§1.6）。
  *
  * 名字里的 `#` 会让**所有**按 `#` 切分的地方错位（这是缓存主键，也进 URL 参数），
  * 故在此收口兜底：正常路径已在上游净化（utils/disambiguate.ts#sanitizeCandidates），
  * 但不能让任何一个漏网的 `#` 造出一个会分裂的 key —— 那意味着同一个人的报告存成两行。
+ * 领域同样要净化（2026-10-12 自由化后可能是自创词）：一个漏网的 `#` 会把领域切成两半，
+ * 净化后为空则回落 'other'，保证 key 永远只有一个分隔符、且领域段非空。
  */
-export function buildPersonKey(name: string, domain: DomainCode): string {
-  return `${name.replace(/[#＃]/g, '').trim()}#${domain}`
+export function buildPersonKey(name: string, domain: string): string {
+  return `${name.replace(/[#＃]/g, '').trim()}#${sanitizeDomain(domain) || 'other'}`
 }
 
-/** 解析 personKey（容错：非法输入返回 null） */
-export function parsePersonKey(personKey: string): { name: string; domain: DomainCode } | null {
+/**
+ * 解析 personKey（容错：名字或领域为空返回 null）。
+ *
+ * 领域自 2026-10-12 起是**自由短串**，故这里不再要求是 12 个已知码之一，
+ * 只要求净化后非空。`lastIndexOf('#')` 与「容忍老 key 里残留的 #（`A#B#ent`）」不变。
+ */
+export function parsePersonKey(personKey: string): { name: string; domain: string } | null {
   const idx = personKey.lastIndexOf('#')
   if (idx <= 0) return null
   const name = personKey.slice(0, idx)
-  const domain = personKey.slice(idx + 1)
-  return isDomainCode(domain) && name ? { name, domain } : null
+  const domain = sanitizeDomain(personKey.slice(idx + 1))
+  return name && domain ? { name, domain } : null
 }

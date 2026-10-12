@@ -12,7 +12,7 @@ import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { diagLog } from './cloud-diagnostics'
 import { currentWeekKey, dayKey8, last7DayRange } from './time'
-import { DomainCode, parsePersonKey } from '@/config/domains'
+import { parsePersonKey } from '@/config/domains'
 
 /**
  * 关注周报（§2.2 M5-2「手动生成周报」）。
@@ -64,13 +64,13 @@ const STORAGE_PREFIX = 'weekly:'
 export interface WeeklyEntry extends NewsItem {
   personKey: string
   personName: string
-  domain: DomainCode
+  domain: string
 }
 
 export interface WeeklyPerson {
   personKey: string
   name: string
-  domain: DomainCode
+  domain: string
   entries: WeeklyEntry[]
 }
 
@@ -184,7 +184,7 @@ export async function collectWeeklyMaterial(): Promise<MaterialOutcome> {
 export interface WeeklyReportPerson {
   personKey: string
   name: string
-  domain: DomainCode
+  domain: string
   /** 该人本周要点（AI；降级时为空） */
   summary: string
   entries: WeeklyEntry[]
@@ -359,7 +359,7 @@ export function sanitizeWeekly(material: WeeklyMaterial, llm: LlmWeeklyFields, r
 export interface WeeklyTimelineItem {
   personKey: string
   personName: string
-  domain: DomainCode
+  domain: string
   /** yyyy-mm-dd（UTC+8）；素材没带日期时为空串，排在带日期的之后 */
   date: string
   title: string
@@ -375,7 +375,7 @@ export interface WeeklyDigest {
   /** 来源分布（条数倒序，最多 SOURCE_TOP 个） */
   sources: Array<{ name: string; count: number }>
   /** 领域分布（条数倒序） */
-  domains: Array<{ domain: DomainCode; persons: number; entries: number }>
+  domains: Array<{ domain: string; persons: number; entries: number }>
   /** 本周动态最多的一位（并列时取材料里靠前者；无人有条目时为 null） */
   mostActive: { name: string; count: number } | null
 }
@@ -404,8 +404,8 @@ export interface TimelineSlice {
 export function buildWeeklyDigest(report: WeeklyReport): WeeklyDigest {
   const timeline: WeeklyTimelineItem[] = []
   const sourceCount = new Map<string, number>()
-  const domainEntries = new Map<DomainCode, number>()
-  const domainPersons = new Map<DomainCode, number>()
+  const domainEntries = new Map<string, number>()
+  const domainPersons = new Map<string, number>()
   let mostActive: { name: string; count: number } | null = null
 
   for (const p of report.persons) {

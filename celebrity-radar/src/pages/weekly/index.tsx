@@ -16,7 +16,7 @@ import type { MaterialOutcome, WeeklyMaterial, WeeklyOutcome, WeeklyReport } fro
 import { buildDayDistribution } from '@/utils/stats'
 import { peekGenerateQuota } from '@/utils/quota'
 import { useAuth } from '@/stores/auth'
-import { DOMAIN_META } from '@/config/domains'
+import { domainLabel, domainStyleCode } from '@/config/domains'
 import { dayKey8, fromNow } from '@/utils/time'
 import { track } from '@/utils/events'
 import './index.scss'
@@ -216,7 +216,7 @@ export default function Weekly() {
       blocks.push(`本期要点：\n${highlights.map((h, i) => `${i + 1}. ${h}`).join('\n')}`)
     }
     for (const p of report.persons) {
-      const lines = [`■ ${p.name}（${DOMAIN_META[p.domain].label}）`]
+      const lines = [`■ ${p.name}（${domainLabel(p.domain)}）`]
       if (p.summary) lines.push(p.summary)
       for (const e of p.entries) {
         lines.push(`· ${e.title}${e.source ? `（${e.source}）` : ''} ${e.url}`)
@@ -394,7 +394,7 @@ export default function Weekly() {
                     onClick={() => openPerson(t.personKey)}
                   >
                     <View className='page-weekly__tl-axis'>
-                      <View className={`page-weekly__tl-dot page-weekly__tl-dot--${t.domain}`} />
+                      <View className={`page-weekly__tl-dot page-weekly__tl-dot--${domainStyleCode(t.domain)}`} />
                       {i < digest.timeline.items.length - 1 && <View className='page-weekly__tl-line' />}
                     </View>
                     <View className='page-weekly__tl-body'>
@@ -489,7 +489,7 @@ export default function Weekly() {
               <Text className='page-weekly__mix-label'>领域</Text>
               {digest.domains.map((d) => (
                 <View key={d.domain} className='page-weekly__domain'>
-                  <Text className='page-weekly__domain-name'>{DOMAIN_META[d.domain].label}</Text>
+                  <Text className='page-weekly__domain-name'>{domainLabel(d.domain)}</Text>
                   <View className='page-weekly__domain-track'>
                     <View
                       className='page-weekly__domain-bar'
@@ -527,13 +527,13 @@ export default function Weekly() {
                 onClick={() => openPerson(p.personKey)}
               >
                 <View className='page-weekly__person-head'>
-                  <View className={`page-weekly__person-icon page-weekly__person-icon--${p.domain}`}>
+                  <View className={`page-weekly__person-icon page-weekly__person-icon--${domainStyleCode(p.domain)}`}>
                     {p.name.slice(0, 1)}
                   </View>
                   <View className='page-weekly__person-info'>
                     <Text className='page-weekly__person-name'>{p.name}</Text>
                     <Text className='page-weekly__person-domain'>
-                      {DOMAIN_META[p.domain].label} · {p.entries.length} 条动态
+                      {domainLabel(p.domain)} · {p.entries.length} 条动态
                       {latest ? ` · 最近 ${latest.slice(5)}` : ''}
                       {srcCount > 0 ? ` · ${srcCount} 个来源` : ''}
                     </Text>

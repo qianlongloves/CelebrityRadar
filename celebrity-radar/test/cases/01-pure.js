@@ -234,12 +234,15 @@ describe('领域码与 personKey utils/domains', () => {
     deepEq(d.parsePersonKey('A#B#ent'), { name: 'A#B', domain: 'ent' })
   })
 
-  it('非法输入返回 null 而不是抛错', () => {
+  it('领域自由化：名字或领域为空返回 null，12 个已知码之外的自由领域照常解析', () => {
     eq(d.parsePersonKey('没有井号'), null)
     eq(d.parsePersonKey('#tech'), null)
-    eq(d.parsePersonKey('张三#'), null)
-    eq(d.parsePersonKey('张三#不存在'), null)
     eq(d.parsePersonKey(''), null)
+    /* 领域净化后为空仍是非法 */
+    eq(d.parsePersonKey('张三#'), null)
+    eq(d.parsePersonKey('张三#   '), null)
+    /* 自 2026-10-12 起领域是自由短串：不是 12 个已知码也合法（不再阻断生成） */
+    deepEq(d.parsePersonKey('张三#不存在'), { name: '张三', domain: '不存在' })
   })
 
   it('isDomainCode 只认枚举内取值', () => {
@@ -248,6 +251,39 @@ describe('领域码与 personKey utils/domains', () => {
     notOk(d.isDomainCode('TECH'))
     notOk(d.isDomainCode('全部'))
     eq(d.DOMAIN_CODES.length, 12)
+  })
+
+  it('domainLabel：已知码给中文标签，自创领域原样展示，空值回落「其他」', () => {
+    eq(d.domainLabel('tech'), '科技')
+    eq(d.domainLabel('other'), '其他')
+    eq(d.domainLabel('脱口秀'), '脱口秀')
+    eq(d.domainLabel(''), '其他')
+    eq(d.domainLabel('   '), '其他')
+  })
+
+  it('domainStyleCode：只有已知码保留，自创领域统一回落中性 other（14 处 SCSS 变体无需新增）', () => {
+    eq(d.domainStyleCode('tech'), 'tech')
+    eq(d.domainStyleCode('脱口秀'), 'other')
+    eq(d.domainStyleCode(''), 'other')
+  })
+
+  it('sanitizeDomain / isFreeDomain：去 # 与空白、截到上限、空即非法', () => {
+    eq(d.sanitizeDomain('  脱 口 秀 '), '脱口秀')
+    eq(d.sanitizeDomain('a#b＃c'), 'abc')
+    eq(d.sanitizeDomain(''), '')
+    eq(d.sanitizeDomain(null), '')
+    eq(d.sanitizeDomain('x'.repeat(30)).length, d.DOMAIN_FREE_MAX)
+    ok(d.isFreeDomain('脱口秀'))
+    notOk(d.isFreeDomain('脱 口秀'), '含空白就不算净化形态')
+    notOk(d.isFreeDomain(''))
+  })
+
+  it('自由领域 personKey 可往返；领域里的 # / 空白不会分裂缓存主键', () => {
+    const key = d.buildPersonKey('张三', '脱口秀')
+    eq(key, '张三#脱口秀')
+    deepEq(d.parsePersonKey(key), { name: '张三', domain: '脱口秀' })
+    eq(d.buildPersonKey('张三', '脱#口秀'), '张三#脱口秀', '领域里的分隔符会被净化')
+    eq(d.buildPersonKey('张三', '  '), '张三#other', '领域净化后为空回落 other')
   })
 
   it('每个领域码都有中文标签', () => {
@@ -1026,8 +1062,9 @@ describe('分享文案与落地路径 utils/share', () => {
     ok(t.startsWith('张三 · 科技｜'), '截断应发生在简介部分')
   })
 
-  it('领域码非法时回落「名人」，不抛错', () => {
-    eq(personShareTitle('张三', 'not-a-code'), '张三 · 名人')
+  it('领域为空时回落「名人」；自创领域原样展示（领域自由化后不再要求 12 个已知码）', () => {
+    eq(personShareTitle('张三', ''), '张三 · 名人')
+    eq(personShareTitle('张三', 'not-a-code'), '张三 · not-a-code')
   })
 })
 
