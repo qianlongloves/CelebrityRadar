@@ -509,6 +509,22 @@ export default function QaPanel({
       )}
 
       <View className='qa-panel__composer'>
+        {report ? (
+          /* 报告图标（2026-10-12）：选中的人有报告时，从输入框左侧一键跳回报告页 ——
+             问完想回去看原文 / 刷新素材，不必退回上一页重新找人 */
+          <View className='qa-panel__report' hoverClass='qa-panel__report--tap' onClick={gotoReport}>
+            <Text className='qa-panel__report-icon'>📄</Text>
+          </View>
+        ) : (
+          /* 直连态没有报告可跳：图标置灰并写「直连」，点一下把「未基于报告素材」说清楚 */
+          <View
+            className='qa-panel__report qa-panel__report--off'
+            hoverClass='qa-panel__report--tap'
+            onClick={() => void Taro.showToast({ title: '本次未基于报告素材', icon: 'none' })}
+          >
+            <Text className='qa-panel__report-text'>直连</Text>
+          </View>
+        )}
         <Input
           className='qa-panel__input'
           value={input}

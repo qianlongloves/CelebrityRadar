@@ -45,48 +45,25 @@
     color: $text-3;
   }
 
-  /* 分组（2026-10-12）：最近看过 / 我的关注 / 搜索加入，各一组纵向铺开。
-     原先是一条横滑卡片带 —— 候选到十几位时只能靠左右滑找人，而且两类人混在一起、
-     看不出某位为什么在列表里。分组后来源一目了然，也把「最近看过优先」显式化。 */
-  &__group {
-    margin-top: 6rpx;
+  /* 人名列表（2026-10-12 改版）：只显示人名，固定高度、超出纵向滑动。
+     高度按 3 行写死（chip 高约 56rpx + 行间距 14rpx）—— 「选人」只需要「是谁」这一个信息量；
+     此前卡片化的头像 / 副行把整个上半屏占满，会话区被挤没了。 */
+  &__names {
+    width: 100%;
+    height: 208rpx;
   }
 
-  &__group-title {
-    display: block;
-    margin-bottom: 6rpx;
-    color: $text-3;
-    font-size: 20rpx;
-  }
-
-  &__grid {
+  &__names-inner {
     display: flex;
     flex-wrap: wrap;
+    gap: 14rpx;
   }
 
-  /* 每行 4 个：宽度写死 25%，卡片之间的间距靠 person 的外边距做 ——
-     避开 calc() / gap 在不同基础库上的差异，也不必依赖全局 box-sizing。 */
-  &__cell {
-    width: 25%;
-    display: flex;
-  }
-
-  /* 选人卡片：头像 + 名字 + 「多久前生成 · 素材条数」。
-     首字头像 + 领域色一眼可辨（同名 / 名字相近时尤其有用），副行给出「这份语料有多新」。
-
-     2026-10-12 网格化：从横滑定宽卡片（152rpx）改为「每行 4 张、随格宽自适应」——
-     宽度交给 flex（cell 25% + person flex:1 + 外边距留缝），竖排信息仍是头像 / 名字 / 副行三行。 */
-  &__person {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4rpx;
-    margin: 0 4rpx 12rpx;
-    padding: 12rpx 6rpx;
+  &__name {
+    max-width: 100%;
+    padding: 8rpx 22rpx;
     border: 2rpx solid $line;
-    border-radius: $radius-md;
+    border-radius: 999rpx;
     background: #fff;
 
     &--active {
@@ -95,63 +72,18 @@
     }
 
     &--tap {
-      opacity: 0.75;
+      opacity: 0.7;
     }
   }
 
-  /* 头像色与关注流 / 收藏页同一套领域色，跨页面对上同一个人时不会认错 */
-  &__avatar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 40rpx;
-    height: 40rpx;
-    border-radius: 50%;
-    color: #fff;
-    font-size: 22rpx;
-    font-weight: 600;
-
-    &--tech { background: $domain-tech; }
-    &--internet { background: $domain-internet; }
-    &--business { background: $domain-business; }
-    &--finance { background: $domain-finance; }
-    &--auto { background: $domain-auto; }
-    &--ent { background: $domain-ent; }
-    &--art { background: $domain-art; }
-    &--sports { background: $domain-sports; }
-    &--health { background: $domain-health; }
-    &--academia { background: $domain-academia; }
-    &--edu { background: $domain-edu; }
-    &--other { background: $domain-other; }
-  }
-
-  &__person-name {
-    max-width: 100%;
+  &__name-text {
     color: $text-1;
-    font-size: 24rpx;
-    font-weight: 600;
+    font-size: 26rpx;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  &__person-meta {
-    max-width: 100%;
-    color: $text-3;
-    font-size: 18rpx;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-
-    /* 无报告的人：用品牌色把「直连」标出来，与旁边「多久前生成 · N 条」一眼可分 */
-    &--direct {
-      color: $brand;
-      font-weight: 600;
-    }
   }
 
   /* 联想推荐（2026-10-12）：输入时按热门榜补全，胶囊式平铺、可换行。
-     只列本机候选里没有的人 —— 本机已有的在下方网格里，不重复。 */
+     只列本机候选里没有的人 —— 本机已有的在下方人名列表里，不重复。 */
   &__suggest {
     margin-bottom: 10rpx;
   }
@@ -222,22 +154,6 @@
     flex-shrink: 0;
     color: $text-3;
     font-size: 18rpx;
-  }
-
-  /* 折叠时底部的「展开全部 / 收起」 */
-  &__more {
-    display: flex;
-    justify-content: center;
-    padding-top: 2rpx;
-
-    &--tap {
-      opacity: 0.7;
-    }
-  }
-
-  &__more-text {
-    color: $brand;
-    font-size: 22rpx;
   }
 
   /* 候选较多时的过滤框（见 pages/ask 的 FILTER_FROM） */

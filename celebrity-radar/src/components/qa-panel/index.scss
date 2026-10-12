@@ -333,4 +333,39 @@
   &__send {
     flex-shrink: 0;
   }
+
+  /* 报告图标（2026-10-12）：输入框左侧一键跳回报告页。
+     有报告：可点；直连态（无报告）：置灰并写「直连」，点一下说明「未基于报告素材」。 */
+  &__report {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 72rpx;
+    height: 72rpx;
+    padding: 0 12rpx;
+    border: 2rpx solid $brand;
+    border-radius: 20rpx;
+    background: rgba(95, 51, 225, 0.06);
+
+    &--off {
+      border-color: $line;
+      background: $bg;
+    }
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  &__report-icon {
+    font-size: 32rpx;
+    line-height: 1;
+  }
+
+  &__report-text {
+    color: $text-3;
+    font-size: 22rpx;
+    font-weight: 600;
+  }
 }

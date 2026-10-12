@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Input, Text, View } from '@tarojs/components'
+import { Input, ScrollView, Text, View } from '@tarojs/components'
 import Taro, { useDidShow, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import EmptyState from '@/components/empty-state'
 import QaPanel from '@/components/qa-panel'
@@ -16,7 +16,8 @@ import { readMemberState } from '@/utils/member'
 import type { Report } from '@/utils/report'
 import { personShareTitle, reportSharePath } from '@/utils/share'
 import { useTabBarSync } from '@/utils/tabbar'
-import { fromNow } from '@/utils/time'
+import { qaUsageToday } from '@/utils/qa'
+import type { QaUsage } from '@/utils/qa'
 import './index.scss'
 
 /**
@@ -61,13 +62,6 @@ const MAX_TARGETS = 20
 const FILTER_FROM = 5
 
 /**
- * 折叠态每组最多铺这么多张（2 行 × 4 列）。
- * 选人器是「多点一下就选完」的过渡控件，不该把下半屏的会话区挤没；关注多的人一屏铺不下，
- * 默认只给两行，超出由底部的「展开全部」放开。
- */
-const COLLAPSED_PER_GROUP = 8
-
-/**
  * 联想推荐最多给几条。
  * 推荐行是「打字时的顺手补全」，不是搜索结果页 —— 给多了会把下方的候选网格顶下去，
  * 反而看不清自己原本要找的人。
@@ -91,15 +85,13 @@ type Phase = 'loading' | 'ready' | 'empty'
  * 提问候选：`report` 为 null 表示本机还没有该人的缓存报告 —— 选中后走 QaPanel 的直连模式
  * （直连大模型，不生成报告）；有报告则照旧用报告素材作答。
  *
- * `source`（2026-10-12）为选人器分组用：最近看过 / 我的关注 / 搜索后临时加入（未接触过的人）。
+ * 2026-10-12 起选人器只显示人名（固定高度、超出纵向滑动），故目标上不再带来源 / 头像 / 副行 ——
+ * 「有没有报告」改由输入框左侧那个报告图标表达（见 QaPanel），列表本身不必再按来源分组。
  */
-type AskSource = 'recent' | 'follow' | 'search'
-
 interface AskTarget {
   personKey: string
   name: string
   report: Report | null
-  source: AskSource
 }
 
 export default function AskPage() {
@@ -113,8 +105,8 @@ export default function AskPage() {
   const [member, setMember] = useState(false)
   /* 选人器的过滤词（够长才出现输入框，见下面的 FILTER_FROM） */
   const [filter, setFilter] = useState('')
-  /* 分组网格是否展开（每组超过 COLLAPSED_PER_GROUP 时才出现「展开全部」） */
-  const [expanded, setExpanded] = useState(false)
+  /* 今日提问用量的展示口径：选人区标题行右侧显示「今日还可问 N 次」 */
+  const [usage, setUsage] = useState<QaUsage>(() => qaUsageToday(false))
   /* 联想推荐的候选池（热门榜，见 SuggestPerson 注释）；拉不到就为空，推荐行自然消失 */
   const [hotPool, setHotPool] = useState<SuggestPerson[]>([])
 
@@ -160,19 +152,14 @@ export default function AskPage() {
      * 逐位造候选：`getCachedReports` 的返回与入参**按下标对齐**（见 utils/cache.ts）。
      * 姓名优先取缓存报告里的，其次从 personKey 解析（无报告时 report 为 null），最后兜底 key 本身。
      */
-    const recentKeys = new Set(recent.map((r) => r.person_key))
     const list: AskTarget[] = keys.map((key, i) => {
       const report = found[i] ?? null
-      return {
-        personKey: key,
-        name: report?.name || parsePersonKey(key)?.name || key,
-        report,
-        /* 最近看过 / 关注：同一个 key 不会同时属于两组（keys 已去重，最近在前） */
-        source: recentKeys.has(key) ? 'recent' : 'follow'
-      }
+      return { personKey: key, name: report?.name || parsePersonKey(key)?.name || key, report }
     })
 
     setMember(state.member)
+    /* 用量与会员态同批刷新：它是本机镜像，进页时对齐一次即可（问一次后会由面板侧更新镜像） */
+    setUsage(qaUsageToday(state.member))
     setTargets(list)
     /* 尽量留在用户原来的选择上；该人已不在候选里才退回第一位 */
     setActiveKey((prev) => (list.some((t) => t.personKey === prev) ? prev : list[0]?.personKey ?? ''))
@@ -193,24 +180,16 @@ export default function AskPage() {
   const keyword = filter.trim()
 
   /**
-   * 分组（2026-10-12）：最近看过 / 我的关注 / 搜索加入，各一组、组内保持原顺序。
+   * 过滤后的人名列表（2026-10-12 改版：只显示人名、固定高度内纵向滑动）。
    *
-   * 为什么分组而不是一条长条：原先是一条横滑卡片带 —— 候选到十几位时只能靠左右滑找人，
-   * 而且「最近看过」与「关注」混在一起，用户看不出某位为什么在列表里。分组后两组各自成块，
-   * 来源一目了然，也把「最近看过优先」这条排序口径显式化。
+   * 顺序 = `targets` 的原顺序（最近看过在前、关注补齐在后，见 load）—— 不再按来源分组：
+   * 分组标题会占掉本就紧张的高度，而「谁排在前面」已经足够表达优先级。
    */
-  const groups = useMemo(() => {
+  const visible = useMemo(() => {
     const q = keyword.toLowerCase()
-    const keep = (t: AskTarget) => !q || t.name.toLowerCase().includes(q)
-    return [
-      { key: 'recent' as const, title: '最近看过', items: targets.filter((t) => t.source === 'recent' && keep(t)) },
-      { key: 'follow' as const, title: '我的关注', items: targets.filter((t) => t.source === 'follow' && keep(t)) },
-      { key: 'search' as const, title: '搜索加入', items: targets.filter((t) => t.source === 'search' && keep(t)) }
-    ].filter((g) => g.items.length > 0)
+    if (!q) return targets
+    return targets.filter((t) => t.name.toLowerCase().includes(q))
   }, [targets, keyword])
-
-  /** 任一组超过折叠上限，才需要底部的「展开全部」 */
-  const overflows = useMemo(() => groups.some((g) => g.items.length > COLLAPSED_PER_GROUP), [groups])
 
   /**
    * 联想推荐（2026-10-12）：按输入匹配热门榜里**本机候选没有**的人。
@@ -240,7 +219,7 @@ export default function AskPage() {
     setTargets((prev) =>
       prev.some((t) => t.personKey === personKey)
         ? prev
-        : [...prev, { personKey, name, report: null, source: 'search' }]
+        : [...prev, { personKey, name, report: null }]
     )
     setActiveKey(personKey)
     setFilter('')
@@ -251,7 +230,7 @@ export default function AskPage() {
     setTargets((prev) =>
       prev.some((t) => t.personKey === p.personKey)
         ? prev
-        : [...prev, { personKey: p.personKey, name: p.name, report: null, source: 'search' }]
+        : [...prev, { personKey: p.personKey, name: p.name, report: null }]
     )
     setActiveKey(p.personKey)
     setFilter('')
@@ -314,9 +293,10 @@ export default function AskPage() {
           <View className='card page-ask__picker'>
             <View className='page-ask__picker-head'>
               <Text className='page-ask__picker-title'>选一位名人提问</Text>
-              {/* 额度口径与报告页同一说法（utils/member.ts 的提问池）：说清两个池的名字，避免被读成「问了也扣生成额度」 */}
+              {/* 剩余次数（2026-10-12 用户要求「在合理位置提示」）：放在标题行右侧。
+                  措辞与报告页口径一致 —— 只计「每日提问次数」，不占「报告生成次数」。 */}
               <Text className='page-ask__picker-count'>
-                {`${targets.length} 位可提问 · 只计「每日提问次数」，不占「报告生成次数」`}
+                {usage.unlimited ? '提问不限次（调试）' : `今日还可问 ${usage.remaining} 次`}
               </Text>
             </View>
 
@@ -362,56 +342,27 @@ export default function AskPage() {
               </View>
             )}
 
-            {groups.map((g) => (
-              <View key={g.key} className='page-ask__group'>
-                <Text className='page-ask__group-title'>{`${g.title} · ${g.items.length}`}</Text>
-                <View className='page-ask__grid'>
-                  {(expanded ? g.items : g.items.slice(0, COLLAPSED_PER_GROUP)).map((t) => (
-                    <View key={t.personKey} className='page-ask__cell'>
-                      <View
-                        className={`page-ask__person${
-                          t.personKey === activeKey ? ' page-ask__person--active' : ''
-                        }`}
-                        hoverClass='page-ask__person--tap'
-                        onClick={() => setActiveKey(t.personKey)}
-                      >
-                        {/* 头像取姓名首字 + 领域色：与关注流 / 收藏页一致，一眼可辨是谁 */}
-                        <View
-                          className={`page-ask__avatar page-ask__avatar--${
-                            parsePersonKey(t.personKey)?.domain ?? 'other'
-                          }`}
-                        >
-                          {t.name.slice(0, 1)}
-                        </View>
-                        <Text className='page-ask__person-name'>{t.name}</Text>
-                        {/* 有报告：给出「多久前生成 · 素材 N 条」；无报告：只标「直连」，不再编一个素材条数 */}
-                        {t.report ? (
-                          <Text className='page-ask__person-meta'>{`${fromNow(t.report.generatedAt)} · ${
-                            t.report.coverage?.items ?? t.report.dynamics.length
-                          } 条`}</Text>
-                        ) : (
-                          <Text className='page-ask__person-meta page-ask__person-meta--direct'>直连</Text>
-                        )}
-                      </View>
-                    </View>
-                  ))}
-                </View>
+            {/* 人名列表（2026-10-12 改版）：只显示人名，固定高度、超出纵向滑动。
+                高度写死在样式里（约 3 行），不让候选人数把下半屏的会话区挤没。 */}
+            <ScrollView className='page-ask__names' scrollY>
+              <View className='page-ask__names-inner'>
+                {visible.map((t) => (
+                  <View
+                    key={t.personKey}
+                    className={`page-ask__name${
+                      t.personKey === activeKey ? ' page-ask__name--active' : ''
+                    }`}
+                    hoverClass='page-ask__name--tap'
+                    onClick={() => setActiveKey(t.personKey)}
+                  >
+                    <Text className='page-ask__name-text'>{t.name}</Text>
+                  </View>
+                ))}
+                {visible.length === 0 && (
+                  <Text className='page-ask__none'>本机没有匹配的名人；可点上方「直接向 AI 提问」</Text>
+                )}
               </View>
-            ))}
-
-            {groups.length === 0 && (
-              <Text className='page-ask__none'>本机没有匹配的名人；可点上方「直接向 AI 提问」</Text>
-            )}
-
-            {overflows && (
-              <View
-                className='page-ask__more'
-                hoverClass='page-ask__more--tap'
-                onClick={() => setExpanded((v) => !v)}
-              >
-                <Text className='page-ask__more-text'>{expanded ? '收起' : '展开全部'}</Text>
-              </View>
-            )}
+            </ScrollView>
           </View>
 
           {/* safeBottom=false：本页根容器带了 .safe-tab（已含 env(safe-area-inset-bottom)），
