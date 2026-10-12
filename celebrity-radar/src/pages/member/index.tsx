@@ -29,6 +29,8 @@ import {
   FALLBACK_MEMBERSHIP_PLANS,
   buyMembership,
   fetchMembershipPlans,
+  planEmojiOf,
+  planLabelOf,
   planNote
 } from '@/utils/pay'
 import type { BuyResult, MembershipPlan } from '@/utils/pay'
@@ -369,14 +371,25 @@ export default function MemberPage() {
     }
   }
 
+  /** 当前等级的 emoji / 名称（顶部卡片标题用；非会员 / 未知档位回落 ⭐ 会员） */
+  const levelEmoji = planEmojiOf(member?.plan ?? null)
+  const levelLabel = planLabelOf(member?.plan ?? null)
+
   return (
     <View className='page-member'>
       {/*
-        顶部卡片（2026-10-12 用户要求：**除有效期外的文字全部删掉**）。
-        撤掉的有三样：等级名（含 emoji）、右侧状态标（会员 · 剩 N 天 / 免费版）、以及加载中的产品名 ——
-        卡片上只剩一行「有效期至 X」。非会员没有有效期，那一行仍显示免费版额度：否则这张卡会是全空的。
+        顶部卡片（2026-10-12 最终口径，用户两轮确认后定的）：
+        **只留两行 —— 「等级名（含 emoji）」+「有效期至 X」**。
+        撤掉的是「后面的文字」：右侧状态标（会员 · 剩 N 天 / 免费版）、以及原先跟在有效期后面那句
+        「到期前续费按天顺延」（该口径已并入下方 notes）。
+        非会员没有有效期：标题回落产品名，第二行给免费版额度，否则这张卡会是全空的。
       */}
       <View className='page-member__hero'>
+        <View className='page-member__hero-head'>
+          <Text className='page-member__hero-title'>
+            {!loading && isMember ? `${levelEmoji} ${levelLabel}` : '名人雷达会员'}
+          </Text>
+        </View>
         <Text className='page-member__hero-sub'>
           {loading
             ? '正在读取你的会员状态…'
