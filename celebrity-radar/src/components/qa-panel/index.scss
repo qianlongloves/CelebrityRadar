@@ -1,5 +1,15 @@
 @import '../../styles/variables.scss';
 
+/*
+  输入框左侧那枚「报告」图标（SVG → base64 data URI，与 custom-tab-bar / person-card 同一套做法）。
+  颜色直接烘焙进 SVG：background-image 无法继承 currentColor，而这里恰好只有两种配色，各写一份即可 ——
+    · on  —— 有报告，红色（$danger）：一眼看出「可以回报告页看原文 / 刷新素材」
+    · off —— 直连态（无报告），中性灰（$text-3）：同一枚图标置灰，不假装有报告
+  图标自身的颜色就是「有没有报告」的信号，故外层不再另加底色 / 描边（那会和红灰两色打架）。
+*/
+$qa-icon-pdf-on: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj48cGF0aCBkPSJNNi42IDIuNzVoNS45Yy4yIDAgLjM5LjA4LjUzLjIybDUgNWMuMTQuMTQuMjIuMzMuMjIuNTN2MTAuOTlhMS43NiAxLjc2IDAgMCAxLTEuNzYgMS43Nkg2LjZhMS43NiAxLjc2IDAgMCAxLTEuNzYtMS43NlY0LjUxQTEuNzYgMS43NiAwIDAgMSA2LjYgMi43NVoiIGZpbGw9IiNlZjQ0NDQiLz48cGF0aCBkPSJNMTIuNDUgMi45djQuMDVjMCAuODMuNjcgMS41IDEuNSAxLjVoNC4xNloiIGZpbGw9IiNmY2E1YTUiLz48dGV4dCB4PSIxMS40IiB5PSIxOC4zIiBmb250LWZhbWlseT0iQXJpYWwsIEhlbHZldGljYSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI2IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5QREY8L3RleHQ+PC9zdmc+");
+$qa-icon-pdf-off: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIj48cGF0aCBkPSJNNi42IDIuNzVoNS45Yy4yIDAgLjM5LjA4LjUzLjIybDUgNWMuMTQuMTQuMjIuMzMuMjIuNTN2MTAuOTlhMS43NiAxLjc2IDAgMCAxLTEuNzYgMS43Nkg2LjZhMS43NiAxLjc2IDAgMCAxLTEuNzYtMS43NlY0LjUxQTEuNzYgMS43NiAwIDAgMSA2LjYgMi43NVoiIGZpbGw9IiM5Yjk3YWIiLz48cGF0aCBkPSJNMTIuNDUgMi45djQuMDVjMCAuODMuNjcgMS41IDEuNSAxLjVoNC4xNloiIGZpbGw9IiNjNmMzZDEiLz48dGV4dCB4PSIxMS40IiB5PSIxOC4zIiBmb250LWZhbWlseT0iQXJpYWwsIEhlbHZldGljYSwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSI2IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSIjZmZmZmZmIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5QREY8L3RleHQ+PC9zdmc+");
+
 /* 会话面板：头部与输入区固定，只有中间的气泡流滚动 —— 输入框常驻可见，
    用户不必"翻到底部才能提问"（这也是它不做成弹层的原因）。
    高度不写死：父容器是 flex 列，本组件 flex:1 撑满剩余空间。 */
@@ -79,25 +89,6 @@
     font-size: 22rpx;
     color: $text-3;
     white-space: nowrap;
-  }
-
-  /*
-    紧凑头部（O-26）：底部菜单「AI 提问」页专用（组件里靠 Props.compact 打开）。
-    那页的选人条就在正上方（头像 / 名字 / 生成时间 / 素材条数全给过），头部再复述一遍
-    「多久前生成的报告 · 素材 N 条」是重复信息，还把本来就不多的会话区又挤掉一截。
-    故：名字降一档（32 → 28rpx）、按紧卡片内外边距（上边距 16 → 4rpx、padding 28 → 18rpx）、
-    并省掉 meta 那一行（在组件里条件渲染，不是 display:none —— 省掉的是真实高度）。
-    选择器权重压过 `.card`，否则全局卡片样式会把 padding 改回去。
-  */
-  &--compact {
-    .qa-panel__head {
-      margin-top: 4rpx;
-      padding: 18rpx 24rpx;
-    }
-
-    .qa-panel__name {
-      font-size: 28rpx;
-    }
   }
 
   /* 陈报告提示：语料是报告快照，生成越久能答的越少。用品牌弱色而非警示色 —— 这不是错误 */
@@ -335,23 +326,15 @@
   }
 
   /* 报告图标（2026-10-12）：输入框左侧一键跳回报告页。
-     有报告：可点；直连态（无报告）：置灰并写「直连」，点一下说明「未基于报告素材」。 */
+     有报告：红色 PDF 图标、可点；直连态（无报告）：同一枚图标置灰，点一下说明「未基于报告素材」。
+     只承载图标本身，不加底色 / 描边 —— 颜色即状态（见文件顶部的 $qa-icon-pdf-*）。 */
   &__report {
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 72rpx;
+    width: 56rpx;
     height: 72rpx;
-    padding: 0 12rpx;
-    border: 2rpx solid $brand;
-    border-radius: 20rpx;
-    background: rgba(95, 51, 225, 0.06);
-
-    &--off {
-      border-color: $line;
-      background: $bg;
-    }
 
     &--tap {
       opacity: 0.7;
@@ -359,13 +342,15 @@
   }
 
   &__report-icon {
-    font-size: 32rpx;
-    line-height: 1;
-  }
+    width: 44rpx;
+    height: 44rpx;
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+    background-image: $qa-icon-pdf-on;
 
-  &__report-text {
-    color: $text-3;
-    font-size: 22rpx;
-    font-weight: 600;
+    &--off {
+      background-image: $qa-icon-pdf-off;
+    }
   }
 }

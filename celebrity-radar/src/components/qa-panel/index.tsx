@@ -74,13 +74,15 @@ interface Props {
    */
   safeBottom?: boolean
   /**
-   * 紧凑头部（O-26）：底部菜单「AI 提问」页专用。
+   * 隐藏头部：底部菜单「AI 提问」页专用。
    *
-   * 那页的选人条就在正上方，头像 / 名字 / 生成时间 / 素材条数全给过了 ——
-   * 头部再复述一遍「多久前生成的报告 · 素材 N 条」是重复信息，还把本来就不多的会话区又挤掉一截。
-   * 紧凑态只留「名字 → 报告页」+ 右侧用量，一行说完。
+   * 那页的选人条就在正上方 —— 选中的人（高亮胶囊）与剩余次数（标题行右侧）都已给过，
+   * 头部这条「名字 · 剩 N 次」是纯粹的重复，还会把本就不多的会话区再挤掉一截。
+   * 回报告页的出口改由输入框左侧的 PDF 图标承担（见下方 composer），头部整块不必存在。
+   *
+   * 报告页 / 对比页的会话仍带头部：那两处没有选人条，名字与报告入口只能由头部提供。
    */
-  compact?: boolean
+  hideHead?: boolean
 }
 
 interface Bubble {
@@ -109,7 +111,7 @@ export default function QaPanel({
   withReport,
   member,
   safeBottom = true,
-  compact = false
+  hideHead = false
 }: Props) {
   const [bubbles, setBubbles] = useState<Bubble[]>([])
   const [input, setInput] = useState('')
@@ -366,46 +368,47 @@ export default function QaPanel({
   }, [])
 
   return (
-    <View className={`qa-panel${safeBottom ? '' : ' qa-panel--no-safe-bottom'}${compact ? ' qa-panel--compact' : ''}`}>
-      <View className='card qa-panel__head'>
-        {/* 报告名是回报告页的入口：问出兴趣之后，下一步一定是「看完整份报告」 */}
-        {report && withReport ? (
-          <View className='qa-panel__head-main'>
-            <View className='qa-panel__name-row qa-panel__name-row--wrap'>
-              <Text className='qa-panel__name'>{`${report.name} × ${withReport.name}`}</Text>
-              <Text className='qa-panel__jump'>对比</Text>
+    <View className={`qa-panel${safeBottom ? '' : ' qa-panel--no-safe-bottom'}`}>
+      {/* 头部整块可省（hideHead）：底部菜单「AI 提问」页的选人条已给全「选中的人 / 剩余次数」，
+          那里再渲染这条「名字 · 剩 N 次」纯属重复（见 Props.hideHead） */}
+      {!hideHead && (
+        <View className='card qa-panel__head'>
+          {/* 报告名是回报告页的入口：问出兴趣之后，下一步一定是「看完整份报告」 */}
+          {report && withReport ? (
+            <View className='qa-panel__head-main'>
+              <View className='qa-panel__name-row qa-panel__name-row--wrap'>
+                <Text className='qa-panel__name'>{`${report.name} × ${withReport.name}`}</Text>
+                <Text className='qa-panel__jump'>对比</Text>
+              </View>
+              <Text className='qa-panel__meta'>{`合计素材 ${totalItems} 条`}</Text>
             </View>
-            {!compact && <Text className='qa-panel__meta'>{`合计素材 ${totalItems} 条`}</Text>}
-          </View>
-        ) : direct ? (
-          /*
-           * 直连态（2026-10-12）：没有报告可跳，因此不显示「报告生成时间 / 素材 N 条」（那会误导成
-           * 「有报告」），只把「这是直连大模型、未基于报告素材」说到明处 —— compact 与普通态都要说，
-           * 否则用户会把模型的自身知识当成报告里的事实。
-           */
-          <View className='qa-panel__head-main'>
-            <View className='qa-panel__name-row'>
-              <Text className='qa-panel__name'>{name}</Text>
+          ) : direct ? (
+            /*
+             * 直连态（2026-10-12）：没有报告可跳，因此不显示「报告生成时间 / 素材 N 条」（那会误导成
+             * 「有报告」），只把「这是直连大模型、未基于报告素材」说到明处，
+             * 否则用户会把模型的自身知识当成报告里的事实。
+             */
+            <View className='qa-panel__head-main'>
+              <View className='qa-panel__name-row'>
+                <Text className='qa-panel__name'>{name}</Text>
+              </View>
+              <Text className='qa-panel__meta'>直连大模型作答 · 未基于报告素材</Text>
             </View>
-            <Text className='qa-panel__meta'>直连大模型作答 · 未基于报告素材</Text>
-          </View>
-        ) : report ? (
-          <View className='qa-panel__head-main' hoverClass='qa-panel__head-main--tap' onClick={gotoReport}>
-            <View className='qa-panel__name-row'>
-              <Text className='qa-panel__name'>{report.name}</Text>
-              <Text className='qa-panel__jump'>报告 ›</Text>
-            </View>
-            {/* 紧凑态省掉这一行：底部菜单页的选人条刚给过「多久前生成 · 素材 N 条」，见 Props.compact */}
-            {!compact && (
+          ) : report ? (
+            <View className='qa-panel__head-main' hoverClass='qa-panel__head-main--tap' onClick={gotoReport}>
+              <View className='qa-panel__name-row'>
+                <Text className='qa-panel__name'>{report.name}</Text>
+                <Text className='qa-panel__jump'>报告 ›</Text>
+              </View>
               <Text className='qa-panel__meta'>
                 {report.generatedAt ? `${fromNow(report.generatedAt)}生成的报告` : '已缓存报告'}
                 {` · 素材 ${report.coverage?.items ?? report.dynamics.length} 条`}
               </Text>
-            )}
-          </View>
-        ) : null}
-        <Text className='qa-panel__left'>{usageLabel}</Text>
-      </View>
+            </View>
+          ) : null}
+          <Text className='qa-panel__left'>{usageLabel}</Text>
+        </View>
+      )}
 
       {/*
         会话上方的口径声明（「每次重新读素材与联网、不记上文；没写到的会直说，[1][2] 可核对」）
@@ -511,18 +514,19 @@ export default function QaPanel({
       <View className='qa-panel__composer'>
         {report ? (
           /* 报告图标（2026-10-12）：选中的人有报告时，从输入框左侧一键跳回报告页 ——
-             问完想回去看原文 / 刷新素材，不必退回上一页重新找人 */
+             问完想回去看原文 / 刷新素材，不必退回上一页重新找人。
+             红色 PDF = 有报告；图标自身的颜色就是「有没有报告」的信号（见 index.scss） */
           <View className='qa-panel__report' hoverClass='qa-panel__report--tap' onClick={gotoReport}>
-            <Text className='qa-panel__report-icon'>📄</Text>
+            <View className='qa-panel__report-icon' />
           </View>
         ) : (
-          /* 直连态没有报告可跳：图标置灰并写「直连」，点一下把「未基于报告素材」说清楚 */
+          /* 直连态没有报告可跳：同一枚图标置灰，点一下把「未基于报告素材」说清楚 */
           <View
             className='qa-panel__report qa-panel__report--off'
             hoverClass='qa-panel__report--tap'
             onClick={() => void Taro.showToast({ title: '本次未基于报告素材', icon: 'none' })}
           >
-            <Text className='qa-panel__report-text'>直连</Text>
+            <View className='qa-panel__report-icon qa-panel__report-icon--off' />
           </View>
         )}
         <Input

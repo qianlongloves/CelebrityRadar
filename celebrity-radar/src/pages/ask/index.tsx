@@ -48,7 +48,7 @@ import './index.scss'
  * **信息重复**：选人条已经给出头像 / 名字 / 生成时间 / 素材条数，面板头部再说一遍；
  * 「不消耗生成额度」与面板头部的用量行说的是同一件事。故：
  *   · 额度说明并进选人条标题行（一行说完，不再单独占行）；
- *   · 面板用 compact 头部（省掉 meta 行，见 components/qa-panel）；
+ *   · 面板头部整块去掉（hideHead，见 components/qa-panel）—— 选人条已给全「选中的人 / 剩余次数」；
  *   · 口径声明压到一行（20rpx）。
  * 会话区是这一页的主角 —— 它被挤到屏幕下半截时，本页就没法用了。
  */
@@ -294,10 +294,10 @@ export default function AskPage() {
             <View className='page-ask__picker-head'>
               <Text className='page-ask__picker-title'>选一位名人提问</Text>
               {/* 剩余次数（2026-10-12 用户要求「在合理位置提示」）：放在标题行右侧。
-                  措辞与报告页口径一致 —— 只计「每日提问次数」，不占「报告生成次数」。 */}
-              <Text className='page-ask__picker-count'>
-                {usage.unlimited ? '提问不限次（调试）' : `今日还可问 ${usage.remaining} 次`}
-              </Text>
+                  措辞与报告页口径一致 —— 只计「每日提问次数」，不占「报告生成次数」。
+                  调试开挂（usage.unlimited）也不再另写「不限次」字样：与面板侧同一条口径 ——
+                  展示如实报数，界面与真实用户所见逐字一致（见 components/qa-panel#usageLabel）。 */}
+              <Text className='page-ask__picker-count'>{`今日还可问 ${usage.remaining} 次`}</Text>
             </View>
 
             {targets.length > FILTER_FROM && (
@@ -367,9 +367,10 @@ export default function AskPage() {
 
           {/* safeBottom=false：本页根容器带了 .safe-tab（已含 env(safe-area-inset-bottom)），
               面板再让一次安全区会让输入框下方多出一整条空白
-              compact：本页正上方就是选人条，面板头部不必再复述「多久前生成 · 素材 N 条」（O-26）
+              hideHead：本页正上方就是选人条（选中的人 / 剩余次数都在那里），面板头部那条
+              「名字 · 剩 N 次」纯属重复，整块去掉；回报告页的出口改由输入框左侧的 PDF 图标承担
               report 为 null 时（该人无缓存报告）走面板的直连模式，用 name 直连大模型作答 */}
-          <QaPanel report={active.report ?? undefined} name={active.name} member={member} safeBottom={false} compact />
+          <QaPanel report={active.report ?? undefined} name={active.name} member={member} safeBottom={false} hideHead />
         </>
       )}
     </View>
