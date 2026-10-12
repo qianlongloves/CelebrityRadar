@@ -122,14 +122,14 @@ export const SEARCH_LANES: Record<SearchLaneKey, SearchLane> = {
   social: {
     keywords: '近期 动态',
     freshness: 'recent',
-    want: '本人在社交平台上的一手发声：微博、知乎、B站、小红书的原创内容',
-    include: ['weibo.com', 'zhihu.com', 'bilibili.com', 'xiaohongshu.com']
+    want: '本人在社交平台上的一手发声：微博、知乎、B站、小红书、抖音的原创内容',
+    include: ['weibo.com', 'zhihu.com', 'bilibili.com', 'xiaohongshu.com', 'douyin.com']
   },
   /* 人物背景线：「人物档案 / 关系图谱 / 时间线」的素材不进新闻流，30 天窗里天然搜不到 */
   profile: {
-    keywords: '个人资料 简介 出生地 学历 经历',
+    keywords: '个人资料 简介 出生地 学历 经历 企业关联 代表合作 商业合作',
     freshness: 'evergreen',
-    want: '长期不随时间变的履历资料：出身、教育、职业经历、代表作品'
+    want: '长期不随时间变的履历资料：出身、教育、职业经历、代表作品、商业合作'
   }
 }
 
