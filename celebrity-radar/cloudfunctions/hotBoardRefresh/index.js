@@ -42,6 +42,19 @@ const BOCHA_ENDPOINT = 'https://api.bochaai.com/v1/web-search'
 const SEARCH_TIMEOUT_MS = 15000
 const LLM_TIMEOUT_MS = 30000
 
+/**
+ * 分域检索的并发与重试（2026-10-12）。
+ *
+ * 原先 12 个领域一起打上游（`Promise.allSettled`）。线上日志里整轮 12 个领域**全部**失败：
+ * 6 个 403、6 个 429 —— 上游对并发突发做了限流，于是「检索素材不足，保留原有榜单」频繁出现，
+ * 热榜长期停在旧的一份。故：并发收到 3，并对 429 / 403（限流的两种表现）退避重试一次。
+ * 超时类失败**不重试** —— 它意味着上游本来就慢，重试只会把这轮的 60s 超时耗光。
+ */
+const SEARCH_CONCURRENCY = 3
+const SEARCH_RETRY = 1
+const SEARCH_RETRY_BACKOFF_MS = 600
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
 const COLLECTION = 'hot_board'
 /** 单文档覆盖写：端上永远只读这一份，不需要按日期查询 */
 const DOC_ID = 'latest'
@@ -54,10 +67,19 @@ const FRESH_MS = 20 * 60 * 60 * 1000
  * 榜单总量与端上完全无感，代价只是单个领域从 4 位缩到 2 位。
  */
 const PER_DOMAIN = 2
-/** 校验下限：低于这个条数视为这轮失败，保留旧榜单（宁可用昨天的，也不要一份残缺榜） */
-const MIN_ITEMS = 12
-/** 至少要覆盖几个领域：防止模型全堆在文娱一个领域（12 个领域时，6 个只算及格） */
-const MIN_DOMAINS = 6
+/**
+ * 校验下限：低于这个量视为这轮失败，保留旧榜单（宁可用昨天的，也不要一份残缺榜）。
+ *
+ * 2026-10-12 由 12 位 / 6 个领域下调为 8 位 / 4 个领域。依据是线上日志：一轮里 12 个领域
+ * 有 11 个搜到了素材（只 sports 429），模型给了 **9 位 / 5 个领域** —— 旧门槛直接判不合格，
+ * 热榜又停在旧的一份。原门槛假定「模型必然给满 24 位」，实测它常给 9~18 位：卡在这个区间
+ * 等于把「模型没给满」误判成「这轮失败」。
+ * 端上读到的是**合并后**的榜单（utils/hot-board 会把云端榜与静态种子 / report_cache 合并补齐），
+ * 云端少几位不会让榜面变空 —— 下调的代价只是「这一天的 AI 榜短一点」，远小于「不更新」。
+ */
+const MIN_ITEMS = 8
+/** 至少要覆盖几个领域：防止模型全堆在文娱一个领域。同样随「有素材的领域数」收缩（见 judge） */
+const MIN_DOMAINS = 4
 
 /** 领域清单：与 src/config/domains.ts 的 DOMAIN_CODES 一一对应（增删必须同步，顺序保持一致） */
 const DOMAINS = [
@@ -150,18 +172,58 @@ function buildDigest(domain, pages) {
   return `【${domain.label}】\n${lines.join('\n')}`
 }
 
-/** 一次分域检索：失败抛错，由调用方按领域兜住，不拖垮整轮 */
+/**
+ * 一次分域检索：失败抛错，由调用方按领域兜住，不拖垮整轮。
+ * 429 / 403（上游限流的两种表现）退避重试一次，理由见 SEARCH_CONCURRENCY 上方的说明。
+ */
 async function searchDomain(domain, key) {
-  const res = await postJson(
-    BOCHA_ENDPOINT,
-    { Authorization: `Bearer ${key}` },
-    { query: domain.query, freshness: 'oneWeek', summary: true, count: 12 },
-    SEARCH_TIMEOUT_MS
-  )
-  const code = Number((res.data && res.data.code) ?? res.status)
-  if (res.status !== 200 || code !== 200) throw new Error(`HTTP ${res.status} / code ${code}`)
-  const inner = res.data && res.data.data
-  return (inner && inner.webPages && inner.webPages.value) || []
+  let lastErr
+  for (let attempt = 0; attempt <= SEARCH_RETRY; attempt++) {
+    if (attempt > 0) await sleep(SEARCH_RETRY_BACKOFF_MS * attempt)
+    try {
+      const res = await postJson(
+        BOCHA_ENDPOINT,
+        { Authorization: `Bearer ${key}` },
+        { query: domain.query, freshness: 'oneWeek', summary: true, count: 12 },
+        SEARCH_TIMEOUT_MS
+      )
+      const code = Number((res.data && res.data.code) ?? res.status)
+      if (res.status !== 200 || code !== 200) {
+        const err = new Error(`HTTP ${res.status} / code ${code}`)
+        err.status = res.status
+        throw err
+      }
+      const inner = res.data && res.data.data
+      return (inner && inner.webPages && inner.webPages.value) || []
+    } catch (err) {
+      lastErr = err
+      const st = err && err.status
+      /* 只重试限流类（429 / 403）；超时与网络错不重试，免得把 60s 超时耗光 */
+      if (st !== 429 && st !== 403) break
+    }
+  }
+  throw lastErr
+}
+
+/**
+ * 限并发跑一批任务，返回与 `Promise.allSettled` **同形**的结果数组
+ * （调用方原样复用 `r.status === 'fulfilled'` 那套分支，不必改）。
+ */
+async function mapLimit(items, limit, worker) {
+  const results = new Array(items.length)
+  let next = 0
+  const run = async () => {
+    while (next < items.length) {
+      const i = next++
+      try {
+        results[i] = { status: 'fulfilled', value: await worker(items[i], i) }
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run))
+  return results
 }
 
 /**
@@ -170,32 +232,36 @@ async function searchDomain(domain, key) {
  *    而模型给不出可核对的口径，端上原来的热度条正是这么变成一个玄学数字的）。
  * 2. 「必须基于给定报道」—— 模型对名人的印象会过期，榜单要的是**本周**的公开信息。
  * 3. 「只输出 JSON」—— 云函数侧手写解析，容忍 markdown 栅栏，但不容忍夹带解释文字。
+ *
+ * ⚠ 输出契约必须是 `{"items":[...]}`（复数、数组），与 normalizeItems/judge 一一对应。
+ * 2026-10-12 修：本函数一度被改成只产出一个 `{"item":{...}}`（「每日名人」），而解析侧仍读
+ * `parsed.items` ⇒ 每次检索都成功、榜单却永远不合格（0 位 / 0 个领域），热榜长期停在旧的一份。
+ * 改这里时请先确认 normalizeItems 读的字段名没变。
  */
-function buildPrompt(digests, today, rand) {
-  // rand: 可选随机因子(0~1)，不传则自动用 Math.random()，让每次抽取结果不同
-  const r = (typeof rand === 'number') ? rand : Math.random()
-  const rPct = Math.floor(r * 1000) / 10 // 0.0 ~ 99.9，用于打乱抽取
-
+function buildPrompt(digests, today) {
+  const total = PER_DOMAIN * DOMAINS.length
   const system = [
-    '你是「名人雷达」的编辑，负责从随机抽取一位**公众人物，作为当天的「每日名人」。',
+    '你是「名人雷达」的热门榜编辑，负责每天从公开报道里挑出当下最值得关注的公众人物。',
+    '',
     '硬性规则：',
-    `1. 候选范围：仅限给定报道中真实出现、且能找到依据的人物；领域可来自 ${DOMAIN_LIST}。`,
-    '2. 不要选政治、军事人物；不要虚构人物；不要把机构名或公司名当人名。',
-    '3. 随机抽取：在符合依据的人物中**等概率随机**抽一位，不要只挑最热门/头部的，也不要每次都选同一位。',
-    `4. 随机因子为 ${rPct}%，仅用于打乱你的抽取顺序——请据此在候选名单里换着抽，确保不同批次抽到不同人物。`,
+    `1. 领域只能从这 ${DOMAINS.length} 个里选：${DOMAIN_LIST}；每个**有素材的**领域给 ${PER_DOMAIN} 位，合计不超过 ${total} 位。`,
+    '2. 只选在给定报道里**真实出现、能指出依据**的人物（人名要与报道一致）。某个领域没有素材就不要给它的条目 —— 宁可少给，也不要凭印象补一个：补出来的人无法核对，整份榜的可信度就没了。',
+    '3. 不要政治、军事人物；不要虚构人物；不要把机构名或公司名当人名。',
+    '4. 数组顺序即排名（第 1 位最热）；同一个人只出现一次；外籍人物用通行中文译名（如「马斯克」，不要写「Elon Musk」）。',
     '5. tag 是这位人物近期的动态关键词，2~6 个字（如「新品发布」「巡演」「复出」）。',
     '6. trend 是一句话（不超过 40 字）说明 TA 近期在做什么、为什么被讨论，必须基于给定报道，不要编造具体数字或结论。',
     '7. 只输出 JSON，不要任何解释文字，不要 markdown 代码块。',
-    '输出格式（只返回一个 item，不是数组）：',
-    '{"item":{"name":"雷军","domain":"tech","tag":"新品发布","trend":"新品发布节奏与年度目标表态持续被讨论"}}'
+    '',
+    '输出格式（items 是数组，不要输出成单个对象）：',
+    '{"items":[{"name":"雷军","domain":"tech","tag":"新品发布","trend":"新品发布节奏与年度目标表态持续被讨论"}]}'
   ].join('\n')
 
   const user = [
-    `今天是 ${today}。以下是近一周的公开报道标题与摘要：`,
+    `今天是 ${today}。以下是各领域近一周的公开报道标题与摘要（**只有列出了报道的领域才有素材**）：`,
     '',
     digests.join('\n\n'),
     '',
-    '请从中**随机抽取一位**公众人物，给出今天的「每日名人」。'
+    `请据此给出今天的 ${total} 位热门名人榜：有素材的领域各 ${PER_DOMAIN} 位，没有素材的领域不要出现在结果里。`
   ].join('\n')
 
   return { system, user }
@@ -495,11 +561,27 @@ function normalizeItems(parsed) {
   return out
 }
 
-/** 校验：条数与领域覆盖两道门槛都过了，才认为这轮产出可用 */
-function judge(items) {
+/**
+ * 校验：条数与领域覆盖两道门槛都过了，才认为这轮产出可用。
+ *
+ * 门槛随「这一轮真正带回素材的领域数」收缩（`available` = usable.length）：
+ * 固定要求 6 个领域，而某天只有 4 个领域搜到了报道时，模型给不出第 5、6 个领域 ——
+ * 这轮必然判不合格、榜单又停在旧的一份。这正是「经常报错、像是素材不足」的来源。
+ * 收缩只降低「要几个领域 / 几条」，**不降**「必须基于素材」这条底线（提示词已要求无素材不给条目）。
+ */
+function judge(items, available) {
   const domains = new Set(items.map((i) => i.domain)).size
-  const ok = items.length >= MIN_ITEMS && domains >= MIN_DOMAINS
-  return { items: items.slice(0, PER_DOMAIN * DOMAINS.length), count: items.length, domains, ok }
+  const needDomains = Math.min(MIN_DOMAINS, Math.max(1, available || 0))
+  const needItems = Math.min(MIN_ITEMS, needDomains * PER_DOMAIN)
+  const ok = items.length >= needItems && domains >= needDomains
+  return {
+    items: items.slice(0, PER_DOMAIN * DOMAINS.length),
+    count: items.length,
+    domains,
+    needItems,
+    needDomains,
+    ok
+  }
 }
 
 function today() {
@@ -683,8 +765,8 @@ exports.main = async (event) => {
     return { ok: true, skipped: 'building', generated_at: cur && cur.generated_at }
   }
 
-  // ① 分域检索（并行）：单个领域失败只丢它自己的素材，不拖垮整轮
-  const settled = await Promise.allSettled(DOMAINS.map((d) => searchDomain(d, bochaKey)))
+  // ① 分域检索（限并发）：单个领域失败只丢它自己的素材，不拖垮整轮
+  const settled = await mapLimit(DOMAINS, SEARCH_CONCURRENCY, (d) => searchDomain(d, bochaKey))
   const digests = []
   const failed = []
   settled.forEach((r, i) => {
@@ -694,8 +776,14 @@ exports.main = async (event) => {
   /* 只有真正带回报道的领域才算可用：素材块里至少要有一条 '- ' 开头的行 */
   const usable = digests.filter((d) => /^- /m.test(d))
   if (usable.length < 3) {
-    /* 检索全线失败：没有任何素材可依据，宁可保留旧榜单，也不要让模型凭记忆编一份出来 */
-    return { ok: false, error: '检索素材不足，保留原有榜单', failed }
+    /* 检索全线失败：没有任何素材可依据，宁可保留旧榜单，也不要让模型凭记忆编一份出来。
+       带上可用领域数与 failed 明细：403 多指向 key / 权限，429 指向限流 —— 两者处置不同，
+       日志里要能一眼分开（见 SEARCH_CONCURRENCY 上方那次真实故障的记录）。 */
+    return {
+      ok: false,
+      error: `检索素材不足（${usable.length}/${DOMAINS.length} 个领域有素材），保留原有榜单`,
+      failed
+    }
   }
 
   // ② 结构化
@@ -711,13 +799,17 @@ exports.main = async (event) => {
     return { ok: false, error: `大模型调用失败：${String((err && err.message) || err)}`, failed }
   }
 
-  const judged = judge(items)
+  const judged = judge(items, usable.length)
   if (action === 'dry') {
     /* 试跑才带上完整 items，方便在控制台直接看榜单长什么样 */
     return { ok: judged.ok, dry: true, date, searches: usable.length, failed, ...judged }
   }
   if (!judged.ok) {
-    return { ok: false, error: `榜单不合格（${judged.count} 位 / ${judged.domains} 个领域），保留原有榜单`, failed }
+    return {
+      ok: false,
+      error: `榜单不合格（${judged.count} 位 / ${judged.domains} 个领域，本轮门槛 ${judged.needItems} 位 / ${judged.needDomains} 个领域），保留原有榜单`,
+      failed
+    }
   }
 
   // ③ 落库

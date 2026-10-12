@@ -72,4 +72,14 @@ describe('两份 JSON 修复器副本不许漂（端上 utils/llm.ts ↔ hotBoar
     ok(/function unwrapSingleObject/.test(LOCAL), '端上缺 unwrapSingleObject')
     ok(/function unwrapSingleObject/.test(CLOUD), '云函数缺 unwrapSingleObject')
   })
+
+  it('热榜提示词的输出契约必须是 items 数组（写成单个 item 会让 normalizeItems 永远拿到空）', () => {
+    /* 2026-10-12 的真实故障：buildPrompt 被改成只产出一个 `{"item":{...}}`（「每日名人」），
+       而解析侧 normalizeItems 只读 parsed.items ⇒ 每次检索都成功、榜单却永远判不合格
+       （0 位 / 0 个领域），且只在 cron 里静默发生。这条用例把「提示词与解析契约同形」钉住。 */
+    const head = fnHead(CLOUD, 'function buildPrompt')
+    ok(head !== '', '云函数找不到 buildPrompt')
+    ok(head.includes('"items":['), 'buildPrompt 的输出格式必须是 {"items":[...]}（数组）')
+    ok(!/"item"\s*:\s*\{/.test(head), 'buildPrompt 不该再出现单个 {"item":{...}} 契约')
+  })
 })
