@@ -262,9 +262,9 @@ During development you can enable "do not verify valid domains" to iterate befor
 
 None of the three is committed (all are in `.gitignore`), so your edits never pollute the working tree or a PR.
 
-- **`src/config/local.ts`** — your own real values: CloudBase environment ID, subscription template IDs, the webview domain allowlist, the local debug switch. **Required**: `src/config/public.ts` imports it directly and the build fails with `Cannot find module './local'`
+- **`src/config/local.ts`** — your own real values: CloudBase environment ID, the webview domain allowlist, the local debug switch (**subscription template IDs are not here** — see the `.env` line). **Required**: `src/config/public.ts` imports it directly and the build fails with `Cannot find module './local'`
 - **`project.private.config.json`** — your private WeChat DevTools project settings (your appid and tool preferences). Without it you re-enter the appid and settings in DevTools every time
-- **`.env`** — deploy-time secrets for cloud functions (`DEEPSEEK_API_KEY` / `BOCHA_API_KEY` …), referenced from `cloudbaserc.json` as `${env.XXX}`. Without it, deployed functions have no upstream keys, so retrieval and generation fail
+- **`.env`** — deploy-time secrets for cloud functions (`DEEPSEEK_API_KEY` / `BOCHA_API_KEY` …) **plus the three subscription template IDs** (the single source for both the client and the cloud), referenced from `cloudbaserc.json` as `${env.XXX}`. Without it, deployed functions have no upstream keys, so retrieval and generation fail; empty template IDs simply disable the subscription pushes
 
 ### Benefits & pricing (one file to edit)
 
@@ -299,14 +299,12 @@ needs human verification anyway).
 
 - **`src/config/public.ts`** (committed) — deployment-independent settings: the selectable **vendor** list `llm.vendors` (5 vendors) and the **quality-tier** list `llm.qualities` (Basic / Standard / Premium, with `memberOnly` flags). **Never put any key or model name here** (keys live in cloud function environment variables; choosing a vendor / tier only changes request parameters)
 - **`src/config/local.example.ts`** (committed) — template for local config, all values are placeholders
-- **`src/config/local.ts`** (not committed, in `.gitignore`) — your own real values: environment ID, subscription template IDs, webview domain allowlist, local debug switch
+- **`src/config/local.ts`** (not committed, in `.gitignore`) — your own real values: environment ID, webview domain allowlist, local debug switch
 
 `local.ts` (created by copying `local.example.ts` after cloning):
 
 - **`cloudbaseEnvId`** — CloudBase environment ID. While it stays at the placeholder, the cloud service counts as unconfigured and no login or DB call is issued
-- **`subscribeTemplateId`** — Template ID for follow-update subscription messages; must match the `SUBSCRIBE_TEMPLATE_ID` environment variable of the cloud functions
-- **`alertTemplateId`** — Template ID for keyword alerts; **it must differ from the one above**: WeChat one-time subscription grants are consumed **per template**, so sharing one template between two scheduled jobs means the first job consumes the grant and the second always fails with 43101
-- **`riskTemplateId`** — Template ID for person risk monitoring; **also must differ from both above** (grants are consumed per template). Leave it empty and the feature still works — it just sends no push, while risk signals remain visible in the alerts page
+- **Subscription template IDs** — **not here**: their single source is the repository-root `.env` (`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`). At deploy time `cloudbaserc.json` injects them into the three scheduled functions; at build time `config/index.js` reads the **same** `.env` and injects them into `src/config/public.ts` via `defineConstants`. Fill them in **one place only** — the client and the cloud cannot diverge. **Three different templates** are required (WeChat one-time grants are consumed **per template**, so sharing one template between two scheduled jobs means the first consumes the grant and the second always fails with 43101). Empty = push disabled (no authorize button; scheduled jobs write in-app data and record a `skipped` reason) while in-app features keep working
 - **`webviewDomains`** — Allowlist of domains the "original article preview" page may embed; leave empty to always fall back to a preview card plus a copy-link action
 - **`debug`** — Local debug switch (opens quota gates and upstream cooldowns). **All flags default to safe values** (five `false` plus `memberOverride: 'off'`), change them only for local integration work
 - **`debug.memberOverride`** — Forces a membership identity so the paid features can be self-tested: `'off'` (default) keeps the real server-side grant, `'free'` forces the free tier, `'monthly'` / `'quarterly'` / `'annual'` force that tier.
@@ -329,7 +327,7 @@ needs human verification anyway).
 ### 2. Secret ownership: server-side only, zero client secrets
 
 - **`BOCHA_API_KEY` + each external vendor's key (`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY` (Qwen))** — environment variables of the `aiProxy` / `hotBoardRefresh` cloud functions (read from `.env` at deploy time). **A vendor only appears in the app once its key is configured**; the default vendor **CloudBase AI** uses the CloudBase AI channel and needs **no key**. ❌ not in the bundle
-- **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** — environment variables of the three scheduled functions (**three different templates**, or they consume each other's one-time grants). ❌ not in the bundle
+- **`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`** — the **single source is `.env`**: injected into the three scheduled functions at deploy time, and into the client at build time. Template IDs are **not secrets** (every user can see them in the mini program), so ✅ they **are** in the bundle. **Three different templates**, or the jobs consume each other's one-time grants
 - **`WX_APPSECRET`** — `dbInit` only (to exchange an access_token for index updates). ❌ not in the bundle
 - **`DB_ADMIN_TOKEN`** — `dbInit` only (custom token, the gate for write actions). ❌ not in the bundle
 - **`AI_PROXY_TEST_TOKEN`** — `aiProxy` only (token for the paid `test` probe; **unset means that action is always rejected**, which is the intended default). It is an ops token rather than a deployment item, so normally you add it in the console only while troubleshooting. The probe also reports the **second search source's connectivity and latency** — both providers live outside mainland China, so calls from a domestic cloud function cross the international gateway; that probe is the only way to tell whether the link actually works. ❌ not in the bundle
@@ -339,7 +337,8 @@ needs human verification anyway).
 - **`PAY_ADMIN_TOKEN`** — `payCallback` only (token for the refund / manual-reconcile ops write port; **unset means the write port is always rejected**). ❌ not in the bundle
 - **`PAY_CALLBACK_GUARD`** — optional `payCallback` variable, the rollout switch: `log` (default, client calls are only logged) / `strict` (client calls rejected) / `off` (no check). Switch to `strict` once real-device logs confirm the callback shape. ❌ not in the bundle
 - **Deploy-time secret source (the `.env` file itself)** — `celebrity-radar/.env` (copied from `.env.example`, **not committed**), referenced from `cloudbaserc.json` as `${env.XXX}`. ❌ not in the bundle
-- **Environment ID / subscription template IDs** — `src/config/local.ts`. ✅ in the bundle (**they are not secrets**)
+- **Environment ID** — `src/config/local.ts` → `cloudbaseEnvId`. ✅ in the bundle (**not a secret**)
+- **Subscription template IDs** — not in `local.ts`; their single source is `.env`, build-injected into the client (`src/config/public.ts`) and deploy-injected into the three functions. ✅ in the bundle (**not secrets**)
 
 Every request is proxied through a cloud function; the client holds no keys and users need no setup. An older build-your-own-key (BYOK) direct mode was **removed entirely**.
 
@@ -546,7 +545,7 @@ Marking **only changes the order status, never the membership**; revoking member
 | Generation fails, `-504003` on the client | Function timeout is still the 20-second default (uploaded with DevTools) | Raise it to 60 seconds in the console (step 2) |
 | Retrieval returns results but the report body is empty | The model timed out or its JSON failed validation | Check the `aiProxy` logs; the default model name must really exist upstream |
 | Free quota never decreases | Quota collections were not tightened, or `quotaGuard` was deployed after the fact | See step 3 |
-| Subscription pushes never arrive (43101) | The scheduled jobs share one template | `subscribeTemplateId` / `alertTemplateId` / `riskTemplateId` must be three different templates |
+| Subscription pushes never arrive (43101) | The scheduled jobs share one template | `SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID` in `.env` (the single source) must be **three different** templates; rebuild the client and redeploy the functions after changing them |
 | Tapping "become a member" does nothing | No merchant account / `payCallback` not deployed | See step 5; free features are unaffected |
 | After repackaging, the quota effectively does not exist | `ai_calls` / the three quota collections were not tightened | See step 3: `ai_calls` and `memberships` must be "client cannot read or write" |
 | UI shows a member but the cloud uses the free tier | No row in `memberships` (the grant only wrote the mirror) | Have the user reopen the order page so the payment callback retries; or check the `payCallback` logs |

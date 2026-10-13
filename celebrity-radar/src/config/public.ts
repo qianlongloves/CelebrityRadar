@@ -5,7 +5,7 @@
  *
  * 【哪些值不在这里】环境相关项与本地调试开关已抽到 **未跟踪** 的 `src/config/local.ts`：
  *
- *   cloudbaseEnvId / subscribeTemplateId / alertTemplateId / riskTemplateId / webviewDomains / debug
+ *   cloudbaseEnvId / webviewDomains / debug
  *
  * 仓库里只有 `local.example.ts`（值为占位串）。首次 clone 后先执行：
  *
@@ -14,6 +14,12 @@
  * 再把 cloudbaseEnvId 换成自己的云开发环境 ID（微信开发者工具 → 工具栏「云开发」→ 环境 ID，
  * 形如 `celebrity-radar-1a2b3c4d`）。该环境须与 project.config.json 里的 appid 归属同一个小程序；
  * 未配置时 isCloudConfigured 为 false，登录与全部 DB 调用不会发起。
+ *
+ * 【三个订阅模板 ID 不在这里，也不在 local.ts】它们的**唯一真源是仓库根 `.env`**
+ * （`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`）：云端部署时
+ * `cloudbaserc.json` 用 `{{env.X}}` 从 `.env` 取值注入云函数，端上则由 `config/index.js`
+ * 在构建期读同一份 `.env` 并经 `defineConstants` 注入（见下方三个 `__*_TEMPLATE_ID__` 常量）。
+ * 只填一处 ⇒ 端云构造上不可能不一致。
  *
  * 为什么要分开：仓库里留真实环境 ID，fork 者会直接连上原作者的云环境；
  * 而本地为放开额度把 debug 置 true 的改动，混在本文件里也总有误提交的风险。
@@ -31,6 +37,20 @@
  *（这是客户端能取到自己 _openid 的唯一途径）。字段由首次登录自动写入，无需手工建。
  */
 import { localConfig } from './local'
+
+/**
+ * 编译期注入的三个订阅消息模板 ID（真源：仓库根 `.env`，见 `config/index.js` 的 defineConstants）。
+ *
+ * `declare const` 只声明类型、不产生运行时代码；读取侧一律走
+ * `typeof __X__ === 'undefined' ? '' : __X__` 守卫 —— 于是：
+ *   · 正常构建：Taro 在打包时把这些标识符替换成 `.env` 里的字面值；
+ *   · 单测等未经 Taro 打包的场景（tsc 直编）：标识符未注入，`typeof` 为 'undefined' → 退化为空串。
+ * 两种情形都不会抛，故「陌生人 clone 后什么都不配也能编译通过」。
+ */
+declare const __SUBSCRIBE_TEMPLATE_ID__: string
+declare const __ALERT_TEMPLATE_ID__: string
+declare const __RISK_TEMPLATE_ID__: string
+
 
 /**
  * 厂商清单（2026-10-12 v3：厂商维度回归，顺序即「我的」页展示顺序）。
@@ -103,35 +123,38 @@ export const publicConfig = {
   /**
    * 订阅消息模板 ID（关注更新提醒）。
    *
+   * **单一来源 = 仓库根 `.env` 的 `SUBSCRIBE_TEMPLATE_ID`**（构建期由 config/index.js 注入）。
+   * 端上这里与云端云函数 notifyFollowUpdates 读的是**同一份 .env**：云端部署时
+   * cloudbaserc.json 用 `{{env.SUBSCRIBE_TEMPLATE_ID}}` 取值，端上由 defineConstants 注入
+   * —— 只填一处 ⇒ 构造上不可能不一致。
+   *
    * **推送功能完整保留，此处为空只是因为当前部署环境未配置。**
    * 本仓库作者的小程序是个人主体、服务类目「机械电子产品」，微信公共模板库里拿不到可用模板，
    * 故仓库默认值一律留空串 —— 这是**当前部署环境的情况，不是功能被放弃**。任何部署者只要在自己的
-   * 服务类目下能选到模板，按下面四步填上即可启用（代码通道一直完整保留，无需改业务代码）。
+   * 服务类目下能选到模板，按下面三步填上即可启用（代码通道一直完整保留，无需改业务代码）。
    *
    * 未配置（空串）时的行为：`notifyConfigured()` 为 false → 端上授权按钮不渲染、云函数
    * notifyFollowUpdates 定时任务只在回执 `skipped` 里写明「未配置 → 跳过推送」（不报错、不阻断
    * 站内数据落库）。**站内功能完全可用** —— 首页「舆情」入口红点、舆情页各块「新 N 条」、
    * 事件时间线 NEW 角标照常工作（口径统一在 utils/inbox.ts）。
    *
-   * 如何启用（四步，缺一步都不行）：
+   * 如何启用（三步，缺一步都不行）：
    *   1. 微信公众平台 → 功能 → 订阅消息 → 公共模板库，按**自己的服务类目**挑一个同时含
    *      `thing1`（提醒内容，≤20 字符）+ `date2`（时间）的模板；**申请/选用三枚不同的模板**
    *      （关注更新 / 关键词预警 / 风险提醒各一枚，理由见下方 alertTemplateId）。
-   *   2. 把三枚 ID 分别填进 src/config/local.ts 的 subscribeTemplateId / alertTemplateId /
-   *      riskTemplateId，并 `npm run build:weapp` 重新编译（这些值编进包，热更新不生效）。
-   *   3. 云开发控制台 → 云函数 → 环境变量，给三个云函数各填同名模板 ID（**必须与端上同模板**）：
-   *      notifyFollowUpdates → SUBSCRIBE_TEMPLATE_ID、keywordAlert → ALERT_TEMPLATE_ID、
-   *      riskWatch → RISK_TEMPLATE_ID。
-   *   4. 真机点三处入口的授权按钮，确认 users 表对应行的
+   *   2. 把三枚 ID 填进仓库根 `.env` 的 SUBSCRIBE_TEMPLATE_ID / ALERT_TEMPLATE_ID /
+   *      RISK_TEMPLATE_ID（**只这一处**），再 `npm run build:weapp` 重新编译端上
+   *      （这些值被编进包，热更新不生效），并重新部署三个云函数让环境变量生效。
+   *   3. 真机点三处入口的授权按钮，确认 users 表对应行的
    *      subscribe_ok / alert_ok / risk_ok 置 true。
    *
-   * 模板 ID 不是密钥（每个用户都能在小程序里看到），可以进包；云函数发送时读的是同名环境变量，
-   * 两边必须指向同一个模板。
+   * 模板 ID 不是密钥（每个用户都能在小程序里看到），可以进包。端上读的是构建期注入的常量
+   * （下方 `__SUBSCRIBE_TEMPLATE_ID__`），云端读的是同名环境变量 —— 同名同源，不会分叉。
    */
-  subscribeTemplateId: localConfig.subscribeTemplateId,
+  subscribeTemplateId: typeof __SUBSCRIBE_TEMPLATE_ID__ === 'undefined' ? '' : __SUBSCRIBE_TEMPLATE_ID__,
 
   /**
-   * 订阅消息模板 ID（关键词舆情预警，2026-10-08）。
+   * 订阅消息模板 ID（关键词舆情预警，2026-10-08）。真源同订阅模板：`.env` 的 `ALERT_TEMPLATE_ID`。
    *
    * 与上面同属「功能完整保留、当前部署环境未配置」（原因见 subscribeTemplateId）。空串 = 未配置 →
    * `alertNotifyConfigured()` 为 false → 预警页不出现授权按钮，云函数 keywordAlert 只写站内预警、
@@ -141,10 +164,10 @@ export const publicConfig = {
    * 按**模板**消耗、且一次授权只够推一条，两个定时任务（notifyFollowUpdates 09:00 /
    * keywordAlert 09:20）若共用一枚模板与一个授权位，先跑的会把授权吃掉，后跑的必得 43101。
    */
-  alertTemplateId: localConfig.alertTemplateId,
+  alertTemplateId: typeof __ALERT_TEMPLATE_ID__ === 'undefined' ? '' : __ALERT_TEMPLATE_ID__,
 
   /**
-   * 订阅消息模板 ID（名人风险监控，第 1 期）。
+   * 订阅消息模板 ID（名人风险监控，第 1 期）。真源同订阅模板：`.env` 的 `RISK_TEMPLATE_ID`。
    *
    * 与上面同属「功能完整保留、当前部署环境未配置」（原因见 subscribeTemplateId）。空串 = 未配置 →
    * `riskNotifyConfigured()` 为 false → 不出现授权按钮，云函数 riskWatch 只落 risk_signals、
@@ -154,7 +177,7 @@ export const publicConfig = {
    * ⚠ 启用时的硬约束：**它得是第三枚独立模板**（三个定时任务 09:00 / 09:20 / 09:40 各用一枚，
    * 任何两个共用都会互相吃授权，理由同 alertTemplateId）。
    */
-  riskTemplateId: localConfig.riskTemplateId,
+  riskTemplateId: typeof __RISK_TEMPLATE_ID__ === 'undefined' ? '' : __RISK_TEMPLATE_ID__,
 
   /**
    * 业务域名白名单：「原文预览」页里能真正内嵌打开的站点（见 pages/link-preview）。

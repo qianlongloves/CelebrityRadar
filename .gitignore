@@ -4,7 +4,7 @@ dist/
 *.local
 .codebuddy/
 
-# 本地配置：环境 ID、订阅模板 ID、本地调试开关（模板见 src/config/local.example.ts）
+# 本地配置：环境 ID、本地调试开关（模板见 src/config/local.example.ts）
 celebrity-radar/src/config/local.ts
 
 # 微信开发者工具的私有配置（含本机编译设置 / 个人项目名）

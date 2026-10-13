@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import Taro, { useDidShow, usePullDownRefresh } from '@tarojs/taro'
+import Taro, { useDidShow, usePullDownRefresh, useReachBottom } from '@tarojs/taro'
 import { View, Text, Picker } from '@tarojs/components'
 import EmptyState from '@/components/empty-state'
 import NoticeClose from '@/components/notice-close'
@@ -11,6 +11,7 @@ import { readPortraits } from '@/utils/portrait'
 import { NewsItem } from '@/utils/search'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { fromNow, sameDay8 } from '@/utils/time'
+import { FEED_PAGE_SIZE, pageSlice } from '@/utils/opinion-access'
 import './index.scss'
 
 /** 流条目：新闻 + 归属人 */
@@ -81,6 +82,13 @@ export default function Feed() {
    * 每次 load 复位：失败人数可能每轮都不同，本轮的新结果必须能被看到。
    */
   const [noticeClosed, setNoticeClosed] = useState(false)
+  /**
+   * 当前页号（从 1 起）—— 关注动态是**客户端分段渲染**：
+   * 数据一次取回全部（见 load 注释），分页只是「按页切片渲染」，触底时 `page+1` 追加下一批。
+   * 任何一次「重取数据」（首屏 / 重试 / 抓取 / 下拉刷新）与「切换筛选」都把页号重置回 1，
+   * 否则会出现「刷新后仍停在第 3 页」或「筛完只剩一批」的错觉。
+   */
+  const [page, setPage] = useState(1)
 
   /**
    * 重读列表。
@@ -90,6 +98,8 @@ export default function Feed() {
    */
   const load = async (withSkeleton = true) => {
     if (withSkeleton) setLoading(true)
+    /* 重取数据一律回到第一页：首屏 / 重试 / 抓取 / 下拉刷新共用本函数，页号不能跨轮残留 */
+    setPage(1)
     try {
       const rows = await listFollows()
       setFollows(rows)
@@ -189,7 +199,30 @@ export default function Feed() {
     Taro.navigateTo({ url: `/pages/profile/index?personKey=${encodeURIComponent(personKey)}` })
   }
 
-  /* 每个人物的动态条数：下拉选项与「全部（N）」计数都用它 */
+  /* 真图预热：关注流一屏多条动态（同一人可能多条），去重后一次批量读把这些人拉进缓存（按全量 entries，不分页） */
+  useEffect(() => {
+    const keys = Array.from(new Set(entries.map((e) => e.personKey)))
+    if (keys.length > 0) void readPortraits(keys)
+  }, [entries])
+
+  /* 当前筛选下的**全部**条目：它是分页的输入，也是头部「N 条」用来表达总规模的依据 */
+  const visible = personFilter ? entries.filter((e) => e.personKey === personFilter) : entries
+  const filterName = follows.find((f) => f.person_key === personFilter)?.name ?? ''
+
+  /*
+   * 客户端分段渲染：首屏只渲染第一页，触底追加下一页（每页 FEED_PAGE_SIZE 条，见该常量注释）。
+   * 为什么是「切片渲染」而非「真分页」：数据一次取回全部（load 里 getFeedDetails 一次 in 查询），
+   * 每页只是把已到手的一维列表切一段出来 —— **没有真实网络加载**，故页面**不伪造 loading**，
+   * 只如实显示「还有 N 条」与到底文案。
+   */
+  const paged = pageSlice(visible, page, FEED_PAGE_SIZE)
+
+  /* 触底加载更多：还有下一页才前进一页；到底则不动（不追加、不触发任何请求） */
+  useReachBottom(() => {
+    setPage((p) => (p * FEED_PAGE_SIZE < visible.length ? p + 1 : p))
+  })
+
+  /* 每个人物的动态条数：下拉选项与「全部（N）」计数都用它（按全量 entries，不受分页影响） */
   const countByPerson: Record<string, number> = {}
   for (const e of entries) countByPerson[e.personKey] = (countByPerson[e.personKey] ?? 0) + 1
 
@@ -208,16 +241,9 @@ export default function Feed() {
   const onFilterChange = (e: { detail: { value: string | number } }) => {
     const idx = Number(e.detail.value)
     setPersonFilter(idx > 0 ? follows[idx - 1]?.person_key ?? '' : '')
+    /* 切换筛选后回到第一页：否则从「全部」的第 3 页切到某人时只接着渲染那人的第 3 页，看起来像「只剩一批」 */
+    setPage(1)
   }
-
-  const shown = personFilter ? entries.filter((e) => e.personKey === personFilter) : entries
-  const filterName = follows.find((f) => f.person_key === personFilter)?.name ?? ''
-
-  /* 真图预热：关注流一屏多条动态（同一人可能多条），去重后一次批量读把这些人拉进缓存 */
-  useEffect(() => {
-    const keys = Array.from(new Set(entries.map((e) => e.personKey)))
-    if (keys.length > 0) void readPortraits(keys)
-  }, [entries])
 
   return (
     <View className='page-feed glow-page'>
@@ -312,20 +338,25 @@ export default function Feed() {
           {/* 按人物筛选已收进顶部聚合卡的下拉（2026-10-10），此处只留标题与当前条数 */}
           <View className='section-head'>
             <Text className='section-head__title'>{personFilter ? `${filterName} 的动态` : '最新动态'}</Text>
-            <Text className='section-head__extra'>{shown.length} 条</Text>
+            {/* 条数取**当前筛选下的全量**（不是已渲染的那一页）：与顶部「近期 M 条」一起表达总规模，避免误以为只有第一页 */}
+            <Text className='section-head__extra'>{visible.length} 条</Text>
           </View>
 
-          {shown.length === 0 && (
+          {visible.length === 0 && (
             <EmptyState
               icon='📭'
               title={`${filterName}暂无动态`}
               desc='点上方「抓取动态」联网检索，或切回「全部」看看其他人'
               actionText='查看全部'
-              onAction={() => setPersonFilter('')}
+              onAction={() => {
+                setPersonFilter('')
+                /* 同筛选切换：回到第一页，别让「全部」接着渲染上一个人的第 N 页 */
+                setPage(1)
+              }}
             />
           )}
 
-          {shown.map((e, i) => (
+          {paged.rows.map((e, i) => (
             <View
               key={`${e.personKey}-${e.url || i}`}
               className='card page-feed__item'
@@ -366,6 +397,16 @@ export default function Feed() {
               </View>
             </View>
           ))}
+
+          {/* 触底加载更多的状态行：切片渲染没有真实网络加载，故不伪造 loading，
+              只如实区分「还有 N 条（触底会追加）」与「到底」两种状态。
+              注意 visible.length === 0（筛选后无内容）时不显示这一行，交由上面的空态表达。 */}
+          {visible.length > 0 && (
+            <Text className='page-feed__foot'>
+              {paged.hasMore ? `上滑加载更多（还有 ${paged.remaining} 条）…` : '—— 没有更多动态 ——'}
+            </Text>
+          )}
+
           <View className='disclaimer'>动态内容来自公开网络检索，由 AI 整理，仅供参考</View>
         </View>
       )}

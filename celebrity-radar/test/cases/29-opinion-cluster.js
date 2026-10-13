@@ -428,10 +428,10 @@ describe('端上降级：读库失败 / 集合为空 → 回落本端聚类', ()
     eq(await store.loadStoredEvents(), null)
   })
 
-  it('免费用户事件 / 时间线仍限 5 条（沿用 opinion-access，不新写门槛）', () => {
+  it('事件概要卡固定首屏（不按会员档放全）；单事件时间线仍按会员档限 5 条', () => {
     env.resetAll()
     const store = env.load('utils/opinion-store')
-    const { sliceDetail } = env.load('utils/opinion-access')
+    const { overviewSlice, EVENT_OVERVIEW_INITIAL, sliceDetail } = env.load('utils/opinion-access')
     const rows = Array.from({ length: 9 }, (_, i) =>
       makeRow({
         event_key: `k${i}`,
@@ -442,9 +442,12 @@ describe('端上降级：读库失败 / 集合为空 → 回落本端聚类', ()
     )
     const events = store.toDisplayEvents(rows, {})
     eq(events.length, 9)
-    eq(sliceDetail(events, false).rows.length, 5, '免费档事件明细切到 5 条')
-    eq(sliceDetail(events, true).rows.length, 9, '会员看到全部')
-    eq(sliceDetail(events[0].timeline, false).rows.length, 5, '免费档时间线也切到 5 条')
+    /* 事件**列表**（概要卡）改为固定首屏 + 按需加载，与会员态无关 —— 不再走 sliceDetail(events, isMember) */
+    eq(overviewSlice(events, EVENT_OVERVIEW_INITIAL).rows.length, EVENT_OVERVIEW_INITIAL, '概要卡首屏固定 3 条')
+    eq(overviewSlice(events, EVENT_OVERVIEW_INITIAL).remaining, 6, '剩余 6 条按需加载')
+    /* 分层门禁仍作用在**该事件的时间线**上（点进 pages/event 由那里把关） */
+    eq(sliceDetail(events[0].timeline, false).rows.length, 5, '免费档时间线仍切到 5 条')
+    eq(sliceDetail(events[0].timeline, true).rows.length, 9, '会员时间线看全部')
   })
 })
 

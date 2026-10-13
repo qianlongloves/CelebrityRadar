@@ -251,4 +251,13 @@
     color: $brand;
     font-size: 22rpx;
   }
+
+  /* 触底加载更多的状态行（「还有 N 条」/「没有更多」）—— 居中、弱化，不抢主内容 */
+  &__foot {
+    display: block;
+    margin: 28rpx 0 8rpx;
+    text-align: center;
+    font-size: 24rpx;
+    color: $text-3;
+  }
 }

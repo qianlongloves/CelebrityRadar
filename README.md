@@ -114,8 +114,8 @@ npm run build:weapp                             # 生产构建，产物输出到
 
 | 文件 | 必须 | 填什么 | 留空 / 未复制的后果 |
 |---|---|---|---|
-| `celebrity-radar/src/config/local.ts` | ✅ **必做** | 云开发环境 ID（`cloudbaseEnvId`）；订阅模板 ID；`webviewDomains`；`debug` 开关 | `celebrity-radar/src/config/public.ts` 直接 `import` 它——没复制会**编译报错** `Cannot find module './local'`。`cloudbaseEnvId` 保持占位串 `REPLACE_ME` 时视为云服务未配置：登录与全部 DB 调用不发起，「我的」页显示「云服务未配置」 |
-| `celebrity-radar/.env` | ✅（部署云函数才需要） | 云函数部署密钥（博查 Key、各上游厂商 Key 等），由 `celebrity-radar/cloudbaserc.json` 以 `{{env.XXX}}` 引用 | 小程序仍能编译运行，但检索 / 生成 / 定时任务在调用上游时报错 |
+| `celebrity-radar/src/config/local.ts` | ✅ **必做** | 云开发环境 ID（`cloudbaseEnvId`）；`webviewDomains`；`debug` 开关（**订阅模板 ID 不在这里**，见 `.env` 一行） | `celebrity-radar/src/config/public.ts` 直接 `import` 它——没复制会**编译报错** `Cannot find module './local'`。`cloudbaseEnvId` 保持占位串 `REPLACE_ME` 时视为云服务未配置：登录与全部 DB 调用不发起，「我的」页显示「云服务未配置」 |
+| `celebrity-radar/.env` | ✅（部署云函数才需要） | 云函数部署密钥（博查 Key、各上游厂商 Key 等）+ **三个订阅模板 ID**（端上/云端唯一来源），由 `celebrity-radar/cloudbaserc.json` 以 `{{env.XXX}}` 引用；端上三个模板 ID 也在构建期从**同一份** `.env` 注入 | 小程序仍能编译运行，但检索 / 生成 / 定时任务在调用上游时报错；模板 ID 留空则订阅推送未配置（详见 §5） |
 | `celebrity-radar/project.private.config.json` | 可选 | 你自己的 appid 与开发者工具本机设置 | 不配则每次在工具里手动设 appid |
 
 ### 3.4 `.env` 必填 / 可空逐项说明
@@ -130,7 +130,7 @@ npm run build:weapp                             # 生产构建，产物输出到
 | `SERPER_API_KEY` / `TAVILY_API_KEY` | 可选 | 第二检索源（博查抓空时的兜底）；**任填其一**即可，都不填 = 整条跳过（行为与没有它时一致） |
 | `DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `MOONSHOT_API_KEY` / `DASHSCOPE_API_KEY` | 可选 | 外部大模型厂商 Key（DeepSeek / 智谱 / Kimi / 通义千问）。**配了哪家，「我的」页才出现哪家**；都不配则只剩默认的「云开发 AI」厂商（零 key） |
 | `LLM_VENDOR` / `LLM_TIER` | 可选 | 默认厂商 / 默认质量档（端上没带、定时任务用的兜底） |
-| `SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID` | 可选 | 三路订阅消息模板 ID；为空 = 推送功能未配置（授权按钮不渲染、定时任务只落站内数据并跳过推送）——详见 §5 |
+| `SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID` | 可选 | 三路订阅消息模板 ID。**端上与云端唯一来源**：云函数部署时由此注入环境变量，端上由 `config/index.js` 在构建期从同一份 `.env` 注入（改后需重新 `build:weapp`）；为空 = 推送功能未配置（授权按钮不渲染、定时任务只落站内数据并跳过推送）——详见 §5 |
 | `WX_PAY_SUB_MCH_ID` / `PAY_CALLBACK_ENV_ID` | 可选 | 会员支付（服务商模式子商户号 + 回调所在云环境）；为空 = 会员支付不可用（不影响免费功能） |
 | `WX_APPID` / `WX_APPSECRET` | 仅 `dbInit` 需要 | 换 `access_token` 建 / 改索引时用；不配 = `dbInit` 的索引动作无法程序化执行（仍可在控制台手工建索引） |
 | `DB_ADMIN_TOKEN` | 仅 `dbInit` 写入需要 | `dbInit` 写操作口令；**未配置时写操作一律拒绝**（只读巡检不受限） |
@@ -298,21 +298,23 @@ cron 为腾讯云 SCF 的 **7 字段**格式（秒 分 时 日 月 周 年）：
 `riskNotifyConfigured()` 均为 false）；三个定时任务**只落站内数据并跳过推送**（在回执 `skipped` 里写明原因），
 **站内功能完全可用**（预警页、事件时间线照常看得到）。**这是一个可正常运行的默认态，不是功能缺失。**
 
-要启用推送，按**自己的服务类目**走这四步（缺一步都不行）：
+> **模板 ID 只填一处：`celebrity-radar/.env`。** 端上与云端从**同一份 `.env`** 取值，构造上不可能不一致：
+> 云端部署时 `cloudbaserc.json` 用 `{{env.X}}` 注入三个云函数的环境变量；端上由 `celebrity-radar/config/index.js`
+> 在构建期读同一份 `.env` 并经 `defineConstants` 注入（`src/config/public.ts` 的三个 `__*_TEMPLATE_ID__` 常量）。
+> 因此**不再**需要在 `src/config/local.ts` 里另填一份 —— 那里也没有这三个字段了。
+
+要启用推送，按**自己的服务类目**走这三步（缺一步都不行）：
 
 1. **公众平台 → 功能 → 订阅消息 → 公共模板库**，按自己的服务类目挑选**字段是 `thing1`（提醒内容，≤20 字）+ `date2`（时间）**
    的那一类模板，申请 / 选用 **三枚不同的模板 ID**（关注更新 / 关键词预警 / 风险提醒各一枚）。
    > ⚠ **必须三枚不同**（标题可同、ID 不可同）：微信一次性订阅**一次授权只够推一条、且按模板消耗授权**，
    > 三个定时任务（09:00 / 09:20 / 09:40）共用一枚会导致先跑的吃掉授权、后跑的报 `43101`。
-2. 把三个 ID 填进 `celebrity-radar/src/config/local.ts` 的三个字段（顺序：关注更新 / 关键词预警 / 风险提醒），
-   并 **`cd celebrity-radar && npm run build:weapp` 重新编译**（这些值会编进包，热更新不生效）。
-3. **云开发控制台 → 云函数 → 各自的「环境变量」**，按同名模板 ID 填写（必须与端上同模板）：
-   `notifyFollowUpdates → SUBSCRIBE_TEMPLATE_ID`、`keywordAlert → ALERT_TEMPLATE_ID`、`riskWatch → RISK_TEMPLATE_ID`。
+2. 把三个 ID 填进 **`celebrity-radar/.env`** 的 `SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`
+   （顺序：关注更新 / 关键词预警 / 风险提醒，**只这一处**），然后 **`cd celebrity-radar && npm run build:weapp` 重新编译端上**
+   （这些值编进包，热更新不生效），并重新部署三个云函数让环境变量生效（`tcb fn deploy`）。
    漏填不会报错也不阻断：云函数只跳过推送。
-4. **真机授权**：登录后点三处入口的授权按钮，确认 `users` 表对应行的 `subscribe_ok` / `alert_ok` / `risk_ok`
+3. **真机授权**：登录后点三处入口的授权按钮，确认 `users` 表对应行的 `subscribe_ok` / `alert_ok` / `risk_ok`
    已置 `true` —— 定时任务只给 `true` 的用户发。
-
-对应的端上字段：`subscribeTemplateId` / `alertTemplateId` / `riskTemplateId`（见 `celebrity-radar/src/config/local.example.ts`）。
 
 ---
 
