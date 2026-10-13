@@ -70,7 +70,7 @@ declare const __TCB_ENV_ID__: string
  * 只影响展示，不参与任何路由 / 请求。
  */
 const LLM_VENDORS = [
-  { key: 'cloudbase', icon: '☁️', label: '云开发 AI', desc: '平台默认通道，零配置、开箱即用' },
+  { key: 'cloudbase', icon: '🔵', label: '腾讯云', desc: '腾讯云，默认通道、零配置、开箱即用' },
   { key: 'deepseek', icon: '🐋', label: 'DeepSeek', desc: '深度求索，性价比与长文生成' },
   { key: 'zhipu', icon: '🧠', label: '智谱 GLM', desc: '智谱 AI，中文理解稳定' },
   { key: 'moonshot', icon: '🌙', label: 'Kimi', desc: '月之暗面，长文与深度推理' },
@@ -117,7 +117,7 @@ export const publicConfig = {
   llm: {
     /**
      * 默认厂商：本机没存偏好时的兜底；须与云端 llm.config.js 的 DEFAULT_VENDOR 一致。
-     * 云开发 AI 零 key 恒在，故默认值永远选得到。
+     * 腾讯云零 key 恒在，故默认值永远选得到。
      */
     defaultVendor: 'cloudbase',
 

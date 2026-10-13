@@ -480,17 +480,18 @@ export function buildOpinionQueue(input: OpinionInput = {}): OpinionEntry[] {
 export const DAILY_FOCUS_MAX = 3
 
 /**
- * 今日要点：从排序好的队列里取前 N（默认 3）条。两条硬门槛（宁缺毋滥，不凑数）：
+ * 今日要点：从排序好的队列里取前 N（默认 3）条。硬门槛（宁缺毋滥，不凑数）：
  *   · **必须有来源** —— 无来源的条目不可追溯，一律不进（文件头红线 2）；
- *   · 必须「与我相关或有风险依据」—— 既没命中监控词 / 关注的人、又没有风险级别的，
- *     属于「其余」，不往要点里塞。
+ *   · 必须「有真正需要你注意的依据」—— 命中监控词 / 命中风险类别 / 有风险级别，任一即可；
+ *   · **刻意排除「仅命中关注的人」的普通动态** —— 这类动态已在「关注动态」卡呈现，再进
+ *     今日要点只会与那张卡内容重合、且点了都跳 pages/feed，纯属重复。
  */
 export function pickDailyFocus(queue: OpinionEntry[], limit: number = DAILY_FOCUS_MAX): OpinionEntry[] {
   if (!Array.isArray(queue) || limit <= 0) return []
   const out: OpinionEntry[] = []
   for (const e of queue) {
     if (!e || !e.source) continue
-    if (!e.hitsKeyword && !e.hitsFollow && e.impact === 'unknown') continue
+    if (!e.hitsKeyword && !e.category && e.impact === 'unknown') continue
     out.push(e)
     if (out.length >= limit) break
   }

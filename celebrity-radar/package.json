@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
+  "author": "刘双乐 <qianlongloves@qq.com>",
   "description": "名人雷达 —— Taro(React) + Taro UI 微信小程序",
   "scripts": {
     "dev:weapp": "npm run build:weapp -- --watch",

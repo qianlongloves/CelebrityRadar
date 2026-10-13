@@ -184,7 +184,7 @@ const PURPOSE_CAPABILITY: Record<QuotaPurpose, 'structured' | 'reasoning'> = {
  * 正常构建里 llm.vendors / qualities 恒存在，**这里是纯防御**：新旧包混用
  * （页面按新结构读、公共配置还是旧结构）时避免 `undefined.find` 把「我的」页打成白屏。
  */
-const FALLBACK_VENDOR = { key: 'cloudbase', label: '云开发 AI', desc: '' }
+const FALLBACK_VENDOR = { key: 'cloudbase', label: '腾讯云', desc: '' }
 const FALLBACK_QUALITY = { key: 'basic', label: '基础版', desc: '', memberOnly: false }
 
 /**

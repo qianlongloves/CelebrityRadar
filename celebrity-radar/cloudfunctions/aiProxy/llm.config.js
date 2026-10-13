@@ -110,7 +110,7 @@ const QWEN_THINK_OFF = { enable_thinking: false }
 const VENDORS = {
   /* ── 云开发 AI（默认通道，零 key）：模型名以当前环境实际开通为准，可用 LLM_MODEL_CLOUDBASE_* 覆盖 ── */
   cloudbase: {
-    label: '云开发 AI',
+    label: '腾讯云',
     channel: 'cloudai',
     modelGroup: MODEL_GROUP,
     tiers: {

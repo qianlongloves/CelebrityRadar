@@ -179,12 +179,12 @@ describe('今日需要注意的 N 件事', () => {
     const { buildOpinionQueue, pickDailyFocus } = U()
     const queue = buildOpinionQueue({
       watchNames: ['张三'],
-      feed: [
-        { title: '条一', source: 'A', date: '2026-10-09', person: '张三' },
-        { title: '条二', source: '', date: '2026-10-08', person: '张三' }, /* 无来源 */
-        { title: '条三', source: 'C', date: '2026-10-07', person: '张三' },
-        { title: '条四', source: 'D', date: '2026-10-06', person: '张三' },
-        { title: '条五', source: 'E', date: '2026-10-05', person: '张三' }
+      alerts: [
+        { title: '条一', source: 'A', date: '2026-10-09', person: '张三', category: 'judicial', level: 'high' },
+        { title: '条二', source: '', date: '2026-10-08', person: '张三', category: 'judicial', level: 'high' }, /* 无来源 */
+        { title: '条三', source: 'C', date: '2026-10-07', person: '张三', category: 'tax', level: 'mid' },
+        { title: '条四', source: 'D', date: '2026-10-06', person: '张三', category: 'rights', level: 'low' },
+        { title: '条五', source: 'E', date: '2026-10-05', person: '张三', category: 'statement', level: 'low' }
       ]
     })
     const focus = pickDailyFocus(queue)
@@ -203,13 +203,23 @@ describe('今日需要注意的 N 件事', () => {
     eq(pickDailyFocus(queue).length, 0, '无关注命中也无风险依据 → 不进今日要点')
   })
 
+  it('仅命中关注的人、但无风险依据的普通动态不进要点（避免与「关注动态」卡重合）', () => {
+    const { buildOpinionQueue, pickDailyFocus } = U()
+    const queue = buildOpinionQueue({
+      watchNames: ['张三'],
+      feed: [{ title: '普通关注动态', source: 'A', date: '2026-10-09', person: '张三' }]
+    })
+    eq(queue.length, 1)
+    eq(pickDailyFocus(queue).length, 0, '仅命中关注、无风险类别 / 级别 → 不进今日要点')
+  })
+
   it('limit 参数生效', () => {
     const { buildOpinionQueue, pickDailyFocus } = U()
     const queue = buildOpinionQueue({
       watchNames: ['张三'],
-      feed: [
-        { title: '条一', source: 'A', date: '2026-10-09', person: '张三' },
-        { title: '条二', source: 'B', date: '2026-10-08', person: '张三' }
+      alerts: [
+        { title: '条一', source: 'A', date: '2026-10-09', person: '张三', category: 'judicial' },
+        { title: '条二', source: 'B', date: '2026-10-08', person: '张三', category: 'tax' }
       ]
     })
     eq(pickDailyFocus(queue, 1).length, 1)

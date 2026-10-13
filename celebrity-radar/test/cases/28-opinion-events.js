@@ -324,7 +324,9 @@ describe('事件概要卡：不按会员档放全（固定首屏 + 按需加载�
       title: `报道第${i}条`,
       source: '某报',
       date: `2026-10-0${(i % 9) + 1}`,
-      person: '张三'
+      person: '张三',
+      category: 'judicial',
+      level: 'high'
     }))
     const input = { feed, watchNames: ['张三'] }
     const events = buildOpinionEvents(input)

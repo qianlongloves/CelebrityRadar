@@ -321,7 +321,9 @@ describe('舆情分层：明细切片（供时间线页）与今日要点、概�
       title: `报道第${i}条`,
       source: '某报',
       date: `2026-10-0${(i % 9) + 1}`,
-      person: '张三'
+      person: '张三',
+      category: 'judicial',
+      level: 'high'
     }))
     const queue = buildOpinionQueue({ feed, watchNames: ['张三'] })
 

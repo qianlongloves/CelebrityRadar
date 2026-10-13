@@ -115,7 +115,7 @@ export default function Mine() {
 
   /**
    * 拉厂商就绪清单（免口令只读，见 utils/llm.ts#listReadyVendors）。
-   * 拉到后若本机存的厂商已不在就绪名单（典型：云端撤了 key），自动切回恒在的云开发 AI ——
+   * 拉到后若本机存的厂商已不在就绪名单（典型：云端撤了 key），自动切回恒在的腾讯云 ——
    * 否则选择器里没有当前项、生成又必败，用户只会看到一句配置错误。
    */
   const refreshReadyVendors = async () => {
@@ -126,12 +126,12 @@ export default function Mine() {
     if (cur && cur !== publicConfig.llm.defaultVendor && !list.some((v) => v.key === cur && v.ready)) {
       setPreferredProvider(publicConfig.llm.defaultVendor)
       setSelection(resolveChatSelection(isMember))
-      Taro.showToast({ title: '原选厂商暂未就绪，已切回云开发 AI', icon: 'none' })
+      Taro.showToast({ title: '原选厂商暂未就绪，已切回腾讯云', icon: 'none' })
     }
   }
 
   /**
-   * 切换厂商（云开发 AI / DeepSeek / 智谱 / Kimi）：只写本机偏好，此后新生成的报告与问答生效。
+   * 切换厂商（腾讯云 / DeepSeek / 智谱 GLM / Kimi / 通义千问）：只写本机偏好，此后新生成的报告与问答生效。
    * 切换厂商不改变质量档选择（各家都是基础/标准/高级同一套）。
    */
   const chooseVendor = (v: LlmVendor) => {
