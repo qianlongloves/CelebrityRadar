@@ -2219,8 +2219,14 @@ describe('P2-22 / P4 定时任务：每人订阅上限的云侧兜底与扫描�
      */
     eq(res.over_limit, undefined, '扫描不再按每人上限裁剪（over_limit 字段已移除）')
     const queries = calls.map((c) => (c.body && c.body.query) || '').filter(Boolean)
+    /*
+     * P4-A（2026-10-13）：命中会**追加一次深挖查询**（形如「关键词 + 空格 + 最新进展」）。
+     * 本用例断言的是「7 条订阅全部进入**扫描**」——故只看扫描查询（纯关键词，无空格后缀），
+     * 深挖查询不计入这条断言（它由 test/cases/31-deep-dive.js 单独覆盖）。
+     */
+    const scanQueries = queries.filter((q) => ['甲', '乙', '丙', '丁', '戊', '己', '庚'].includes(q))
     eq(
-      queries.length,
+      scanQueries.length,
       7,
       `7 条订阅必须全部进入扫描（不再按人裁到 5），实际 ${JSON.stringify(queries)}`
     )

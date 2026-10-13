@@ -1010,7 +1010,13 @@ describe('P2-31 超长关键词整行忽略', () => {
 
     eq(res.invalid, 1, '超长词要单独计数（恒为 0 才「正常」就说明没人看这个数）')
     ok(res.skipped.some((s) => String(s).includes('超过 12 字')), `实际：${JSON.stringify(res.skipped)}`)
-    eq(calls.length, 1, '只该为「雷军」打一次上游')
+    /*
+     * P4-A：命中会**追加一次深挖查询**（「雷军 最新进展」）。本用例断言的是「超长词一次都不打上游、
+     * 只扫了『雷军』」——故按扫描查询过滤（深挖那条的措辞由 31-deep-dive 覆盖）。
+     */
+    const queries = calls.map((c) => (c.body && c.body.query) || '').filter(Boolean)
+    eq(queries.filter((q) => q === '雷军').length, 1, `「雷军」只该扫一次：${JSON.stringify(queries)}`)
+    notOk(queries.some((q) => String(q).includes(longWord)), `超长词一次都不该打上游：${JSON.stringify(queries)}`)
     eq(calls[0].body.query, '雷军')
   })
 

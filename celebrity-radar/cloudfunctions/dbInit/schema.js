@@ -425,6 +425,26 @@ const collections = [
       })
     ]
   },
+  /* ↓ 事件驱动深挖的单日预算计数（P4-A，2026-10-13）—— 见 benefits.ts#DEEP_DIVE */
+  {
+    name: 'deep_dive_quota',
+    /*
+     * 定时任务「命中即深挖」的**单日成本闸门**计数（_id = yyyy-MM-dd，+8 时区切天）。
+     * 为什么单独一张表：单轮预算在云函数**一次调用内存**里递减即可（同轮不可能超发），
+     * 但**单日**上限要跨轮累计，必须落库；而它和用户配额（generate_quota 等）是两回事
+     * （这是**平台成本闸门**，不与任何用户/会员档挂钩），混进用户配额表会污染其语义。
+     * 客户端完全不可读写：它是服务端成本边界，绝不能被端上看到 / 篡改。
+     */
+    purpose: '事件驱动深挖的单日预算计数（_id = yyyy-MM-dd）：云函数 keywordAlert/riskWatch 写、客户端不可读写',
+    acl: ACL.cloudOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('date', 'string', { required: true }),
+      f('count', 'number', { def: 0 }),
+      f('updated_at', 'string?', { def: null })
+    ],
+    indexes: []
+  },
   /* ↓ 舆情事件落库（P4，2026-10-13）：两张表分工 = 「事件本体（全站共享、只读）」与「个人状态（各人一份）」 */
   {
     name: 'opinion_events',

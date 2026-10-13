@@ -169,5 +169,10 @@ module.exports = {
       "free": 5,
       "member": null
     }
+  },
+  "DEEP_DIVE": {
+    "queriesPerHit": 1,
+    "perRunMax": 6,
+    "perDayMax": 60
   }
 }

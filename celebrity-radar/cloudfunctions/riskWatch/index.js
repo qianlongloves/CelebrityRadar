@@ -45,6 +45,20 @@
  *    risk_scans.seen_urls，从第二次起才报真正新出现的条目。
  * 5. **级别只由「命中的是哪一类词」决定**：司法监管 / 税务合规 = high，商业合作 / 名誉维权 = mid，
  *    回应表态 = low。它不是对事件严重性的评估 —— 这样每级都能回放到触发它的那条素材。
+ *
+ * P4-A（2026-10-13）**事件驱动深挖**：扫描命中（该人本轮确有风险表述）时，对该人再**扩查一个
+ * 查询词**（对象 + 中性语境后缀，见 DEEP_DIVE_SUFFIXES），把其中**仍命中风险词典**的新条目
+ * 落成额外的 risk_signals ——下一轮 opinionCluster 会把它当作该人事件的**补充证据 / 时间线成员**。
+ * 深挖不改变级别口径：级别仍只由命中的是哪一类词决定（取舍 5），绝不因为「深挖到了」就提级。
+ *
+ * ⚠ **只在命中时触发，绝不改成「每轮把所有监控对象都深挖一遍」**（那会让成本随监控人数线性膨胀，
+ *   与有没有风险进展无关）。命中是低频事件，这才是成本可控的根本原因。预算由 `DEEP_DIVE`
+ *   （真源 src/config/benefits.ts）的三层闸门封顶，超限**记录不静默丢弃**（见 deepDive* 一组函数）。
+ *
+ * ⚠ **相关性闸门（2026-10-13 修，与 keywordAlert 同源）**：上游是宽松匹配，深挖可能带回与监控对象
+ *   无关的条目。故补成 signal 前除「仍命中风险词典」外，还必须过 `isDeepDiveRelated`
+ *   （title+summary 需含对象名）——**只作用于深挖条目**，扫描命中的词典判定与级别口径一个字不动；
+ *   丢弃条数计入回执 `deep_dive.filtered`。详见该函数注释。
  */
 
 const cloud = require('wx-server-sdk')
@@ -55,7 +69,7 @@ const https = require('https')
  * （经 `npm run config:sync` 生成同目录的 benefits.config.js），与端上
  * utils/opinion-access.ts#personWatchLimit 读的是同一份数据（用例 14 钉住副本一致性）。
  */
-const { OPINION_LIMITS } = require('./benefits.config')
+const { OPINION_LIMITS, DEEP_DIVE } = require('./benefits.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
@@ -93,6 +107,14 @@ const SCAN_TABLE = 'risk_scans'
 const SIGNAL_TABLE = 'risk_signals'
 /** 服务端权威会员表（_id = openid，客户端完全不可读写，见下方 isActiveMember） */
 const MEMBERSHIP_TABLE = 'memberships'
+/** 深挖单日预算计数表（_id = yyyy-MM-dd，+8 时区，客户端完全不可读写）—— P4-A 成本闸门 */
+const DEEP_DIVE_TABLE = 'deep_dive_quota'
+
+/**
+ * 深挖的候选查询词后缀（**中性语境词，不含任何评价性表述**）：
+ * 命中后按 `对象 + 后缀` 生成候选词，只取前 `DEEP_DIVE.queriesPerHit` 个去扩查。
+ */
+const DEEP_DIVE_SUFFIXES = ['最新进展', '回应']
 
 /**
  * 风险词典（**与 src/utils/risk.ts#RISK_TERMS 同源，改动须两处同步**，见取舍 1）。
@@ -399,6 +421,28 @@ function matchTerm(text) {
 }
 
 /**
+ * 由「条目 + 词典命中」组装一条 risk_signal。
+ * 扫描与深挖（P4-A）共用本函数 —— 字段口径只有一处，深挖不会另造一套字段名
+ * （端上 utils/risk-watch.ts 直接渲染这些字段）。
+ */
+function toSignal(personKey, name, item, hit, firstSeenAt) {
+  return {
+    person_key: personKey,
+    name,
+    level: LEVEL_OF[hit.category],
+    category: hit.category,
+    category_label: CATEGORY_LABEL[hit.category],
+    keyword: hit.word,
+    title: item.title,
+    /* 摘要为空时退回标题：列表项至少要有一句能读的 */
+    quote: item.summary || item.title,
+    source: item.source,
+    url: item.url,
+    first_seen_at: firstSeenAt
+  }
+}
+
+/**
  * 按人检索 → 条目[]。
  * freshness 取 oneWeek（比关键词预警的 oneDay 宽）：风险信号很少当天第一次上网，
  * 一周窗口能覆盖「事件发酵两三天后才被媒体写出来」的常见节奏。
@@ -431,6 +475,88 @@ async function searchPerson(name, key) {
       return item
     })
     .filter((x) => x.url && x.title)
+}
+
+/* ───────────── 事件驱动深挖：三层预算闸门（P4-A，2026-10-13）───────────── */
+
+/**
+ * 服务端「今天」（+8 时区）：云函数时区为 UTC，必须显式 +8。
+ * 口径与 quotaGuard#todayKey 同源 —— 深挖计数按北京时间切天，跨天即新行（天然重置）。
+ */
+function todayKey() {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+}
+
+/**
+ * 命中对象 → 深挖候选查询词。只取前 `DEEP_DIVE.queriesPerHit` 个（第一层闸门）。
+ * 对象为空或词数上限为 0 时返回空数组（不发任何上游请求）。
+ */
+function deepDiveQueries(object, max) {
+  const base = String(object || '').trim()
+  const n = Math.max(0, Number(max) || 0)
+  if (!base || n <= 0) return []
+  return DEEP_DIVE_SUFFIXES.slice(0, n).map((suffix) => `${base} ${suffix}`)
+}
+
+/**
+ * 深挖条目的**相关性判定（纯函数）**。
+ *
+ * ⚠ **这是刻意的同源复制**：云函数各自独立打包，不能 require 端上 TS，也不能跨函数 require，
+ *   故 keywordAlert 与 riskWatch 各持一份**逐字相同**的实现 —— 两侧的「深挖条目是否与对象相关」
+ *   必须是同一套逻辑（同为宽松匹配的上游，两侧都靠它挡住无关条目）。
+ *   用例 33-deep-dive-relevance 用同一批输入断言两个函数返回值一致，漂移即红；改一处须改两处。
+ *
+ * 规则（确定性，可测）：`title + summary` 归一化后必须**包含**对象名（归一化后）。
+ *   · 「归一化」= 小写 + 去掉间隔号 / 空格等（见 NAME_SEPARATORS）。
+ *
+ * ⚠ **不引入外部别名词典**（避免误伤）：项目里没有权威的「人物别名 / 简称」来源，自己编一张
+ *   别名表会把「同一个人」的判定交给猜测，宁可漏判也不误判。只做「对象名本身 + 去间隔号 / 空格」
+ *   这类**确定性变换**。局限：无法覆盖真正的简称（「迪丽热巴」与「热巴」共享字面但长度不同，
+ *   本规则**故意不认**——半个名字不足以证明是同一个人）。
+ *
+ * ⚠ **只作用于深挖条目**：扫描命中的词典判定与级别口径一个字都不动（见 main 里的深挖分支）。
+ */
+const NAME_SEPARATORS = /[\s·・.'’‘"“”\-—–_]+/g
+
+/** 归一化：小写 + 去掉间隔号 / 空格（确定性变换，不依赖别名词典） */
+function normalizeName(text) {
+  return String(text || '').toLowerCase().replace(NAME_SEPARATORS, '')
+}
+
+function isDeepDiveRelated(item, object) {
+  const target = normalizeName(object)
+  /* 对象名净化后为空（空串 / 纯符号）→ 不并入任何条目：否则「空串匹配一切」会把噪声全放进来 */
+  if (!target) return false
+  const text = normalizeName(`${(item && item.title) || ''} ${(item && item.summary) || ''}`)
+  return text.includes(target)
+}
+
+/**
+ * 原子预留一次「单日深挖额度」（第三层闸门）。
+ *
+ * 做法：先确保当日行存在（count=0），再用**单文档条件自增** `count < perDayMax` 时 `inc(1)`
+ * 原子预留一格 —— `stats.updated === 1` 才算预留成功。多轮 / 并发同时触发也只能把这一行
+ * 加到 `perDayMax` 为止（不会超发）；预留失败即当日超限。
+ *
+ * 读 / 写异常一律按**未预留**处理（fail-closed：无法确认预算时不花钱），并打出日志 —— 绝不静默。
+ */
+async function reserveDayDeepDive(dayKey) {
+  const coll = db.collection(DEEP_DIVE_TABLE)
+  try {
+    /* 行已存在时 add 会抛主键冲突，属正常（并发首行同理），吞掉即可 */
+    await coll.add({ data: { _id: dayKey, date: dayKey, count: 0 } })
+  } catch (err) {
+    /* 忽略：多半是主键已存在 */
+  }
+  try {
+    const res = await coll
+      .where({ _id: dayKey, count: db.command.lt(DEEP_DIVE.perDayMax) })
+      .update({ data: { count: db.command.inc(1), updated_at: new Date().toISOString() } })
+    return ((res && res.stats && res.stats.updated) || 0) === 1
+  } catch (err) {
+    console.warn(`[riskWatch] 深挖预算表读写失败，本轮跳过深挖：${err && err.message}`)
+    return false
+  }
 }
 
 /* ─────────────────── 分页取全表（P2-11，2026-10-09） ─────────────────── */
@@ -525,7 +651,9 @@ exports.main = async (event) => {
       signals: 0,
       users: 0,
       pushed: 0,
-      skipped: []
+      skipped: [],
+      /* 无监控对象 = 无命中 = 无深挖（全 0；filtered = 因与对象无关被丢弃的深挖条目数） */
+      deep_dive: { hits: 0, queries: 0, skipped_run: 0, skipped_day: 0, filtered: 0 }
     }
   }
 
@@ -551,6 +679,16 @@ exports.main = async (event) => {
 
   const nowIso = new Date().toISOString()
   const perPerson = new Map() // personKey -> { name, signals: [], error }
+  /*
+   * P4-A 深挖预算跟踪（三层闸门，见 DEEP_DIVE 注释）：
+   *   · runBudgetLeft —— 单轮闸门，**一次调用内存**递减（同轮不可能超发）；
+   *   · deepDiveDayKey + reserveDayDeepDive —— 单日闸门，落在 deep_dive_quota（+8 切天，跨天自动重置）；
+   *   · deepDiveQueries 的词数 —— 每次命中的词数闸门。
+   * 超限一律记进 deepDive / summary（不静默丢弃）。
+   */
+  const deepDive = { hits: 0, queries: 0, skipped_run: 0, skipped_day: 0, filtered: 0 }
+  const deepDiveDayKey = todayKey()
+  let runBudgetLeft = DEEP_DIVE.perRunMax
   const summary = {
     ok: true,
     persons: queue.length,
@@ -560,7 +698,9 @@ exports.main = async (event) => {
     pushed: 0,
     /* 扫描不按每人上限裁剪（见上），故不再有 over_limit 字段；被写入路径挡下的超额新增
        在 handleAdd 的回执里（reason:'over_limit'），不会静默丢弃。 */
-    skipped: []
+    skipped: [],
+    /* P4-A 深挖回执：命中了几个对象、真正扩查了几次、因单轮 / 单日预算各跳过几次 */
+    deep_dive: { hits: 0, queries: 0, skipped_run: 0, skipped_day: 0, filtered: 0 }
   }
 
   // 3. 逐个名人：检索 → 词典命中 → 落 signal → 更新快照
@@ -590,21 +730,58 @@ exports.main = async (event) => {
     for (const item of fresh) {
       const hit = matchTerm(`${item.title} ${item.summary}`)
       if (!hit) continue
-      signals.push({
-        person_key: personKey,
-        name: person.name,
-        level: LEVEL_OF[hit.category],
-        category: hit.category,
-        category_label: CATEGORY_LABEL[hit.category],
-        keyword: hit.word,
-        title: item.title,
-        /* 摘要为空时退回标题：列表项至少要有一句能读的 */
-        quote: item.summary || item.title,
-        source: item.source,
-        url: item.url,
-        first_seen_at: nowIso
-      })
+      signals.push(toSignal(personKey, person.name, item, hit, nowIso))
       if (signals.length >= MAX_SIGNALS_PER_PERSON) break
+    }
+
+    /* P4-A：**命中即深挖**（事件驱动）。命中 = 本轮确有风险表述（signals 非空）；
+       未命中就绝不发任何额外上游请求 —— 这是成本可控的根本原因（见文件头）。
+       深挖结果**仍按风险词典判定**：只有仍命中词典的新条目才补成 signal ——
+       级别口径不变（取舍 5），绝不因为「深挖到了」就给非风险条目盖上风险标签。 */
+    if (signals.length) {
+      deepDive.hits++
+      for (const q of deepDiveQueries(person.name, DEEP_DIVE.queriesPerHit)) {
+        if (signals.length >= MAX_SIGNALS_PER_PERSON) break
+        /* 单轮闸门（内存计数）—— 到顶只记不查 */
+        if (runBudgetLeft <= 0) {
+          deepDive.skipped_run++
+          continue
+        }
+        /* 单日闸门（原子预留）—— 预留不到即当日超限 */
+        if (!(await reserveDayDeepDive(deepDiveDayKey))) {
+          deepDive.skipped_day++
+          continue
+        }
+        runBudgetLeft--
+        let found
+        try {
+          found = await searchPerson(q, bochaKey)
+          deepDive.queries++
+        } catch (err) {
+          /* 单次深挖失败不拖垮整轮：预算已花（上游请求已发出），下一轮再试 */
+          console.warn(`[riskWatch] 深挖检索失败（${q}）：${err && err.message}`)
+          continue
+        }
+        for (const item of found) {
+          if (!item.url || !item.title) continue
+          /* 只并入「本次扫描没扫到、也没缓存过」的新条目，避免与扫描结果重复 */
+          if (seen.has(item.url)) continue
+          if (items.some((x) => x.url === item.url)) continue
+          if (signals.some((s) => s.url === item.url)) continue
+          /* 相关性闸门（本轮缺陷修复）：深挖条目必须含对象名，否则丢弃 —— 上游宽松匹配
+             会把无关人物 / 事件（赵丽颖 / 萨利巴 / TVB 等）带回来，原样并入会污染时间线。
+             丢弃**计入回执**（deepDive.filtered），绝不静默。放在词典判定**之前**：
+             filtered 只统计「因与对象无关被丢弃」，词典不命中的（本就不落 signal）不重复计数。 */
+          if (!isDeepDiveRelated(item, person.name)) {
+            deepDive.filtered++
+            continue
+          }
+          const hit = matchTerm(`${item.title} ${item.summary}`)
+          if (!hit) continue
+          signals.push(toSignal(personKey, person.name, item, hit, nowIso))
+          if (signals.length >= MAX_SIGNALS_PER_PERSON) break
+        }
+      }
     }
 
     /* 先查已落过的再只写新的：同一 url 可能在不同轮次被检出。
@@ -654,6 +831,27 @@ exports.main = async (event) => {
     } catch (err) {
       summary.skipped.push({ person: person.name, reason: `写扫描快照失败：${String(err && err.message)}` })
     }
+  }
+
+  /* P4-A 深挖回执 + 超限记录（不静默丢弃）：运维一眼能看出被哪一层闸门挡了 */
+  summary.deep_dive = {
+    hits: deepDive.hits,
+    queries: deepDive.queries,
+    skipped_run: deepDive.skipped_run,
+    skipped_day: deepDive.skipped_day,
+    filtered: deepDive.filtered
+  }
+  if (deepDive.skipped_run || deepDive.skipped_day) {
+    summary.skipped.push(
+      `深挖预算不足，本轮跳过 ${deepDive.skipped_run + deepDive.skipped_day} 次` +
+        `（单轮上限 ${DEEP_DIVE.perRunMax} / 单日上限 ${DEEP_DIVE.perDayMax}；` +
+        `单轮跳过 ${deepDive.skipped_run}、单日跳过 ${deepDive.skipped_day}）`
+    )
+    console.warn(`[riskWatch] 深挖预算受限：${JSON.stringify(summary.deep_dive)}`)
+  }
+  /* 相关性丢弃同样不静默：明确写进回执，让「上游宽松匹配带回了多少噪声」可见 */
+  if (deepDive.filtered) {
+    summary.skipped.push(`深挖结果有 ${deepDive.filtered} 条与监控对象无关（未含对象名），已丢弃`)
   }
 
   // 4. 只推「够得上打扰级别」的名人：low 只落库（取舍 5）
@@ -715,6 +913,12 @@ exports.main = async (event) => {
 /* 供运维排查用：确认「监控文档主键」与端上 utils/risk-watch.ts 同口径 */
 exports.personWatchId = personWatchId
 exports.signalId = signalId
+/* 供运维 / 用例排查用：深挖预算的三层闸门取值与候选词生成（P4-A） */
+exports.DEEP_DIVE = DEEP_DIVE
+exports.deepDiveQueries = deepDiveQueries
+/* 深挖条目的相关性判定（纯函数，与 keywordAlert 同源）：供用例直接调用 + 断言两侧一致 */
+exports.isDeepDiveRelated = isDeepDiveRelated
+exports.normalizeName = normalizeName
 /* 供运维排查用：确认「分档新增上限」与端上（utils/opinion-access.ts）同源 */
 exports.PERSON_WATCH_LIMITS = PERSON_WATCH_LIMITS
 

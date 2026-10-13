@@ -58,7 +58,9 @@ const SOURCES = [
        套餐白名单（唯一价格源：价格 / 天数 / 订单标题） → payCreate；
        舆情功能的免费 / 会员分层上限（OPINION_LIMITS）：
          · watchCount 是关键词监控的新增上限 → keywordAlert（写入路径按档判定，P4 2026-10-13）
-         · personWatchCount 是「监控某人」的新增上限 → riskWatch（同样写入路径按档判定，2026-10-13） */
+         · personWatchCount 是「监控某人」的新增上限 → riskWatch（同样写入路径按档判定，2026-10-13）
+       事件驱动深挖的成本闸门（DEEP_DIVE，P4-A 2026-10-13）：
+         · keywordAlert / riskWatch 命中即深挖的「词数 / 单轮 / 单日」三层上限都取自它 */
     targets: ['aiProxy', 'quotaGuard', 'payCreate', 'keywordAlert', 'riskWatch']
   },
   {
