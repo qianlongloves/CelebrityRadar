@@ -1,6 +1,8 @@
 import Taro from '@tarojs/taro'
 import { domainLabel, domainStyleCode, DomainCode } from '@/config/domains'
 import { diagLog } from './cloud-diagnostics'
+import { BRIEF_POINT_MAX } from './weekly-brief'
+import type { WeeklyBrief } from './weekly-brief'
 
 /**
  * 分享卡片（§2.1 M6-1 / §4.2 分享流，P1「验证性实现」）。
@@ -326,6 +328,103 @@ export function paintQuoteCard(ctx: Ctx2D, w: number, h: number, d: QuoteCardInp
   paintFooter(ctx, w, h)
 }
 
+/* ===== 周报简报卡（P4-B） ===== */
+
+/**
+ * 周报简报卡的版式常量（逻辑 px）。
+ *
+ * 与名言卡同一取舍：**固定栅格、不做自适应高度** —— 但简报的要点条数是可变的（3~5 条），
+ * 故高度按条数由 `weeklyBriefHeight` 算出（一次性给出画布尺寸，不做「先量高再重画」的两次绘制）。
+ * 每块高度取的是**最坏情况**（要点正文最多 2 行 + 来源·时间 1 行），于是无论文本多长都不会越界。
+ */
+const WEEKLY_HEAD_H = 104
+const WEEKLY_POINT_H = 70
+const WEEKLY_NOTE_H = 60
+
+/** 周报简报卡高度：随要点条数变化（无要点时按 1 条算，避免高度塌成一条线） */
+export function weeklyBriefHeight(pointCount: number): number {
+  const n = Math.max(1, Math.min(Math.floor(pointCount) || 0, BRIEF_POINT_MAX))
+  return WEEKLY_HEAD_H + n * WEEKLY_POINT_H + WEEKLY_NOTE_H + FOOT_H
+}
+
+/**
+ * 画一张周报简报卡：紫底 + 标题与窗口 + 逐条要点（带来源与时间）+ 底部说明 + 页脚。
+ *
+ * 合规（与 utils/weekly-brief.ts 的三条红线一致）：每条要点都带「来源 · 时间」；
+ * 底部固定写出「公开报道 · 非平台定性 · 聚合≠认定」；页脚带产品名与「AI 生成，仅供参考」。
+ * 这里**只负责画**，内容取舍（截断 / 过滤 / 去重）全部已在 buildWeeklyBrief 里完成。
+ */
+export function paintWeeklyBrief(ctx: Ctx2D, w: number, h: number, d: WeeklyBrief): void {
+  paintBrandBg(ctx, w, h)
+
+  /* 标题与统计窗口 */
+  ctx.fillStyle = '#FFFFFF'
+  ctx.font = 'bold 26px sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  ctx.fillText(d.title, PAD, 34)
+
+  drawText(ctx, d.range, {
+    x: PAD,
+    y: 72,
+    size: 14,
+    color: 'rgba(255,255,255,0.82)',
+    maxWidth: w - PAD * 2,
+    maxLines: 1
+  })
+
+  /* 逐条要点：序号圆点 + 正文（最多 2 行）+「来源 · 时间」 */
+  let y = WEEKLY_HEAD_H
+  d.points.forEach((p, i) => {
+    ctx.fillStyle = 'rgba(255,255,255,0.22)'
+    ctx.beginPath()
+    ctx.arc(PAD + 10, y + 9, 10, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#FFFFFF'
+    ctx.font = 'bold 12px sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(i + 1), PAD + 10, y + 10)
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'top'
+
+    const textEnd = drawText(ctx, p.text, {
+      x: PAD + 30,
+      y,
+      size: 16,
+      weight: 'bold',
+      color: '#FFFFFF',
+      lineHeight: 23,
+      maxWidth: w - PAD * 2 - 30,
+      maxLines: 2
+    })
+
+    drawText(ctx, `${p.source || '来源未标注'} · ${p.date || '近期'}`, {
+      x: PAD + 30,
+      y: textEnd + 3,
+      size: 12,
+      color: 'rgba(255,255,255,0.72)',
+      maxWidth: w - PAD * 2 - 30,
+      maxLines: 1
+    })
+
+    y += WEEKLY_POINT_H
+  })
+
+  /* 底部说明：合规硬要求，固定在页脚之上 */
+  drawText(ctx, d.note, {
+    x: PAD,
+    y: h - FOOT_H - WEEKLY_NOTE_H + 6,
+    size: 11,
+    color: 'rgba(255,255,255,0.62)',
+    lineHeight: 16,
+    maxWidth: w - PAD * 2,
+    maxLines: 3
+  })
+
+  paintFooter(ctx, w, h)
+}
+
 /* ===== 画布与导出 ===== */
 
 /** 画布 id：组件与绘制函数共用，改一处即可 */
@@ -400,6 +499,18 @@ export async function renderPoster(
 /** 生成名言卡，返回本地临时图片路径 */
 export function renderQuotePoster(data: QuoteCardInput): Promise<string> {
   return renderPoster(QUOTE_POSTER_HEIGHT, (ctx, w, h) => paintQuoteCard(ctx, w, h, data))
+}
+
+/**
+ * 生成周报简报卡，返回本地临时图片路径。
+ *
+ * 与名言卡**共用同一条绘制管线**（`renderPoster` 的离屏 canvas 查询、dpr 像素比缩放、
+ * canvasToTempFilePath 导出），故不同机型的清晰度处理完全一致；高度随要点条数算出。
+ */
+export function renderWeeklyBriefPoster(brief: WeeklyBrief): Promise<string> {
+  return renderPoster(weeklyBriefHeight(brief.points.length), (ctx, w, h) =>
+    paintWeeklyBrief(ctx, w, h, brief)
+  )
 }
 
 /**

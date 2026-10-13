@@ -13,31 +13,62 @@ import { track } from '@/utils/events'
 import './index.scss'
 
 /**
- * 名言卡弹层。
+ * 分享图弹层。
  *
  * 组件挂载即出图：离屏 canvas 就画在同一个节点树里（屏幕外，见 index.scss），
  * 由 utils/share-card 负责绘制，这里只管「画布多大、图放哪、按了什么」。
  *
- * 为什么不做成页面：卡片是报告页 / 收藏页上的一个动作，跳页会丢掉原页面的滚动位置与上下文，
+ * 为什么不做成页面：卡片是报告页 / 收藏页 / 周报页上的一个动作，跳页会丢掉原页面的滚动位置与上下文，
  * 而弹层关掉就回到原处，用户还要接着往下读。
+ *
+ * P4-B（2026-10-13）：从「只画名言卡」收敛成**两种内容共用一套弹层** —— 名言卡（给 `quote`）
+ * 与周报简报（给 `render` + `height`）。保存相册的权限处理、失败降级、转发菜单、离屏画布与
+ * 像素比处理全部复用同一段代码，两种分享图的行为不会漂移。
  */
 interface SharePosterProps {
-  /** 画什么：调用方直接把内容给全，弹层不回头去取数据 */
-  quote: QuoteCardInput
+  /** 名言卡内容：与 `render` 二选一（都缺则出图失败并如实提示，不白屏） */
+  quote?: QuoteCardInput
+  /** 自定义出图函数（如周报简报 `renderWeeklyBriefPoster`）：与 `quote` 二选一 */
+  render?: () => Promise<string>
+  /** 画布逻辑高度（px）；缺省按名言卡 3:4 竖版。必须与 `render` 实际画的高度一致 */
+  height?: number
+  /** 面板标题 */
+  title?: string
+  /** 底部提示（说明图上带了什么合规角标） */
+  hint?: string
+  /** 给了就在动作区多出一个「复制摘要」按钮（内容由调用方保证与图一致） */
+  copyText?: string
   /** 埋点在动作发生时记录，不带 personKey 的调用方直接传空 */
   personKey?: string
   onClose: () => void
 }
 
-export default function SharePoster({ quote, personKey = '', onClose }: SharePosterProps) {
+export default function SharePoster({
+  quote,
+  render,
+  height,
+  title = '名言卡',
+  hint = '图片带「AI 生成，仅供参考」角标',
+  copyText,
+  personKey = '',
+  onClose
+}: SharePosterProps) {
   /** 出图结果：本地临时路径，喂给 <Image> 与两个动作按钮 */
   const [path, setPath] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
+  const posterHeight = height ?? QUOTE_POSTER_HEIGHT
+
   useEffect(() => {
     let alive = true
-    renderQuotePoster(quote)
+    /* 两种内容来源二选一：给了自定义 render 就用它，否则回落到名言卡 */
+    const draw = render ?? (quote ? () => renderQuotePoster(quote) : null)
+    if (!draw) {
+      setError('缺少卡片内容')
+      return
+    }
+    draw()
       .then((tempPath) => {
         if (alive) setPath(tempPath)
       })
@@ -79,6 +110,14 @@ export default function SharePoster({ quote, personKey = '', onClose }: SharePos
     }
   }
 
+  /** 复制文本摘要（内容与图一致，由调用方给全）——纯本地，不依赖出图结果 */
+  const onCopy = () => {
+    if (!copyText || busy) return
+    Taro.setClipboardData({ data: copyText })
+    track('share', { personKey, channel: 'poster_copy' })
+    Taro.showToast({ title: '摘要已复制', icon: 'none' })
+  }
+
   return (
     <View className='share-poster'>
       <View className='share-poster__mask' onClick={onClose} />
@@ -88,12 +127,12 @@ export default function SharePoster({ quote, personKey = '', onClose }: SharePos
         type='2d'
         id={POSTER_CANVAS_ID}
         className='share-poster__canvas'
-        style={{ width: `${POSTER_WIDTH}px`, height: `${QUOTE_POSTER_HEIGHT}px` }}
+        style={{ width: `${POSTER_WIDTH}px`, height: `${posterHeight}px` }}
       />
 
       <View className='share-poster__panel'>
         <View className='share-poster__head'>
-          <Text className='share-poster__title'>名言卡</Text>
+          <Text className='share-poster__title'>{title}</Text>
           <Text className='share-poster__close' onClick={onClose}>
             ✕
           </Text>
@@ -123,6 +162,16 @@ export default function SharePoster({ quote, personKey = '', onClose }: SharePos
           >
             保存到相册
           </View>
+          {copyText ? (
+            <View
+              className={`share-poster__btn share-poster__btn--ghost ${
+                busy ? 'share-poster__btn--disabled' : ''
+              }`}
+              onClick={onCopy}
+            >
+              复制摘要
+            </View>
+          ) : null}
           <View
             className={`share-poster__btn share-poster__btn--primary ${
               !path || busy ? 'share-poster__btn--disabled' : ''
@@ -134,7 +183,7 @@ export default function SharePoster({ quote, personKey = '', onClose }: SharePos
         </View>
 
         {/* 图上已画免责角标，弹层里再说一次是为了「还没保存就看到」而不是保存后才发现 */}
-        <Text className='share-poster__hint'>图片带「AI 生成，仅供参考」角标</Text>
+        <Text className='share-poster__hint'>{hint}</Text>
       </View>
     </View>
   )

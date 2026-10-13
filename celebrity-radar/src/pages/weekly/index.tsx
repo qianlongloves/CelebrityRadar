@@ -4,6 +4,7 @@ import { View, Text } from '@tarojs/components'
 import EmptyState from '@/components/empty-state'
 import NoticeClose from '@/components/notice-close'
 import Skeleton from '@/components/skeleton'
+import SharePoster from '@/components/share-poster'
 import {
   WEEKLY_WINDOW_DAYS,
   MATERIAL_FAIL_TEXT,
@@ -13,6 +14,14 @@ import {
   readWeeklyCache
 } from '@/utils/weekly'
 import type { MaterialOutcome, WeeklyMaterial, WeeklyOutcome, WeeklyReport } from '@/utils/weekly'
+import {
+  buildWeeklyBrief,
+  canExportWeeklyBrief,
+  weeklyBriefCopy,
+  weeklyExportNote
+} from '@/utils/weekly-brief'
+import { renderWeeklyBriefPoster, weeklyBriefHeight } from '@/utils/share-card'
+import { readMemberState } from '@/utils/member'
 import { buildDayDistribution } from '@/utils/stats'
 import { peekGenerateQuota } from '@/utils/quota'
 import { useAuth } from '@/stores/auth'
@@ -56,9 +65,24 @@ export default function Weekly() {
    * 每次生成出新报告时复位 —— 关掉的是「这一份」的说明，换一份就该重新出现。
    */
   const [warnClosed, setWarnClosed] = useState(false)
+  /**
+   * 是否会员（P4-B：导出 / 分享周报图是会员权益）。
+   * ⚠ 每次进入页面（useDidShow）重读 `users.membership` 镜像，不引入额外缓存 —— 开通后重进即生效
+   *   （沿用舆情页 readMemberState 口径）。站内查看周报**不分档**，本状态只门禁「导出分享图」这一个动作。
+   */
+  const [isMember, setIsMember] = useState(false)
+  /** 分享图弹层是否打开 */
+  const [posterOpen, setPosterOpen] = useState(false)
+  /** 免费用户点导出入口后，是否显示**非弹窗**的升级引导行（点引导行跳会员页） */
+  const [exportGuide, setExportGuide] = useState(false)
 
   /* 端上聚合（时间线 / 来源 / 领域 / 跨度）：纯函数，同一份周报任何时候打开结果都一样 */
   const digest = useMemo(() => (report ? buildWeeklyDigest(report) : null), [report])
+  /**
+   * 周报简报（P4-B）：分享图与复制摘要共用的纯数据（内容取舍全在 utils/weekly-brief.ts，
+   * 本页只把它交给弹层；同一份周报任何时候生成的要点都一样）。
+   */
+  const brief = useMemo(() => (report ? buildWeeklyBrief(report) : null), [report])
   /** 本期要点（模型产出）。旧缓存没有这一段，按「本来就没有」处理并写明怎么补（见字段注释） */
   const highlights = report?.highlights ?? []
   /** 领域分布的归一基准：条数最多的那个领域占满整条 */
@@ -109,8 +133,21 @@ export default function Weekly() {
     void refreshQuota()
   }
 
+  /**
+   * 读会员态（只影响「导出分享图」是否放行；读库失败按非会员处理 —— 保守，不放大权益）。
+   * 与舆情页同一取舍：挂在 useDidShow 上，开通后重进即生效，不引入额外缓存。
+   */
+  const loadMember = async () => {
+    try {
+      setIsMember((await readMemberState()).member)
+    } catch {
+      setIsMember(false)
+    }
+  }
+
   useDidShow(() => {
     void load()
+    void loadMember()
   })
 
   useShareAppMessage(() => ({
@@ -234,6 +271,28 @@ export default function Weekly() {
     blocks.push(report.disclaimer)
     Taro.setClipboardData({ data: blocks.join('\n\n') })
     track('share', { channel: 'copy', scope: 'weekly' })
+  }
+
+  const goMember = () => void Taro.navigateTo({ url: '/pages/member/index' })
+
+  /**
+   * 「导出分享图」入口（P4-B，对所有用户可见，分层在点击那一刻生效）：
+   *   · 本期没有可分享的动态 → 明确提示，不打开空图（不白屏）；
+   *   · 免费用户 → **非弹窗**地就地展开一行升级引导（点了跳会员页），不放行；
+   *   · 会员 → 打开分享图弹层（保存相册 / 复制摘要 / 转发）。
+   * 门禁取自 utils/weekly-brief.ts#canExportWeeklyBrief（身份来自 readMemberState），不写死在页面里。
+   */
+  const onExport = () => {
+    if (!report || !brief) return
+    if (brief.points.length === 0) {
+      Taro.showToast({ title: '本期暂无可分享的动态', icon: 'none' })
+      return
+    }
+    if (!canExportWeeklyBrief(isMember)) {
+      setExportGuide(true)
+      return
+    }
+    setPosterOpen(true)
   }
 
   const quotaHint = quotaLeft === null ? '' : `（今日报告生成额度剩 ${quotaLeft} 次）`
@@ -588,14 +647,42 @@ export default function Weekly() {
           )}
 
           <View className='page-weekly__actions'>
-            <View className='page-weekly__action' onClick={copyAll}>
+            <View className='page-weekly__action page-weekly__action--ghost' onClick={copyAll}>
               复制全文
             </View>
+            <View className='page-weekly__action' onClick={onExport}>
+              导出分享图
+            </View>
           </View>
+
+          {/*
+            免费用户点「导出分享图」后展开的**非弹窗**升级引导（P4-B）：就地一行，不遮罩不弹窗，
+            点它进会员页（沿用 opinion-access#moreDetailNote 的克制写法与舆情页交互）。会员不显示。
+          */}
+          {exportGuide && !isMember && (
+            <Text className='page-weekly__export-guide' onClick={goMember}>
+              {weeklyExportNote()}
+            </Text>
+          )}
 
           <View className='disclaimer'>
             周报由 AI 汇总公开检索素材生成，仅供参考；分享前请自行核对信息
           </View>
+
+          {/*
+            分享图弹层（P4-B）：与名言卡**共用同一个弹层组件**（同一套离屏画布 / 保存相册权限处理 /
+            失败降级 / dpr 像素比）。图上带来源与时间与「非平台定性」说明；复制摘要内容与图一致。
+          */}
+          {posterOpen && brief && (
+            <SharePoster
+              render={() => renderWeeklyBriefPoster(brief)}
+              height={weeklyBriefHeight(brief.points.length)}
+              title='本周简报'
+              hint='图上带来源与时间，并注明「公开报道 · 非平台定性」'
+              copyText={weeklyBriefCopy(brief)}
+              onClose={() => setPosterOpen(false)}
+            />
+          )}
         </View>
       )}
 

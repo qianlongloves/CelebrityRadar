@@ -476,5 +476,26 @@
     color: #fff;
     font-size: 28rpx;
     font-weight: 600;
+
+    /* 次要动作（复制全文）：浅紫底、品牌字色，与主按钮区分但同层 */
+    &--ghost {
+      background: $brand-weak;
+      color: $brand;
+    }
+  }
+
+  /*
+   * 免费用户点「导出分享图」后的升级引导行（P4-B，非弹窗）：
+   * 就地一行、浅紫底、居中，点了进会员页 —— 与舆情页「会员可见全部 N 条 ›」同一克制风格。
+   */
+  &__export-guide {
+    display: block;
+    margin: 16rpx 32rpx 0;
+    padding: 20rpx 24rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 25rpx;
+    text-align: center;
   }
 }
