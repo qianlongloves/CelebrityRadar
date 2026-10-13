@@ -11,7 +11,7 @@
  * | 字段比对 / 补字段 | ✅ | 文档型库无 schema，比对的是**实际文档的字段集合** vs `schema.js`；补字段 = `where(_.exists(false)).update()` |
  * | 建 / 改索引      | ✅ 需 access_token | 微信云开发 HTTP API「更新索引」`POST /tcb/updateindex`（**wx-server-sdk 没有索引 API**） |
  * | 列出已有索引     | ❌ | 该接口**只能按索引名新增 / 删除**，没有「列出」能力 ⇒ 见下方「索引比对的做法」 |
- * | 设置集合权限     | ❌ | 无对应接口，仍须控制台手工设置（见 `doc/云开发配置手册.md` §四） |
+ * | 设置集合权限     | ❌ | 无对应接口，仍须控制台手工设置（见 `../../../README.md` 的「云开发配置 → 集合与权限」） |
  *
  * ── 索引比对的做法（没有 list 接口的替代方案）──────────────────────────
  * 按 `schema.js` 里钉死的索引名**逐个幂等 create**：报「已存在」即视为在位，
@@ -537,7 +537,7 @@ async function runDbInit(event) {
   }
 
   /* 权限改不了：把设计要求的 ACL 逐表列出，供人工在控制台核对 */
-  out.permissions_manual = defs.map((d) => ({ collection: d.name, acl: d.acl.label, note: d.acl.rule ? '自定义规则（见 doc/云开发配置手册.md §四）' : '控制台预设' }))
+  out.permissions_manual = defs.map((d) => ({ collection: d.name, acl: d.acl.label, note: d.acl.rule ? '自定义规则（见 README 的「云开发配置 → 集合与权限」）' : '控制台预设' }))
   out.token_gate = process.env.DB_ADMIN_TOKEN ? '已配置 DB_ADMIN_TOKEN，写操作需传 event.token' : '未配置 DB_ADMIN_TOKEN ⇒ 写操作一律拒绝'
 
   return out

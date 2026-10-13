@@ -1,6 +1,6 @@
 /**
  * dbInit/schema.js —— 云数据库的「单一事实源」。
- * 与 `doc/云开发配置手册.md` 一一对应：文档讲「为什么」，本文件讲「是什么」。
+ * 与 `../../../README.md` 的「云开发配置 → 集合与权限」一节一一对应：README 讲「为什么」，本文件讲「是什么」。
  * 字段依据：`src/types/db.ts` + `src/utils/{auth,follows,favorites,history,cache,quota,events}.ts`。
  *
  * 字段标记（决定 dbInit 的写行为）：

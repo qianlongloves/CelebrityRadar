@@ -114,7 +114,7 @@ export async function callCloudFunction(name: string, data: unknown): Promise<un
  *     此时真正的原因是「这一趟活儿本身超过了 60 秒」—— 最可能是高级档的推理槽模型在单次
  *     调用里思考太久。给用户的路只有一条：换基础版（或非推理模型）再试。指错方向会让他在
  *     控制台里反复折腾一个已经顶格的配置，所以这句提示必须把两条路分开说。
- * 排查口径见 doc/联调手册.md §六。
+ * 排查口径见 `../../../README.md` §4.4「云开发 AI 通道与「函数超时改 60s」」一节。
  */
 export function cloudTimeoutHint(msg: string): string | null {
   if (!/-504003|FUNCTIONS_TIME_LIMIT_EXCEEDED|Invoking task timed out/i.test(msg)) return null
