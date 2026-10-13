@@ -128,4 +128,58 @@
     -webkit-line-clamp: 4;
     overflow: hidden;
   }
+
+  /* 今日要点卡：页首的判断入口。品牌淡底到白的轻微渐变，暗示「先看这里」，
+     刻意不用警示色（避免把「需要留意」渲染成一堆红黄条）。 */
+  &__focus {
+    background: linear-gradient(180deg, $brand-weak 0%, #fff 46%);
+  }
+
+  /* 分级标签行：三枚小胶囊、中性灰调。只有「建议回应 / 建议关注」用一点暖色/品牌色
+     轻轻点一下，其余（未评级 / 未知 / 无需回应）一律保持灰调 —— 克制优先。 */
+  &__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8rpx;
+    margin-top: 10rpx;
+  }
+
+  &__tag {
+    padding: 2rpx 12rpx;
+    border-radius: 6rpx;
+    background: $bg;
+    color: $text-3;
+    font-size: 20rpx;
+    line-height: 1.8;
+
+    &--respond {
+      background: $accent-orange-bg;
+      color: $accent-orange;
+    }
+
+    &--watch {
+      background: $brand-weak;
+      color: $brand;
+    }
+  }
+
+  /* 今日要点卡尾的免责说明：比正式 disclaimer 轻，贴在卡片里避免被读成定性 */
+  &__note {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 免费档明细被截断时列表底部的一行升级引导（「会员可见全部 N 条 ›」）：
+     刻意做得克制 —— 右对齐、品牌色、无底色，不遮罩、不弹窗，只是列表下方多一行可点文字 */
+  &__more-detail {
+    display: block;
+    margin-top: 12rpx;
+    padding: 8rpx 0;
+    text-align: right;
+    font-size: 24rpx;
+    color: $brand;
+  }
 }

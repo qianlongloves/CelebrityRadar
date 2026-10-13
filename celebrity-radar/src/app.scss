@@ -270,6 +270,13 @@ page {
 /* ===== 安全区 ===== */
 .safe-bottom { padding-bottom: calc(24rpx + env(safe-area-inset-bottom)); }
 
-/* tab 页：为自定义底栏留空间。悬浮后底栏离底还有 24rpx 间距，故在 160rpx 基础上加 40rpx
-   （112rpx 栏高 + 24rpx 底距 + 凸起/呼吸余量），保证内容不被悬浮栏遮住 */
-.safe-tab { padding-bottom: calc(200rpx + env(safe-area-inset-bottom)); }
+/* tab 页：为自定义底栏留空间（取值理由见下） */
+.safe-tab {
+  /*
+   * 底部预留 = 悬浮栏高度(112rpx) + 一点呼吸位。2026-10-13 由 200rpx 收到 140rpx：
+   * 底栏改成「贴安全区上沿」的悬浮胶囊后，原按「贴底通栏 + 24rpx 底距」算出的 200rpx
+   * 会在栏与内容之间多留出一条明显空白（提问页的输入框下方尤其显眼）。
+   * 不能再低：低于栏高就会被悬浮栏压住。
+   */
+  padding-bottom: calc(140rpx + env(safe-area-inset-bottom));
+}

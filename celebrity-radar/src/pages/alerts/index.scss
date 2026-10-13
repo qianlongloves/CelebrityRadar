@@ -64,6 +64,37 @@
     color: $text-3;
   }
 
+  /* 达到监测词上限时替换输入框的那一行升级引导（P2）：克制、不弹窗、点了进会员页 */
+  &__limit {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-top: 20rpx;
+    padding: 20rpx 24rpx;
+    border-radius: 16rpx;
+    background: $brand-weak;
+  }
+
+  &__limit--tap {
+    opacity: 0.9;
+  }
+
+  &__limit-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $text-2;
+  }
+
+  &__limit-go {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
   /* 已监测的词：点一下即取消（带二次确认） */
   &__chips {
     display: flex;

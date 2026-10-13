@@ -47,10 +47,10 @@ export default defineAppConfig({
      * 顺序不能随意调：自定义 tabBar 的槽位按这里的前 2 / 后 2 分组渲染（见 components/custom-tab-bar）。
      */
     list: [
-      { pagePath: 'pages/index/index', text: '查' },
-      { pagePath: 'pages/ask/index', text: '问' },
-      { pagePath: 'pages/opinion/index', text: '盯' },
-      { pagePath: 'pages/mine/index', text: '管' }
+      { pagePath: 'pages/index/index', text: '发现' },
+      { pagePath: 'pages/ask/index', text: '提问' },
+      { pagePath: 'pages/opinion/index', text: '舆情' },
+      { pagePath: 'pages/mine/index', text: '我的' }
     ]
   },
   window: {

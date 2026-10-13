@@ -1,0 +1,9 @@
+{
+  "name": "riskWatch",
+  "version": "1.0.0",
+  "description": "名人风险监控：定时检索被监控名人，命中风险表述时落 signal 并提醒一次",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

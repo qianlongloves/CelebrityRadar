@@ -11,11 +11,12 @@ import {
   loadAlerts,
   listWatches,
   markAllSeen,
-  MAX_WATCHES,
   removeWatch,
   splitWatches,
   WatchRow
 } from '@/utils/keyword-alert'
+import { readMemberState } from '@/utils/member'
+import { watchGate, watchLimit, watchLimitNote } from '@/utils/opinion-access'
 import {
   groupSignals,
   isMonitoredName,
@@ -46,10 +47,12 @@ import './index.scss'
 export default function Alerts() {
   const { userId } = useAuth()
 
-  /** 我的关键词订阅（用来渲染 chips 与「已监测 N/5」）—— 不含监控行 */
+  /** 我的关键词订阅（用来渲染 chips 与「已监测 N/上限」）—— 不含监控行 */
   const [watches, setWatches] = useState<WatchRow[]>([])
   /** 监控中的名人（keyword_watches 里 type='person' 的行） */
   const [persons, setPersons] = useState<WatchRow[]>([])
+  /** 是否会员：决定关键词监测数上限的档位（免费 watchCount.free / 会员 watchCount.member） */
+  const [isMember, setIsMember] = useState(false)
   /** 预警分组（按等级 + 最近检索时间排序） */
   const [groups, setGroups] = useState<AlertGroup[]>([])
   /** 风险信号分组（按人；按最近一条信号时间倒序） */
@@ -68,12 +71,13 @@ export default function Alerts() {
       setLoading(false)
       return
     }
-    const [rows, res] = await Promise.all([listWatches(), loadAlerts()])
+    const [rows, res, member] = await Promise.all([listWatches(), loadAlerts(), readMemberState()])
     /* 同一张表混着两类行，必须拆开：关键词订阅归上方「关键词监测」，监控行归下方风险信号板块。
-       直接用整表长度会让「已监测 N/5」把监控中的人算进关键词额度（见 keyword-alert.ts#splitWatches） */
+       直接用整表长度会让「已监测 N/上限」把监控中的人算进关键词额度（见 keyword-alert.ts#splitWatches） */
     const { keywords, persons: personRows } = splitWatches(rows)
     setWatches(keywords)
     setPersons(personRows)
+    setIsMember(member.member)
     setGroups(res.groups)
     setLoading(false)
 
@@ -197,6 +201,13 @@ export default function Alerts() {
   const notifyReady = alertNotifyConfigured()
   const riskNotifyReady = riskNotifyConfigured()
 
+  /*
+   * 关键词监测数上限（P2，2026-10-13）：免费 / 会员分档，真源见 utils/opinion-access.ts。
+   * 达到上限时**只收起新增入口**（换成一行升级引导），既有订阅与下方预警列表照常可看可管。
+   */
+  const watchCap = watchLimit(isMember)
+  const atWatchLimit = !watchGate(watches.length, isMember).allowed
+
   return (
     <View className='page-alerts'>
       {/* 订阅管理 */}
@@ -204,8 +215,8 @@ export default function Alerts() {
         <View className='card-title'>关键词监测</View>
         <Text className='page-alerts__intro'>
           {watches.length
-            ? `正在监测 ${watches.length}/${MAX_WATCHES} 个词，云端每天检索一次公开报道。`
-            : `最多可监测 ${MAX_WATCHES} 个词，云端每天检索一次公开报道。`}
+            ? `正在监测 ${watches.length}/${watchCap} 个词，云端每天检索一次公开报道。`
+            : `最多可监测 ${watchCap} 个词，云端每天检索一次公开报道。`}
         </Text>
         {/* 定位说明（2026-10-09）：本卡片与下方「监控中的名人」是两种订阅，同页并列时
             不写清就会被当成同一件事（甚至同一个人出现两遍）。一句话讲清各自的筛法即可。 */}
@@ -217,24 +228,36 @@ export default function Alerts() {
         </Text>
 
         {userId ? (
-          <View className='page-alerts__composer'>
-            <Input
-              className='page-alerts__input'
-              value={input}
-              maxlength={KEYWORD_MAX_CHARS}
-              placeholder={`输入关键词，不超过 ${KEYWORD_MAX_CHARS} 字`}
-              confirmType='done'
-              onInput={(e) => setInput(e.detail.value)}
-              onConfirm={() => void handleAdd()}
-            />
+          atWatchLimit ? (
+            /* 达到上限：收起新增入口，换成一行升级引导（不弹窗、不打断，既有订阅照常可看可管） */
             <View
-              className={`page-alerts__submit${submitting || !input.trim() ? ' page-alerts__submit--off' : ''}`}
-              hoverClass='page-alerts__submit--tap'
-              onClick={() => void handleAdd()}
+              className='page-alerts__limit'
+              hoverClass={isMember ? '' : 'page-alerts__limit--tap'}
+              onClick={isMember ? undefined : () => Taro.navigateTo({ url: '/pages/member/index' })}
             >
-              <Text>开始监测</Text>
+              <Text className='page-alerts__limit-text'>{watchLimitNote(isMember)}</Text>
+              {!isMember && <Text className='page-alerts__limit-go'>去升级 ›</Text>}
             </View>
-          </View>
+          ) : (
+            <View className='page-alerts__composer'>
+              <Input
+                className='page-alerts__input'
+                value={input}
+                maxlength={KEYWORD_MAX_CHARS}
+                placeholder={`输入关键词，不超过 ${KEYWORD_MAX_CHARS} 字`}
+                confirmType='done'
+                onInput={(e) => setInput(e.detail.value)}
+                onConfirm={() => void handleAdd()}
+              />
+              <View
+                className={`page-alerts__submit${submitting || !input.trim() ? ' page-alerts__submit--off' : ''}`}
+                hoverClass='page-alerts__submit--tap'
+                onClick={() => void handleAdd()}
+              >
+                <Text>开始监测</Text>
+              </View>
+            </View>
+          )
         ) : (
           <Text className='page-alerts__login-tip'>登录后可订阅关键词（去「我的」页一键登录）</Text>
         )}

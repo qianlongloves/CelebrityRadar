@@ -4,6 +4,8 @@ import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { parsePersonKey } from '@/config/domains'
 import { diagLog } from './cloud-diagnostics'
+import { readMemberState } from './member'
+import { followGate, followLimitNote } from './opinion-access'
 
 /** 关注列表（§3.8 follows，主键 = openid#personKey） */
 export interface FollowRow {
@@ -74,6 +76,23 @@ export async function toggleFollow(personKey: string, source?: string): Promise<
     track('unfollow', source ? { personKey, from: source } : { personKey })
     return false
   }
+
+  /*
+   * 新增关注前的分档门禁（P2，2026-10-13）：免费档最多 followLimit(false) 人、会员档
+   * followLimit(true) 人（真源见 config/benefits.ts#OPINION_LIMITS）。
+   *
+   * ⚠ 判定**只在「新增」这一支**做 —— 上面的取消关注分支永远放行，listFollows 也从不截断：
+   *   线上已有用户可能已关注超过免费档的人，那些数据必须原样保留、照常可看可用（含取关），
+   *   超限只影响「继续新增」。任何把上限用在读 / 删 / 藏既有数据上的写法都是错的。
+   * ⚠ 端上上限是**体验层不是安全边界**：关注数据由端上写入，改包可绕过（见
+   *   utils/opinion-access.ts 文件头），这里只负责给用户一个合理的入口体验。
+   */
+  const isMember = (await readMemberState()).member
+  if (!followGate((await listFollows()).length, isMember).allowed) {
+    Taro.showToast({ title: followLimitNote(isMember), icon: 'none', duration: 2500 })
+    return null
+  }
+
   const { error } = await table('follows').insert({
     id,
     openid: userId,

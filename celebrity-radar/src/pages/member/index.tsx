@@ -22,7 +22,8 @@ import { dayKey8 } from '@/utils/time'
 import { HISTORY_LIMIT } from '@/utils/history'
 /* 报告模板的节数与名单也只有一个来源（utils/report-toc.ts），对比表同样只引用不复制 */
 import { FREE_TOC_COUNT, TEMPLATE_SIZE } from '@/utils/report-toc'
-import { KEYWORD_MAX_CHARS, MAX_WATCHES } from '@/utils/keyword-alert'
+/* 舆情功能的免费 / 会员分层上限（关注人数 / 关键词监测 / 舆情明细）真源：config/benefits.ts */
+import { OPINION_LIMITS } from '@/config/benefits'
 import { QA_MAX_QUESTION } from '@/utils/qa'
 import { MAX_PERSON_WATCHES } from '@/utils/risk-watch'
 import {
@@ -140,9 +141,31 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
     member: `每日 ${MEMBER_DAILY_ASK_LIMIT} 次`
   },
   {
-    name: '关注 / 收藏 / 历史',
+    /*
+     * 2026-10-13（P2）起「关注名人」也是分档权益：免费最多关注 3 人、会员 30 人。
+     * 数值取自 config/benefits.ts#OPINION_LIMITS（真源），不在这里写死；收藏与浏览历史仍不分档，
+     * 故拆成两行，避免把「关注有人数上限」含糊进一句「不限次」里。
+     */
+    name: '关注名人',
+    free: `最多 ${OPINION_LIMITS.followCount.free} 人`,
+    member: `最多 ${OPINION_LIMITS.followCount.member} 人`
+  },
+  {
+    name: '收藏 / 浏览历史',
     free: '不限次',
     member: '不限次'
+  },
+  {
+    /* 关键词监测数同样于 2026-10-13 分档（免费 1 / 会员 10）；数值取自 OPINION_LIMITS */
+    name: '关键词监测',
+    free: `最多 ${OPINION_LIMITS.watchCount.free} 个词`,
+    member: `最多 ${OPINION_LIMITS.watchCount.member} 个词`
+  },
+  {
+    /* 舆情页每块明细：免费截断到 N 条，会员显示全部（今日要点卡不受限，是留存钩子） */
+    name: '舆情明细',
+    free: `每块最多 ${OPINION_LIMITS.detailRows.free} 条`,
+    member: '全部可见'
   },
   {
     /*
@@ -168,10 +191,11 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
  * 额度与次数一览（2026-10-10 新增）。
  *
  * 为什么要在对比表之外**再列一遍**：对比表是「卖点表」，只挑得出差异的几行（模型档位、
- * 报告厚度、生成 / 提问次数），而用户真正会撞上的限制散在四个模块里 —— 抓取动态 10 次/日、
- * 周报占用生成额度、免费版 12 小时刷新冷却、关键词与监控各 5 个容量、提问 120 字上限。
- * 这些此前只在撞上的一瞬间以 toast 出现（「今日刷新已达上限」「最多订阅 5 个关键词」），
+ * 报告厚度、生成 / 提问次数），而用户真正会撞上的限制散在几个模块里 —— 抓取动态 10 次/日、
+ * 周报占用生成额度、免费版 12 小时刷新冷却、风险监控 5 位容量、提问 120 字上限。
+ * 这些此前只在撞上的一瞬间以 toast 出现（「今日刷新已达上限」「最多盯 5 位」），
  * 用户不会为了知道规则而先把每一条都撞一遍。
+ * （关注人数 / 关键词监测 已在 2026-10-13 起分档，是**差异权益**，故归上方对比表，不列在此。）
  *
  * 三条硬口径（改动前先读）：
  *   1. **数字全部引用常量**，页面里不写死 —— 与对比表同一条规则（见文件头原则 2）；
@@ -221,7 +245,6 @@ const QUOTA_ROWS: Array<{ name: string; free: string; member: string; note: stri
 
 /** 容量与输入上限（两版相同，不分档；数值取各自实现处的常量） */
 const QUOTA_CAPS: string[] = [
-  `关键词预警：每人最多订阅 ${MAX_WATCHES} 个词，每个词 ≤ ${KEYWORD_MAX_CHARS} 字`,
   `风险监控：每人最多盯 ${MAX_PERSON_WATCHES} 位名人，云端每天自动检索一次`,
   `单条提问：≤ ${QA_MAX_QUESTION} 字`,
   `浏览历史：本机保留最近 ${HISTORY_LIMIT} 条，超出后丢弃最旧的`

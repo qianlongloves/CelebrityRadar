@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import Taro, { useDidShow } from '@tarojs/taro'
 import { Text, View } from '@tarojs/components'
 import { listFollows } from '@/utils/follows'
@@ -7,6 +7,20 @@ import { MATERIAL_FAIL_TEXT, WEEKLY_WINDOW_DAYS, collectWeeklyMaterial, readWeek
 import type { WeeklyReport } from '@/utils/weekly'
 import { loadAlerts, listWatches, splitWatches } from '@/utils/keyword-alert'
 import { groupSignals, loadRiskSignals } from '@/utils/risk-watch'
+import { readMemberState } from '@/utils/member'
+import { moreDetailNote, sliceDetail } from '@/utils/opinion-access'
+import {
+  CRED_LABEL,
+  IMPACT_LABEL,
+  RESPONSE_LABEL,
+  buildOpinionQueue,
+  credibilityOf,
+  impactOf,
+  pickDailyFocus,
+  responseOf
+} from '@/utils/opinion-rank'
+import type { OpinionBlock } from '@/utils/opinion-rank'
+import type { RiskSignalRow } from '@/types/db'
 import { domainLabel, parsePersonKey } from '@/config/domains'
 import { formatMoment8, fromNow } from '@/utils/time'
 import { useTabBarSync } from '@/utils/tabbar'
@@ -22,13 +36,24 @@ import './index.scss'
  * 数据层全部复用既有 utils（follows / cache / weekly / keyword-alert / risk-watch），
  * 不新增集合、不改云函数；每块各自 try/catch，**一块读失败只降级那一块**，不拖垮整页。
  *
+ * P1（2026-10-13）：页首新增「今日需要注意的 N 件事」——判断入口。判断规则（分级 / 排序 /
+ * 去重 / 挑要点）全在纯函数 utils/opinion-rank.ts 里，本页只负责取数与渲染。
+ *
+ * ⚠ 合规红线（本页同样适用，见 utils/opinion-rank.ts 文件头）：
+ *   · 涉政涉军仍是拒答 —— 本页只重排**已过滤**的存量条目，不新增任何内容来源；
+ *   · 每条必带来源与时间，无来源的不进「今日要点」（显示为「来源未标注」而不是编一个）；
+ *   · 分级标签来自「报道里出现的表述类别」，不是平台对人和事的定性（页面底部有免责说明）。
+ *
  * 刻意不做的事：不在这里调 generateWeekly（生成要花额度且需用户确认，交给完整页）；
  * 也不调 markAllSeen（一旦在这里标已读，完整页里那批「新」就凭空消失了）。
  */
 
-/** 每个区块最多列几条概要 */
-const PREVIEW_ROWS = 3
-
+/**
+ * 每块明细可见条数（P2，2026-10-13 起分档）：免费档 detailRows.free 条 / 会员档全部，
+ * 取值与截断由 utils/opinion-access.ts#sliceDetail 给（真源 config/benefits.ts#OPINION_LIMITS）。
+ * ⚠ 「今日要点」卡不受此限制 —— 它最多 3 条（utils/opinion-rank.ts#DAILY_FOCUS_MAX），
+ *   是留存钩子，免费用户照常看到。
+ */
 type Status = 'loading' | 'ready' | 'error'
 
 interface FeedPreview {
@@ -51,7 +76,10 @@ interface FeedState {
   followCount: number
   entryCount: number
   failedCount: number
-  latest: FeedPreview[]
+  /** 全部归并后的动态（统一队列取全量；本块按会员态截断展示） */
+  items: FeedPreview[]
+  /** 关注的人名（「与我相关」排序用） */
+  followNames: string[]
 }
 
 interface WeeklyState {
@@ -68,7 +96,14 @@ interface AlertState {
   personCount: number
   newTotal: number
   riskCount: number
-  latest: AlertPreview[]
+  /** 关键词预警条目（全量；本块按会员态截断展示） */
+  items: AlertPreview[]
+  /** 风险信号原文（参与统一队列分级；本块只统计条数） */
+  riskRows: RiskSignalRow[]
+  /** 监控中的关键词原文（「与我相关」排序用） */
+  keywords: string[]
+  /** 监控中的名人名（「与我相关」排序用；与关注的人合并） */
+  personNames: string[]
 }
 
 /** 周报未生成时的状态文案：先说有没有可汇总的材料，再给出下一步 */
@@ -86,7 +121,8 @@ export default function Opinion() {
     followCount: 0,
     entryCount: 0,
     failedCount: 0,
-    latest: []
+    items: [],
+    followNames: []
   })
   const [weekly, setWeekly] = useState<WeeklyState>({
     status: 'loading',
@@ -100,8 +136,26 @@ export default function Opinion() {
     personCount: 0,
     newTotal: 0,
     riskCount: 0,
-    latest: []
+    items: [],
+    riskRows: [],
+    keywords: [],
+    personNames: []
   })
+  /**
+   * 是否会员：决定每块明细条数上限（免费截断、会员显示全部）。
+   * ⚠ 每次进入页面（useDidShow）都重读一次 users.membership 镜像 —— 不引入任何额外缓存，
+   *   用户开通后重新进入即生效（沿用项目既有的 readMemberState 口径）。
+   */
+  const [isMember, setIsMember] = useState(false)
+
+  /** 会员态：读库失败按非会员处理（保守，只影响展示条数） */
+  const loadMember = useCallback(async () => {
+    try {
+      setIsMember((await readMemberState()).member)
+    } catch {
+      setIsMember(false)
+    }
+  }, [])
 
   /** 关注动态概要：批量读缓存（与关注流页同一入口），归并后取最近若干条 */
   const loadFeed = useCallback(async () => {
@@ -131,7 +185,8 @@ export default function Opinion() {
         followCount: rows.length,
         entryCount: merged.length,
         failedCount: failed,
-        latest: merged.slice(0, PREVIEW_ROWS)
+        items: merged,
+        followNames: rows.map((r) => r.name)
       })
     } catch {
       setFeed((s) => ({ ...s, status: 'error' }))
@@ -167,12 +222,12 @@ export default function Opinion() {
       const [rows, res] = await Promise.all([listWatches(), loadAlerts()])
       const { keywords, persons } = splitWatches(rows)
 
-      const latest: AlertPreview[] = []
+      const items: AlertPreview[] = []
       let newTotal = 0
       for (const g of res.groups) {
         newTotal += g.newCount
         for (const it of g.items) {
-          latest.push({
+          items.push({
             keyword: g.keyword,
             title: it.title,
             source: it.source,
@@ -182,15 +237,18 @@ export default function Opinion() {
       }
 
       const keys = persons.map((p) => p.person_key).filter((k): k is string => !!k)
-      const riskCount = groupSignals(await loadRiskSignals(keys)).reduce((n, g) => n + g.signals.length, 0)
+      const riskRows = await loadRiskSignals(keys)
 
       setAlerts({
         status: 'ready',
         keywordCount: keywords.length,
         personCount: persons.length,
         newTotal,
-        riskCount,
-        latest: latest.slice(0, PREVIEW_ROWS)
+        riskCount: groupSignals(riskRows).reduce((n, g) => n + g.signals.length, 0),
+        items,
+        riskRows,
+        keywords: keywords.map((w) => w.keyword),
+        personNames: persons.map((p) => p.keyword)
       })
     } catch {
       setAlerts((s) => ({ ...s, status: 'error' }))
@@ -198,20 +256,134 @@ export default function Opinion() {
   }, [])
 
   useDidShow(() => {
+    /* 每次进入都重读会员态：开通后重新进入即看到更高上限 / 更多条数（不引入额外缓存） */
+    void loadMember()
     void loadFeed()
     void loadWeekly()
     void loadAlertBlock()
   })
 
+  /**
+   * 统一队列：把三块数据合成一条排序好的列表（纯函数，脏数据自动跳过）。
+   * 输入里 `watchNames` = 关注的人 ∪ 监控的人 —— 两者都是用户主动盯上的对象（见 opinion-rank.ts）。
+   */
+  const queue = useMemo(() => {
+    const weeklyEntries =
+      weekly.report?.persons?.flatMap((p) =>
+        p.entries.map((it) => ({
+          block: 'weekly' as const,
+          title: it.title,
+          source: it.source,
+          date: it.publishedDate ?? '',
+          person: p.name
+        }))
+      ) ?? []
+
+    return buildOpinionQueue({
+      feed: feed.items.map((e) => ({
+        block: 'feed' as const,
+        title: e.title,
+        source: e.source,
+        date: e.date,
+        person: e.personName
+      })),
+      weekly: weeklyEntries,
+      alerts: [
+        ...alerts.items.map((a) => ({
+          block: 'alert' as const,
+          title: a.title,
+          source: a.source,
+          date: a.date,
+          keyword: a.keyword
+        })),
+        ...alerts.riskRows.map((s) => ({
+          block: 'alert' as const,
+          title: s.title,
+          source: s.source,
+          date: s.first_seen_at,
+          person: s.name,
+          category: s.category,
+          level: s.level
+        }))
+      ],
+      keywords: alerts.keywords,
+      watchNames: [...feed.followNames, ...alerts.personNames]
+    })
+  }, [feed.items, feed.followNames, weekly.report, alerts.items, alerts.riskRows, alerts.keywords, alerts.personNames])
+
+  /** 今日要点：统一队列前 3 条（无来源 / 与我不相关的不凑数）—— 不受明细条数分层限制 */
+  const focus = useMemo(() => pickDailyFocus(queue), [queue])
+
+  /**
+   * 每块明细的展示截断（P2）：免费档切到 detailRows.free 条，会员档全部。
+   * `hidden > 0` 即被藏起的条数，页面据此在列表底部给一行「会员可见全部 N 条 ›」的提示
+   * （不遮罩、不弹窗）。**今日要点不在此列**，它走自己的 focus（最多 3 条）。
+   */
+  const feedShown = sliceDetail(feed.items, isMember)
+  const alertShown = sliceDetail(alerts.items, isMember)
+
   const goFeed = () => void Taro.navigateTo({ url: '/pages/feed/index' })
   const goWeekly = () => void Taro.navigateTo({ url: '/pages/weekly/index' })
   const goAlerts = () => void Taro.navigateTo({ url: '/pages/alerts/index' })
+  const goMember = () => void Taro.navigateTo({ url: '/pages/member/index' })
+  /** 今日要点点进对应完整页 —— 同一套入口，不新增页面 */
+  const goBlock = (block: OpinionBlock) => {
+    if (block === 'feed') goFeed()
+    else if (block === 'weekly') goWeekly()
+    else goAlerts()
+  }
+
+  /**
+   * 单条的分级标签（影响面 / 可信度 / 是否需回应）。
+   * feed 与关键词预警条目没有风险级别字段，故这里是「未评级 / 未知」——**如实透出，不猜**。
+   */
+  const gradeTags = (source: string, category?: RiskSignalRow['category'], level?: string) => {
+    const impact = impactOf(level)
+    const cred = credibilityOf([source])
+    const resp = responseOf(category, level)
+    return (
+      <View className='page-opinion__tags'>
+        <Text className={`page-opinion__tag page-opinion__tag--${impact}`}>{IMPACT_LABEL[impact]}</Text>
+        <Text className={`page-opinion__tag page-opinion__tag--cred-${cred}`}>{CRED_LABEL[cred]}</Text>
+        <Text className={`page-opinion__tag page-opinion__tag--${resp}`}>{RESPONSE_LABEL[resp]}</Text>
+      </View>
+    )
+  }
 
   return (
     <View className='page-opinion glow-page safe-tab'>
       <View className='page-opinion__hero'>
         <Text className='page-opinion__hero-title'>舆情台</Text>
         <Text className='page-opinion__hero-sub'>关注的人 · 本周周报 · 关键词预警，一处看全</Text>
+      </View>
+
+      {/* ===== 今日要点（判断入口，置于三块之前） ===== */}
+      <View className='card page-opinion__focus'>
+        <View className='page-opinion__head'>
+          <Text className='page-opinion__head-title'>
+            {focus.length > 0 ? `🎯 今日需要注意的 ${focus.length} 件事` : '🎯 今日需要注意的事'}
+          </Text>
+        </View>
+
+        {focus.length === 0 ? (
+          <Text className='page-opinion__empty'>今天没有需要你特别留意的事</Text>
+        ) : (
+          focus.map((e) => (
+            <View key={e.id} className='page-opinion__row' onClick={() => goBlock(e.block)}>
+              <Text className='page-opinion__row-title'>{e.title}</Text>
+              <Text className='page-opinion__row-meta'>
+                {[e.source || '来源未标注', e.date ? formatMoment8(e.date) : '', e.reason]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+              {gradeTags(e.source, e.category, e.level)}
+            </View>
+          ))
+        )}
+
+        <Text className='page-opinion__note'>
+          以上均为公开报道的转载与检索结果，不是平台对任何人、任何事的定性；分级来自报道里出现的表述类别。
+        </Text>
       </View>
 
       {/* ===== 关注动态 ===== */}
@@ -245,14 +417,28 @@ export default function Opinion() {
                   <Text className='page-opinion__stat page-opinion__stat--warn'>{feed.failedCount} 人读取失败</Text>
                 )}
               </View>
-              {feed.latest.map((e, i) => (
+              {feedShown.rows.map((e, i) => (
                 <View key={`${e.personName}-${i}`} className='page-opinion__row' onClick={goFeed}>
                   <Text className='page-opinion__row-title'>{e.title}</Text>
                   <Text className='page-opinion__row-meta'>
-                    {e.personName} · {domainLabel(e.domain)} · {e.source || '公开来源'}
+                    {[
+                      e.personName,
+                      domainLabel(e.domain),
+                      e.source || '来源未标注',
+                      e.date ? formatMoment8(e.date) : ''
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </Text>
+                  {gradeTags(e.source)}
                 </View>
               ))}
+              {/* 免费档明细被截断：列表底部一行不刺眼的升级引导（会员显示全部，故不出现） */}
+              {feedShown.hidden > 0 && (
+                <Text className='page-opinion__more-detail' onClick={goMember}>
+                  {moreDetailNote(feed.items.length)}
+                </Text>
+              )}
             </>
           ))}
       </View>
@@ -324,18 +510,28 @@ export default function Opinion() {
                   <Text className='page-opinion__stat page-opinion__stat--warn'>风险信号 {alerts.riskCount} 条</Text>
                 )}
               </View>
-              {alerts.latest.length === 0 ? (
+              {alerts.items.length === 0 ? (
                 <Text className='page-opinion__empty'>已开始监测，暂无相关报道</Text>
               ) : (
-                alerts.latest.map((a, i) => (
-                  <View key={`${a.keyword}-${i}`} className='page-opinion__row' onClick={goAlerts}>
-                    <Text className='page-opinion__row-title'>{a.title}</Text>
-                    <Text className='page-opinion__row-meta'>
-                      {a.keyword} · {a.source || '公开来源'}
-                      {a.date ? ` · ${formatMoment8(a.date)}` : ''}
+                <>
+                  {alertShown.rows.map((a, i) => (
+                    <View key={`${a.keyword}-${i}`} className='page-opinion__row' onClick={goAlerts}>
+                      <Text className='page-opinion__row-title'>{a.title}</Text>
+                      <Text className='page-opinion__row-meta'>
+                        {[a.keyword, a.source || '来源未标注', a.date ? formatMoment8(a.date) : '']
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </Text>
+                      {gradeTags(a.source)}
+                    </View>
+                  ))}
+                  {/* 免费档明细被截断：列表底部一行不刺眼的升级引导（会员显示全部，故不出现） */}
+                  {alertShown.hidden > 0 && (
+                    <Text className='page-opinion__more-detail' onClick={goMember}>
+                      {moreDetailNote(alerts.items.length)}
                     </Text>
-                  </View>
-                ))
+                  )}
+                </>
               )}
             </>
           ))}

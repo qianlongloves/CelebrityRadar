@@ -1,7 +1,10 @@
 import Taro from '@tarojs/taro'
 import { useAuth } from '@/stores/auth'
+import { callCloudFunction } from './cloud'
 import { diagLog } from './cloud-diagnostics'
 import { explainDbFailure, table } from './db'
+import { readMemberState } from './member'
+import { watchGate, watchLimit, watchLimitNote } from './opinion-access'
 
 /**
  * 关键词舆情预警（2026-10-08）。
@@ -85,8 +88,15 @@ export interface AlertGroup {
   lastFetchedAt: string
 }
 
-/** 每人订阅上限：与云函数 keywordAlert 的 MAX_WATCHES_PER_USER 保持一致 */
-export const MAX_WATCHES = 5
+/*
+ * 每人订阅上限（P2，2026-10-13 起分档）：免费 `watchLimit(false)` 个 / 会员 `watchLimit(true)` 个，
+ * 数值真源见 `config/benefits.ts#OPINION_LIMITS`，取用与门禁见 `utils/opinion-access.ts`。
+ *
+ * ⚠ P4（2026-10-13）：原先这里写死 5、与云函数 keywordAlert 的「每人不分档的 5」对齐 ——
+ *   会员档（10）已超过那个 5，云端会把每人第 6~10 行整行忽略（用户以为在盯、实际没扫）。
+ *   现云端 keywordAlert 已按 `memberships`（权威表）分档校验新增数量（写入走 action:'add'），
+ *   且定时扫描**不再按上限裁剪存量**；本文件的分档门禁只在云端不可用时兜底，是**体验层**。
+ */
 /** 关键词最长字符数（按字符计，超出会让上游检索变成一句描述） */
 export const KEYWORD_MAX_CHARS = 12
 /** 判定为「舆情升温」的最少新增条数：与云函数 ALERT_MIN_ITEMS 同口径 */
@@ -167,11 +177,49 @@ export function splitWatches(rows: WatchRow[]): { keywords: WatchRow[]; persons:
 }
 
 /**
+ * 经云函数 keywordAlert 权威写入一条订阅（P4，2026-10-13）。
+ *
+ * 为什么订阅也要过一次云端：`watchLimit` 读的是 `users.membership` **镜像**（端上可改、
+ * 可被改包绕过），而每一条订阅都会在每天定时扫描里持续消耗上游检索预算 —— 所以
+ * 「能不能再加一个」必须由云端按 `memberships`（权威表）说了算。云端回的是**结构化回执**，
+ * 超限时带 `reason:'over_limit'` 与 `limit` / `tier`，**不会静默丢弃**（静默丢弃正是本轮修的缺陷）。
+ *
+ * 返回 `null` = 云端不可用（函数未部署 / 网络抖动），调用方回退端上原有路径 ——
+ * 与 utils/quota-guard.ts「云端优先、静默回退本机」同一取舍。
+ */
+async function addWatchViaCloud(
+  keyword: string
+): Promise<{ ok: boolean; message: string; fatal?: boolean } | null> {
+  try {
+    const res = (await callCloudFunction('keywordAlert', { action: 'add', keyword })) as
+      | { ok?: boolean; reason?: string; limit?: number; tier?: string; message?: string }
+      | null
+    if (!res || typeof res.ok !== 'boolean') {
+      diagLog('warn', 'db', 'keywordAlert(add) 无有效回执，回退端上订阅')
+      return null
+    }
+    if (res.ok) return { ok: true, message: res.message || `已开始监测「${keyword}」` }
+    /* over_limit 的文案按云端回执的档位生成（端上 mirror 可能已过期，以云端 tier 为准） */
+    if (res.reason === 'over_limit') {
+      return { ok: false, message: res.message || watchLimitNote(res.tier === 'member') }
+    }
+    return { ok: false, message: res.message || '订阅失败，请重试' }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    diagLog('warn', 'db', `keywordAlert(add) 调用失败，回退端上订阅：${msg}`)
+    return null
+  }
+}
+
+/**
  * 订阅一个关键词。
  *
  * seen_at 写当前时间的原因见文件头取舍 3；重复订阅直接返回提示而不重复写库。
  * 上限与去重都只算**关键词**行：监控名人（type='person'）有它自己的上限，
- * 不该占用「最多监测 5 个词」的额度。
+ * 不该占用「最多监测 N 个词」的额度（N 按身份分档，见 utils/opinion-access.ts）。
+ *
+ * 写入路径（P4，2026-10-13 起）：**优先走云端权威判定**（见 addWatchViaCloud，读 memberships
+ * 判档）；云端不可用时回退端上门禁 + 直接写库。
  *
  * 失败时若判定为环境问题（集合没建 / 权限不允许端上写入），返回值带 `fatal: true`，
  * 调用方改用弹窗说清修法（见 db.ts#explainDbFailure）—— 与 monitorPerson 同一套。
@@ -186,8 +234,22 @@ export async function addWatch(raw: string): Promise<{ ok: boolean; message: str
   if (watches.some((w) => w.keyword === check.keyword)) {
     return { ok: false, message: '这个词已经在监测中了' }
   }
-  if (watches.length >= MAX_WATCHES) {
-    return { ok: false, message: `最多同时监测 ${MAX_WATCHES} 个词，先取消一个再加` }
+
+  /* 云端权威判定优先（分档上限读 memberships，端上改包绕不过）。null = 云端不可用，走下面的回退。 */
+  const viaCloud = await addWatchViaCloud(check.keyword)
+  if (viaCloud) return viaCloud
+
+  /*
+   * 回退路径（云端未部署 / 调用失败）：端上门禁 + 直接写库，与 P2 改造后的行为一致。
+   * ⚠ 端上这道上限是**体验层不是安全边界**（读的是 users.membership 镜像、整段可被改包绕过），
+   *   真正的成本边界在云端 keywordAlert（读 memberships 权威表）。回退期间可被绕过，属已知过渡态。
+   * ⚠ 判定**只在「新增」这一支**做 —— 上面的重复订阅、下面的取消订阅都照常，listWatches /
+   *   loadAlerts 也从不截断：已有用户可能已订阅超过免费档的词，那些数据原样保留、照常可看可用。
+   */
+  const isMember = (await readMemberState()).member
+  const limit = watchLimit(isMember)
+  if (!watchGate(watches.length, isMember).allowed) {
+    return { ok: false, message: watchLimitNote(isMember) }
   }
 
   const now = new Date().toISOString()
@@ -207,19 +269,19 @@ export async function addWatch(raw: string): Promise<{ ok: boolean; message: str
   }
 
   /*
-   * P2-29：上面的 `watches.length >= MAX_WATCHES` 是「先查数、再插入」，两次点击并发时
-   * 都读到 4、各插一条 ⇒ 落到 6 条（端上没有任何原子计数可用）。而云端 keywordAlert 的
-   * 每人上限判定会把**第 6 行整行忽略** —— 超出的那条永不扫描，端上却显示「已开始监测」，
-   * 用户以为在监控、实际什么都没发生，三层都不报错。
-   * 端上做不了原子计数，于是插完再核一次：真超了就把刚插的这条撤回，如实报错。
+   * P2-29：上面的门禁是「先查数、再插入」，两次点击并发时都读到 limit-1、各插一条
+   * ⇒ 落到 limit+1 条（端上没有任何原子计数可用）。超出的那条会被云端整行忽略 ——
+   * 永不扫描，端上却显示「已开始监测」，用户以为在监控、实际什么都没发生，三层都不报错。
+   * 端上做不了原子计数，于是插完再核一次：真超了就把**刚插的这条**撤回，如实报错。
+   * ⚠ 这里删的只是本次刚插入的那一行，绝不触碰既有订阅（既有存量一律保留）。
    */
   const after = splitWatches(await listWatches()).keywords
-  if (after.length > MAX_WATCHES) {
+  if (after.length > limit) {
     const { error: rollbackErr } = await table('keyword_watches')
       .delete()
       .eq('id', `${userId}#${check.keyword}`)
     if (rollbackErr) diagLog('warn', 'db', `回滚超限订阅失败：${rollbackErr.message ?? rollbackErr}`)
-    return { ok: false, message: `最多同时监测 ${MAX_WATCHES} 个词，先取消一个再加` }
+    return { ok: false, message: watchLimitNote(isMember) }
   }
 
   return { ok: true, message: `已开始监测「${check.keyword}」` }
@@ -241,7 +303,7 @@ export async function removeWatch(keyword: string): Promise<boolean> {
 /**
  * 读预警列表：订阅 → 批量取各词的检索缓存 → 过滤出「我又没看过的新条目」。
  *
- * 一次 `in` 查询取回全部（最多 MAX_WATCHES 个词），不逐个关键词查：
+ * 一次 `in` 查询取回全部（每人最多几个词由分档上限决定，见 utils/opinion-access.ts），不逐个关键词查：
  * 小程序端每次 get 都要一次网络往返，5 个词逐个查就是 5 倍等待。
  */
 export async function loadAlerts(): Promise<{ groups: AlertGroup[]; watched: number }> {

@@ -116,13 +116,35 @@
     text-overflow: ellipsis;
   }
 
-  /* 取关做成描边胶囊：比纯文字更像「可点的操作」，也与危险的红色区分开 */
-  &__op {
-    flex-shrink: 0;
-    padding: 8rpx 24rpx;
-    border: 2rpx solid $line;
-    border-radius: 999rpx;
+  /* ===== 关注上限提示（P2）：免费档给升级引导，会员档只如实说明 =====
+     左右 32rpx 与 .card 的 margin 对齐；克制的一行，不打断浏览与取关 */
+  &__limit {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin: 0 32rpx 12rpx;
+    padding: 16rpx 24rpx;
+    border-radius: 16rpx;
+    background: $brand-weak;
+
+    &--tap {
+      opacity: 0.92;
+    }
+  }
+
+  &__limit-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
     color: $text-2;
-    font-size: 22rpx;
+  }
+
+  &__limit-go {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand;
   }
 }

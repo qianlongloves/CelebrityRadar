@@ -22,11 +22,11 @@ interface TabItem {
  * icon 与路径一一对应，顺序仍按前 2 / 后 2 分组渲染（见下方 render）。
  */
 const TABS: TabItem[] = [
-  { path: '/pages/index/index', label: '查', icon: 'home' },
-  { path: '/pages/ask/index', label: '问', icon: 'chat' },
-  /* 第三格：舆情聚合页（眼睛 = 盯），见 pages/opinion */
-  { path: '/pages/opinion/index', label: '盯', icon: 'eye' },
-  { path: '/pages/mine/index', label: '管', icon: 'user' }
+  { path: '/pages/index/index', label: '发现', icon: 'home' },
+  { path: '/pages/ask/index', label: '提问', icon: 'chat' },
+  /* 第三格：舆情聚合页（眼睛 = 盯舆情），见 pages/opinion */
+  { path: '/pages/opinion/index', label: '舆情', icon: 'eye' },
+  { path: '/pages/mine/index', label: '我的', icon: 'user' }
 ]
 
 /** 归一化路由：个别基础库给的是带前导斜杠的完整路径，不统一就一个都匹配不上、恒亮首项 */

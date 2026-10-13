@@ -1,0 +1,9 @@
+{
+  "name": "keywordAlert",
+  "version": "1.0.0",
+  "description": "关键词舆情预警：定时扫描订阅词 + 分档校验新增订阅（action:'add'）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

@@ -695,11 +695,12 @@ describe('关键词订阅与名人监控共用表 utils/keyword-alert', () => {
     deepEq(persons.map((w) => w.person_key), ['雷军#tech'])
   })
 
-  it('addWatch 写 type=keyword，且监控行不占用「最多 5 个词」的额度', async () => {
+  it('addWatch 写 type=keyword，且监控行不占用关键词监测额度', async () => {
     const { db, load } = fresh()
     const me = login()
     const { addWatch, listWatches } = load('utils/keyword-alert')
-    /* 先塞满 5 个监控行：若上限把监控行算进去，下面的 addWatch 会被误拒 */
+    /* 先塞满 5 个监控行：若上限把监控行算进去，下面的 addWatch 会被误拒
+       （P2-2026-10-13 起关键词上限分档：免费 1 / 会员 10，但只算 type='keyword' 的行） */
     db.__seed(
       'keyword_watches',
       Array.from({ length: 5 }, (_, i) => ({
@@ -770,13 +771,19 @@ describe('关键词订阅与名人监控共用表 utils/keyword-alert', () => {
     eq(person.seen_at, '2026-10-01T00:00:00.000Z', '监控行不该被盖章')
   })
 
-  it('P2-29：并发点击导致超限时，撤回刚插的那条（否则云端把第 6 行整行忽略 = 幽灵订阅）', async () => {
+  it('P2-29：并发点击导致超限时，撤回刚插的那条（否则云端把超出的行整行忽略 = 幽灵订阅）', async () => {
     const { db, load } = fresh()
     const me = login()
-    /* 已有 4 个关键词订阅，离上限 5 只差一个 */
+    /*
+     * 关键词上限自 2026-10-13 起分档（免费 1 / 会员 10）：要复现「先查数、再插入」那个时间窗，
+     * 需要把计数停在**上限 - 1** 处，故这里用一个会员档场景（上限 10，先放 9 个）。
+     */
+    db.__seed('users', [
+      { _id: 'u1', _openid: me, membership: { plan: 'month', expires_at: new Date(Date.now() + 864e5).toISOString() } }
+    ])
     db.__seed(
       'keyword_watches',
-      [0, 1, 2, 3].map((i) => ({
+      [0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => ({
         _id: `${me}#w${i}`,
         openid: me,
         keyword: `w${i}`,
@@ -800,10 +807,10 @@ describe('关键词订阅与名人监控共用表 utils/keyword-alert', () => {
       const res = await addWatch('雷军')
 
       notOk(res.ok, '真超限必须如实失败，端上不能显示「已开始监测」')
-      ok(res.message.includes('最多同时监测 5'), `实际：${res.message}`)
+      ok(res.message.includes('最多同时监测 10'), `实际：${res.message}`)
       const ids = db.__dump('keyword_watches').map((r) => r._id)
       notOk(ids.includes(`${me}#雷军`), '刚插的那条要撤回 —— 否则它永不扫描，用户以为在监控')
-      eq(ids.length, 5, '4 个原有 + 1 行并发 = 5，不应留下第 6 行')
+      eq(ids.length, 10, '9 个原有 + 1 行并发 = 10，不应留下第 11 行')
     } finally {
       env.wxMock.cloud.database = restore
     }

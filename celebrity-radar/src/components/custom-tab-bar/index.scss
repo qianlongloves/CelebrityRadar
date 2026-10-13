@@ -6,20 +6,31 @@
    * 悬浮胶囊（替代原「贴底通栏」）：四周留白、四角一致圆角，
    * 底部间距里含安全区，避免压到 Home 指示条。
    *
-   * 背景分两层：先给一层足够不透明的兜底色，再叠毛玻璃。部分机型 / 低版本
-   * WebView 不支持 backdrop-filter，此时只剩兜底色 —— 它必须自己就能让栏内
-   * 文字与下方内容拉开对比，不能指望模糊来救。
+   * 背景 = 页面底色（$bg）半透明 + 毛玻璃（2026-10-13 调整）：原先是浅紫底 + 较重阴影，
+   * 悬浮栏与页面之间会显出一条明显边界。改成与内容同色后，栏本身几乎「融」进背景，
+   * 只剩内容与一道很轻的投影提示它可点。兜底色必须自己够不透明，因为部分机型 /
+   * 低版本 WebView 不支持 backdrop-filter，那时全靠它撑对比。
    */
   position: fixed;
   left: 24rpx;
   right: 24rpx;
-  bottom: calc(24rpx + env(safe-area-inset-bottom));
+  bottom: calc(0rpx + env(safe-area-inset-bottom));
   z-index: 999;
-  background: rgba(238, 233, 255, 0.94);
+  /*
+   * 半透明与毛玻璃都加重了（2026-10-13 二次调整）：因为页面底色与栏底本来就同色，
+   * 光靠「同色」会糊成一片、看不出这是悬浮层。加重分三处：
+   *   ① 模糊半径 20rpx -> 40rpx，并叠 saturate —— 内容滚到栏下时才看得出的「玻璃感」；
+   *   ② 不透明度 0.94 -> 0.97，字压在滚动内容上仍然清楚（糊了就没法读）；
+   *   ③ 阴影加到两层（大范围柔影 + 贴边紧影），把悬浮感做出来。
+   * 刻意**不加描边**：硬边线会显脏，这里只要「分层」不要「画框」。
+   */
+  background: rgba($bg, 0.97);
   border-radius: 40rpx;
-  box-shadow: 0 12rpx 48rpx rgba(95, 51, 225, 0.16);
-  -webkit-backdrop-filter: blur(20rpx);
-  backdrop-filter: blur(20rpx);
+  box-shadow:
+    0 10rpx 40rpx rgba(61, 6, 227, 0.16),
+    0 2rpx 8rpx rgba(61, 6, 227, 0.06);
+  -webkit-backdrop-filter: blur(40rpx) saturate(180%);
+  backdrop-filter: blur(40rpx) saturate(180%);
 
   &__inner {
     display: flex;

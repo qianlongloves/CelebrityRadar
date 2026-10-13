@@ -2152,7 +2152,7 @@ describe('P2-25 免计费复核的 target 上限与写口同源', () => {
 })
 
 /** 加载一个定时任务云函数：wx-server-sdk → 内存 DB（无 openid = 定时器），https → 假上游 */
-function loadScheduled(name, https) {
+function loadScheduled(name, https, openid) {
   env.resetAll()
   clearLlmEnv()
   const db = env.db.database()
@@ -2162,8 +2162,9 @@ function loadScheduled(name, https) {
     database: () => db,
     /* 云开发 AI：hotBoardRefresh 生成热榜解读走这条（见 fakeHttps 里的 ai 假实现） */
     ai: () => https.ai(),
-    /* 定时触发没有调用方 openid —— 这正是 P0-21 那道调用方闸门的通过条件 */
-    getWXContext: () => ({})
+    /* 定时触发没有调用方 openid —— 这正是 P0-21 那道调用方闸门的通过条件；
+       传了 openid 则模拟「端上调用」（keywordAlert 的 action:'add' 写入路径要它） */
+    getWXContext: () => (openid ? { OPENID: openid } : {})
   }
   const p = path.join(CLOUD, name, 'index.js')
   const orig = Module.prototype.require
@@ -2199,8 +2200,8 @@ const personWatch = (openid, personKey, name) => ({
   created_at: '2026-10-01T00:00:00.000Z'
 })
 
-describe('P2-22 定时任务：每人订阅上限的云侧兜底', () => {
-  it('keywordAlert：同一人的第 6 个词被云端挡下（端上那道可被改包绕过）', async () => {
+describe('P2-22 / P4 定时任务：每人订阅上限的云侧兜底与扫描口径', () => {
+  it('keywordAlert：扫描不按每人上限裁剪存量 —— 同一人的 6 个词全部照扫（P4 修复静默忽略）', async () => {
     const https = fakeHttps(Array.from({ length: 30 }, () => searchOk(1)))
     const { fn, calls } = loadScheduled('keywordAlert', https)
     env.db.__seed('keyword_watches', [
@@ -2211,14 +2212,21 @@ describe('P2-22 定时任务：每人订阅上限的云侧兜底', () => {
     const res = await fn.main({})
 
     eq(res.ok, true)
-    eq(res.over_limit, 1, '第 6 个订阅必须被云端挡下，否则一个人能吃掉整轮检索预算')
+    /*
+     * P4（2026-10-13）：原先这里有一段「每人最多 5 个、超出整行忽略」的裁剪 —— 它会把
+     * 会员的第 6~10 个词（上限已放开到 10）和免费存量用户（>1 个）静默停扫。现改为照单全收，
+     * 该字段已移除（成本边界交给写入路径的分档判定 + 全局 MAX_KEYWORDS 轮转预算）。
+     */
+    eq(res.over_limit, undefined, '扫描不再按每人上限裁剪（over_limit 字段已移除）')
     const queries = calls.map((c) => (c.body && c.body.query) || '').filter(Boolean)
     eq(
       queries.length,
-      6,
-      `7 条订阅（同一人 6 条 + 别人 1 条）只该检索 6 个词 —— 被挡下的那个不花上游的钱，实际 ${JSON.stringify(queries)}`
+      7,
+      `7 条订阅必须全部进入扫描（不再按人裁到 5），实际 ${JSON.stringify(queries)}`
     )
-    ok(queries.indexOf('庚') >= 0, '别人的词照常检索')
+    for (const k of ['甲', '乙', '丙', '丁', '戊', '己', '庚']) {
+      ok(queries.indexOf(k) >= 0, `${k} 应被扫描（存量/会员超额都不能被停扫）`)
+    }
   })
 
   it('riskWatch：同一人的第 6 个监控对象被挡下', async () => {
@@ -2240,6 +2248,128 @@ describe('P2-22 定时任务：每人订阅上限的云侧兜底', () => {
       `7 条监控（同一人 6 条 + 别人 1 条）只该检索 6 位名人，实际 ${JSON.stringify(queries)}`
     )
     ok(queries.indexOf('名人九') >= 0, '别人的监控照常检索')
+  })
+})
+
+/*
+ * P4（2026-10-13）：关键词监控的**分档新增上限**由云端判定（写入路径 action:'add'）。
+ *
+ * 分档口径读 `memberships`（服务端权威表，只认 expires_at 未过期），与 quotaGuard / aiProxy
+ * 的 isActiveMember 逐字同源。失败一律**显式结构化回执**（reason/limit/tier），绝不静默丢弃。
+ */
+describe('P4 关键词监控：新增上限按档判定（写入路径 action:add）', () => {
+  const future = new Date(Date.now() + 30 * 864e5).toISOString()
+  const past = new Date(Date.now() - 864e5).toISOString()
+  const seedMember = (openid, expiresAt) =>
+    env.db.__seed('memberships', [{ _id: openid, openid, plan: 'annual', expires_at: expiresAt }])
+
+  it('免费用户已达上限（1）再新增 → 显式 over_limit 回执，且不落库', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https, 'free-user')
+    env.db.__seed('keyword_watches', [wordWatch('free-user', '甲')])
+
+    const res = await fn.main({ action: 'add', keyword: '乙' })
+
+    eq(res.ok, false)
+    eq(res.reason, 'over_limit')
+    eq(res.limit, 1)
+    eq(res.tier, 'free')
+    eq(res.count, 1)
+    eq(env.db.__dump('keyword_watches').length, 1, '被拦下的新增绝不落库（不静默写入）')
+  })
+
+  it('有效会员在 1~10 之间可新增（第 10 个也放行）', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https, 'vip-user')
+    seedMember('vip-user', future)
+    env.db.__seed(
+      'keyword_watches',
+      Array.from({ length: 9 }, (_, i) => wordWatch('vip-user', `词${i}`))
+    )
+
+    const res = await fn.main({ action: 'add', keyword: '第十个' })
+
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.reason, 'added')
+    eq(res.tier, 'member')
+    eq(res.limit, 10)
+    eq(res.count, 10)
+    eq(env.db.__dump('keyword_watches').length, 10)
+  })
+
+  it('会员到期后回落免费档（上限 1）：同一次新增被拦下', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https, 'expired-user')
+    seedMember('expired-user', past)
+    env.db.__seed('keyword_watches', [wordWatch('expired-user', '甲')])
+
+    const res = await fn.main({ action: 'add', keyword: '乙' })
+
+    eq(res.ok, false)
+    eq(res.reason, 'over_limit')
+    eq(res.tier, 'free')
+    eq(res.limit, 1)
+  })
+
+  it('重复订阅 → reason:duplicate（不落库）', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https, 'vip-user')
+    seedMember('vip-user', future)
+    env.db.__seed('keyword_watches', [wordWatch('vip-user', '甲')])
+
+    const res = await fn.main({ action: 'add', keyword: '甲' })
+
+    eq(res.ok, false)
+    eq(res.reason, 'duplicate')
+    eq(env.db.__dump('keyword_watches').length, 1)
+  })
+
+  it('非法关键词不放宽校验（含 # / 超长 / 纯符号一律拒）', async () => {
+    const https = fakeHttps([])
+    const cases = ['a#b', 'x'.repeat(20), '!!!']
+    for (const kw of cases) {
+      const { fn } = loadScheduled('keywordAlert', https, 'vip-user')
+      seedMember('vip-user', future)
+      const res = await fn.main({ action: 'add', keyword: kw })
+      eq(res.ok, false, `关键词「${kw}」应被拒`)
+      ok(['invalid', 'empty'].includes(res.reason), `实际 reason=${res.reason}`)
+    }
+  })
+
+  it('无 openid（且未带 event.openid）→ reason:no_auth', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https)
+    const res = await fn.main({ action: 'add', keyword: '甲' })
+    eq(res.ok, false)
+    eq(res.reason, 'no_auth')
+  })
+
+  it('身份以 WXContext 优先：端上带 event.openid 也不能冒充他人', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https, 'real-caller')
+    /* 端上调用必带 ctx.openid；此时 event.openid 必须被忽略，否则就能替别人订阅 */
+    const res = await fn.main({ action: 'add', keyword: '甲', openid: 'victim' })
+    eq(res.ok, true, JSON.stringify(res))
+    const row = env.db.__dump('keyword_watches')[0]
+    eq(row.openid, 'real-caller', '写入的 openid 必须是真实调用者，而不是 event 里报的')
+  })
+
+  it('控制台 / 运维调用（无 WXContext）可用 event.openid 代为判定与写入', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https)
+    seedMember('ops-target', future)
+    const res = await fn.main({ action: 'add', keyword: '甲', openid: 'ops-target' })
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.tier, 'member')
+    eq(env.db.__dump('keyword_watches')[0].openid, 'ops-target')
+  })
+
+  it('只有 action:add 放行端上调用；带 openid 的其它调用仍走 P0-21 闸门', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https, 'attacker')
+    const res = await fn.main({})
+    eq(res.ok, false)
+    ok(/只由定时器触发/.test(res.skipped), `实际 ${res.skipped}`)
   })
 })
 

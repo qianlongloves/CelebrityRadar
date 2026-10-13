@@ -1,9 +1,20 @@
 /**
  * keywordAlert —— 关键词舆情预警：定时检索用户订阅的词，出现新报道时落站内预警并提醒一次。
  *
- * 触发：定时触发器（cloudbaserc.json 的 triggers，默认每天 09:20 —— 与 notifyFollowUpdates
- * 的 09:00 错开 20 分钟：两个任务都要打博查，挤在同一个 60s 窗口里会互相拖慢甚至半途超时；
- * 错开后上游限流也更容易扛住）。
+ * 触发 / 入口（P4，2026-10-13 起两条路，靠 event.action 区分）：
+ *   · `event.action === 'add'` —— **新增订阅**：端上在「订阅」时调用。按 memberships
+ *     （权威会员表）分档判「还能不能再加一个」（免费 1 / 会员 10），结果**显式回执**
+ *     （`{ ok, reason, limit, tier, count }`）——**绝不静默丢弃**（见 handleAdd）。这条写入
+ *     路径是**真正的成本边界**：端上 utils/keyword-alert.ts 那道分档门禁只是体验层，可被改包绕过。
+ *   · 无 action 且无调用方 openid —— **定时扫描**：由 cloudbaserc.json 的触发器驱动
+ *     （默认每天 09:20，与 notifyFollowUpdates 09:00 错开：两个任务都要打博查，
+ *     挤在同一个 60s 窗口里会互相拖慢甚至半途超时；错开后上游限流也更容易扛住）。
+ *
+ * ⚠ 两个「上限」是两件事，改代码前必须分清（本轮缺陷正是混成一把造成的）：
+ *   ① **新增上限（按档）** WATCH_LIMITS.free / .member —— 只拦「还能不能再加一个」，写入路径判定；
+ *   ② **扫描口径** —— 定时扫描**不按①裁剪存量**：存量用户（免费档历史上可能 >1 个）与会员的
+ *      第 6~10 个词都必须照常扫描，否则既有订阅会静默停摆（违反「只拦新增，不删存量」）。
+ *      每轮成本由全局 MAX_KEYWORDS 预算 + fetched_at 轮转兜住，不靠「每人裁几个」。
  *
  * 环境变量（控制台 → 云函数 → keywordAlert → 配置 → 环境变量）：
  *   BOCHA_API_KEY     博查搜索 key（与 aiProxy / notifyFollowUpdates 共用同一枚）**缺失则整轮跳过**
@@ -35,6 +46,13 @@
 const cloud = require('wx-server-sdk')
 const https = require('https')
 
+/**
+ * 分档新增上限的数值**不手写**：取自真源 `src/config/benefits.ts#OPINION_LIMITS`
+ * （经 `npm run config:sync` 生成同目录的 benefits.config.js），
+ * 与端上 utils/opinion-access.ts#watchLimit 读的是同一份数据（用例 14 钉住副本一致性）。
+ */
+const { OPINION_LIMITS } = require('./benefits.config')
+
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const db = cloud.database()
@@ -44,10 +62,18 @@ const TIMEOUT_MS = 15000
 /** 单轮最多检索多少个关键词：博查按次计费，云函数默认 60s 超时也撑不住更多 */
 const MAX_KEYWORDS = 20
 /**
- * 每人订阅上限。云侧**兜底判定**（见 main 里的 perUser / overLimit）：端上 utils/keyword-alert.ts
- * 也拦一道，但那道判定可被改包绕过 —— 只写常量不判定，等于把「每人 5 个」交给客户端自证。
+ * 关键词订阅的**分档新增上限**（免费 1 / 会员 10）—— 这是「**还能不能再加一个**」的上限，
+ * 只在**写入路径**（见下方 handleAdd）上判。
+ *
+ * ⚠ 它**不是**定时扫描的裁剪线：两者是两件事，混成一把就会出事 ——
+ *   · 拿它当扫描线 ⇒ 存量用户会被停扫（免费档历史上可能已订了 >1 个；会员上限 10，
+ *     旧版扫描线却是每人不分档的 5，会员的第 6~10 个词会被整行忽略）。用户以为在盯、
+ *     实际没扫，等于对用户撒谎 —— 这正是本轮修的核心缺陷。
+ *   · 不写入路径判 ⇒ 改包者能订上千个词，把每天 MAX_KEYWORDS 次的上游检索预算吃光。
+ *
+ * 判定权威在云端（读 `memberships`），端上 utils/keyword-alert.ts 那道是体验层、可被改包绕过。
  */
-const MAX_WATCHES_PER_USER = 5
+const WATCH_LIMITS = OPINION_LIMITS.watchCount
 /**
  * 订阅词的字符数上限（P2-31）。**与端上 src/utils/keyword-alert.ts#KEYWORD_MAX_CHARS 同源**。
  *
@@ -69,6 +95,8 @@ const THING_MAX = 20
 
 const WATCH_TABLE = 'keyword_watches'
 const CACHE_TABLE = 'keywords'
+/** 服务端权威会员表（_id = openid，客户端完全不可读写，见下方 isActiveMember） */
+const MEMBERSHIP_TABLE = 'memberships'
 
 function readEnv(name) {
   const v = process.env[name]
@@ -179,6 +207,135 @@ const cacheId = (keyword) => keyword
 /** 关键词 → 订阅文档主键（与 follows 的 openid#personKey 同构） */
 const watchId = (openid, keyword) => `${openid}#${keyword}`
 
+/* ───────────── 分档新增上限（P4，2026-10-13）：写入路径的服务端权威判定 ───────────── */
+
+/**
+ * 调用者是不是**有效期内的会员**。口径与云端既有闸门**逐字同源**：
+ * `quotaGuard/index.js#isActiveMember` 与 `aiProxy/index.js#isActiveMember` 读的是同一张
+ * `memberships`（_id = openid，客户端完全不可读写），只认 `expires_at`（未过期即有效）、
+ * 不校验 plan（plan 只决定天数）。
+ *
+ * **刻意不读 `users.membership`**：那张表权限是「仅创建者可读写」，端上能改自己那一行 ——
+ * 以它为准等于把「谁能订几个词」交给改包者自证。读不到 / 读库异常一律按**非会员**
+ * （fail-closed：宁可少给，不留白拿口子），与那两处同一方向。
+ */
+async function isActiveMember(openid) {
+  try {
+    const res = await db.collection(MEMBERSHIP_TABLE).doc(openid).get()
+    const m = (res && res.data) || null
+    const t = m && m.expires_at ? Date.parse(m.expires_at) : NaN
+    return Number.isFinite(t) && t > Date.now()
+  } catch (err) {
+    return false
+  }
+}
+
+/**
+ * 关键词校验。**口径与端上 utils/keyword-alert.ts#validateKeyword 同源、不放宽**：
+ * 非空、不含 `#`（订阅主键是拼出来的 `openid#关键词`，词里再有 `#` 会让主键边界模糊）、
+ * 不超过 MAX_KEYWORD_CHARS 字、且至少含一个中文 / 字母 / 数字（纯符号检索不出东西、白花一次上游）。
+ *
+ * 云端必须自己再判一次：端上那道可被改包绕过，而写入路径一旦放进来就收不回去了
+ * （这条词会进每天的扫描队列、持续消耗上游预算）。
+ */
+function validateKeyword(raw) {
+  const keyword = String(raw || '').trim().replace(/\s+/g, ' ')
+  if (!keyword) return { ok: false, reason: 'empty', message: '请输入要监测的关键词' }
+  if (keyword.includes('#')) return { ok: false, reason: 'invalid', message: '关键词不能包含 #' }
+  if (Array.from(keyword).length > MAX_KEYWORD_CHARS) {
+    return { ok: false, reason: 'invalid', message: `关键词不超过 ${MAX_KEYWORD_CHARS} 个字` }
+  }
+  if (!/[\u4e00-\u9fa5a-zA-Z0-9]/.test(keyword)) {
+    return { ok: false, reason: 'invalid', message: '关键词至少要包含文字或数字' }
+  }
+  return { ok: true, keyword }
+}
+
+/**
+ * 「新增订阅」的服务端权威写入路径（P4，2026-10-13）。
+ *
+ * 为什么订阅这件事要过一次云端：端上 utils/keyword-alert.ts 的分档门禁是**体验层**
+ * （读的是 `users.membership` 镜像，且整段可被改包绕过）。而每一条订阅都会在每天定时
+ * 扫描里持续消耗上游检索预算 —— 所以「能不能再加一个」必须由读 `memberships` 权威表的
+ * 这一处说了算。**真正的成本边界在云端**，端上那个上限只是提前给用户一个提示。
+ *
+ * 失败一律**显式回执**（结构化 reason + limit + tier），**绝不静默丢弃 / 静默截断**：
+ * 静默会让用户以为在监控、实际没扫（本轮修的正是这个「撒谎」），故宁可明确报错。
+ *
+ * 身份来源：优先 `WXContext.OPENID`（小程序端调用必带，客户端无法伪造）；仅当**没有
+ * WXContext**（控制台 / 运维调用）时才接受 `event.openid` —— 端上永远走前者，故这个口子
+ * 不能用来冒充他人，只是给运维排障 / 线上验证留的入口。
+ */
+async function handleAdd(event, ctxOpenid) {
+  const openid = ctxOpenid || (event && event.openid)
+  if (!openid) {
+    return { ok: false, reason: 'no_auth', message: '取不到调用者 openid：请从小程序端订阅' }
+  }
+
+  const check = validateKeyword(event && event.keyword)
+  if (!check.ok) return { ok: false, reason: check.reason, message: check.message }
+
+  const tier = (await isActiveMember(openid)) ? 'member' : 'free'
+  const limit = tier === 'member' ? WATCH_LIMITS.member : WATCH_LIMITS.free
+
+  /* 只算关键词行：同表还住着「监控某人」（type='person'，属 riskWatch 那一档上限），
+     它有自己的一套、不占「最多监测 N 个词」的额度（读法与端上 splitWatches 同口径）。 */
+  const mine = (await listAll(WATCH_TABLE, { openid })).filter((w) => w && w.type !== 'person')
+  const count = mine.length
+  if (mine.some((w) => w.keyword === check.keyword)) {
+    return { ok: false, reason: 'duplicate', limit, tier, count, message: '这个词已经在监测中了' }
+  }
+  if (count >= limit) {
+    return {
+      ok: false,
+      reason: 'over_limit',
+      limit,
+      tier,
+      count,
+      message:
+        tier === 'member'
+          ? `最多同时监测 ${limit} 个词，先取消一个再加`
+          : `免费版最多监测 ${limit} 个词，开通会员可监测 ${WATCH_LIMITS.member} 个`
+    }
+  }
+
+  const now = new Date().toISOString()
+  try {
+    await db.collection(WATCH_TABLE).add({
+      data: {
+        _id: watchId(openid, check.keyword),
+        /* 云函数是管理员身份，不会像端上写入那样自动注入 _openid；缺了它，端上按
+           「仅创建者可读写」规则读不到这一行（与 quotaGuard 显式写 _openid 同一原因）。 */
+        _openid: openid,
+        openid,
+        keyword: check.keyword,
+        created_at: now,
+        /* 订阅那一刻即盖 seen_at：留空会让新订阅者第一眼看到一批旧闻被标成预警 */
+        seen_at: now,
+        type: 'keyword'
+      }
+    })
+  } catch (err) {
+    const code = err && (err.errCode != null ? err.errCode : err.code)
+    const text = String((err && err.errMsg) || (err && err.message) || err)
+    /* -502001 主键冲突 / duplicate：并发同词订阅时另一个请求刚插好 —— 归一成「已在监测中」，不是故障 */
+    if (code === -502001 || /already exists|duplicate/i.test(text)) {
+      return { ok: false, reason: 'duplicate', limit, tier, count, message: '这个词已经在监测中了' }
+    }
+    console.warn(`[keywordAlert] 订阅写入失败：${text}`)
+    return { ok: false, reason: 'write_failed', limit, tier, count, message: '订阅失败，请重试' }
+  }
+  return {
+    ok: true,
+    reason: 'added',
+    limit,
+    tier,
+    count: count + 1,
+    keyword: check.keyword,
+    message: `已开始监测「${check.keyword}」`
+  }
+}
+
 /* ─────────────────── 分页取全表（P2-11，2026-10-09） ─────────────────── */
 
 const PAGE_SIZE = 100
@@ -218,17 +375,26 @@ async function listAll(collection, where) {
 }
 
 /**
- * 调用方闸门（P0-21，2026-10-09）：本函数只该由**定时器**触发，端上一次都不该调它
- * （端上订阅/退订关键词走的是自己的库写入，从不触发云端检索）。
+ * 入口。两条路，靠 `event.action` 区分：
  *
- * 判据：端上 `wx.cloud.callFunction` 调用时 `getWXContext().OPENID` 必有值，
- * 而定时器触发、控制台「云端测试」都没有 openid。
+ * 1. **新增订阅（`action:'add'`）**：端上在「订阅」时调用，走 handleAdd ——
+ *    按 `memberships` 分档判「还能不能再加一个」，并把结果**显式回执**（见 handleAdd）。
+ * 2. **定时扫描（无 action，且无调用方 openid）**：本函数的本职，按词检索并推送预警。
  *
- * 挡的是「改包后循环调用」：本函数一轮按关键词打 BOCHA 检索并按订阅者群发订阅消息，
- * 端上能反复触发就等于把上游额度与推送配额交给任何人点火。
+ * 调用方闸门（P0-21，2026-10-09）：除上面那条已授权的写入路径外，端上**调用一律拒绝** ——
+ * 判据是「端上 `callFunction` 时 `getWXContext().OPENID` 必有值，而定时器 / 控制台没有」。
+ * 挡的是「改包后循环触发扫描」：一轮扫描要打上游检索并按订阅者群发消息，
+ * 端上能反复点火就等于把上游额度与推送配额交出去。
  */
-exports.main = async () => {
-  if ((cloud.getWXContext() || {}).OPENID) {
+exports.main = async (event) => {
+  const ctxOpenid = (cloud.getWXContext() || {}).OPENID
+
+  /* 新增订阅的服务端权威写入路径：允许端上调用（那是它的正当用途） */
+  if (event && event.action === 'add') {
+    return handleAdd(event, ctxOpenid)
+  }
+
+  if (ctxOpenid) {
     console.warn('[keywordAlert] 拒绝端上调用：本函数只由定时器触发')
     return { ok: false, skipped: '本函数只由定时器触发，不接受端上调用' }
   }
@@ -241,13 +407,16 @@ exports.main = async () => {
   const byKeyword = new Map()
   const watchRows = []
   /*
-   * 每人订阅上限的**云侧兜底**（P2-22）：端上 utils/keyword-alert.ts 拦一道，但改包可以绕过 ——
-   * 这段以前只把 MAX_WATCHES_PER_USER 导出当文档，函数里根本没判，于是改包者能订上千个词，
-   * 把每天 MAX_KEYWORDS 次的上游检索预算全吃在自己身上（其余用户永远轮不到自己那个词）。
-   * 按 listAll 的 `_id` 升序取前 N 个：顺序确定、可复现，也不会因为翻页顺序抖动而每次换一批。
+   * ⚠ **扫描不按分档上限裁存量**（P4，2026-10-13 修）：这里原先有一段「每人最多 5 个、
+   * 超出的整行忽略」的裁剪。它是本轮的缺陷源 ——
+   *   ① 会员上限已按档放开到 10，那段硬顶却是每人不分档的 5 ⇒ 会员订到第 6~10 个词时
+   *      被整行忽略：用户以为在盯着，实际一次都没扫（对用户撒谎）；
+   *   ② 存量用户（免费档历史上可能已订了 >1 个）也会被按「1」的档位线裁掉，既有订阅
+   *      静默停摆 —— 违反项目铁律「只拦新增，不删存量、不阻塞既有功能」。
+   * 于是扫描**照单全收**（只过滤「监控某人」与超长词这两种非本队列的行）。
+   * 成本边界不在这里，而在：① **写入路径**已按档拦住超额新增（见 handleAdd，权威在云端）；
+   * ② 全局预算 MAX_KEYWORDS 限定每轮最多检索多少个词 + 按 fetched_at 轮转保证公平轮到。
    */
-  const perUser = new Map()
-  const overLimit = []
   const invalid = []
   for (const w of await listAll(WATCH_TABLE)) {
     /* 同一张表还存着「监控某人」的行（type='person'，第 1 期 riskWatch 用）：它们的 keyword
@@ -261,12 +430,6 @@ exports.main = async () => {
       invalid.push(`${watchId(w.openid, w.keyword).slice(0, 40)}: 关键词超过 ${MAX_KEYWORD_CHARS} 字，本轮忽略`)
       continue
     }
-    const kept = (perUser.get(w.openid) || 0) + 1
-    perUser.set(w.openid, kept)
-    if (kept > MAX_WATCHES_PER_USER) {
-      overLimit.push(`${watchId(w.openid, w.keyword)}: 超出每人 ${MAX_WATCHES_PER_USER} 个订阅上限，本轮忽略`)
-      continue
-    }
     watchRows.push(w)
     if (!byKeyword.has(w.keyword)) byKeyword.set(w.keyword, [])
     byKeyword.get(w.keyword).push(w.openid)
@@ -277,9 +440,8 @@ exports.main = async () => {
       keywords: 0,
       users: 0,
       pushed: 0,
-      over_limit: overLimit.length,
       invalid: invalid.length,
-      skipped: overLimit.concat(invalid)
+      skipped: invalid.slice()
     }
   }
 
@@ -365,11 +527,9 @@ exports.main = async () => {
     updated,
     users: userNews.size,
     pushed: 0,
-    /* 被每人上限挡下的订阅数（P2-22）：正常用户恒为 0，非 0 就是有人在绕过端上写订阅 */
-    over_limit: overLimit.length,
-    /* 因超长被忽略的订阅数（P2-31）：同上，恒为 0 才是正常 */
+    /* 因超长被忽略的订阅数（P2-31）：恒为 0 才是正常（它不是分档裁剪，是数据问题） */
     invalid: invalid.length,
-    skipped: overLimit.concat(invalid)
+    skipped: invalid.slice()
   }
   if (!userNews.size) return summary
 
@@ -420,6 +580,6 @@ exports.main = async () => {
   return summary
 }
 
-/* 供运维排查用：确认「每人最多订阅几个词」与端上常量一致 */
-exports.MAX_WATCHES_PER_USER = MAX_WATCHES_PER_USER
+/* 供运维排查用：确认「分档新增上限」与端上（utils/opinion-access.ts）同源 */
+exports.WATCH_LIMITS = WATCH_LIMITS
 exports.watchId = watchId

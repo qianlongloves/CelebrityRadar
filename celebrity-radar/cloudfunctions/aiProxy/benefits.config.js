@@ -151,5 +151,19 @@ module.exports = {
     "deepBgCount": 12,
     "askCount": 8,
     "askFreshnessDays": 7
+  },
+  "OPINION_LIMITS": {
+    "followCount": {
+      "free": 3,
+      "member": 30
+    },
+    "watchCount": {
+      "free": 1,
+      "member": 10
+    },
+    "detailRows": {
+      "free": 5,
+      "member": null
+    }
   }
 }
