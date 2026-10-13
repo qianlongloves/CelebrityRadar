@@ -65,10 +65,6 @@ The screenshots below all come from `assets/screenshots/` — real captures from
     <td align="center"><img src="./assets/screenshots/report-10.png" width="150"/><br/><sub>Report 10</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="./assets/screenshots/comparison.png" width="150"/><br/><sub>Celebrity comparison</sub></td>
-    <td align="center"><img src="./assets/screenshots/ai-qa.png" width="150"/><br/><sub>AI Q&A</sub></td>
-  </tr>
-  <tr>
     <td align="center"><img src="./assets/screenshots/opinion.png" width="150"/><br/><sub>Opinion</sub></td>
     <td align="center"><img src="./assets/screenshots/events.png" width="150"/><br/><sub>Events</sub></td>
     <td align="center"><img src="./assets/screenshots/monitoring.png" width="150"/><br/><sub>Monitoring</sub></td>
@@ -79,6 +75,8 @@ The screenshots below all come from `assets/screenshots/` — real captures from
     <td align="center"><img src="./assets/screenshots/favorites.png" width="150"/><br/><sub>Favorites</sub></td>
     <td align="center"><img src="./assets/screenshots/member.png" width="150"/><br/><sub>Member</sub></td>
     <td align="center"><img src="./assets/screenshots/model-tier.png" width="150"/><br/><sub>Model tier</sub></td>
+    <td align="center"><img src="./assets/screenshots/comparison.png" width="150"/><br/><sub>Celebrity comparison</sub></td>
+    <td align="center"><img src="./assets/screenshots/ai-qa.png" width="150"/><br/><sub>AI Q&A</sub></td>
   </tr>
 </table>
 

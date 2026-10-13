@@ -65,10 +65,6 @@
     <td align="center"><img src="./assets/screenshots/report-10.png" width="150"/><br/><sub>报告 10</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="./assets/screenshots/comparison.png" width="150"/><br/><sub>名人对比照片</sub></td>
-    <td align="center"><img src="./assets/screenshots/ai-qa.png" width="150"/><br/><sub>AI 问答</sub></td>
-  </tr>
-  <tr>
     <td align="center"><img src="./assets/screenshots/opinion.png" width="150"/><br/><sub>舆情</sub></td>
     <td align="center"><img src="./assets/screenshots/events.png" width="150"/><br/><sub>舆情事件</sub></td>
     <td align="center"><img src="./assets/screenshots/monitoring.png" width="150"/><br/><sub>名人监控</sub></td>
@@ -79,6 +75,8 @@
     <td align="center"><img src="./assets/screenshots/favorites.png" width="150"/><br/><sub>我的收藏</sub></td>
     <td align="center"><img src="./assets/screenshots/member.png" width="150"/><br/><sub>会员</sub></td>
     <td align="center"><img src="./assets/screenshots/model-tier.png" width="150"/><br/><sub>大模型切换</sub></td>
+    <td align="center"><img src="./assets/screenshots/comparison.png" width="150"/><br/><sub>名人对比照片</sub></td>
+    <td align="center"><img src="./assets/screenshots/ai-qa.png" width="150"/><br/><sub>AI 问答</sub></td>
   </tr>
 </table>
 
