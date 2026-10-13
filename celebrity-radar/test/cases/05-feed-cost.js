@@ -34,12 +34,12 @@ const tick = () => new Promise((r) => setTimeout(r, 0))
  * 让「云环境已配置」为真。
  *
  * refreshAllFeeds 的前置闸门 `hasSearchChannel()` 读的就是 utils/cloud#isCloudConfigured，
- * 而它是**模块级常量**（首次 require 时算定）。测试编译用的 local.ts 里 cloudbaseEnvId
- * 仍是占位串（所以 isCloudConfigured 为 false —— 这正是 04 那批「降级到 coldstart」
- * 用例的前提），而 feed 刷新的用例必须越过这道闸门。
+ * 而它是**模块级常量**（首次 require 时算定）。环境 ID 自 2026-10-13 起由构建期从 .env 注入
+ * （真源见 config/index.js），单测是 tsc 直编、注入常量不存在 ⇒ 编译产物里为空串，
+ * harness/load() 会补一个非空默认值；本函数的显式写法与之等价 ——
+ * 保留是为了让「本用例依赖云已配置」这个前提在用例里看得见。
  *
  * 与 env.setDebugFlags 同一手法：在 load 业务模块**之前**改掉那份配置对象即可。
- * 刻意不动 harness 的默认值 —— 改了会让 04 的降级用例全部失真。
  */
 function configureCloud() {
   require(path.join(BUILD, 'config/public')).publicConfig.cloudbaseEnvId = 'test-env-id'

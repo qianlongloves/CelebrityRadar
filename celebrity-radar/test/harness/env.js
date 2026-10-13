@@ -163,6 +163,7 @@ let restrictedFlagPinned = false
 
 /** 加载编译后的 src 模块，如 load('utils/time') */
 function load(rel) {
+  const pub = require(path.join(BUILD, 'config/public'))
   /*
    * 「限制类检索」的放开开关在**加载任何模块之前**强制关回 false（2026-10-12 补）。
    *
@@ -173,7 +174,20 @@ function load(rel) {
    * 要测「放开后的行为」的用例，先 setDebugFlags({ allowRestrictedSearch: true }) 即可固定。
    */
   if (!restrictedFlagPinned) {
-    require(path.join(BUILD, 'config/public')).publicConfig.debug.allowRestrictedSearch = false
+    pub.publicConfig.debug.allowRestrictedSearch = false
+  }
+  /*
+   * 云环境 ID 的测试默认值（2026-10-13 补）。
+   *
+   * 环境 ID 自 2026-10-13 起改由构建期从仓库根 `.env` 注入（真源见 config/index.js），
+   * 而单测是 tsc 直编、不经 Taro ⇒ 注入常量不存在、`publicConfig.cloudbaseEnvId` 退化为空串。
+   * 空串 = isCloudConfigured false，会让「关注流刷新 / 检索写口 / 大模型通道」等用例在
+   * 闸门处提前返回 —— 而它们此前依赖编译进产物的 local.ts 里那个非空环境 ID 才走得通。
+   * 故这里等价地补一个非空的**假**值（与各用例里的 configureCloud() 同一手法）：
+   * 显式 configureCloud() 过的用例值非空、不会被覆盖；要测「未配置」的用例可在 load 之后再清空。
+   */
+  if (!pub.publicConfig.cloudbaseEnvId) {
+    pub.publicConfig.cloudbaseEnvId = 'test-env-id'
   }
   return require(path.join(BUILD, rel))
 }

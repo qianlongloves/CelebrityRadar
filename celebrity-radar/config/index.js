@@ -50,6 +50,33 @@ const subscribeTemplateId = envFile.SUBSCRIBE_TEMPLATE_ID || ''
 const alertTemplateId = envFile.ALERT_TEMPLATE_ID || ''
 const riskTemplateId = envFile.RISK_TEMPLATE_ID || ''
 
+/**
+ * 云开发环境 ID 的编译期取值：**单一来源 = 仓库根 `.env` 的 `TCB_ENV_ID`**。
+ *
+ * `TCB_ENV_ID` 是 CloudBase CLI 的约定名 —— `cloudbaserc.json` 顶部
+ * `"envId": "{{env.TCB_ENV_ID}}"` 由 `tcb fn deploy` 读取。此前端上另在
+ * `src/config/local.ts` 里再填一份 `cloudbaseEnvId`，两处漂移的后果很隐蔽：
+ * 端上连 A 环境、部署却写 B 环境 → 表现为「登录 / 读写全挂但没有任何报错线索」。
+ * 现改为**端上也读同一份 `.env`**：CLI 与端上构建同源，只填一处（保留原名不改）。
+ *
+ * ⚠ 与环境 ID 不同：三个模板 ID 留空只是「推送未配置」，而环境 ID 留空 =
+ * **整个云开发不可用**（登录、读写、云函数调用全挂）。故这里对缺值给出**构建期警告**
+ * （不阻断构建，陌生人 clone 未填也能编译），并把可诊断的报错交给运行期
+ * `src/utils/cloud.ts`（它在首次初始化失败时报「未配置 TCB_ENV_ID」，而不是让后续
+ * 调用以难懂的错误失败）。
+ */
+const tcbEnvId = envFile.TCB_ENV_ID || ''
+
+if (!tcbEnvId) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[config] ⚠ 仓库根 .env 未配置 TCB_ENV_ID（或为空）：端上不会初始化云开发 ——\n' +
+      '  登录、全部读写与云函数调用都将不可用（「我的」页会提示「云服务未配置」）。\n' +
+      '  请把云开发环境 ID 填入 celebrity-radar/.env 的 TCB_ENV_ID 后重新构建（npm run build:weapp）。\n' +
+      '  说明：TCB_ENV_ID 同时供 cloudbaserc.json 的 envId（tcb CLI 部署）使用 —— 端上与部署共用这一处来源。'
+  )
+}
+
 const config = {
   projectName: 'celebrity-radar',
   date: '2026-10-4',
@@ -66,15 +93,18 @@ const config = {
   framework: 'react',
   compiler: 'webpack5',
   /*
-   * 编译期常量：把 .env 里的三个订阅模板 ID 注入端上（Taro 会在打包时做全局标识符替换）。
-   * 端上代码见 src/config/public.ts 的三个 subscribeTemplateId / alertTemplateId / riskTemplateId
-   * —— 用 `typeof X === 'undefined' ? '' : X` 守卫，使「没有注入」（如单测经 tsc 直编）也安全退化为空串。
-   * 这三个值都不是密钥（每个用户都能在小程序里看到），可以进包。
+   * 编译期常量：把 .env 里的三个订阅模板 ID 与云开发环境 ID（TCB_ENV_ID）注入端上
+   * （Taro 会在打包时做全局标识符替换）。
+   * 端上代码见 src/config/public.ts 的同名字段 —— 用 `typeof X === 'undefined' ? '' : X`
+   * 守卫，使「没有注入」（如单测经 tsc 直编）也安全退化为空串：模板 ID 空 = 推送未配置、
+   * 环境 ID 空 = 云服务未配置（运行期报「未配置 TCB_ENV_ID」，见 utils/cloud.ts）。
+   * 这几个值都不是密钥（环境 ID / 模板 ID 每个用户都能在小程序里看到），可以进包。
    */
   defineConstants: {
     __SUBSCRIBE_TEMPLATE_ID__: JSON.stringify(subscribeTemplateId),
     __ALERT_TEMPLATE_ID__: JSON.stringify(alertTemplateId),
-    __RISK_TEMPLATE_ID__: JSON.stringify(riskTemplateId)
+    __RISK_TEMPLATE_ID__: JSON.stringify(riskTemplateId),
+    __TCB_ENV_ID__: JSON.stringify(tcbEnvId)
   },
   // 注意：不要在 scss 的值里写非 ASCII 字符（如 content: '→'）。
   // dart-sass 会因此给产物头部插入 @charset "UTF-8";，而微信 WXSS 不支持该规则，

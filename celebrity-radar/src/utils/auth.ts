@@ -89,7 +89,7 @@ export function ensureLogin(): Promise<void> {
 async function doLogin(): Promise<void> {
   if (!isCloudConfigured) {
     useAuth.getState().setError(
-      cloudInitErrorMessage() ?? '云服务未配置：请在 src/config/public.ts 填写 cloudbaseEnvId'
+      cloudInitErrorMessage() ?? '云服务未配置：请在仓库根 .env 填写 TCB_ENV_ID 后重新构建'
     )
     return
   }

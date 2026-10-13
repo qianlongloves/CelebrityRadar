@@ -2,10 +2,14 @@ import { publicConfig } from '@/config/public'
 import { diagLog } from './cloud-diagnostics'
 
 /**
- * 云服务是否已配置（cloudbaseEnvId 仍是占位值时为 false）。
- * 未配置时登录与全部 DB 调用不会发起，相关页面应给出明确提示而不是静默报错。
+ * 云服务是否已配置：环境 ID 非空（且不是占位串）时为 true。
+ *
+ * 环境 ID 的真源是仓库根 `.env` 的 `TCB_ENV_ID`（构建期注入，见 src/config/public.ts）。
+ * 为空即「整个云开发不可用」——未配置时登录与全部 DB 调用不会发起，
+ * 相关页面应给出明确提示而不是静默报错。
  */
-export const isCloudConfigured = !publicConfig.cloudbaseEnvId.includes('REPLACE_ME')
+export const isCloudConfigured =
+  publicConfig.cloudbaseEnvId.length > 0 && !publicConfig.cloudbaseEnvId.includes('REPLACE_ME')
 
 let cloudInitError: string | null = null
 let inited = false
@@ -29,7 +33,8 @@ function ensureInit(): void {
   }
   if (!isCloudConfigured) {
     cloudInitError =
-      'CloudBase 环境 ID 未配置：请填写 src/config/public.ts 的 cloudbaseEnvId 后重新编译'
+      '未配置 TCB_ENV_ID：云开发环境 ID 为空 —— 请把云环境 ID 填入仓库根 .env 的 TCB_ENV_ID' +
+      '（端上与部署共用该值），再执行 npm run build:weapp 重新编译后重试'
     return
   }
   try {

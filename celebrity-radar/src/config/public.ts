@@ -3,19 +3,23 @@
  * 本项目不持有任何用户密钥 —— 搜索与大模型的 key 只存在于云函数环境变量里，
  * 客户端零配置（见 utils/llm.ts 与 utils/search.ts）。严禁把任何 key 写进本文件。
  *
- * 【哪些值不在这里】环境相关项与本地调试开关已抽到 **未跟踪** 的 `src/config/local.ts`：
+ * 【哪些值不在这里】本地调试开关已抽到 **未跟踪** 的 `src/config/local.ts`：
  *
- *   cloudbaseEnvId / webviewDomains / debug
+ *   webviewDomains / debug
  *
  * 仓库里只有 `local.example.ts`（值为占位串）。首次 clone 后先执行：
  *
  *   cp src/config/local.example.ts src/config/local.ts
  *
- * 再把 cloudbaseEnvId 换成自己的云开发环境 ID（微信开发者工具 → 工具栏「云开发」→ 环境 ID，
- * 形如 `celebrity-radar-1a2b3c4d`）。该环境须与 project.config.json 里的 appid 归属同一个小程序；
- * 未配置时 isCloudConfigured 为 false，登录与全部 DB 调用不会发起。
+ * 【云开发环境 ID 也不在 local.ts（2026-10-13 起）】唯一真源是仓库根 `.env` 的 `TCB_ENV_ID`
+ * （这个名字是 CloudBase CLI 的约定名 —— `cloudbaserc.json` 顶部 `envId` 也读它）：
+ * 云端部署与端上构建读**同一份** `.env`，端上由 `config/index.js` 在构建期经 `defineConstants`
+ * 注入（见下方 `__TCB_ENV_ID__`）。只填一处 ⇒ 端上连的环境与部署写的环境构造上一致，
+ * 不会再出现「端上连 A、部署写 B」这种登录/读写全挂却毫无报错线索的情况。
+ * 该环境须与 project.config.json 里的 appid 归属同一个小程序；未配置（空）时
+ * isCloudConfigured 为 false，登录与全部 DB 调用不会发起（utils/cloud.ts 会报「未配置 TCB_ENV_ID」）。
  *
- * 【三个订阅模板 ID 不在这里，也不在 local.ts】它们的**唯一真源是仓库根 `.env`**
+ * 【三个订阅模板 ID 也不在这里，也不在 local.ts】它们的**唯一真源同样也是仓库根 `.env`**
  * （`SUBSCRIBE_TEMPLATE_ID` / `ALERT_TEMPLATE_ID` / `RISK_TEMPLATE_ID`）：云端部署时
  * `cloudbaserc.json` 用 `{{env.X}}` 从 `.env` 取值注入云函数，端上则由 `config/index.js`
  * 在构建期读同一份 `.env` 并经 `defineConstants` 注入（见下方三个 `__*_TEMPLATE_ID__` 常量）。
@@ -39,17 +43,20 @@
 import { localConfig } from './local'
 
 /**
- * 编译期注入的三个订阅消息模板 ID（真源：仓库根 `.env`，见 `config/index.js` 的 defineConstants）。
+ * 编译期注入的常量（真源：仓库根 `.env`，见 `config/index.js` 的 defineConstants）：
+ * 三个订阅消息模板 ID + 云开发环境 ID（TCB_ENV_ID）。
  *
  * `declare const` 只声明类型、不产生运行时代码；读取侧一律走
  * `typeof __X__ === 'undefined' ? '' : __X__` 守卫 —— 于是：
  *   · 正常构建：Taro 在打包时把这些标识符替换成 `.env` 里的字面值；
  *   · 单测等未经 Taro 打包的场景（tsc 直编）：标识符未注入，`typeof` 为 'undefined' → 退化为空串。
- * 两种情形都不会抛，故「陌生人 clone 后什么都不配也能编译通过」。
+ * 两种情形都不会抛，故「陌生人 clone 后什么都不配也能编译通过」（环境 ID 为空时
+ * 由 utils/cloud.ts 在运行期报表，而不是编译失败）。
  */
 declare const __SUBSCRIBE_TEMPLATE_ID__: string
 declare const __ALERT_TEMPLATE_ID__: string
 declare const __RISK_TEMPLATE_ID__: string
+declare const __TCB_ENV_ID__: string
 
 
 /**
@@ -96,8 +103,15 @@ const LLM_QUALITIES = [
 export type LlmQuality = (typeof LLM_QUALITIES)[number]
 
 export const publicConfig = {
-  /** CloudBase 环境 ID（微信云开发 → 环境 ID）；取值见 src/config/local.ts */
-  cloudbaseEnvId: localConfig.cloudbaseEnvId,
+  /**
+   * CloudBase 环境 ID（微信云开发 → 环境 ID，形如 `cloud1-xxxxxxxx`）。
+   *
+   * **单一来源 = 仓库根 `.env` 的 `TCB_ENV_ID`**（构建期由 config/index.js 注入）。
+   * 该名字是 CloudBase CLI 的约定名 —— `cloudbaserc.json` 的 `envId` 也读它，故端上
+   * 连的环境与 `tcb fn deploy` 写的环境构造上一致。为空 = 云服务未配置（isCloudConfigured
+   * 为 false，登录与全部 DB 调用不发起；utils/cloud.ts 报到「未配置 TCB_ENV_ID」）。
+   */
+  cloudbaseEnvId: typeof __TCB_ENV_ID__ === 'undefined' ? '' : __TCB_ENV_ID__,
 
   /** LLM 通道：端上只上报「厂商 + 质量档」，请求由 cloudfunctions/aiProxy 代打 */
   llm: {

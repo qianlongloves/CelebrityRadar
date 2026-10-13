@@ -7,15 +7,21 @@
  * cp src/config/local.example.ts src/config/local.ts
  * ```
  *
- * 然后把 `cloudbaseEnvId` 换成你自己的云开发环境 ID
- * （微信开发者工具 → 工具栏「云开发」→ 环境 ID，形如 `celebrity-radar-1a2b3c4d`），
- * 该环境须与 `project.config.json` 里的 appid 归属同一个小程序。
+ * 模板里 `webviewDomains` 默认空、`debug` 默认全 false，直接可用；按需改。
+ *
+ * ## 环境 ID 不在本文件（2026-10-13 起）
+ *
+ * 云开发环境 ID 的唯一真源是仓库根 `.env` 的 `TCB_ENV_ID`：端上由
+ * `config/index.js` 在构建期经 `defineConstants` 注入 `src/config/public.ts#cloudbaseEnvId`，
+ * 云端部署时 `cloudbaserc.json` 的 `envId` 也读同一份 `.env`。**端上与部署共用一处来源**
+ * （该环境须与 `project.config.json` 里的 appid 归属同一个小程序），故这里不再有该字段。
+ * 为空 = `utils/cloud.ts#isCloudConfigured` 为 false（登录与全部 DB 调用不发起，
+ * 且报「未配置 TCB_ENV_ID」），而不是静默报错或白屏。
  *
  * ## 为什么单开一个文件
  *
- * 环境 ID 与本地调试开关都是「跟机器走、不跟代码走」的值：
- * 仓库里留真实值，fork 者会直接连上原作者的云环境；而作者本地为放开额度
- * 把 `debug` 置 true 的改动，混在 `public.ts` 里也总有误提交的风险。
+ * `webviewDomains` 与 `debug` 是「跟机器走、不跟代码走」的值：
+ * 作者本地为放开额度把 `debug` 置 true 的改动，混在 `public.ts` 里总有误提交的风险。
  * 抽到 `local.ts` 并由 .gitignore 忽略后，两边互不干扰。
  *
  * ⚠ `local.ts` 必须存在：`src/config/public.ts` 直接 import 它，
@@ -97,14 +103,6 @@ export interface LocalDebugFlags {
 
 export interface LocalConfig {
   /**
-   * CloudBase 环境 ID。
-   *
-   * 保持占位串 `REPLACE_ME` = 未配置：此时 `utils/cloud.ts#isCloudConfigured` 为 false，
-   * 登录与全部 DB 调用不会发起（页面给明确提示，而不是静默报错或白屏）。
-   */
-  cloudbaseEnvId: string
-
-  /**
    * 业务域名白名单（原文预览页可内嵌的站点）。
    * 只填主域名，不带协议/路径/www；默认留空 = 全部走「素材预览卡 + 复制链接」降级路径。
    */
@@ -115,7 +113,6 @@ export interface LocalConfig {
 }
 
 export const localConfig: LocalConfig = {
-  cloudbaseEnvId: 'REPLACE_ME',
   webviewDomains: [],
   debug: {
     disableGenerateQuota: false,

@@ -809,7 +809,7 @@ export async function chatText(
   purpose: QuotaPurpose = 'generate'
 ): Promise<{ ok: true; text: string } | { ok: false; error: string; retryable?: boolean; kind?: string }> {
   if (!hasLlmChannel()) {
-    return { ok: false, error: '大模型通道不可用：云环境未配置（见 public.ts 的 cloudbaseEnvId）' }
+    return { ok: false, error: '大模型通道不可用：云环境未配置（.env 的 TCB_ENV_ID 为空）' }
   }
   const attempt = await chatOnce(
     [
@@ -845,7 +845,7 @@ export async function chatJSON<T>(
   opts: { retries?: number; purpose?: QuotaPurpose } = {}
 ): Promise<ChatJSONResult<T>> {
   if (!hasLlmChannel()) {
-    return { ok: false, error: '大模型通道不可用：云环境未配置（见 public.ts 的 cloudbaseEnvId）' }
+    return { ok: false, error: '大模型通道不可用：云环境未配置（.env 的 TCB_ENV_ID 为空）' }
   }
 
   const purpose: QuotaPurpose = opts.purpose ?? 'generate'
