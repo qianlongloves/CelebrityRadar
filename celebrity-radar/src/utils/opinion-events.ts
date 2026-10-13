@@ -280,6 +280,17 @@ export function eventKeyOf(objectKey: string, themeToken: string): string {
   return hashOf(`${asText(objectKey)}#${asText(themeToken)}`)
 }
 
+/**
+ * 是不是一个合法的 `event_key`（路由参数门禁，纯函数）。
+ *
+ * 形态：`hashOf` 产出的 **8 位十六进制**；云函数撞键时会在末尾加 `-2`、`-3`… 后缀
+ * （见文件头「冲突处理」），故一并接受 `-N`。用途：事件时间线页从路由参数拿到的
+ * `eventKey` 必须是这个形态，否则直接给空态、**不发起任何读库 / 聚类**（参数缺失 / 被篡改同理）。
+ */
+export function isValidEventKey(key: unknown): boolean {
+  return typeof key === 'string' && /^[0-9a-f]{8}(-\d+)?$/.test(key)
+}
+
 /* ─────────────────────────── 事件标题选取 ─────────────────────────── */
 
 /**

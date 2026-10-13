@@ -21,6 +21,8 @@ export default defineAppConfig({
     'pages/ask/index',
     /* 舆情聚合页（底部菜单第三格「盯」：关注动态 / 周报 / 关键词预警三块概要，见 pages/opinion） */
     'pages/opinion/index',
+    /* 事件时间线（舆情页事件卡跳转的独立二级页；**不是 tab 页**，见 pages/event） */
+    'pages/event/index',
     /* AI 问答（报告页底部进入，只读缓存报告、不消耗生成额度，见 pages/qa + utils/qa） */
     'pages/qa/index',
     /* 会员中心（「我的」页会员卡进入：权益对比 + 档位选择 + 吸底支付，见 pages/member） */

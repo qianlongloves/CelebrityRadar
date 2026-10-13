@@ -1,0 +1,232 @@
+@import '../../styles/variables.scss';
+
+/* 事件时间线页（从舆情页事件卡进入的二级页）：单个事件的完整时间线 + 已读 / 跟进。
+   与舆情页同一套视觉语言（.card / 分级标签 / 时间线竖线圆点），但只服务单个事件。 */
+.page-event {
+  min-height: 100vh;
+
+  &__hero {
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+    padding: 24rpx 44rpx 0;
+  }
+
+  &__hero-sub {
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  /* 事件头：标题 + 「新事件」角标 */
+  &__title {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+  }
+
+  &__title-text {
+    font-size: 32rpx;
+    font-weight: 600;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  &__badge {
+    flex-shrink: 0;
+    margin-top: 6rpx;
+    padding: 2rpx 10rpx;
+    border-radius: 6rpx;
+    font-size: 18rpx;
+    line-height: 1.7;
+    background: $brand-weak;
+    color: $brand;
+
+    &--update {
+      background: $accent-orange-bg;
+      color: $accent-orange;
+    }
+  }
+
+  &__meta {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 分级标签行：影响面 / 可信度 / 是否需回应（与舆情页同一口径） */
+  &__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8rpx;
+    margin-top: 10rpx;
+  }
+
+  &__tag {
+    padding: 2rpx 12rpx;
+    border-radius: 6rpx;
+    background: $bg;
+    color: $text-3;
+    font-size: 20rpx;
+    line-height: 1.8;
+
+    &--respond {
+      background: $accent-orange-bg;
+      color: $accent-orange;
+    }
+
+    &--watch {
+      background: $brand-weak;
+      color: $brand;
+    }
+  }
+
+  /* 已读 / 跟进操作行：两个小文字按钮（沿用舆情页交互，不弹窗） */
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 24rpx;
+    margin-top: 12rpx;
+  }
+
+  &__action {
+    font-size: 22rpx;
+    color: $text-3;
+
+    &--on {
+      color: $brand;
+    }
+  }
+
+  /* 时间线：左侧一条竖线 + 各节点圆点；日期行含 时间 · 来源 · 来源性质 · 归属 */
+  &__timeline {
+    margin-top: 16rpx;
+    padding-left: 8rpx;
+  }
+
+  &__timeline-item {
+    display: flex;
+    gap: 16rpx;
+    position: relative;
+    padding: 10rpx 0;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 8rpx;
+      top: 28rpx;
+      bottom: 0;
+      width: 1rpx;
+      background: $line;
+    }
+
+    &:last-child::before {
+      display: none;
+    }
+  }
+
+  &__timeline-dot {
+    flex-shrink: 0;
+    width: 12rpx;
+    height: 12rpx;
+    margin-top: 8rpx;
+    border-radius: 50%;
+    background: $brand-weak;
+    border: 3rpx solid $brand-soft;
+    box-sizing: content-box;
+    z-index: 1;
+  }
+
+  &__timeline-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  &__timeline-meta {
+    display: block;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__timeline-text {
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+  }
+
+  /* 免费档时间线被截断 / 底部「没有更多」的一行提示（不遮罩、不弹窗） */
+  &__more-detail {
+    display: block;
+    margin-top: 12rpx;
+    padding: 8rpx 0;
+    text-align: right;
+    font-size: 24rpx;
+    color: $brand;
+  }
+
+  &__foot {
+    display: block;
+    margin-top: 16rpx;
+    padding: 8rpx 0;
+    text-align: center;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 加载 / 空态 / 失败提示 */
+  &__hint {
+    display: block;
+    padding: 24rpx 0;
+    font-size: 24rpx;
+    text-align: center;
+    color: $text-3;
+
+    &--err {
+      color: $domain-business;
+    }
+  }
+
+  /* 克制的说明行（「聚合 ≠ 认定」/ 降级提示） */
+  &__note {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 空态：明确说清「为什么没有」并给一个返回入口 */
+  &__empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12rpx;
+    padding: 80rpx 40rpx;
+  }
+
+  &__empty-icon {
+    font-size: 72rpx;
+  }
+
+  &__empty-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__empty-desc {
+    font-size: 24rpx;
+    line-height: 1.6;
+    text-align: center;
+    color: $text-3;
+  }
+
+  &__empty-action {
+    margin-top: 12rpx;
+    font-size: 26rpx;
+    color: $brand;
+  }
+}

@@ -364,19 +364,20 @@ describe('舆情页：事件时间线视角已接入（静态约束）', () => {
   it('引用事件纯函数层，不把聚类规则写进页面', () => {
     ok(page.includes("from '@/utils/opinion-events'"), '舆情页应引用 utils/opinion-events')
     ok(page.includes('buildOpinionEvents('), '应调用事件聚合纯函数')
-    ok(page.includes('SOURCE_NATURE_LABEL'), '时间线每条要标注来源性质')
+    notOk(/function\s+sameEvent/.test(page), '页面不得另写一套聚类判据')
   })
 
-  it('事件卡可展开 / 收起时间线（默认收起），并保留三块与今日要点', () => {
+  it('事件卡改为整卡跳转事件时间线页（不再内联展开），并保留三块与今日要点', () => {
     ok(page.includes('事件时间线'), '缺事件卡标题')
-    ok(page.includes('展开时间线') && page.includes('收起时间线'), '缺展开/收起时间线交互')
-    ok(page.includes('toggleEvent('), '缺展开状态切换')
+    ok(page.includes('/pages/event/index'), '事件卡应跳转到事件时间线页')
+    ok(page.includes('Taro.navigateTo'), '跳转用 navigateTo')
+    ok(page.includes('eventKey=') && page.includes('encodeURIComponent'), '跳转要带上 encode 过的 eventKey')
+    notOk(page.includes('展开时间线') || page.includes('toggleEvent('), '内联展开已移除，改为整卡跳转')
     ok(page.includes('buildOpinionQueue(') && page.includes('pickDailyFocus('), '三块与今日要点不得被替换掉')
-    ok(scss.includes('&__timeline-item') && scss.includes('&__timeline-dot'), '缺时间线样式')
-    ok(scss.includes('&__event-toggle'), '缺展开/收起提示样式')
+    ok(scss.includes('&__event-actions') && scss.includes('&__event-go'), '缺事件卡操作行 / 跳转提示样式')
   })
 
-  it('事件明细与时间线沿用 opinion-access 门禁（同一套门槛，不新写判断）', () => {
+  it('事件明细沿用 opinion-access 门禁（同一套门槛，不新写判断）', () => {
     ok(page.includes("from '@/utils/opinion-access'") && page.includes('sliceDetail('), '事件应走 sliceDetail')
     ok(page.includes('moreDetailNote('), '免费档复用现有升级提示行，不新造弹窗')
     ok(page.includes('/pages/member/index'), '提示行应能跳会员页')

@@ -20,7 +20,8 @@ import {
   responseOf
 } from '@/utils/opinion-rank'
 import type { CredTier, ImpactLevel, OpinionBlock, OpinionInput, ResponseNeed } from '@/utils/opinion-rank'
-import { SOURCE_NATURE_LABEL, buildOpinionEvents } from '@/utils/opinion-events'
+import { buildOpinionEvents } from '@/utils/opinion-events'
+import type { OpinionEvent } from '@/utils/opinion-events'
 import {
   emptyStatus,
   eventNewness,
@@ -51,9 +52,12 @@ import './index.scss'
  * P1（2026-10-13）：页首新增「今日需要注意的 N 件事」——判断入口。判断规则（分级 / 排序 /
  * 去重 / 挑要点）全在纯函数 utils/opinion-rank.ts 里，本页只负责取数与渲染。
  *
- * P3（2026-10-13）：新增「事件时间线」视角 —— 把同一件事的多条来源聚成一条、给出可展开的时间线。
+ * P3（2026-10-13）：新增「事件时间线」视角 —— 把同一件事的多条来源聚成一条。
  * 聚类与归因同样是纯函数（utils/opinion-events.ts，复用 P1 的 sameEvent / normalizeTitle 判据），
- * 本页只负责渲染与「展开 / 收起」的本地交互。**聚合 ≠ 认定**：事件卡保留一句克制的轻量说明。
+ * 本页只负责渲染事件卡列表。**聚合 ≠ 认定**：事件卡区保留一句克制的轻量说明。
+ *
+ * P5（2026-10-13）：事件卡改为**整卡跳转**到独立的事件时间线页（pages/event），**不再内联展开** ——
+ * 同一份时间线在两处各渲染一遍必然漂移，且本页已经很长。跳转带上 event_key（稳定主题键）。
  *
  * ⚠ 合规红线（本页同样适用，见 utils/opinion-rank.ts 与 utils/opinion-events.ts 文件头）：
  *   · 涉政涉军仍是拒答 —— 本页只重排 / 归拢**已过滤**的存量条目，不新增任何内容来源；
@@ -163,11 +167,6 @@ export default function Opinion() {
    *   用户开通后重新进入即生效（沿用项目既有的 readMemberState 口径）。
    */
   const [isMember, setIsMember] = useState(false)
-  /**
-   * 事件卡展开态（P3）：默认全部收起（避免页面过长），点事件头才展开时间线。
-   * 纯本地 UI 状态，重新进入页面即重置 —— 不持久化，也不影响任何数据。
-   */
-  const [openEvents, setOpenEvents] = useState<Record<string, boolean>>({})
   /**
    * 落库事件（P4）：`null` = 还没读到 / 读失败（回落本端聚类）；`[]` = 集合为空（同样回落）。
    * 刻意不用页面的 `Status` 表达它 —— 它本就不算「一块读失败」：读不到就走本端聚类，用户无感，
@@ -409,8 +408,17 @@ export default function Opinion() {
     else if (block === 'weekly') goWeekly()
     else goAlerts()
   }
-  /** 事件卡展开 / 收起（默认收起，见 openEvents） */
-  const toggleEvent = (id: string) => setOpenEvents((s) => ({ ...s, [id]: !s[id] }))
+  /**
+   * 事件卡 → 独立的事件时间线页（P5，2026-10-13）：整卡跳转，**不再内联展开**。
+   *
+   * 为什么去掉内联展开：同一份时间线若在舆情页与时间线页各渲染一遍必然漂移（改一处忘另一处
+   * 不会报错），且舆情页本身已经很长。参数带上定位该事件所需的 `eventKey`（稳定主题键）——
+   * 时间线页据此在 `opinion_events` 里定位，定位不到再回落本端聚类。title 只为空态兜底展示。
+   */
+  const goEvent = (ev: OpinionEvent) =>
+    void Taro.navigateTo({
+      url: `/pages/event/index?eventKey=${encodeURIComponent(ev.key)}&title=${encodeURIComponent(ev.title)}`
+    })
 
   /**
    * 「标记已读」（P4）：沿用页面既有交互风格 —— 事件卡头部一个小文字按钮，不弹窗、不遮罩。
@@ -503,7 +511,7 @@ export default function Opinion() {
         </Text>
       </View>
 
-      {/* ===== 事件时间线（P3：同一事件的多来源聚合 + 可展开时间线） ===== */}
+      {/* ===== 事件时间线（P3/P5：同一事件的多来源聚合；整卡跳转独立时间线页） ===== */}
       <View className='card page-opinion__events'>
         <View className='page-opinion__head'>
           <Text className='page-opinion__head-title'>
@@ -520,24 +528,23 @@ export default function Opinion() {
         ) : (
           <>
             {eventShown.rows.map((ev) => {
-              const open = !!openEvents[ev.id]
-              /* 时间线也按会员态截断（免费档不放全） —— 与事件列表同一套 opinion-access 门禁 */
-              const tl = sliceDetail(ev.timeline, isMember)
               /* 「新事件」角标：没读过 → NEW；读过但最近有报道 → 有新进展（规则见 opinion-store） */
               const newness = eventNewness({ event_key: ev.key, last_at: ev.date }, eventStatus)
               const badge = newnessLabel(newness)
               const read = !!eventStatus.reads[ev.key]
               const following = !!eventStatus.follows[ev.key]
               return (
-                <View key={ev.key} className='page-opinion__event'>
+                /* 整卡跳转到事件时间线页（P5）：不再内联展开。已读 / 跟进按钮 stopPropagation，
+                   避免点它们时被整卡的手势一起带走 */
+                <View key={ev.key} className='page-opinion__event' onClick={() => goEvent(ev)}>
                   <View className='page-opinion__event-head'>
-                    <View className='page-opinion__event-title' onClick={() => toggleEvent(ev.id)}>
+                    <View className='page-opinion__event-title'>
                       <Text className='page-opinion__row-title'>{ev.title}</Text>
                       {badge ? (
                         <Text className={`page-opinion__badge page-opinion__badge--${newness}`}>{badge}</Text>
                       ) : null}
                     </View>
-                    <Text className='page-opinion__row-meta' onClick={() => toggleEvent(ev.id)}>
+                    <Text className='page-opinion__row-meta'>
                       {[
                         `${ev.memberCount} 条来源`,
                         ev.labels.length ? ev.labels.join('、') : '',
@@ -548,54 +555,29 @@ export default function Opinion() {
                         .join(' · ')}
                     </Text>
                     {tagsView(ev.impact, ev.credibility, ev.response)}
-                    {/* 已读 / 跟进：克制的两个小文字按钮，不用弹窗、不遮罩 */}
+                    {/* 已读 / 跟进：克制的两个小文字按钮，不用弹窗、不遮罩（stopPropagation 防止触发整卡跳转） */}
                     <View className='page-opinion__event-actions'>
                       <Text
                         className={`page-opinion__action${read ? ' page-opinion__action--on' : ''}`}
-                        onClick={() => void markRead(ev.key)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void markRead(ev.key)
+                        }}
                       >
                         {read ? '✓ 已读' : '标记已读'}
                       </Text>
                       <Text
                         className={`page-opinion__action${following ? ' page-opinion__action--on' : ''}`}
-                        onClick={() => void toggleFollow(ev.key)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void toggleFollow(ev.key)
+                        }}
                       >
                         {following ? '★ 已跟进' : '☆ 跟进'}
                       </Text>
-                      <Text className='page-opinion__event-toggle' onClick={() => toggleEvent(ev.id)}>
-                        {open ? '收起时间线 ▲' : '展开时间线 ▼'}
-                      </Text>
+                      <Text className='page-opinion__event-go'>查看完整时间线 ›</Text>
                     </View>
                   </View>
-
-                  {open && (
-                    <View className='page-opinion__timeline'>
-                      {tl.rows.map((t, i) => (
-                        <View key={`${ev.key}-${i}`} className='page-opinion__timeline-item'>
-                          <View className='page-opinion__timeline-dot' />
-                          <View className='page-opinion__timeline-body'>
-                            <Text className='page-opinion__timeline-meta'>
-                              {[
-                                t.date ? formatMoment8(t.date) : '',
-                                t.source || '来源未标注',
-                                SOURCE_NATURE_LABEL[t.nature],
-                                t.label
-                              ]
-                                .filter(Boolean)
-                                .join(' · ')}
-                            </Text>
-                            <Text className='page-opinion__timeline-text'>{t.text}</Text>
-                          </View>
-                        </View>
-                      ))}
-                      {/* 免费档时间线被截断：沿用与明细同一行升级引导（不新造弹窗） */}
-                      {tl.hidden > 0 && (
-                        <Text className='page-opinion__more-detail' onClick={goMember}>
-                          {moreDetailNote(ev.timeline.length)}
-                        </Text>
-                      )}
-                    </View>
-                  )}
                 </View>
               )
             })}

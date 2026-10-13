@@ -141,3 +141,56 @@ export function personWatchLimitNote(isMember: boolean): string {
 export function moreDetailNote(total: number): string {
   return `会员可见全部 ${total} 条 ›`
 }
+
+/* ─────────────────────────── 时间线分页（客户端分段渲染） ─────────────────────────── */
+
+/**
+ * 事件时间线**每页条数**（产品口径；真源在此，页面与用例共用）。
+ *
+ * ⚠ 分页只能是**客户端分段渲染**，不是服务端分页：时间线是**事件文档里的一个嵌套数组**
+ *   （`opinion_events.timeline`），云数据库无法对嵌套数组做服务端分页 —— 一次 `loadStoredEvents`
+ *   就把该事件整条取回，分页只是「按页切片渲染」。
+ *   · 单事件条目在**几十条**（本值的一屏）量级时，这个做法完全够用；
+ *   · 当单个事件的条目增长到**数百条**（例如 `timeline.length` 稳定超过 ~200）时，
+ *     一次取回整条文档会明显变重（首屏变慢、单文档体积逼近上限），
+ *     此时应改成像 `opinion_event_items` 那样**按 `event_key + 序号` 单独落一张集合**、
+ *     用 `where(event_key).skip().limit()` 做**真分页**。**本轮不新建该集合**
+ *     （现有事件的条目量远未到该规模，新建集合的跨会话一致性成本不值得）。
+ */
+export const TIMELINE_PAGE_SIZE = 10
+
+/** 分页切片结果：`rows` 是「累计到第 page 页应渲染的行」（第 1..page 页，非单页） */
+export interface PageSlice<T> {
+  /** 累计渲染的行（`items.slice(0, page × pageSize)`） */
+  rows: T[]
+  /** 是否还有下一页（`page × pageSize < items.length`） */
+  hasMore: boolean
+  /** 当前页号（从 1 起；越界会被钳到 `[1, max(1, pageCount)]`） */
+  page: number
+  /** 总页数（空数据为 0） */
+  pageCount: number
+}
+
+/**
+ * 分页切片（**纯函数**，对任何输入都不抛）：把一维数组按固定页长切成「累计行」。
+ *
+ * 为什么返回**累计**而不是单页：触底加载是「在后面追加」，页面只需渲染 `rows`、
+ * 不必自己维护已加载数组的拼接 —— 页号变了、`rows` 自然变长。
+ *
+ * 边界：空 / 非数组 → `rows: []`、`hasMore: false`、`page: 1`、`pageCount: 0`；
+ * 页号非正整数或超过总页数 → 钳到合法页（不会因为越界而少渲染最后一段）。
+ */
+export function pageSlice<T>(items: T[] | null | undefined, page: number, pageSize: number = TIMELINE_PAGE_SIZE): PageSlice<T> {
+  const list = Array.isArray(items) ? items : []
+  const size = Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : TIMELINE_PAGE_SIZE
+  const pageCount = Math.ceil(list.length / size)
+  const want = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
+  const cur = pageCount > 0 ? Math.min(want, pageCount) : 1
+  const end = cur * size
+  return {
+    rows: list.slice(0, end),
+    hasMore: end < list.length,
+    page: cur,
+    pageCount
+  }
+}

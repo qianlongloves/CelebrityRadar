@@ -255,6 +255,38 @@ export function resolveDisplayEvents(
   return { events: localEvents, source: 'local' }
 }
 
+/**
+ * **按 event_key 定位单个事件**（事件时间线页用）：落库优先、**该键不在库里才回落本端聚类**。
+ *
+ * 与 `resolveDisplayEvents` 的区别：后者回答「整张事件列表用哪份数据」（只要库里有任意事件就用库），
+ * 本函数回答「**这一件事**在哪」—— 库里**没有这一键**时（云函数当天还没跑、或该事件只在端上聚类出现）
+ * 仍然会去本端聚类结果里找，而不是因为「库里有别的事件」就放弃。返回 `source` 只为排障 / 断言。
+ *
+ * 三档来源：`cloud`（库里命中该键）/ `local`（库里没有 → 本端聚类命中）/ `none`（两处都没有）。
+ * `stored` 传 `null`（读失败）按「库里没有」处理，同样回落本端聚类。纯函数，对任何输入都不抛。
+ */
+export function resolveEventByKey(
+  stored: OpinionEventRow[] | null,
+  localEvents: OpinionEvent[],
+  eventKey: string,
+  opts: { keywords?: string[]; watchNames?: string[] } = {}
+): { event: OpinionEvent | null; source: 'cloud' | 'local' | 'none' } {
+  const key = typeof eventKey === 'string' ? eventKey : ''
+  if (!key) return { event: null, source: 'none' }
+
+  if (Array.isArray(stored)) {
+    const rows = stored.filter((r) => r && r.event_key === key)
+    if (rows.length > 0) {
+      const events = toDisplayEvents(rows, opts)
+      if (events.length > 0) return { event: events[0], source: 'cloud' }
+    }
+  }
+
+  const local = (Array.isArray(localEvents) ? localEvents : []).find((e) => e && e.key === key)
+  if (local) return { event: local, source: 'local' }
+  return { event: null, source: 'none' }
+}
+
 /* ─────────────────────────── 「新事件」判定 ─────────────────────────── */
 
 export type EventNewness = 'new' | 'update' | 'seen'
