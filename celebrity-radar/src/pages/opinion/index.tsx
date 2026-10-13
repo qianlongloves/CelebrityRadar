@@ -16,8 +16,7 @@ import {
   readInboxSeen,
   riskNewCount
 } from '@/utils/inbox'
-import { readMemberState } from '@/utils/member'
-import { moreDetailNote, sliceDetail } from '@/utils/opinion-access'
+import { EVENT_OVERVIEW_BATCH, EVENT_OVERVIEW_INITIAL, overviewSlice } from '@/utils/opinion-access'
 import {
   CRED_LABEL,
   IMPACT_LABEL,
@@ -86,10 +85,14 @@ import './index.scss'
  */
 
 /**
- * 每块明细可见条数（P2，2026-10-13 起分档）：免费档 detailRows.free 条 / 会员档全部，
- * 取值与截断由 utils/opinion-access.ts#sliceDetail 给（真源 config/benefits.ts#OPINION_LIMITS）。
- * ⚠ 「今日要点」卡不受此限制 —— 它最多 3 条（utils/opinion-rank.ts#DAILY_FOCUS_MAX），
- *   是留存钩子，免费用户照常看到。
+ * P6（2026-10-13）**口径修正 —— 概要不分档**：本页三张**概要卡**（事件 / 关注动态 / 关键词预警）
+ * 统一为「固定首屏 + 按需加载」（`utils/opinion-access.ts#overviewSlice`），**不再按会员档放全**。
+ *
+ * ⚠ 本页因此**不再**用 `sliceDetail` 渲染任何列表，「明细条数」这一层分层**在舆情页上不再体现**；
+ *   分层的其余部分仍生效、且**不在本页**：关注人数 / 关键词监控数 / 风险监控人数上限（P2 门禁，
+ *   落在各自新增入口），以及事件**时间线页**的明细门禁（pages/event：免费 5 / 会员全部）。
+ *   ⚠ 「今日要点」卡（①）本就不受分层限制 —— 它最多 3 条（utils/opinion-rank.ts#DAILY_FOCUS_MAX），
+ *     是留存钩子，免费用户照常看到。
  */
 type Status = 'loading' | 'ready' | 'error'
 
@@ -191,11 +194,13 @@ export default function Opinion() {
     personNames: []
   })
   /**
-   * 是否会员：决定每块明细条数上限（免费截断、会员显示全部）。
-   * ⚠ 每次进入页面（useDidShow）都重读一次 users.membership 镜像 —— 不引入任何额外缓存，
-   *   用户开通后重新进入即生效（沿用项目既有的 readMemberState 口径）。
+   * 三张**概要卡**已渲染到第几条（P6，2026-10-13，端上分片渲染）：首屏固定
+   * `EVENT_OVERVIEW_INITIAL` 条，「加载更多」每次 +`EVENT_OVERVIEW_BATCH`。
+   * ⚠ 与会员态**无关** —— 三张概要卡统一走「概要不分档」（见下方 feedSlice / alertSlice 注释）。
    */
-  const [isMember, setIsMember] = useState(false)
+  const [eventShownCount, setEventShownCount] = useState(EVENT_OVERVIEW_INITIAL)
+  const [feedShownCount, setFeedShownCount] = useState(EVENT_OVERVIEW_INITIAL)
+  const [alertShownCount, setAlertShownCount] = useState(EVENT_OVERVIEW_INITIAL)
   /**
    * 落库事件（P4）：`null` = 还没读到 / 读失败（回落本端聚类）；`[]` = 集合为空（同样回落）。
    * 刻意不用页面的 `Status` 表达它 —— 它本就不算「一块读失败」：读不到就走本端聚类，用户无感，
@@ -204,15 +209,6 @@ export default function Opinion() {
   const [storedEvents, setStoredEvents] = useState<OpinionEventRow[] | null>(null)
   /** 我的事件状态（已读 / 跟进）；读失败 = 空状态（页面照常，只是显示为「都没读过」） */
   const [eventStatus, setEventStatus] = useState<EventStatus>(emptyStatus())
-
-  /** 会员态：读库失败按非会员处理（保守，只影响展示条数） */
-  const loadMember = useCallback(async () => {
-    try {
-      setIsMember((await readMemberState()).member)
-    } catch {
-      setIsMember(false)
-    }
-  }, [])
 
   /** 关注动态概要：批量读缓存（与关注流页同一入口），归并后取最近若干条 */
   const loadFeed = useCallback(async () => {
@@ -343,8 +339,6 @@ export default function Opinion() {
   }, [])
 
   useDidShow(() => {
-    /* 每次进入都重读会员态：开通后重新进入即看到更高上限 / 更多条数（不引入额外缓存） */
-    void loadMember()
     void loadFeed()
     void loadWeekly()
     void loadAlertBlock()
@@ -444,24 +438,31 @@ export default function Opinion() {
   const inboxTotal = alerts.newTotal + alerts.riskNew + eventNew
 
   /**
-   * 每块明细的展示截断（P2）：免费档切到 detailRows.free 条，会员档全部。
-   * `hidden > 0` 即被藏起的条数，页面据此在列表底部给一行「会员可见全部 N 条 ›」的提示
-   * （不遮罩、不弹窗）。**今日要点不在此列**，它走自己的 focus（最多 3 条）。
+   * 三张**概要卡**统一走同一套「固定首屏 + 按需加载」（P6，2026-10-13 修正口径）：
+   * 事件 / 关注动态 / 关键词预警**都**用 `overviewSlice`，**不再按会员档放全**。
+   *
+   * 为什么改：概要数据都是**会累积**的 —— 事件一轮聚类实测约 200 条；关注动态 = 关注人数 × 条目；
+   * 关键词预警 = 各监测词的条目之和。此前这两张卡与事件卡一样走 `sliceDetail` 的**明细口径**
+   * （会员档「全部」），于是会员一进这一页就把整库一次渲染出来，页面「内容过多」。根因是
+   * **口径用错了位置**：`sliceDetail` 的会员档「全部」是**明细**口径（给「查看全部」之后的明细页 /
+   * 单个事件的时间线用），不该安在**概要卡**上。
+   *
+   * ⚠ **口径变化 —— 概要不分档**：改完后舆情页三张概要卡对免费 / 会员**一视同仁**，
+   *   **「明细条数」这一层分层在舆情页上不再体现**。分层**其余部分仍生效**，并非被删：
+   *     · 关注人数 / 关键词监控数 / 风险监控人数上限（followGate / watchGate / personWatchGate，P2）；
+   *     · 事件**时间线页**的明细门禁（pages/event：免费 5 / 会员全部，走 sliceDetail）。
+   *   故**不给「加载更多」加免费封顶**（用户已明确选择「概要不分档」）。
    */
-  const feedShown = sliceDetail(feed.items, isMember)
-  const alertShown = sliceDetail(alerts.items, isMember)
-  /**
-   * 事件视角的两层截断（P3，沿用同一套 opinion-access 门禁，不新写门槛）：
-   *   · 事件列表：免费档切到 detailRows.free 条，会员档全部；
-   *   · 每个事件展开后的**时间线条目**同样按会员态截断（免费也不放全）。
-   * 与今日要点不同 —— 事件卡属于「明细」，免费档受限；今日要点是留存钩子，照常 3 条。
-   */
-  const eventShown = sliceDetail(events, isMember)
+  const eventSlice = overviewSlice(events, eventShownCount)
+  const feedSlice = overviewSlice(feed.items, feedShownCount)
+  const alertSlice = overviewSlice(alerts.items, alertShownCount)
+  const loadMoreEvents = () => setEventShownCount((n) => n + EVENT_OVERVIEW_BATCH)
+  const loadMoreFeed = () => setFeedShownCount((n) => n + EVENT_OVERVIEW_BATCH)
+  const loadMoreAlerts = () => setAlertShownCount((n) => n + EVENT_OVERVIEW_BATCH)
 
   const goFeed = () => void Taro.navigateTo({ url: '/pages/feed/index' })
   const goWeekly = () => void Taro.navigateTo({ url: '/pages/weekly/index' })
   const goAlerts = () => void Taro.navigateTo({ url: '/pages/alerts/index' })
-  const goMember = () => void Taro.navigateTo({ url: '/pages/member/index' })
   /** 今日要点点进对应完整页 —— 同一套入口，不新增页面 */
   const goBlock = (block: OpinionBlock) => {
     if (block === 'feed') goFeed()
@@ -642,7 +643,7 @@ export default function Opinion() {
           </Text>
         ) : (
           <>
-            {eventShown.rows.map((ev) => {
+            {eventSlice.rows.map((ev) => {
               /* 「新事件」角标：没读过 → NEW；读过但最近有报道 → 有新进展（规则见 opinion-store） */
               const newness = eventNewness({ event_key: ev.key, last_at: ev.date }, eventStatus)
               const badge = newnessLabel(newness)
@@ -696,11 +697,15 @@ export default function Opinion() {
                 </View>
               )
             })}
-            {/* 免费档事件列表被截断：列表底部一行升级引导 */}
-            {eventShown.hidden > 0 && (
-              <Text className='page-opinion__more-detail' onClick={goMember}>
-                {moreDetailNote(events.length)}
+            {/* 概要卡「加载更多 / 到底」：端上分片渲染（不新增页面、不新增云调用）。
+                首屏只渲染固定若干条，头部标题已给出事件总数（不让人以为只有首屏这几条）；
+                这里每次追加一批，加载完显示到底文案。 */}
+            {eventSlice.hasMore ? (
+              <Text className='page-opinion__more-detail' onClick={loadMoreEvents}>
+                加载更多事件（还有 {eventSlice.remaining} 条）›
               </Text>
+            ) : (
+              <Text className='page-opinion__done'>—— 没有更多事件 ——</Text>
             )}
           </>
         )}
@@ -751,7 +756,7 @@ export default function Opinion() {
                   <Text className='page-opinion__stat page-opinion__stat--warn'>{feed.failedCount} 人读取失败</Text>
                 )}
               </View>
-              {feedShown.rows.map((e, i) => (
+              {feedSlice.rows.map((e, i) => (
                 <View key={`${e.personName}-${i}`} className='page-opinion__row' onClick={goFeed}>
                   <Text className='page-opinion__row-title'>{e.title}</Text>
                   <Text className='page-opinion__row-meta'>
@@ -767,11 +772,15 @@ export default function Opinion() {
                   {gradeTags(e.source, e.category, e.level)}
                 </View>
               ))}
-              {/* 免费档明细被截断：列表底部一行不刺眼的升级引导（会员显示全部，故不出现） */}
-              {feedShown.hidden > 0 && (
-                <Text className='page-opinion__more-detail' onClick={goMember}>
-                  {moreDetailNote(feed.items.length)}
+              {/* 概要卡「加载更多 / 到底」（与事件卡同一套口径，概要不分档）：首屏只渲染固定若干条，
+                  头部 stats 已给出关注人数 / 近期条数（不让人以为只有首屏这几条）；每次追加一批，
+                  加载完显示到底文案。不再有「会员可见全部 N 条」的明细提示行。 */}
+              {feedSlice.hasMore ? (
+                <Text className='page-opinion__more-detail' onClick={loadMoreFeed}>
+                  加载更多动态（还有 {feedSlice.remaining} 条）›
                 </Text>
+              ) : (
+                <Text className='page-opinion__done'>—— 没有更多动态 ——</Text>
               )}
             </>
           ))}
@@ -843,6 +852,11 @@ export default function Opinion() {
                 {alerts.personCount > 0 && (
                   <Text className='page-opinion__stat'>监控 {alerts.personCount} 位名人</Text>
                 )}
+                {/* 列表总数（概要卡头部显示总数，与事件卡「N 件事」/ 关注动态「近期 N 条」同义）：
+                    首屏只渲染固定若干条，这里如实给出总数，不让人以为只有首屏这几条 */}
+                {alerts.items.length > 0 && (
+                  <Text className='page-opinion__stat'>相关报道 {alerts.items.length} 条</Text>
+                )}
                 {alerts.newTotal > 0 && (
                   <Text className='page-opinion__stat page-opinion__stat--warn'>新增 {alerts.newTotal} 条</Text>
                 )}
@@ -854,7 +868,7 @@ export default function Opinion() {
                 <Text className='page-opinion__empty'>已开始监测，暂无相关报道</Text>
               ) : (
                 <>
-                  {alertShown.rows.map((a, i) => (
+                  {alertSlice.rows.map((a, i) => (
                     <View key={`${a.keyword}-${i}`} className='page-opinion__row' onClick={goAlerts}>
                       <Text className='page-opinion__row-title'>{a.title}</Text>
                       <Text className='page-opinion__row-meta'>
@@ -865,11 +879,14 @@ export default function Opinion() {
                       {gradeTags(a.source, a.category, a.level)}
                     </View>
                   ))}
-                  {/* 免费档明细被截断：列表底部一行不刺眼的升级引导（会员显示全部，故不出现） */}
-                  {alertShown.hidden > 0 && (
-                    <Text className='page-opinion__more-detail' onClick={goMember}>
-                      {moreDetailNote(alerts.items.length)}
+                  {/* 概要卡「加载更多 / 到底」（与事件卡同一套口径，概要不分档）：每次追加一批，
+                      加载完显示到底文案。不再有「会员可见全部 N 条」的明细提示行。 */}
+                  {alertSlice.hasMore ? (
+                    <Text className='page-opinion__more-detail' onClick={loadMoreAlerts}>
+                      加载更多预警（还有 {alertSlice.remaining} 条）›
                     </Text>
+                  ) : (
+                    <Text className='page-opinion__done'>—— 没有更多预警 ——</Text>
                   )}
                 </>
               )}

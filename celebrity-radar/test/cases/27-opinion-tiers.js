@@ -9,7 +9,9 @@
  *   2. 「只拦新增」的门禁判定函数（utils/opinion-access.ts）——达到 / 超过上限都只影响
  *      「还能不能再加一个」，**绝不删除、隐藏、过滤任何既有数据**；
  *   3. 存量超限不删不藏（端到端：seed 超限数据 → 列表照常全量读出 → 新增被拦 → 既有仍可取消）；
- *   4. 舆情页明细按会员态截断（免费 5 条 / 会员全部）而**今日要点（≤3 条）不受此限**。
+ *   4. 舆情页三张**概要卡概要不分档**（统一走 utils/opinion-access.ts#overviewSlice「固定首屏 +
+ *      按需加载」）；「明细条数」这一层分层只作用在事件**时间线页**（pages/event：免费 5 条 /
+ *      会员全部），而**今日要点（≤3 条）不受此限**。
  *
  * 纯函数直接 require 编译产物；页面是 .tsx（不进测试编译），与既有页面用例同法读源码文本断言。
  */
@@ -260,28 +262,31 @@ describe('舆情分层：存量超限不删不藏，只拦新增（端到端）'
   })
 })
 
-/* ─────────────── 4. 舆情页明细深度与今日要点（静态 + 纯函数） ─────────────── */
+/* ─────────────── 4. 明细切片 / 概要卡不分档与今日要点（静态 + 纯函数） ─────────────── */
 
-describe('舆情分层：舆情页明细深度与今日要点', () => {
+describe('舆情分层：明细切片（供时间线页）与今日要点、概要卡不分档', () => {
   const page = read('pages/opinion/index.tsx')
 
-  it('明细按会员态截断：引用 opinion-access，会员态每次进入重读，未知数不再写死', () => {
+  it('概要卡统一走 overviewSlice（概要不分档）：本页不再按会员态截断列表、也不再重读会员态', () => {
     ok(page.includes("from '@/utils/opinion-access'"), '舆情页应引用 utils/opinion-access')
-    ok(page.includes('sliceDetail('), '明细应走 sliceDetail（按会员态截断）')
-    ok(page.includes('readMemberState('), '每次进入重读会员态，开通后即生效')
+    ok(page.includes('overviewSlice('), '三张概要卡应走 overviewSlice（固定首屏 + 按需加载）')
+    notOk(page.includes('sliceDetail('), '概要卡不得再用按会员档放全的 sliceDetail')
+    notOk(page.includes('readMemberState('), '概要不分档 → 本页不再需要重读会员态（分层其余部分在各自入口 / 时间线页）')
     ok(page.includes('useDidShow('), '读取挂在 useDidShow 上（不引入额外缓存）')
     ok(page.includes('pickDailyFocus('), '今日要点仍走 P1 的 pickDailyFocus（不受明细分层影响）')
     notOk(page.includes('PREVIEW_ROWS'), '不应再有写死的固定条数')
   })
 
-  it('免费档给一行不刺眼的升级提示，点了进会员页（不遮罩、不弹窗）', () => {
-    ok(page.includes('moreDetailNote('), '缺「会员可见全部 N 条」提示')
-    ok(page.includes('page-opinion__more-detail'), '缺提示行样式钩子')
-    ok(page.includes('/pages/member/index'), '提示行应能跳会员页')
+  it('概要卡给出「加载更多 / 到底」收尾，不再有「会员可见全部 N 条」升级提示行', () => {
+    ok(page.includes('page-opinion__more-detail'), '缺「加载更多」提示行样式钩子')
+    ok(page.includes('page-opinion__done'), '缺到底文案样式钩子')
+    notOk(page.includes('moreDetailNote('), '概要卡不再用「会员可见全部 N 条」明细提示')
+    notOk(page.includes('/pages/member/index'), '概要不分档 → 本页不再有跳会员页的升级提示行')
   })
 
-  it('免费档明细切到 5 条，而今日要点照常给 3 条（留存钩子不被切）', () => {
+  it('明细切片 sliceDetail 仍是「免费 5 条 / 会员全部」，而今日要点照常给 3 条（留存钩子不被切）', () => {
     env.resetAll()
+    /* sliceDetail 是**明细**口径，现在只作用在事件时间线页（pages/event）；这里直接钉住纯函数本身 */
     const { sliceDetail } = env.load('utils/opinion-access')
     const { buildOpinionQueue, pickDailyFocus } = env.load('utils/opinion-rank')
 

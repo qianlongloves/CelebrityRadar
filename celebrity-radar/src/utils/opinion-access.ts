@@ -142,6 +142,64 @@ export function moreDetailNote(total: number): string {
   return `会员可见全部 ${total} 条 ›`
 }
 
+/* ────────────────── 概要卡按需加载（端上分片渲染，P6，2026-10-13） ────────────────── */
+
+/**
+ * **概要卡**首屏渲染条数（固定 3）—— 舆情页三张概要卡（事件 / 关注动态 / 关键词预警）**共用**。
+ *
+ * ⚠ **刻意不按会员档**：会员档的「全部」（`detailRows.member === null`）是给**明细**用的口径，
+ *   安在**概要卡**上是**用错了位置** —— 概要数据都是**会累积**的：事件一轮聚类实测约 200 条；
+ *   关注动态 = 关注人数 × 条目；关键词预警 = 各监测词的条目之和。若概要卡按明细口径放全，
+ *   会员一进舆情页就会把整库一次性渲染出来，页面「内容过多」。故三张概要卡对免费 / 会员
+ *   **一律**只放固定首屏若干条，其余靠 `overviewSlice` + 底部「加载更多」按需追加。
+ *
+ * ⚠ **口径变化（P6，2026-10-13）——「概要不分档」**：改完后舆情页三张概要卡对免费 / 会员
+ *   **一视同仁**，于是**「明细条数」这一层分层在舆情页上不再体现**。这不是把分层删了 ——
+ *   分层的**其余部分仍生效**：
+ *     · 关注人数 / 关键词监控数 / 风险监控人数上限（`followGate` / `watchGate` / `personWatchGate`，P2）；
+ *     · 事件**时间线页**的明细门禁（pages/event：免费 5 / 会员全部，走 `sliceDetail`）。
+ *   换言之：概要不是明细，「明细分档」只作用在真正的明细页 / 时间线上（见 pages/event）。
+ *   （用户已明确选择「概要不分档」，故**不给「加载更多」加免费封顶**。）
+ */
+export const EVENT_OVERVIEW_INITIAL = 3
+
+/** 概要卡每次「加载更多」追加的条数（三张概要卡共用） */
+export const EVENT_OVERVIEW_BATCH = 3
+
+/** 概要卡分片结果：`rows` 是**累计**要渲染的行，`remaining` 是尚未渲染的剩余条数 */
+export interface OverviewSlice<T> {
+  /** 累计要渲染的行（`items.slice(0, shown)`，越界按总数截断） */
+  rows: T[]
+  /** 还没渲染出来的条数（`items.length - rows.length`） */
+  remaining: number
+  /** 是否还有更多（`remaining > 0`）—— 决定页面显示「加载更多」还是到底文案 */
+  hasMore: boolean
+}
+
+/**
+ * 概要卡「少渲染 + 按需追加」切片（**纯函数**，对任何输入都不抛）。
+ *
+ * 与 `sliceDetail` 的区别：`sliceDetail` 是**按会员档**截断明细（免费 / 会员两档）；本函数
+ * **完全不涉及会员态** —— 它只回答「当前已渲染了 `shown` 条时，应渲染哪一段、还剩多少」，
+ * 供页面实现「固定首屏 + 加载更多」，避免概要卡按明细口径把整库一次放全（这是本函数存在的理由）。
+ *
+ * 边界：空 / 非数组 → `rows: []`、`remaining: 0`、`hasMore: false`；
+ * `shown` 非法（非正 / NaN）→ 退回一个批次；`batch` 非法 → 退回 `EVENT_OVERVIEW_BATCH`；
+ * `shown` 超过总数时按总数截断（不会抛、不会多算）。
+ */
+export function overviewSlice<T>(
+  items: T[] | null | undefined,
+  shown: number,
+  batch: number = EVENT_OVERVIEW_BATCH
+): OverviewSlice<T> {
+  const list = Array.isArray(items) ? items : []
+  const step = Number.isFinite(batch) && batch > 0 ? Math.floor(batch) : EVENT_OVERVIEW_BATCH
+  const want = Number.isFinite(shown) && shown > 0 ? Math.floor(shown) : step
+  const rows = list.slice(0, Math.min(want, list.length))
+  const remaining = list.length - rows.length
+  return { rows, remaining, hasMore: remaining > 0 }
+}
+
 /* ─────────────────────────── 时间线分页（客户端分段渲染） ─────────────────────────── */
 
 /**
@@ -159,6 +217,23 @@ export function moreDetailNote(total: number): string {
  */
 export const TIMELINE_PAGE_SIZE = 10
 
+/**
+ * 关注动态页（`pages/feed`）**每页条数**（产品口径；真源在此，页面与用例共用）。
+ *
+ * ⚠ 与事件时间线是**同一取舍**：关注动态也是**一次取回全部**（`cache.ts#getFeedDetails`
+ *   把全部关注人的 `feed_cache` 用一次 `in` 查询批量读回），云数据库无法对「跨多位关注人、
+ *   已归并排序后的一维列表」做服务端分页 —— 分页只能是**客户端分段渲染**（按页切片）。
+ *   · 关注动态 = 关注人数 × 每人约 10 条；关注十几位时总量在**一两百条**量级，本做法足够；
+ *   · 当关注人数 × 每人条数增长到**数千条**（例如关注上百人）时，一次把全部人的 feed_cache
+ *     取回会明显变重（首屏数据量、归并排序耗时都上来了），此时应改成像 `weekly.ts` 选人那样
+ *     **按关注的人分批查询**（`where(person_key in […]).skip().limit()` 逐批取，边取边渲染）——
+ *     即把分页维度从「条目」换成「人」。**本轮不这么做**：零新增云调用是硬约束，且现规模未到。
+ *
+ * 取 10 而非概要卡的 3：本页是「查看全部」之后的**完整页**，用户是带着「我要看全部」的预期进来的，
+ * 一屏 10 张卡（约两屏内容）比 3 条更尊重这个预期；同时与事件时间线页取同一档，减少心智与代码分叉。
+ */
+export const FEED_PAGE_SIZE = 10
+
 /** 分页切片结果：`rows` 是「累计到第 page 页应渲染的行」（第 1..page 页，非单页） */
 export interface PageSlice<T> {
   /** 累计渲染的行（`items.slice(0, page × pageSize)`） */
@@ -169,6 +244,8 @@ export interface PageSlice<T> {
   page: number
   /** 总页数（空数据为 0） */
   pageCount: number
+  /** 尚未渲染的条数（`items.length - rows.length`）—— 供「还有 N 条」文案 */
+  remaining: number
 }
 
 /**
@@ -187,10 +264,12 @@ export function pageSlice<T>(items: T[] | null | undefined, page: number, pageSi
   const want = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
   const cur = pageCount > 0 ? Math.min(want, pageCount) : 1
   const end = cur * size
+  const rows = list.slice(0, end)
   return {
-    rows: list.slice(0, end),
+    rows,
     hasMore: end < list.length,
     page: cur,
-    pageCount
+    pageCount,
+    remaining: list.length - rows.length
   }
 }

@@ -313,10 +313,10 @@ describe('事件聚合：复用 P1 判据（源码钉住，不另写相似度规
 
 /* ───────────────────────── 7. 分层（复用 opinion-access） ───────────────────────── */
 
-describe('事件卡分层：免费受限、今日要点不受限', () => {
-  it('免费事件明细切到 5 条、时间线同样切；会员全部；今日要点照常 3 条', () => {
+describe('事件概要卡：不按会员档放全（固定首屏 + 按需加载），今日要点不受限', () => {
+  it('概要卡首屏固定 3 条（与会员态无关）、其余按需加载；今日要点照常 3 条', () => {
     env.resetAll()
-    const { sliceDetail } = env.load('utils/opinion-access')
+    const { overviewSlice, EVENT_OVERVIEW_INITIAL } = env.load('utils/opinion-access')
     const { buildOpinionQueue, pickDailyFocus } = env.load('utils/opinion-rank')
     const { buildOpinionEvents } = env.load('utils/opinion-events')
 
@@ -331,8 +331,9 @@ describe('事件卡分层：免费受限、今日要点不受限', () => {
     const queue = buildOpinionQueue(input)
 
     eq(events.length, 9, '九条不同事件不合并')
-    eq(sliceDetail(events, false).rows.length, 5, '免费档事件明细被切到 5 条')
-    eq(sliceDetail(events, true).rows.length, 9, '会员看到全部事件')
+    /* 概要卡对免费 / 会员**一律**只放固定首屏若干条 —— 事件会累积，按明细口径放全会让会员一进来就是上百条 */
+    eq(overviewSlice(events, EVENT_OVERVIEW_INITIAL).rows.length, EVENT_OVERVIEW_INITIAL, '事件概要卡首屏固定 3 条（不按会员档放全）')
+    eq(overviewSlice(events, EVENT_OVERVIEW_INITIAL).remaining, 6, '其余 6 条靠「加载更多」按需追加')
     eq(pickDailyFocus(queue).length, 3, '今日要点照常 3 条 —— 不受明细分层影响')
   })
 
@@ -377,10 +378,15 @@ describe('舆情页：事件时间线视角已接入（静态约束）', () => {
     ok(scss.includes('&__event-actions') && scss.includes('&__event-go'), '缺事件卡操作行 / 跳转提示样式')
   })
 
-  it('事件明细沿用 opinion-access 门禁（同一套门槛，不新写判断）', () => {
-    ok(page.includes("from '@/utils/opinion-access'") && page.includes('sliceDetail('), '事件应走 sliceDetail')
-    ok(page.includes('moreDetailNote('), '免费档复用现有升级提示行，不新造弹窗')
-    ok(page.includes('/pages/member/index'), '提示行应能跳会员页')
+  it('三张概要卡统一走 overviewSlice（概要不分档）；本页不再用 sliceDetail 截断列表', () => {
+    ok(page.includes("from '@/utils/opinion-access'"), '页面应引用 utils/opinion-access')
+    ok(
+      page.includes('overviewSlice(') && page.includes('EVENT_OVERVIEW_INITIAL') && page.includes('EVENT_OVERVIEW_BATCH'),
+      '概要卡应走 overviewSlice（固定首屏 + 按需加载），常量来自 utils/opinion-access'
+    )
+    notOk(page.includes('sliceDetail('), '概要卡不得再用按会员档放全的 sliceDetail')
+    notOk(page.includes('moreDetailNote('), '概要不分档 → 不再有「会员可见全部 N 条」明细提示行')
+    notOk(/sliceDetail\(\s*events\s*,/.test(page), '事件概要卡不得再用按会员档放全的 sliceDetail')
   })
 
   it('保留「聚合 ≠ 认定」的克制说明，区分报道与官方通报', () => {
