@@ -5,8 +5,17 @@ import { listFollows } from '@/utils/follows'
 import { getFeedDetails } from '@/utils/cache'
 import { MATERIAL_FAIL_TEXT, WEEKLY_WINDOW_DAYS, collectWeeklyMaterial, readWeeklyCache } from '@/utils/weekly'
 import type { WeeklyReport } from '@/utils/weekly'
-import { loadAlerts, listWatches, splitWatches } from '@/utils/keyword-alert'
+import { loadAlerts, listWatches, markAllSeen, splitWatches } from '@/utils/keyword-alert'
 import { groupSignals, loadRiskSignals } from '@/utils/risk-watch'
+import { loadFollowWatches } from '@/utils/watch'
+import {
+  alertNewCount,
+  countNewEvents,
+  feedNewCount,
+  markModuleSeen,
+  readInboxSeen,
+  riskNewCount
+} from '@/utils/inbox'
 import { readMemberState } from '@/utils/member'
 import { moreDetailNote, sliceDetail } from '@/utils/opinion-access'
 import {
@@ -28,6 +37,7 @@ import {
   loadEventStatus,
   loadStoredEvents,
   markEventRead,
+  markEventsRead,
   newnessLabel,
   resolveDisplayEvents,
   setEventFollow
@@ -66,7 +76,13 @@ import './index.scss'
  *   · 分级标签来自「报道里出现的表述类别」，不是平台对人和事的定性（页面底部有免责说明）。
  *
  * 刻意不做的事：不在这里调 generateWeekly（生成要花额度且需用户确认，交给完整页）；
- * 也不调 markAllSeen（一旦在这里标已读，完整页里那批「新」就凭空消失了）。
+ * **进入本页不会自动 markAllSeen**（若进页即盖章，完整页里那批「新」就凭空消失了）——
+ * 只有在用户显式点页首的「全部已读」时才盖章（那是「我要清掉站内未读」的主动意图）。
+ *
+ * 站内触达收口（2026-10-13）：本页三块的「新 N 条」角标统一走 utils/inbox 的纯函数口径
+ * （关注动态 = 有变化的人数、关键词预警 = 各词新增之和、事件 = 复用 reads 的新事件数），
+ * 并提供页首「全部已读」一次清掉预警 / 风险 / 事件三处站内未读。口径与各模块既有基线同源，
+ * 不新造一套互相冲突的机制（详见 utils/inbox.ts 文件头）。
  */
 
 /**
@@ -83,7 +99,7 @@ interface FeedPreview {
   title: string
   source: string
   date: string
-  /** 条目级分级字段（feed_cache 写入前由 cache.ts 用例行词典补齐；未命中则无） */
+  /** 条目级分级字段（云端写口 aiProxy#saveFeed 写入 feed_cache 前用风险词典补齐；未命中 / 旧缓存则无） */
   category?: RiskCategory
   level?: string
 }
@@ -103,6 +119,8 @@ interface FeedState {
   followCount: number
   entryCount: number
   failedCount: number
+  /** 自上次查看以来有变化的关注对象数（口径走 utils/inbox#feedNewCount，即每个人的 hasNew） */
+  newCount: number
   /** 全部归并后的动态（统一队列取全量；本块按会员态截断展示） */
   items: FeedPreview[]
   /** 关注的人名（「与我相关」排序用） */
@@ -122,6 +140,8 @@ interface AlertState {
   keywordCount: number
   personCount: number
   newTotal: number
+  /** 风险信号里自上次查看以来的新增条数（口径走 utils/inbox#riskNewCount，基线是本机 inbox:seen.risk） */
+  riskNew: number
   riskCount: number
   /** 关键词预警条目（全量；本块按会员态截断展示） */
   items: AlertPreview[]
@@ -148,6 +168,7 @@ export default function Opinion() {
     followCount: 0,
     entryCount: 0,
     failedCount: 0,
+    newCount: 0,
     items: [],
     followNames: []
   })
@@ -162,6 +183,7 @@ export default function Opinion() {
     keywordCount: 0,
     personCount: 0,
     newTotal: 0,
+    riskNew: 0,
     riskCount: 0,
     items: [],
     riskRows: [],
@@ -197,7 +219,12 @@ export default function Opinion() {
     setFeed((s) => ({ ...s, status: 'loading' }))
     try {
       const rows = await listFollows()
-      const details = await getFeedDetails(rows.map((f) => f.person_key))
+      /* 动态缓存与实际内容并发读；watch 带 60s 内存缓存（与关注流 / 消息中心共享），
+         这里只为拿到「自上次查看以来有变化的人数」，口径与关注列页完全一致（utils/inbox#feedNewCount） */
+      const [details, watches] = await Promise.all([
+        getFeedDetails(rows.map((f) => f.person_key)),
+        loadFollowWatches(rows)
+      ])
       const merged: FeedPreview[] = []
       let failed = 0
       for (const f of rows) {
@@ -223,6 +250,7 @@ export default function Opinion() {
         followCount: rows.length,
         entryCount: merged.length,
         failedCount: failed,
+        newCount: feedNewCount(watches),
         items: merged,
         followNames: rows.map((r) => r.name)
       })
@@ -261,9 +289,7 @@ export default function Opinion() {
       const { keywords, persons } = splitWatches(rows)
 
       const items: AlertPreview[] = []
-      let newTotal = 0
       for (const g of res.groups) {
-        newTotal += g.newCount
         for (const it of g.items) {
           items.push({
             keyword: g.keyword,
@@ -284,7 +310,10 @@ export default function Opinion() {
         status: 'ready',
         keywordCount: keywords.length,
         personCount: persons.length,
-        newTotal,
+        /* 关键词预警口径走 utils/inbox#alertNewCount（等价于各词 newCount 之和，基线是每个词的 seen_at） */
+        newTotal: alertNewCount(res.groups),
+        /* 风险信号没有天然基线，走本机 inbox:seen.risk（见 utils/inbox 文件头） */
+        riskNew: riskNewCount(riskRows, readInboxSeen().risk),
         riskCount: groupSignals(riskRows).reduce((n, g) => n + g.signals.length, 0),
         items,
         riskRows,
@@ -403,6 +432,18 @@ export default function Opinion() {
   const focus = useMemo(() => pickDailyFocus(queue), [queue])
 
   /**
+   * 事件维度的「新」：复用 opinion_event_status.reads（已读且无新进展 → 不算新），
+   * 与每张事件卡上的角标同源（utils/inbox#countNewEvents → opinion-store#eventNewness）。
+   */
+  const eventNew = useMemo(
+    () => countNewEvents(events.map((e) => ({ key: e.key, at: e.date })), eventStatus),
+    [events, eventStatus]
+  )
+
+  /** 首页「舆情」入口角标口径：预警 + 风险 + 事件（关注动态归铃铛，见 utils/inbox 文件头） */
+  const inboxTotal = alerts.newTotal + alerts.riskNew + eventNew
+
+  /**
    * 每块明细的展示截断（P2）：免费档切到 detailRows.free 条，会员档全部。
    * `hidden > 0` 即被藏起的条数，页面据此在列表底部给一行「会员可见全部 N 条 ›」的提示
    * （不遮罩、不弹窗）。**今日要点不在此列**，它走自己的 focus（最多 3 条）。
@@ -478,6 +519,48 @@ export default function Opinion() {
     }
   }
 
+  /**
+   * 「全部已读」：一次把站内三处未读清掉（预警 / 风险 / 事件）—— 推送没了之后的显式收口入口。
+   *
+   * 各模块沿用**各自既有的写入路径**，不新造一套「已读」（口径见 utils/inbox 文件头）：
+   *   · 关键词预警 → 既有 markAllSeen（与预警页进入时的动作完全一致，只盖章关键词行）；
+   *   · 风险信号 → 把本机基线 inbox:seen.risk 推进到当前时刻（唯一没有天然基线的模块）；
+   *   · 舆情事件 → 把当前有角标的键**一次性**走 opinion_event_status.reads（复用 markEventsRead，
+   *     不另立事件已读；与逐条「标记已读」同源，只是合成一次读-改-写）。
+   *
+   * 不做「关注动态」的已读：它的基线是每个人的 followed_at（关注那一刻），没有「清掉」的动作，
+   * 且已由「消息中心（铃铛）」覆盖。完成后重读本块，让计数与库内状态对齐。
+   */
+  const markAllRead = async () => {
+    /* 关键词预警：等待写库完成再重读，避免与 loadAlertBlock 抢跑导致「新」计数不归零 */
+    if (alerts.keywords.length) await markAllSeen(alerts.keywords)
+    /* 风险信号：推进本机基线（无写库） */
+    markModuleSeen('risk')
+    /* 事件：当前有角标（new / update）的键一次性标已读，乐观更新本地态，失败回滚 */
+    const newKeys = events
+      .filter((ev) => eventNewness({ event_key: ev.key, last_at: ev.date }, eventStatus) !== 'seen')
+      .map((ev) => ev.key)
+    if (newKeys.length) {
+      const now = new Date().toISOString()
+      setEventStatus((s) => {
+        const reads = { ...s.reads }
+        for (const k of newKeys) reads[k] = now
+        return { ...s, reads }
+      })
+      if (!(await markEventsRead(newKeys))) {
+        setEventStatus((s) => {
+          const reads = { ...s.reads }
+          for (const k of newKeys) delete reads[k]
+          return { ...s, reads }
+        })
+        Taro.showToast({ title: '标记失败，请重试', icon: 'none' })
+        return
+      }
+    }
+    await loadAlertBlock()
+    Taro.showToast({ title: '已全部标为已读', icon: 'none' })
+  }
+
   /** 分级标签行（影响面 / 可信度 / 是否需回应）的可复用渲染：单条与事件卡共用 */
   const tagsView = (impact: ImpactLevel, cred: CredTier, resp: ResponseNeed) => (
     <View className='page-opinion__tags'>
@@ -499,7 +582,15 @@ export default function Opinion() {
     <View className='page-opinion glow-page safe-tab'>
       <View className='page-opinion__hero'>
         <Text className='page-opinion__hero-title'>舆情台</Text>
-        <Text className='page-opinion__hero-sub'>关注的人 · 本周周报 · 关键词预警，一处看全</Text>
+        <View className='page-opinion__hero-row'>
+          <Text className='page-opinion__hero-sub'>关注的人 · 本周周报 · 关键词预警，一处看全</Text>
+          {/* 站内「全部已读」显式入口（推送没了之后的收口），只在确有未读时出现 */}
+          {inboxTotal > 0 && (
+            <Text className='page-opinion__read-all' onClick={() => void markAllRead()}>
+              全部已读
+            </Text>
+          )}
+        </View>
       </View>
 
       {/* ===== 今日要点（判断入口，置于三块之前） ===== */}
@@ -534,9 +625,13 @@ export default function Opinion() {
       {/* ===== 事件时间线（P3/P5：同一事件的多来源聚合；整卡跳转独立时间线页） ===== */}
       <View className='card page-opinion__events'>
         <View className='page-opinion__head'>
-          <Text className='page-opinion__head-title'>
-            {events.length > 0 ? `🧩 事件时间线 · ${events.length} 件事` : '🧩 事件时间线'}
-          </Text>
+          <View className='page-opinion__head-main'>
+            <Text className='page-opinion__head-title'>
+              {events.length > 0 ? `🧩 事件时间线 · ${events.length} 件事` : '🧩 事件时间线'}
+            </Text>
+            {/* 「新 N 条」：口径来自 utils/inbox#countNewEvents（复用 opinion_event_status.reads） */}
+            {eventNew > 0 && <Text className='count-badge'>新 {eventNew} 条</Text>}
+          </View>
         </View>
 
         {events.length === 0 ? (
@@ -624,7 +719,11 @@ export default function Opinion() {
       {/* ===== 关注动态 ===== */}
       <View className='card page-opinion__block'>
         <View className='page-opinion__head'>
-          <Text className='page-opinion__head-title'>📡 关注动态</Text>
+          <View className='page-opinion__head-main'>
+            <Text className='page-opinion__head-title'>📡 关注动态</Text>
+            {/* 「新 N 条」= 自上次查看以来有变化的关注对象数（口径 utils/inbox#feedNewCount，即每个人的 hasNew） */}
+            {feed.newCount > 0 && <Text className='count-badge'>新 {feed.newCount} 条</Text>}
+          </View>
           <Text className='page-opinion__more' onClick={goFeed}>
             查看全部 ›
           </Text>
@@ -714,7 +813,13 @@ export default function Opinion() {
       {/* ===== 关键词预警 ===== */}
       <View className='card page-opinion__block'>
         <View className='page-opinion__head'>
-          <Text className='page-opinion__head-title'>📣 关键词预警</Text>
+          <View className='page-opinion__head-main'>
+            <Text className='page-opinion__head-title'>📣 关键词预警</Text>
+            {/* 「新 N 条」= 关键词新增 + 风险信号新增（口径 utils/inbox#alertNewCount / #riskNewCount） */}
+            {alerts.newTotal + alerts.riskNew > 0 && (
+              <Text className='count-badge'>新 {alerts.newTotal + alerts.riskNew} 条</Text>
+            )}
+          </View>
           <Text className='page-opinion__more' onClick={goAlerts}>
             查看全部 ›
           </Text>

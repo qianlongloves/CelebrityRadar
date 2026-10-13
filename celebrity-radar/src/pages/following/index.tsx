@@ -6,6 +6,7 @@ import Skeleton from '@/components/skeleton'
 import PersonAvatar from '@/components/person-avatar'
 import { listFollows, unfollow, FollowRow } from '@/utils/follows'
 import { loadFollowWatches, FollowWatch, WATCH_LIMIT } from '@/utils/watch'
+import { feedNewCount } from '@/utils/inbox'
 import { readMemberState } from '@/utils/member'
 import { followGate, followLimitNote } from '@/utils/opinion-access'
 import { useAuth } from '@/stores/auth'
@@ -80,7 +81,8 @@ export default function Following() {
     }
   }
 
-  const newCount = rows.filter((r) => watches[r.person_key]?.hasNew).length
+  /* 「有新内容」人数：走 utils/inbox#feedNewCount（与舆情页「新 N 条」同一口径，即每个人的 hasNew） */
+  const newCount = feedNewCount(watches)
   const visible = onlyNew ? rows.filter((r) => watches[r.person_key]?.hasNew) : rows
 
   /* 真图预热：关注列表一屏多人，一次批量读把全部人拉进缓存，避免逐行各打一次云函数 */

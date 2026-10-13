@@ -148,6 +148,21 @@ export async function markEventRead(eventKey: string, now: Date = new Date()): P
   return saveStatus({ ...cur, reads: { ...cur.reads, [eventKey]: now.toISOString() } })
 }
 
+/**
+ * 批量标记「已读」（舆情页「全部已读」用）：一次读状态、一次写回，
+ * 避免逐条 `markEventRead` 变成 N 次读-改-写。键去重、空键跳过，裁剪交给 saveStatus。
+ * 返回写库是否成功；无有效键时视为「无事可做」，返回 true（调用方据此不报错）。
+ */
+export async function markEventsRead(eventKeys: string[], now: Date = new Date()): Promise<boolean> {
+  const keys = [...new Set((Array.isArray(eventKeys) ? eventKeys : []).filter((k): k is string => typeof k === 'string' && !!k))]
+  if (keys.length === 0) return true
+  const cur = await loadEventStatus()
+  const reads = { ...cur.reads }
+  const iso = now.toISOString()
+  for (const k of keys) reads[k] = iso
+  return saveStatus({ ...cur, reads })
+}
+
 /** 设置 / 取消「跟进」（含时间）。返回写库是否成功 */
 export async function setEventFollow(
   eventKey: string,

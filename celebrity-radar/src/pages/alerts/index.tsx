@@ -16,6 +16,7 @@ import {
   WatchRow
 } from '@/utils/keyword-alert'
 import { readMemberState } from '@/utils/member'
+import { alertNewCount, markModuleSeen } from '@/utils/inbox'
 import { personWatchLimit, watchGate, watchLimit, watchLimitNote } from '@/utils/opinion-access'
 import {
   groupSignals,
@@ -82,7 +83,19 @@ export default function Alerts() {
 
     /* 风险信号一次 in 查询取回（空名单不发请求）：把结果按人分组，交给下方板块渲染 */
     const keys = personRows.map((p) => p.person_key).filter((k): k is string => !!k)
-    setRiskGroups(groupSignals(await loadRiskSignals(keys)))
+    const riskRows = await loadRiskSignals(keys)
+    setRiskGroups(groupSignals(riskRows))
+    /*
+     * 进入预警页即把「风险信号」的本机基线推进到当前（或最新一条信号时间）—— 风险信号是唯一
+     * 没有天然基线的模块（口径见 utils/inbox.ts 文件头），标记放在**读到之后**，与 markAllSeen 同理。
+     */
+    if (riskRows.length) {
+      const latest = riskRows.reduce(
+        (m, s) => (String(s.first_seen_at ?? '') > m ? String(s.first_seen_at ?? '') : m),
+        ''
+      )
+      markModuleSeen('risk', latest)
+    }
 
     /* 标记已看必须在读之后：反了会把本次刚读出的条目直接算成已读 */
     if (res.groups.length) void markAllSeen(res.groups.map((g) => g.keyword))
@@ -196,7 +209,8 @@ export default function Alerts() {
   const itemDate = (item: AlertGroup['items'][number]) =>
     formatMoment8(item.published_date ?? item.first_seen_at ?? '')
 
-  const newTotal = groups.reduce((n, g) => n + g.newCount, 0)
+  /* 本次新增之和：走 utils/inbox#alertNewCount（与舆情页「新 N 条」同一口径，等价于各词 newCount 相加） */
+  const newTotal = alertNewCount(groups)
   const notifyReady = alertNotifyConfigured()
   const riskNotifyReady = riskNotifyConfigured()
 

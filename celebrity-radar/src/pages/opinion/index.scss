@@ -19,9 +19,26 @@
     color: $text-1;
   }
 
+  /* 副标题 + 右侧「全部已读」同排 */
+  &__hero-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+  }
+
   &__hero-sub {
+    flex: 1;
+    min-width: 0;
     font-size: 24rpx;
     color: $text-3;
+  }
+
+  /* 「全部已读」：与「查看全部 ›」同一套文字入口写法，克制不抢标题 */
+  &__read-all {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    color: $brand;
   }
 
   /* 区块头：标题 + 右侧「查看全部 ›」 */
@@ -30,6 +47,14 @@
     align-items: center;
     justify-content: space-between;
     margin-bottom: 12rpx;
+  }
+
+  /* 标题 + 「新 N 条」角标同排（角标不抢右下的「查看全部」） */
+  &__head-main {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    min-width: 0;
   }
 
   &__head-title {

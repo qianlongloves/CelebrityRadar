@@ -29,6 +29,7 @@ import {
 } from '@/utils/member'
 import { clearWeeklyCache } from '@/utils/weekly'
 import { clearMessageState } from '@/utils/messages'
+import { clearInboxSeen } from '@/utils/inbox'
 import { clearQaUsage, qaUsageToday, refreshQaUsage } from '@/utils/qa'
 import type { QaUsage } from '@/utils/qa'
 import { useTabBarSync } from '@/utils/tabbar'
@@ -259,6 +260,8 @@ export default function Mine() {
     clearWeeklyCache()
     /* 消息已读基线也是本机数据：留着会让「清空后」的首页铃铛按旧基线判定未读 */
     clearMessageState()
+    /* 风险信号的「上次查看」基线同属本机数据：一并清掉，清空后按「从未看过」重新计（见 utils/inbox） */
+    clearInboxSeen()
     /* 问答用量同理：清掉本机镜像与连点时间。⚠ 云端 `ask_quota` 不清 ——
        额度挂在账号上，清本机数据不会重置今日提问次数（与生成配额同一口径） */
     clearQaUsage()
