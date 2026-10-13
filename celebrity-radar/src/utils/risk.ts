@@ -44,8 +44,9 @@ export const RISK_CATEGORY_LABEL: Record<RiskCategory, string> = {
 export type RiskLevel = 'high' | 'mid' | 'low'
 
 /**
- * 类别 → 级别。**与云端 cloudfunctions/riskWatch 与 cloudfunctions/keywordAlert 的 `LEVEL_OF` 同源**：
- * 三份都由同一批「命中词类别」推导，改动须三处同步（一致性由 test/cases 的词典用例钉住）。
+ * 类别 → 级别。**与云端 cloudfunctions/riskWatch / keywordAlert / aiProxy(report-store.js)
+ * 的 `LEVEL_OF` 同源**：各份都由同一批「命中词类别」推导，改动须各处同步
+ * （一致性由 test/cases/01-pure.js 与 34-field-grading.js 的词典用例钉住）。
  * 它给出的每一级都能回放到触发它的那条素材（见 riskWatch 文件头取舍 5）。
  */
 export const RISK_LEVEL_OF: Record<RiskCategory, RiskLevel> = {
@@ -211,8 +212,9 @@ export const RIGHTS_AFTER_WINDOW = 8
  * 这是一个**启发式**（不是语义理解），所以窗口取得小（6 字）—— 窗口一大就会把
  * 「团队否认，此前已被起诉」这种真有信号的长句一起吃掉。
  */
-/* 导出以供一致性测试：云函数 riskWatch 复制了同一份词典与否定词表，
-   test/cases/01-pure.js 会读云函数源码比对（见该用例），漂移会红 */
+/* 导出以供一致性测试：云端云函数（riskWatch / keywordAlert / aiProxy 的 report-store.js）
+   各自复制了同一份词典与否定词表，test/cases/01-pure.js 与 34-field-grading.js 会读云函数
+   源码比对（见该用例），漂移会红 */
 export const NEG_WORDS = ['未', '没', '无', '否认', '不实', '谣言', '造谣', '辟谣']
 export const NEG_WINDOW = 6
 
@@ -277,32 +279,6 @@ function matchTerm(text: string): { word: string; category: RiskCategory } | nul
     return term
   }
   return null
-}
-
-/**
- * 条目级分级字段：命中词典才产出的「类别 / 类别标签 / 级别」三件套，**未命中返回 null**。
- *
- * 用途：云端产出侧（feed_cache 在 cache.ts 写入前、keywords.items 在 keywordAlert 云端写入前）
- * 给每条补上这三个字段，让端上判断层（utils/opinion-rank.ts）不再恒判「未评级 / 未知」。
- * 字段名与 risk_signals 现有字段完全一致（category / category_label / level）。
- *
- * ⚠ **未命中一律不产出任何字段**（返回 null，调用方据此原样写回，不落任何默认值）：
- *   覆盖率天然有限 —— 只能识别词典里列举的表述。没命中的条目在端上仍按「未评级 / 未知」对待，
- *   这是刻意设计（见本文件边界 1/3 与 utils/opinion-rank.ts 文件头红线 4）：算不出就说算不出，
- *   绝不为界面好看去猜一个级别或给默认值。
- *
- * 判定规则与 buildRiskSignals 一致（同词表、同否定词窗口、同双向词方向判定）—— 只是复用给单条文本。
- */
-export function riskFieldsOf(
-  text: string
-): { category: RiskCategory; category_label: string; level: RiskLevel } | null {
-  const hit = matchTerm(String(text || ''))
-  if (!hit) return null
-  return {
-    category: hit.category,
-    category_label: RISK_CATEGORY_LABEL[hit.category],
-    level: RISK_LEVEL_OF[hit.category]
-  }
 }
 
 function clip(s: string): string {

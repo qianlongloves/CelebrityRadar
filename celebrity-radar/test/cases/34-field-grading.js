@@ -1,8 +1,8 @@
 'use strict'
 
 /**
- * 分级字段上游化（P4-B，2026-10-13）——把「类别 / 级别」在**云端产出时**就写进舆情条目，
- * 使端上舆情判断层不再恒判「未评级 / 未知」。
+ * 分级字段上游化（P4-B，2026-10-13）——把「类别 / 级别」的**权威产出位置**放在云端写口，
+ * 端上只透传 / 展示，不再自行判定（本轮从「端上 cache.ts 写入前补」改为「云端写口补」）。
  *
  * 背景：端上 utils/opinion-rank.ts 的 impactOf 只认条目自带的 level 字段、responseOf 只认
  * category + level；而原先**只有 risk_signals** 带这两个字段 —— 关注动态（feed_cache）与
@@ -11,11 +11,12 @@
  *
  * 本用例钉住六件事：
  *   1. **本地确定性分级（零新增上游成本）**：命中风险词典才产出 category/category_label/level；
- *   2. **诚实分级**：未命中**一律不产出任何字段**（端上保持未评级 / 未知，不给默认值、不猜）；
- *   3. **端上兼容旧缓存**：有字段的条目正确分级、无字段的（旧缓存）仍按未评级且不抛；
- *   4. **事件聚合自动受益**：影响面取成员最高能吃到条目级新字段（端上 + 云函数两侧）；
- *   5. **两条云端写入路径**：cache.ts 写 feed_cache、keywordAlert 写 keywords.items；
- *   6. **词典两端一致**：keywordAlert 复制的词典与 src/utils/risk.ts 逐字同源（漂移即红）。
+ *   2. **诚实分级**：未命中**一律不落任何字段**（端上保持未评级 / 未知，不给默认值、不猜）；
+ *   3. **端上不再自行分级**：写口可用时端上把检索结果原样交给写口（不预分级）；写口不可用回退
+ *      直写这一路写出的条目**没有**分级字段（端上只透传 / 展示，见 cache.ts#writeFeedCache）；
+ *   4. **端上兼容旧缓存**：有字段的条目正确分级、无字段的（旧缓存 / 回退产物）仍按未评级且不抛；
+ *   5. **两条云端写入路径**：aiProxy#saveFeed 写 feed_cache、keywordAlert 写 keywords.items；
+ *   6. **词典几处同源**：aiProxy / keywordAlert 复制的词典与 src/utils/risk.ts 逐字同源（漂移即红）。
  *
  * 加载方式：端上纯函数走 env.load（编译产物）；云函数走 wx-server-sdk → 内存 DB 的替身
  * （与 31/33 同法，https → 可编程假上游）。
@@ -35,48 +36,9 @@ const BUILD = path.join(ROOT, 'test', '.build')
 const HOUR = 3600 * 1000
 const ago = (ms) => new Date(Date.now() - ms).toISOString()
 
-/* ─────────────────────────── 端上：risk.ts#riskFieldsOf ─────────────────────────── */
+/* ─────────────────────────── 端上：不再自行分级（云端写口才是权威） ─────────────────────────── */
 
-describe('端上词典：riskFieldsOf 命中即产出三件套、未命中返回 null', () => {
-  function R() {
-    env.resetAll()
-    return env.load('utils/risk')
-  }
-
-  it('命中词典 → 正确的类别 / 类别标签 / 级别', () => {
-    const { riskFieldsOf } = R()
-    deepEq(riskFieldsOf('某明星因偷税被调查'), { category: 'tax', category_label: '税务合规', level: 'high' })
-    deepEq(riskFieldsOf('品牌方宣布与其解约'), { category: 'contract', category_label: '商业合作', level: 'mid' })
-    deepEq(riskFieldsOf('工作室发声明澄清'), { category: 'statement', category_label: '回应表态', level: 'low' })
-  })
-
-  it('未命中 → 返回 null（不产出任何字段；端上据此保持未评级 / 未知）', () => {
-    const { riskFieldsOf } = R()
-    eq(riskFieldsOf('新片今日开机，主创亮相'), null)
-    eq(riskFieldsOf(''), null)
-    eq(riskFieldsOf('翻车了 / 塌房了'), null, '评价性词汇不在词典内，不得据此分级')
-  })
-
-  it('否定词排除与双向词方向判定与 buildRiskSignals 同口径', () => {
-    const { riskFieldsOf } = R()
-    eq(riskFieldsOf('工作室否认被起诉'), null, '「否认被起诉」是假信号')
-    deepEq(
-      riskFieldsOf('本人起诉长期造谣者'),
-      { category: 'rights', category_label: '名誉维权', level: 'mid' },
-      '双向动词后跟维权对象 → 名誉维权'
-    )
-    deepEq(riskFieldsOf('某人被起诉'), { category: 'judicial', category_label: '司法监管', level: 'high' })
-  })
-
-  it('级别只由类别决定（RISK_LEVEL_OF = 云端 LEVEL_OF 同源）', () => {
-    const { RISK_LEVEL_OF } = R()
-    deepEq(RISK_LEVEL_OF, { judicial: 'high', tax: 'high', contract: 'mid', rights: 'mid', statement: 'low' })
-  })
-})
-
-/* ─────────────────────────── 端上：feed_cache 写入即补字段 ─────────────────────────── */
-
-describe('关注动态：写入 feed_cache 时补条目级分级字段', () => {
+describe('关注动态：端上只透传、不产出分级字段（分级权威在云端写口）', () => {
   /** 让「云环境已配置」为真（口径同 05-feed-cost） */
   function configureCloud() {
     require(path.join(BUILD, 'config/public')).publicConfig.cloudbaseEnvId = 'test-env-id'
@@ -91,7 +53,37 @@ describe('关注动态：写入 feed_cache 时补条目级分级字段', () => {
     env.load('stores/auth').useAuth.getState().setLogin({ userId: id })
   }
 
-  it('命中词典的动态落 category/level，未命中的不落任何字段', async () => {
+  it('写口可用时，端上把检索结果原样交给写口（不预分级，即便标题命中词典）', async () => {
+    const load = fresh()
+    login()
+    let saved = null
+    env.registerCloudFn('aiProxy', (data) => {
+      if (data.action === 'search') {
+        return {
+          ok: true,
+          pages: [{ name: '某明星被起诉', url: 'https://n.example/a', snippet: '某明星被起诉' }]
+        }
+      }
+      if (data.action === 'report' && data.op === 'saveFeed') {
+        saved = data
+        return { ok: true, result: 'saved' }
+      }
+      return { ok: false }
+    })
+    const { refreshFeed } = load('utils/cache')
+
+    const out = await refreshFeed('P0#tech', 'P0')
+    eq(out.ok, true)
+    ok(!!saved, '写口可用时必须走写口，不落端上直写')
+    const sent = saved.items.find((i) => i.url === 'https://n.example/a')
+    ok(!!sent, '端上应把条目交给写口')
+    notOk(
+      'category' in sent || 'level' in sent || 'category_label' in sent,
+      '端上不再分级：交给写口的条目不得预置分级字段（分级由云端写口做）'
+    )
+  })
+
+  it('写口不可用回退直写：条目原样落库、不带任何分级字段（诚实的降级缺口）', async () => {
     const load = fresh()
     login()
     /* aiProxy 只处理 search：写口（action=report）返回 {ok:false} → 端上回退直写 feed_cache */
@@ -111,13 +103,14 @@ describe('关注动态：写入 feed_cache 时补条目级分级字段', () => {
     eq(out.ok, true)
 
     const row = env.db.__dump('feed_cache').find((r) => r._id === 'P0#tech')
-    ok(!!row, 'feed_cache 应被写出')
+    ok(!!row, 'feed_cache 应被写出（回退直写）')
     const hit = row.items.find((i) => i.url === 'https://n.example/a')
-    const miss = row.items.find((i) => i.url === 'https://n.example/b')
-    eq(hit.category, 'judicial')
-    eq(hit.level, 'high')
-    eq(hit.category_label, '司法监管')
-    notOk('category' in miss || 'level' in miss, '未命中词典的条目不得落分级字段（旧口径不变）')
+    /* 即便标题命中词典，端上也不落字段 —— 这正是「端上不再承担权威标注」的后果：
+       回退路径写出的条目在端上判断层按「未评级 / 未知」对待（它只在云端写口不可用时发生）。 */
+    notOk(
+      'category' in hit || 'level' in hit || 'category_label' in hit,
+      '端上不再分级：回退直写路径不得落分级字段（分级权威在云端写口）'
+    )
   })
 })
 
@@ -251,7 +244,7 @@ function loadCloudFn(name, responses, opts = {}) {
     DYNAMIC_CURRENT_ENV: 'test-env',
     init() {},
     database: () => db,
-    getWXContext: () => ({}),
+    getWXContext: () => (opts.openid ? { OPENID: opts.openid } : {}),
     openapi: { subscribeMessage: { send: () => Promise.resolve({ errCode: 0 }) } }
   }
   const file = path.join(CLOUD, name, 'index.js')
@@ -275,6 +268,60 @@ const wordWatch = (openid, keyword) => ({
   keyword,
   type: 'keyword',
   created_at: ago(48 * HOUR)
+})
+
+/* ─────────────────────── 云端：aiProxy 写口（action:report / op:saveFeed）补字段 ─────────────────────── */
+
+describe('aiProxy 写口：写入 feed_cache 前补条目级分级字段（权威产出位置）', () => {
+  it('命中词典的条目落三件套；未命中不落；客户端自报的假级别被抹掉（写口权威）', async () => {
+    const { fn } = loadCloudFn('aiProxy', [], { openid: 'u1' })
+    const res = await fn.main({
+      action: 'report',
+      op: 'saveFeed',
+      personKey: 'P0#tech',
+      items: [
+        { title: '某明星被起诉', url: 'https://n.example/a', source: 'A报' },
+        { title: '今日片场探班花絮', url: 'https://n.example/b', source: 'B报' },
+        /* 端上不该自报级别；万一带着（改包 / 旧版本），写口以词典为准，一并抹掉 */
+        { title: '普通的一天', url: 'https://n.example/c', category: 'judicial', level: 'high' }
+      ]
+    })
+    eq(res.ok, true)
+    eq(res.result, 'saved')
+
+    const row = env.db.__dump('feed_cache').find((r) => r._id === 'P0#tech')
+    ok(!!row, 'feed_cache 应被写出')
+
+    const hit = row.items.find((i) => i.url === 'https://n.example/a')
+    eq(hit.category, 'judicial')
+    eq(hit.category_label, '司法监管')
+    eq(hit.level, 'high')
+
+    const miss = row.items.find((i) => i.url === 'https://n.example/b')
+    notOk('category' in miss || 'level' in miss || 'category_label' in miss, '未命中词典不落任何字段')
+
+    const forged = row.items.find((i) => i.url === 'https://n.example/c')
+    notOk('category' in forged || 'level' in forged, '写口是权威：客户端自报的级别被抹掉，以词典判定为准')
+  })
+
+  it('词典判定与端上同源：否定词 / 双向词方向同口径（写口产出）', async () => {
+    const { fn } = loadCloudFn('aiProxy', [], { openid: 'u1' })
+    await fn.main({
+      action: 'report',
+      op: 'saveFeed',
+      personKey: 'P1#tech',
+      items: [
+        { title: '工作室否认被起诉', url: 'https://n.example/x' },
+        { title: '本人起诉长期造谣者', url: 'https://n.example/y' }
+      ]
+    })
+    const row = env.db.__dump('feed_cache').find((r) => r._id === 'P1#tech')
+    const x = row.items.find((i) => i.url === 'https://n.example/x')
+    notOk('category' in x, '「否认被起诉」是假信号，不得分级')
+    const y = row.items.find((i) => i.url === 'https://n.example/y')
+    eq(y.category, 'rights', '双向动词后跟维权对象 → 名誉维权')
+    eq(y.level, 'mid')
+  })
 })
 
 /* ─────────────────────────── 云端：keywordAlert 写 keywords.items 补字段 ─────────────────────────── */
@@ -352,18 +399,22 @@ describe('opinionCluster：落库事件的影响面吃到 feed / keywords 的条
   })
 })
 
-/* ─────────────────────────── 词典两端一致（漂移即红） ─────────────────────────── */
+/* ─────────────────────────── 词典几处一致（漂移即红） ─────────────────────────── */
 
 /**
- * keywordAlert 复制了一份风险词典（与 riskWatch / src/utils/risk.ts 同源，云函数不能跨函数
- * require）。这里读 keywordAlert **源码**字面量、与端上真源逐条比对 —— 有人只改一端就红，
- * 与 01-pure.js 的「风险词典两端一致（riskWatch ↔ risk.ts）」同一套写法。
+ * aiProxy（report-store.js）与 keywordAlert **各自复制**了一份风险词典（云函数不能跨函数
+ * require，与 riskWatch / src/utils/risk.ts 同源）。这里读两份云函数**源码**字面量、与端上真源
+ * 逐条比对 —— 有人只改一处就红，与 01-pure.js 的「风险词典两端一致（riskWatch ↔ risk.ts）」
+ * 同一套写法。端上 risk.ts 是词表真源（buildRiskSignals 仍在用它）。
  */
-describe('风险词典两端一致（keywordAlert ↔ src/utils/risk.ts）', () => {
-  const src = fs.readFileSync(path.join(CLOUD, 'keywordAlert', 'index.js'), 'utf8')
+describe('风险词典几处一致（aiProxy · keywordAlert ↔ src/utils/risk.ts）', () => {
+  const SOURCES = {
+    aiProxy: fs.readFileSync(path.join(CLOUD, 'aiProxy', 'report-store.js'), 'utf8'),
+    keywordAlert: fs.readFileSync(path.join(CLOUD, 'keywordAlert', 'index.js'), 'utf8')
+  }
 
-  /** 从云函数源码里抠出顶层 `const NAME = <字面量>` 并求值（数组 / 对象 / 数字） */
-  function literal(name) {
+  /** 从某份云函数源码里抠出顶层 `const NAME = <字面量>` 并求值（数组 / 对象 / 数字） */
+  function literalFrom(src, name) {
     const head = `const ${name} = `
     const at = src.indexOf(head)
     if (at < 0) throw new Error(`云函数源码里未找到 ${head}`)
@@ -390,23 +441,27 @@ describe('风险词典两端一致（keywordAlert ↔ src/utils/risk.ts）', () 
     return env.load('utils/risk')
   }
 
-  it('词表逐条相同、顺序也相同（命中取第一个词，顺序变了结果就变）', () => {
-    const { RISK_TERMS } = risk()
-    deepEq(literal('RISK_TERMS'), RISK_TERMS.map((t) => ({ word: t.word, category: t.category })))
-  })
+  for (const label of Object.keys(SOURCES)) {
+    const literal = (name) => literalFrom(SOURCES[label], name)
 
-  it('否定词表 / 窗口、双向词方向判定相同', () => {
-    const { NEG_WORDS, NEG_WINDOW, BIDIRECTIONAL_TERMS, RIGHTS_OBJECTS, RIGHTS_AFTER_WINDOW } = risk()
-    deepEq(literal('NEG_WORDS'), NEG_WORDS)
-    eq(literal('NEG_WINDOW'), NEG_WINDOW)
-    deepEq(literal('BIDIRECTIONAL_TERMS'), BIDIRECTIONAL_TERMS)
-    deepEq(literal('RIGHTS_OBJECTS'), RIGHTS_OBJECTS)
-    eq(literal('RIGHTS_AFTER_WINDOW'), RIGHTS_AFTER_WINDOW)
-  })
+    it(`[${label}] 词表逐条相同、顺序也相同（命中取第一个词，顺序变了结果就变）`, () => {
+      const { RISK_TERMS } = risk()
+      deepEq(literal('RISK_TERMS'), RISK_TERMS.map((t) => ({ word: t.word, category: t.category })))
+    })
 
-  it('类别标签相同、级别只由类别决定（LEVEL_OF ↔ RISK_LEVEL_OF）', () => {
-    const { RISK_CATEGORY_LABEL, RISK_LEVEL_OF } = risk()
-    deepEq(literal('CATEGORY_LABEL'), RISK_CATEGORY_LABEL)
-    deepEq(literal('LEVEL_OF'), RISK_LEVEL_OF)
-  })
+    it(`[${label}] 否定词表 / 窗口、双向词方向判定相同`, () => {
+      const { NEG_WORDS, NEG_WINDOW, BIDIRECTIONAL_TERMS, RIGHTS_OBJECTS, RIGHTS_AFTER_WINDOW } = risk()
+      deepEq(literal('NEG_WORDS'), NEG_WORDS)
+      eq(literal('NEG_WINDOW'), NEG_WINDOW)
+      deepEq(literal('BIDIRECTIONAL_TERMS'), BIDIRECTIONAL_TERMS)
+      deepEq(literal('RIGHTS_OBJECTS'), RIGHTS_OBJECTS)
+      eq(literal('RIGHTS_AFTER_WINDOW'), RIGHTS_AFTER_WINDOW)
+    })
+
+    it(`[${label}] 类别标签相同、级别只由类别决定（LEVEL_OF ↔ RISK_LEVEL_OF）`, () => {
+      const { RISK_CATEGORY_LABEL, RISK_LEVEL_OF } = risk()
+      deepEq(literal('CATEGORY_LABEL'), RISK_CATEGORY_LABEL)
+      deepEq(literal('LEVEL_OF'), RISK_LEVEL_OF)
+    })
+  }
 })

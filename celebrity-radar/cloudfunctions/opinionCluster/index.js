@@ -322,8 +322,9 @@ async function collectSources() {
         source: asText(it && it.source),
         date: asText(it && (it.publishedDate || it.published_date)),
         label,
-        /* 条目级分级字段（P4-B，可能没有）：feed_cache 写入前已由 cache.ts 用风险词典补齐，
-           有则透传给 deriveEvent（影响面 / 需回应据此计算），没有则维持「未评级 / 未知」。 */
+        /* 条目级分级字段（P4-B，可能没有）：feed_cache 写入前已由云端写口
+           （aiProxy/report-store.js#storeSaveFeed）用风险词典补齐，有则透传给 deriveEvent
+           （影响面 / 需回应据此计算），没有则维持「未评级 / 未知」。 */
         category: asRiskCategory(it && it.category),
         level: normLevel(it && it.level)
       })

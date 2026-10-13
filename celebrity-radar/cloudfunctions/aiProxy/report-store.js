@@ -24,6 +24,143 @@
  * 里已有的那一份，免得同一个函数里出现两套会员判定或两套计数口径。
  */
 
+/* ═══════════════════════════════════════════════════════════════════════
+ * 风险词典 —— 条目级分级字段（分级字段上游化，P4-B，2026-10-13）
+ *
+ * 「类别 / 级别」的**权威产出位置**是这里（`saveFeed` 写口）：写入 `feed_cache` 前给每条补
+ * `category` / `category_label` / `level`，端上只透传 / 展示，不再自行判定（见 file 头「写口能
+ * 保证与不能保证的」）。纯本地词典匹配，**零上游成本**（不新增任何检索 / 模型调用）。
+ *
+ * ⚠ 云函数不能跨函数 require（各自独立打包），故这里**复制**一份与
+ * `src/utils/risk.ts` / `cloudfunctions/riskWatch` / `cloudfunctions/keywordAlert` **逐字同源**
+ * 的词典与判定规则。改动必须几处同步 —— 一致性由 `test/cases/34-field-grading.js` 读源码字面量
+ * 比对钉住（有人只改一端即红）；**不允许另造第二套词表**。
+ *
+ * 未命中**不落任何字段**（保持「未评级 / 未知」）：覆盖率天然有限 —— 只能识别词典里列举的表述，
+ * 算不出就说算不出，绝不为界面好看去猜一个级别或给默认值（同 risk.ts 三条边界）。
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/** 词表：全部是可核对的事实类表述，不含评价性词汇（同 risk.ts 口径）。命中取第一个词。 */
+const RISK_TERMS = [
+  { word: '偷税', category: 'tax' },
+  { word: '逃税', category: 'tax' },
+  { word: '漏税', category: 'tax' },
+  { word: '补缴税款', category: 'tax' },
+  { word: '税务稽查', category: 'tax' },
+  { word: '起诉', category: 'judicial' },
+  { word: '立案', category: 'judicial' },
+  { word: '诉讼', category: 'judicial' },
+  { word: '判决', category: 'judicial' },
+  { word: '败诉', category: 'judicial' },
+  { word: '庭审', category: 'judicial' },
+  { word: '传唤', category: 'judicial' },
+  { word: '拘留', category: 'judicial' },
+  { word: '逮捕', category: 'judicial' },
+  { word: '强制执行', category: 'judicial' },
+  { word: '通报批评', category: 'judicial' },
+  { word: '行政处罚', category: 'judicial' },
+  { word: '罚款', category: 'judicial' },
+  { word: '律师函', category: 'judicial' },
+  { word: '调查', category: 'judicial' },
+  { word: '查封', category: 'judicial' },
+  { word: '冻结', category: 'judicial' },
+  { word: '限制高消费', category: 'judicial' },
+  { word: '失信被执行人', category: 'judicial' },
+  { word: '解约', category: 'contract' },
+  { word: '终止合作', category: 'contract' },
+  { word: '停止合作', category: 'contract' },
+  { word: '合作终止', category: 'contract' },
+  { word: '代言取消', category: 'contract' },
+  { word: '撤换', category: 'contract' },
+  { word: '下架', category: 'contract' },
+  { word: '索赔', category: 'contract' },
+  { word: '违约', category: 'contract' },
+  { word: '解聘', category: 'contract' },
+  { word: '辞退', category: 'contract' },
+  { word: '撤档', category: 'contract' },
+  { word: '名誉权', category: 'rights' },
+  { word: '肖像权', category: 'rights' },
+  { word: '诽谤', category: 'rights' },
+  { word: '造谣', category: 'rights' },
+  { word: '侵权', category: 'rights' },
+  { word: '维权', category: 'rights' },
+  { word: '盗用', category: 'rights' },
+  { word: '假冒', category: 'rights' },
+  { word: '道歉', category: 'statement' },
+  { word: '致歉', category: 'statement' },
+  { word: '澄清', category: 'statement' },
+  { word: '辟谣', category: 'statement' }
+]
+
+/* 双向词方向判定（与 src/utils/risk.ts / riskWatch / keywordAlert 同源）：「起诉 / 诉讼」
+   原告被告都在用，命中后要看动词后面是否跟着维权对象 ——「起诉造谣者」是名誉维权、「被起诉」
+   才是司法监管。 */
+const BIDIRECTIONAL_TERMS = ['起诉', '诉讼']
+const RIGHTS_OBJECTS = [
+  '造谣', '诽谤', '侵权', '名誉', '肖像', '网暴', '黑粉', '抹黑', '诋毁', '抄袭', '盗用', '假冒', '维权'
+]
+const RIGHTS_AFTER_WINDOW = 8
+
+/** 类别 → 级别：只表示「命中词属于哪一类」，不是对事件的定性（与 riskWatch / keywordAlert 同源） */
+const LEVEL_OF = { judicial: 'high', tax: 'high', contract: 'mid', rights: 'mid', statement: 'low' }
+const CATEGORY_LABEL = {
+  judicial: '司法监管',
+  tax: '税务合规',
+  contract: '商业合作',
+  rights: '名誉维权',
+  statement: '回应表态'
+}
+
+/* 否定词：命中词前 NEG_WINDOW 个字符内出现即整条丢弃（「未被起诉」「否认解约」）。
+   与 risk.ts / riskWatch 同源、同窗口 —— 这是启发式，窗口一大就会吃掉「团队否认，此前已被起诉」。 */
+const NEG_WORDS = ['未', '没', '无', '否认', '不实', '谣言', '造谣', '辟谣']
+const NEG_WINDOW = 6
+
+/** 字面命中：返回第一个未被否定的命中词，没有则 null（与 risk.ts#matchTerm / riskWatch 同一套规则） */
+function matchTerm(text) {
+  for (const term of RISK_TERMS) {
+    const at = text.indexOf(term.word)
+    if (at < 0) continue
+    const before = text.slice(Math.max(0, at - NEG_WINDOW), at)
+    if (NEG_WORDS.some((n) => before.includes(n))) continue
+    /* 双向词再看宾语方向：「起诉造谣者」是维权、「被起诉」才是司法监管 */
+    if (BIDIRECTIONAL_TERMS.indexOf(term.word) >= 0) {
+      const after = text.slice(at + term.word.length, at + term.word.length + RIGHTS_AFTER_WINDOW)
+      if (RIGHTS_OBJECTS.some((o) => after.includes(o))) return { word: term.word, category: 'rights' }
+    }
+    return term
+  }
+  return null
+}
+
+/**
+ * 条目级分级字段：命中词典才产出的三件套，**未命中返回空对象**（展开后不落任何字段）。
+ * 未命中不产出 = 端上保持「未评级 / 未知」，这是刻意设计（覆盖率天然有限）。
+ */
+function riskFieldsOf(text) {
+  const hit = matchTerm(String(text || ''))
+  if (!hit) return {}
+  return {
+    category: hit.category,
+    category_label: CATEGORY_LABEL[hit.category],
+    level: LEVEL_OF[hit.category]
+  }
+}
+
+/** 条目级分级字段的字段名（写口据「命中即覆盖、未命中即抹除」保持权威：客户端塞进来的假级别一并清掉） */
+const GRADED_FIELDS = ['category', 'category_label', 'level']
+
+/**
+ * 给单条 feed 条目定级：在本条副本上**先清掉任何既有的分级字段**（写口是权威，不认客户端自报的级别），
+ * 再按词典命中结果落三件套；未命中则三条字段都不存在（保持「未评级」）。
+ */
+function gradeFeedItem(it) {
+  if (!it || typeof it !== 'object' || Array.isArray(it)) return it
+  const out = Object.assign({}, it)
+  for (const k of GRADED_FIELDS) delete out[k]
+  return Object.assign(out, riskFieldsOf(`${it.title || ''} ${it.content || ''}`))
+}
+
 module.exports = function createReportStore(deps) {
   const { db, cloud, isActiveMember, bumpAbuseCount, quotaGuardDisabled, todayKey, failDetail } = deps
   const _ = db.command
@@ -312,7 +449,13 @@ module.exports = function createReportStore(deps) {
     }
   }
 
-  /** 动态列表落库：无锁、无会员差异，只有形状与体积校验（feed 里没有 LLM 产物） */
+  /**
+   * 动态列表落库：无锁、无会员差异，只有形状与体积校验（feed 里没有 LLM 产物）。
+   *
+   * P4-B（2026-10-13）：落库前用本地风险词典给每条补条目级分级字段（`gradeFeedItem`）——
+   * 这是 feed_cache 分级字段的**唯一权威产出位置**，端上只透传 / 展示。纯本地匹配、零上游成本；
+   * 未命中的条目不落任何字段（保持「未评级 / 未知」）。
+   */
   async function storeSaveFeed(event) {
     const personKey = str(event.personKey)
     if (!personKey) return bad('缺少 personKey')
@@ -320,14 +463,18 @@ module.exports = function createReportStore(deps) {
     const items = event.items
     if (!Array.isArray(items)) return bad('items 必须是数组')
 
-    const bytes = Buffer.byteLength(JSON.stringify(items), 'utf8')
+    /* 定级后再做体积校验：分级字段（三件套，每条最多几十字节）会让条目略增，
+       按理存货的真实体积判，避免「校验通过、落库却超限」。 */
+    const graded = items.map(gradeFeedItem)
+
+    const bytes = Buffer.byteLength(JSON.stringify(graded), 'utf8')
     if (bytes > FEED_MAX_BYTES) return bad(`动态列表体积超限（${bytes} > ${FEED_MAX_BYTES} 字节）`)
 
     try {
       await db
         .collection('feed_cache')
         .doc(personKey)
-        .set({ data: { items, fetched_at: str(event.fetchedAt) || new Date().toISOString() } })
+        .set({ data: { items: graded, fetched_at: str(event.fetchedAt) || new Date().toISOString() } })
       return { ok: true, result: 'saved' }
     } catch (err) {
       return { ok: false, kind: 'upstream', error: `动态列表落库失败：${failDetail(err)}` }

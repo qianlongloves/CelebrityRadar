@@ -23,7 +23,6 @@ import {
 /* 检索词规划（2026-10-11）：先问模型「该查什么」，再拿这些词去查（见 utils/search-plan.ts 头注释） */
 import { planSearchQueries } from './search-plan'
 import { parsePersonKey } from '@/config/domains'
-import { riskFieldsOf } from './risk'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { todayKey } from './time'
@@ -1186,40 +1185,24 @@ export function refreshFailureNote(outcome: ReportOutcome): string | null {
 /* ===== 动态缓存 + 刷新配额（§3.7） ===== */
 
 /**
- * 给 feed 条目补「条目级分级字段」（分级字段上游化，2026-10-13）。
- *
- * 关注动态（feed_cache）原本**不带**类别 / 级别，导致端上舆情判断层（utils/opinion-rank.ts）
- * 对它们恒判「未评级 / 未知」，事件聚合的「影响面取成员最高」也因此基本失效。
- * 这里在**写入前**用本地词典（utils/risk.ts，零上游成本、不新增任何检索 / 模型调用）给每条
- * 命中词典的条目补上 category / category_label / level；**未命中的条目原样写回、不落任何字段**
- * —— 覆盖率天然有限（只能识别词典里的表述），没命中的在端上仍按「未评级 / 未知」对待，
- * 这是刻意设计（见 risk.ts#riskFieldsOf 与 opinion-rank.ts 文件头红线 4），不给默认值、不猜级别。
- *
- * 放在写入路径（而非展示层）是为了「上游化」：缓存里落了字段，所有读者都受益，且不随页面变化。
- */
-function gradeFeedItems(items: NewsItem[]): NewsItem[] {
-  return items.map((it) => {
-    if (!it || typeof it !== 'object') return it
-    const fields = riskFieldsOf(`${it.title ?? ''} ${it.content ?? ''}`)
-    return fields ? { ...it, ...fields } : it
-  })
-}
-
-/**
  * 写 feed_cache（P0-2，2026-10-09：客户端已无写权限，只能走写口）。
  * 云端优先 + 回退直写；`rejected`（体积 / 形状被拒）**不回退** —— 与报告那条同一套判断，
  * 理由见 report-store.ts 文件头。返回是否真的写成功，供调用方决定要不要计入 refreshed。
  * 它比报告那条简单：feed 无锁、无会员差异，失败只影响「这次刷没刷成」，不影响已取到的 items。
+ *
+ * ⚠ 条目级分级字段（category / category_label / level）**不在端上产出**（分级字段上游化，P4-B，
+ *   2026-10-13）：权威产出位置是云端写口 `aiProxy/report-store.js#storeSaveFeed`，端上只把
+ *   检索结果原样透传给它。故 `unavailable` 回退直写这一路写出的条目**没有**这些字段，
+ *   端上判断层按「未评级 / 未知」对待（见 utils/opinion-rank.ts 红线 4）—— 这是刻意的降级缺口，
+ *   回退只在云端写口不可用时发生（函数未部署 / 网络 / upstream），此时以「能写进去」优先。
  */
 async function writeFeedCache(personKey: string, items: NewsItem[]): Promise<boolean> {
-  /* 写入前补齐条目级分级字段（命中词典才有）—— 让缓存里的关注动态不再恒为「未评级」 */
-  const graded = gradeFeedItems(items)
-  const viaCloud = await saveFeedViaCloud(personKey, graded)
+  const viaCloud = await saveFeedViaCloud(personKey, items)
   if (viaCloud === 'saved') return true
   if (viaCloud === 'rejected') return false
 
   const { error } = await table('feed_cache').upsert(
-    { id: personKey, items: graded, fetched_at: new Date().toISOString() },
+    { id: personKey, items, fetched_at: new Date().toISOString() },
     { onConflict: 'id' }
   )
   return !error

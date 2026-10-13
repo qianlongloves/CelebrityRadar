@@ -20,9 +20,10 @@ export interface NewsItem {
   /** 结果自带的发布时间（用于 N30/N7 计数，§1.6） */
   publishedDate?: string
   /**
-   * 条目级分级字段（写入 feed_cache 前由 cache.ts#writeFeedCache 用本地词典补齐）——
-   * **只有命中风险词典（utils/risk.ts）的条目才有**，未命中则三个字段都不存在
-   * （端上判断层据此保持「未评级 / 未知」，见 utils/opinion-rank.ts）。字段名与 risk_signals 一致。
+   * 条目级分级字段（权威产出在云端写口 `aiProxy/report-store.js#storeSaveFeed`，写入 feed_cache
+   * 前由风险词典补齐）—— **只有命中风险词典（utils/risk.ts）的条目才有**，未命中则三个字段都不存在
+   * （端上判断层据此保持「未评级 / 未知」，见 utils/opinion-rank.ts）。端上只透传，不自行判定。
+   * 字段名与 risk_signals 一致。
    */
   category?: RiskCategory
   category_label?: string
