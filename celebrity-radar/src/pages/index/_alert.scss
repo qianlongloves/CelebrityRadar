@@ -1,4 +1,0 @@
-/* 关键词预警入口图标（喇叭 / 广播；与 _bell.scss 同一套「SVG → base64 data URI」做法，
-   不引入图片资源与字体图标）。用品牌紫填充，与黑色的铃铛在形状与颜色上都拉开距离：
-   两个圆形按钮并排时，用户要能一眼分出「订阅命中」和「消息」是两件事。 */
-$icon-alert: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMyA5VjE1SDdMMTIgMjBWNEw3IDlIM1pNMTYuNSAxMkMxNi41IDEwLjIzIDE1LjQ4IDguNzEgMTQgNy45N1YxNi4wMkMxNS40OCAxNS4yOSAxNi41IDEzLjc3IDE2LjUgMTJaTTE0IDMuMjNWNS4yOUMxNi44OSA2LjE1IDE5IDguODMgMTkgMTJDMTkgMTUuMTcgMTYuODkgMTcuODUgMTQgMTguNzFWMjAuNzdDMTguMDEgMTkuODYgMjEgMTYuMjggMjEgMTJDMjEgNy43MiAxOC4wMSA0LjE0IDE0IDMuMjNaIiBmaWxsPSIjNUYzM0UxIi8+PC9zdmc+DQo=");

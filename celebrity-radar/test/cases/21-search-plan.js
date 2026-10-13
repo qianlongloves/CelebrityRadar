@@ -182,3 +182,66 @@ describe('检索词规划：先问模型「该查什么」，再拿这些词去�
     ok(src.includes('plan?.profile'), '背景线也要吃到模型词')
   })
 })
+
+/**
+ * 「姓名 + 关键词」里的关键词怎么用（2026-10-13）
+ *
+ * 用户输入「雷军 小米科技」时，端上拆出 name=雷军 / keyword=小米科技（见 utils/query-split.ts）。
+ * 关键词的用途**只有两处**，且都不改 personKey：
+ *   ① 消歧提示：追加一行「补充关键词：X」，帮模型判断是哪个同名人物（不覆盖 / 伪造 domain）；
+ *   ② 检索补充：并入主线第一档查询（`${name} ${keyword}`）—— 不额外开新路，成本口径不变。
+ */
+describe('补充关键词：只作提示（消歧 + 检索），不进 personKey', () => {
+  it('消歧 user 消息追加「补充关键词：X」；没有关键词时不出现该行（原行为）', async () => {
+    const { load } = fresh()
+    const { disambiguate } = load('utils/disambiguate')
+    const calls = fakeChat({ ok: true, content: JSON.stringify({ refused: false, candidates: [] }) })
+
+    await disambiguate('雷军', { domainHint: 'all', keyword: '小米科技' })
+    const user = String(calls[0].messages[1].content)
+    ok(user.includes('名字：雷军'), '名字照旧')
+    ok(user.includes('补充关键词：小米科技'), '拆出的关键词作为提示进 user 消息')
+
+    calls.length = 0
+    await disambiguate('雷军', { domainHint: 'all' })
+    notOk(String(calls[0].messages[1].content).includes('补充关键词'), '没有关键词时不加这一行')
+  })
+
+  it('检索规划：关键词并入主线第一档；模型无词时也用它（其余路仍走模板兜底）', async () => {
+    const { load } = fresh()
+    const { planSearchQueries } = load('utils/search-plan')
+
+    /* 模型给了词 → 关键词排最前（用户意图优先），但不串到其它路 */
+    fakeChat(json({ news: ['公开报道'], profile: ['出生地'] }))
+    const p1 = await planSearchQueries('雷军', 'tech', { lanes: ['news', 'profile'], keyword: '小米科技' })
+    deepEq(p1.news, ['小米科技', '公开报道'], '关键词是第一档主线查询')
+    deepEq(p1.profile, ['出生地'], '关键词只并入主线，不串到 profile')
+
+    /* 模型没给可用词（如上游挂）→ 关键词仍让检索有词可用，而不是 null */
+    fakeChat({ ok: false, kind: 'upstream', error: '大模型服务暂时不可用' })
+    const p2 = await planSearchQueries('雷军', 'tech', { lanes: ['news', 'profile'], keyword: '小米科技' })
+    deepEq(p2, { news: ['小米科技'] })
+
+    /* 没有关键词时与改造前一致：模型没给可用词 → null（回落模板句式） */
+    eq(
+      await planSearchQueries('雷军', 'tech', { lanes: ['news'] }),
+      null,
+      '无关键词 + 模型不给词 ⇒ 仍是 null'
+    )
+  })
+
+  it('关键词只进 URL 参数 / 可选形参，绝不进 personKey：拆出的 name 才生成 key', () => {
+    const fs = require('fs')
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'src', 'pages', 'index', 'index.tsx'),
+      'utf8'
+    )
+    ok(src.includes('splitPersonQuery('), '搜索入口要先拆词')
+    ok(src.includes('resolvePersonKey(name, domain)'), 'personKey 只由 name + domain 生成（不含关键词）')
+    ok(src.includes('&keyword='), '关键词随 URL 透传给生成链路')
+    ok(src.includes('disambiguate(name, { domainHint, keyword: queryKeyword })'), '关键词透传给消歧')
+
+    const cache = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src', 'utils', 'cache.ts'), 'utf8')
+    ok(cache.includes('keyword: opts.keyword'), 'cache.ts 要把 keyword 透传给 planSearchQueries（可选形参）')
+  })
+})

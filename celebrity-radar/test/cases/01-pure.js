@@ -328,6 +328,82 @@ describe('发现页筛选条件 config/filters', () => {
     eq(f.domainFilterLabel('academia'), '学术')
     eq(f.domainFilterLabel('edu'), '教育')
   })
+
+  /*
+   * 关注筛选与报告模板「同源派生」（2026-10-13）。
+   *
+   * 此前 config/filters 的 FOCUS_META 与 utils/report-toc 的 REPORT_TEMPLATE 各写一份、
+   * 靠人工对齐（dynamics↔sec-dynamics / quotes↔sec-quotes / timeline↔sec-timeline），
+   * 模板改节 id 或删节时**不会报错**，只会静默漂移。现在标签与顺序都从模板派生，
+   * 这条用例就是那道闸：模板一动，绑定/标签/顺序任一不符即红。
+   */
+  it('关注方向码 / 标签 / 顺序与报告模板同源（改模板节 id 或删节，本用例即红）', () => {
+    const toc = env.load('utils/report-toc')
+    const DIRS = ['dynamics', 'quotes', 'timeline']
+
+    /* ① 每个具体方向都绑定到模板里**真实存在**的节 —— 模板改 id / 删节，ok(sec) 立刻失败 */
+    for (const code of DIRS) {
+      const id = f.FOCUS_SECTION_BINDING[code]
+      ok(id, `${code} 没有绑定到任何报告节`)
+      const sec = toc.REPORT_TEMPLATE.find((s) => s.id === id)
+      ok(sec, `${code} 绑定的节「${id}」在模板里不存在 —— 改模板节 id / 删节必须同步 config/filters.ts`)
+      /* ② 标签取自该节的 label（同源，不再手写重复字符串） */
+      eq(f.FOCUS_META[code].label, sec.label, `${code} 的标签必须等于模板该节的 label`)
+    }
+
+    /* ③ 顺序 = 绑定节在模板中的先后顺序（'all' 固定最前） */
+    const idx = (code) => toc.REPORT_TEMPLATE.findIndex((s) => s.id === f.FOCUS_SECTION_BINDING[code])
+    const dirs = f.FOCUS_CODES.slice(1)
+    deepEq(dirs, dirs.slice().sort((a, b) => idx(a) - idx(b)), '关注码顺序必须跟着模板顺序走')
+    /* 对外取值与顺序保持兼容（本次不做「focus 码改为节 id」的更大重构） */
+    deepEq(f.FOCUS_CODES, ['all', 'dynamics', 'quotes', 'timeline'])
+  })
+})
+
+/* ------------------------------------ 姓名 + 关键词拆分 utils/query-split（2026-10-13） */
+
+/*
+ * 用户会输入「雷军 小米科技」这种「姓名 + 关键词」。整串当人名塞进消歧会查无此人，故拆开：
+ * 名字走原链路（personKey / 缓存键只认它），关键词只作提示（消歧补充 + 检索补充）。
+ * 关键边界是西文人名（Taylor Swift / Robert Downey Jr.）：不能见空格就拆，否则姓氏被当关键词。
+ * 判据：按分隔符切开后 ≥2 段、且除首段外至少有一段含中日韩字符时才拆；否则视为单个人名。
+ */
+describe('姓名 + 关键词拆分 utils/query-split', () => {
+  const { splitPersonQuery } = env.load('utils/query-split')
+
+  it('空格 / 全角空格 / 中文标点都能分开名字与关键词，关键词取其余全部', () => {
+    deepEq(splitPersonQuery('雷军 小米科技'), { name: '雷军', keyword: '小米科技' })
+    deepEq(splitPersonQuery('雷军 小米科技 手机'), { name: '雷军', keyword: '小米科技 手机' }, '其余段合并为关键词')
+    deepEq(splitPersonQuery('雷军，小米科技'), { name: '雷军', keyword: '小米科技' })
+    deepEq(splitPersonQuery('雷军、小米科技'), { name: '雷军', keyword: '小米科技' })
+    deepEq(splitPersonQuery('雷军　小米科技'), { name: '雷军', keyword: '小米科技' }, '全角空格')
+  })
+
+  it('西文人名不拆：不含中日韩字符的补充段不成立（否则姓氏会被当关键词）', () => {
+    deepEq(splitPersonQuery('Taylor Swift'), { name: 'Taylor Swift', keyword: '' })
+    deepEq(splitPersonQuery('Robert Downey Jr.'), { name: 'Robert Downey Jr.', keyword: '' })
+  })
+
+  it('译名里的间隔号不算分隔符（否则「迈克尔·乔丹」会被拆成 name=迈克尔，把人查错）', () => {
+    deepEq(splitPersonQuery('迈克尔·乔丹'), { name: '迈克尔·乔丹', keyword: '' })
+    deepEq(splitPersonQuery('莱昂纳多·迪卡普里奥'), { name: '莱昂纳多·迪卡普里奥', keyword: '' })
+    deepEq(splitPersonQuery('迈克尔·乔丹 篮球'), { name: '迈克尔·乔丹', keyword: '篮球' }, '真要补关键词仍可用空格')
+  })
+
+  it('没有分隔符 / 单个名字：keyword 为空，name 为整串', () => {
+    deepEq(splitPersonQuery('雷军'), { name: '雷军', keyword: '' })
+    deepEq(splitPersonQuery('雷军小米科技'), { name: '雷军小米科技', keyword: '' }, '无分隔符 = 单个人名，不猜')
+  })
+
+  it('首尾多余空格被去掉（普通空格 / 全角空格）', () => {
+    deepEq(splitPersonQuery('  雷军  小米科技  '), { name: '雷军', keyword: '小米科技' })
+    deepEq(splitPersonQuery('　雷军　'), { name: '雷军', keyword: '' })
+  })
+
+  it('空输入：name / keyword 都为空串（调用方据此不发请求）', () => {
+    deepEq(splitPersonQuery(''), { name: '', keyword: '' })
+    deepEq(splitPersonQuery('   '), { name: '', keyword: '' })
+  })
 })
 
 describe('关键词云 utils/keywords', () => {

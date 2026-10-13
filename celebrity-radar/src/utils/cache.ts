@@ -591,12 +591,15 @@ async function waitForReady(personKey: string): Promise<Report | null> {
  * 缓存仍以 personKey 为唯一键，避免破坏关注流 / 个人页的只读缓存读取；
  * 侧重不一致时由报告页提示「重新生成以聚焦」，用户点刷新（force）后覆盖缓存。
  *
+ * `keyword`（2026-10-13）同 focus：用户输入里的补充关键词**只透传给检索词规划**，
+ * **同样不进 personKey、不进缓存键** —— 同一个人只有一份报告，关键词只影响这一次生成时查什么。
+ *
  * `opts.onProgress`（2026-10-11）：本机真实生成时逐阶段回调（检索 → 分批生成），供等待动画
  * 显示真实进度；命中缓存 / 排队等待等**不产生**进度的路径不会回调（那些路径本就没有「生成」可播报）。
  */
 export async function getOrBuildReport(
   personKeyParam: string,
-  opts: { force?: boolean; focus?: FocusCode; onProgress?: (p: ReportProgress) => void } = {}
+  opts: { force?: boolean; focus?: FocusCode; keyword?: string; onProgress?: (p: ReportProgress) => void } = {}
 ): Promise<ReportOutcome> {
   const focus = opts.focus ?? 'all'
   const userId = useAuth.getState().userId ?? 'anonymous'
@@ -861,9 +864,14 @@ export async function getOrBuildReport(
      *   ① 规划失败 / 没给出可用词一律回落模板句式 —— 它是加分项，不该让任何一次生成失败；
      *   ② 走 aux 档（不占用户当日的生成额度，与消歧同一档）；
      *   ③ 只在真要查的几路上问词 —— 免费档不发社交支线（`socialCount: 0`），也就不问社交词。
+     *
+     * 补充关键词：用户在发现页输入「姓名 + 关键词」时拆出的后半段（见 utils/query-split.ts），
+     * 由调用方经 opts.keyword 透传到这里并入主线检索词。它**不参与 personKey / 缓存键**，
+     * 只影响这一次「查什么」；命中缓存时本段根本不会执行，故同一份报告的读者共享它。
      */
     const plan = await planSearchQueries(name, domain, {
-      lanes: memberDeep ? ['news', 'social', 'profile'] : ['news', 'profile']
+      lanes: memberDeep ? ['news', 'social', 'profile'] : ['news', 'profile'],
+      keyword: opts.keyword
     })
 
     /* 免费档与会员档的文案口径见上方「批 2」注释；模型词单独走 planned（两档都有） */

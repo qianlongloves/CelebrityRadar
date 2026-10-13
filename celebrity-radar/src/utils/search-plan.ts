@@ -125,19 +125,41 @@ function buildUserMessage(name: string, domain: string, lanes: SearchLaneKey[]):
 }
 
 /**
+ * 把用户输入里拆出的**补充关键词**并入主线（news）的检索词。
+ *
+ * 它是用户自己给的限定（见 utils/query-split.ts），优先级高于模型词，故排在最前 ——
+ * 于是 `${name} ${keyword}` 成为第一档查询，检索直接按用户意图收窄。
+ *
+ * 三条边界：
+ *   · 只并入 news 路：关键词是「这个人 + 什么」的通用限定，主线最能兑现它；不额外开新路，
+ *     也就不额外多发一次检索（成本/条数预算与改造前一致，仍受 planWordsPerLane 上限约束）；
+ *   · 关键词已经过 sanitizeWord 净化（摘人名 / 去标点 / 截断），空串即忽略；
+ *   · 只在**契约层**参与检索 —— 绝不进 personKey，也绝不进缓存报告（缓存键只认 personKey，
+ *     同一份报告对所有读者只有一份）。
+ */
+function applyKeyword(plan: SearchPlan | null, keyword: string, lanes: SearchLaneKey[]): SearchPlan | null {
+  if (!keyword || !lanes.includes('news')) return plan
+  const news = [keyword, ...(plan?.news ?? [])].filter((w, i, arr) => arr.indexOf(w) === i)
+  return { ...(plan ?? {}), news: news.slice(0, MAX_WORDS) }
+}
+
+/**
  * 让模型给出检索词。**绝不抛错、绝不阻塞生成**：
  * 返回 null = 「这次没有可用的模型词，请按模板句式去查」，调用方无需区分成因（日志里能查到）。
  *
  * @param lanes 本次真要查的几路（免费档不查社交支线，就不该问模型要社交词 —— 白花 token）
+ * @param opts.keyword 用户输入拆出的补充关键词（可选）：并入主线检索词，见 applyKeyword
  */
 export async function planSearchQueries(
   name: string,
   domain: string,
-  opts: { lanes: SearchLaneKey[] }
+  opts: { lanes: SearchLaneKey[]; keyword?: string }
 ): Promise<SearchPlan | null> {
   const person = cleanText(name, { markup: true }).trim()
   const lanes = opts.lanes.filter((k, i) => !!SEARCH_LANES[k] && opts.lanes.indexOf(k) === i)
   if (!person || lanes.length === 0) return null
+  /* 关键词与模型词同一套净化口径（摘人名、丢标点、截断）；空关键词不参与 */
+  const keyword = opts.keyword ? sanitizeWord(opts.keyword, person) : ''
 
   /*
    * retries: 0 —— 规划在**每次生成的必经路径**上（比报告长生成更靠前），多一轮重试就是白等
@@ -148,16 +170,17 @@ export async function planSearchQueries(
     retries: 0,
     purpose: 'aux'
   })
+  let base: SearchPlan | null
   if (!res.ok) {
     diagLog('warn', 'llm', `检索词规划跳过（${res.kind ?? 'error'}），改用模板句式：${res.error}`)
-    return null
+    base = null
+  } else {
+    base = sanitizePlan(res.data, person, lanes)
+    if (!base) diagLog('warn', 'llm', `检索词规划没给出可用词，改用模板句式：${person}`)
   }
 
-  const plan = sanitizePlan(res.data, person, lanes)
-  if (!plan) {
-    diagLog('warn', 'llm', `检索词规划没给出可用词，改用模板句式：${person}`)
-    return null
-  }
+  const plan = applyKeyword(base, keyword, lanes)
+  if (!plan) return null
   diagLog(
     'info',
     'llm',

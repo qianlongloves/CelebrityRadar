@@ -1,4 +1,5 @@
 import { DOMAIN_CODES, DOMAIN_META, DomainCode } from './domains'
+import { REPORT_TEMPLATE } from '../utils/report-toc'
 
 /**
  * 发现页搜索筛选条件（§2.1 M1 搜索入口）。
@@ -9,13 +10,46 @@ import { DOMAIN_CODES, DOMAIN_META, DomainCode } from './domains'
 /** 关注方向码（'all' = 综合，六段完整输出） */
 export type FocusCode = 'all' | 'dynamics' | 'quotes' | 'timeline'
 
-export const FOCUS_CODES: FocusCode[] = ['all', 'dynamics', 'quotes', 'timeline']
+/**
+ * focus 码 → 报告模板里的节 id（模板真源见 utils/report-toc.ts#REPORT_TEMPLATE）。
+ *
+ * 这是「关注筛选」与「报告模板」之间**唯一的绑定点**：标签与顺序都从被绑定的那一节派生，
+ * 不再各写一份字符串。此前两处硬编码、改名不报错（dynamics↔sec-dynamics / quotes↔sec-quotes /
+ * timeline↔sec-timeline 全靠人工对齐）。
+ * 'all' 不绑定单节（= 完整报告），故不在此表里。
+ */
+const FOCUS_SECTION_ID: Record<Exclude<FocusCode, 'all'>, string> = {
+  dynamics: 'sec-dynamics',
+  quotes: 'sec-quotes',
+  timeline: 'sec-timeline'
+}
+
+/**
+ * 取模板里某节的 label（同源派生）。绑定的节不存在时回落空串 —— 该漂移由
+ * test/cases/01-pure.js「关注方向码/标签/顺序与报告模板同源」用例**立刻**拦下：
+ * 改模板节 id 或删节，那条用例即红（不在这里抛错，否则会连带炸掉整个用例套件）。
+ */
+function sectionLabel(id: string): string {
+  return REPORT_TEMPLATE.find((s) => s.id === id)?.label ?? ''
+}
+
+/** focus 码在模板里的先后位置（绑定的节缺失时返回 -1，同样由那条一致性用例拦截） */
+const templateIndex = (code: Exclude<FocusCode, 'all'>): number =>
+  REPORT_TEMPLATE.findIndex((s) => s.id === FOCUS_SECTION_ID[code])
+
+/** focus 码顺序 = 绑定节在模板中的先后顺序（'all' 固定在最前） */
+const FOCUS_DIRECTIONS = (Object.keys(FOCUS_SECTION_ID) as Array<Exclude<FocusCode, 'all'>>).sort(
+  (a, b) => templateIndex(a) - templateIndex(b)
+)
+
+export const FOCUS_CODES: FocusCode[] = ['all', ...FOCUS_DIRECTIONS]
 
 export const FOCUS_META: Record<FocusCode, { label: string; short: string; desc: string }> = {
   all: { label: '综合', short: '综合', desc: '简介 · 动态 · 言论 · 履历 六段完整' },
-  dynamics: { label: '近期动态', short: '动态', desc: '近期新闻、公开活动与事件' },
-  quotes: { label: '言论观点', short: '言论', desc: '公开表达、观点与金句' },
-  timeline: { label: '经历履历', short: '履历', desc: '关键节点与成长脉络' }
+  /* label 取自模板对应节的 label（同源）；short / desc 是「关注筛选」自己的短标签与说明，仍在此维护 */
+  dynamics: { label: sectionLabel(FOCUS_SECTION_ID.dynamics), short: '动态', desc: '近期新闻、公开活动与事件' },
+  quotes: { label: sectionLabel(FOCUS_SECTION_ID.quotes), short: '言论', desc: '公开表达、观点与金句' },
+  timeline: { label: sectionLabel(FOCUS_SECTION_ID.timeline), short: '履历', desc: '关键节点与成长脉络' }
 }
 
 export function isFocusCode(v: string): v is FocusCode {
@@ -36,3 +70,9 @@ export function summarizeFilters(domain: DomainFilterCode, focus: FocusCode): st
   const d = domain === 'all' ? '全部行业' : DOMAIN_META[domain].label
   return `${d} · ${focus === 'all' ? '六段完整' : `侧重${FOCUS_META[focus].short}`}`
 }
+
+/**
+ * 供一致性用例断言用的绑定表（focus 码 → 模板节 id）。
+ * 与 FOCUS_SECTION_ID 同源；单独导出只是为了让测试能读到绑定关系（生产代码不必用它）。
+ */
+export const FOCUS_SECTION_BINDING: Readonly<Record<Exclude<FocusCode, 'all'>, string>> = FOCUS_SECTION_ID

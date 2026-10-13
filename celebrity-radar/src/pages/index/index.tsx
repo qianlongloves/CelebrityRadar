@@ -21,6 +21,7 @@ import { loadHotBoard } from '@/utils/hot-board'
 import { readPortraits } from '@/utils/portrait'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
+import { splitPersonQuery } from '@/utils/query-split'
 import { track } from '@/utils/events'
 import { exploreRandomPerson, pickRandomPerson, todayPerson } from '@/utils/explore'
 import { listRecentHistory, HistoryRow } from '@/utils/history'
@@ -49,6 +50,12 @@ export default function Index() {
   useTabBarSync()
   const [keyword, setKeyword] = useState('')
   const [state, setState] = useState<SearchState>({ phase: 'idle' })
+  /**
+   * 本次搜索从输入里拆出的**补充关键词**（如「雷军 小米科技」的后半段，见 utils/query-split.ts）。
+   * 它只作提示（消歧补充 + 检索补充），**不进 personKey、不进缓存键**：同一个人仍只有一份报告。
+   * 候选点名开报告时随 URL 透传给生成链路，像 focus 一样走可选参数。
+   */
+  const [searchKeyword, setSearchKeyword] = useState('')
   /** 搜索前的行业筛选（作用于消歧 + 候选列表） */
   const [domainHint, setDomainHint] = useState<DomainFilterCode>('all')
   /** 搜索前的关注方向（作用于报告生成侧重） */
@@ -122,35 +129,10 @@ export default function Index() {
   }
 
   /**
-   * 关注流入口：2026-10-07 底部菜单第二格换成「AI 提问」，关注流改二级页，
-   * 落到发现页顶部（原本它自己占一格 tab，撤掉后必须有明确落点，
-   * 否则「关注了人却找不到动态」—— 关注是留存主线，入口不能靠猜）。
+   * 关注动态 / 周报 / 关键词预警三个入口（2026-10-13 从首页移出）：
+   * 这三块内容已整体迁到新增的「舆情」页（pages/opinion，底部菜单第三格「盯」），
+   * 首页的图标按钮随之撤掉 —— 同一批内容不再在首屏重复占位，入口收在舆情页各处「查看全部」。
    */
-  const goFeed = () => {
-    void Taro.navigateTo({ url: '/pages/feed/index' })
-  }
-
-  /**
-   * 周报入口（2026-10-10 新增）：紧挨关注动态图标右侧。
-   *
-   * 放在这里的理由：周报是「本周关注动态」的汇总产物，与动态流同源（都读关注名单）；
-   * 原先它只藏在关注动态页顶部的一张卡里 —— 而那条路径要求用户先想起来进动态页，
-   * 想「看周报」的人未必正想看流水账。两个入口并排，各自直达。
-   */
-  const goWeekly = () => {
-    void Taro.navigateTo({ url: '/pages/weekly/index' })
-  }
-
-  /**
-   * 关键词预警入口（2026-10-09 从消息页顶部搬到首页，铃铛左侧，图标代替文字）。
-   *
-   * 铃铛是「有事情发生」的统一落点，但关键词命中新报道既不是某个名人的更新（不该混进关注流），
-   * 也不该只靠订阅消息触达（订阅授权会耗尽）。原先它藏在消息页顶部的胶囊里，等于「被召回后
-   * 才有机会发现入口」；搬到首页与铃铛并排常显，用户想翻历史命中时有地方可去，不至于「点完就断」。
-   */
-  const goAlerts = () => {
-    void Taro.navigateTo({ url: '/pages/alerts/index' })
-  }
 
   /** 铃铛：进消息中心（关注更新 / 周报提醒 / 平台公告，见 utils/messages） */
   const onBellTap = () => {
@@ -164,7 +146,7 @@ export default function Index() {
    * 页面中间留一大块「查询失败」，把下方热门推荐整个顶下去，用户还得先清掉才能继续
    * 浏览；弹框看完即走，页面保持原样。确认键直接重试，省去回去再点一次「搜索名人」。
    */
-  const reportSearchError = async (name: string, message: string) => {
+  const reportSearchError = async (rawInput: string, message: string) => {
     /* 先回 idle：弹框期间不应残留 loading，页面也不该被失败态占位 */
     setState({ phase: 'idle' })
     const { confirm } = await Taro.showModal({
@@ -173,19 +155,25 @@ export default function Index() {
       confirmText: '重试',
       cancelText: '取消'
     })
-    /* 重试复用本次的名词而非输入框现值：弹框期间输入框可能已被改动 */
-    if (confirm) void doSearch(name)
+    /* 重试复用本次的原始输入（名字 + 关键词）而非输入框现值：弹框期间输入框可能已被改动 */
+    if (confirm) void doSearch(rawInput)
   }
 
   /**
    * 搜索流（§4.2）：一级敏感拦截 → LLM 消歧 → 选定 personKey → 报告页。
    * 可显式传入关键词（热搜词一键搜索），缺省读输入框。
+   *
+   * 输入先按「姓名 + 关键词」拆开（utils/query-split.ts）：**名字**才是人（走敏感检查 / 消歧 /
+   * personKey），后半段**关键词**只作提示（消歧补充 + 检索补充）—— 整串塞进消歧会把
+   * 「雷军 小米科技」当成一个人的名字（查无此人）。关键词不进 personKey、不进缓存键。
    */
-  const doSearch = async (rawName?: string) => {
-    const name = (rawName ?? keyword).trim()
+  const doSearch = async (rawInput?: string) => {
+    const raw = (rawInput ?? keyword).trim()
+    if (!raw) return
+    const { name, keyword: queryKeyword } = splitPersonQuery(raw)
     if (!name) return
 
-    // 第一级：本地敏感名单（命中即拒答，不发任何网络请求，§六.7）
+    // 第一级：本地敏感名单（命中即拒答，不发任何网络请求，§六.7）—— 只查名字本身
     if (isSensitiveQuery(name)) {
       setState({ phase: 'refused' })
       return
@@ -193,10 +181,12 @@ export default function Index() {
 
     setState({ phase: 'loading' })
     setDomainFilter('all')
+    /* 记住本次关键词：候选点名开报告时透传给生成链路（见 openPerson） */
+    setSearchKeyword(queryKeyword)
     track('search', { name, domain: domainHint, focus })
-    const res = await disambiguate(name, { domainHint })
+    const res = await disambiguate(name, { domainHint, keyword: queryKeyword })
     if (!res.ok) {
-      await reportSearchError(name, res.error)
+      await reportSearchError(raw, res.error)
       return
     }
     if (res.data.refused) {
@@ -214,12 +204,18 @@ export default function Index() {
     setState({ phase: 'candidates', candidates: res.data.candidates })
   }
 
-  /* 生成 personKey 前先按名字归一到「已有报告的那份 key」（Task C）：避免同一个人被本入口分叉出第二种领域 */
-  const openPerson = async (name: string, domain: string) => {
+  /**
+   * 生成 personKey 前先按名字归一到「已有报告的那份 key」（Task C）：避免同一个人被本入口分叉出第二种领域。
+   *
+   * `kw` 是从输入拆出的补充关键词（仅搜索候选走这条时传）：它只随 URL 透传给生成链路作检索补充，
+   * **绝不参与 personKey / 缓存键** —— 见 utils/query-split.ts 与 utils/cache.ts 的注释。
+   */
+  const openPerson = async (name: string, domain: string, kw = '') => {
     const personKey = await resolvePersonKey(name, domain)
     track('disambiguate_selected', { personKey, focus })
+    const extra = kw ? `&keyword=${encodeURIComponent(kw)}` : ''
     Taro.navigateTo({
-      url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}&focus=${focus}`
+      url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}&focus=${focus}${extra}`
     })
   }
 
@@ -287,7 +283,7 @@ export default function Index() {
 
   return (
     <View className='page-index glow-page safe-tab'>
-      {/* 问候区（头像 + 昵称 + 右侧「关注流 / 周报 / 关键词预警 / 消息」四个图标入口，点击头像进「我的」） */}
+      {/* 问候区（头像 + 昵称 + 右侧「消息」铃铛入口，点击头像进「我的」） */}
       <View className='page-index__header'>
         <View className='page-index__avatar' onClick={goMine} hoverClass='page-index__tap'>
           {avatarUrl ? (
@@ -301,12 +297,6 @@ export default function Index() {
         <View className='page-index__greet'>
           <Text className='page-index__username'>{userId ? nickname || '名人观察员' : '名人观察员'}</Text>
         </View>
-        {/* 关注流入口：图标按钮，紧挨预警图标左侧（无文字，理由见 index.scss 的 __feed 注释） */}
-        <View className='page-index__feed' onClick={goFeed} hoverClass='page-index__tap' />
-        {/* 周报入口：图标按钮，紧挨关注流右侧（无文字，理由见 index.scss 的 __weekly 注释） */}
-        <View className='page-index__weekly' onClick={goWeekly} hoverClass='page-index__tap' />
-        {/* 关键词预警入口：图标按钮，紧挨铃铛左侧（无文字，文案见 index.scss 的 __alert 注释） */}
-        <View className='page-index__alert' onClick={goAlerts} hoverClass='page-index__tap' />
         <View className='page-index__bell' onClick={onBellTap} hoverClass='page-index__tap'>
           {/* 红点按未读数显隐：铃铛图标自带的那颗紫点是装饰，这里才是「有消息」 */}
           {unread > 0 && <View className='page-index__bell-dot' />}
@@ -543,8 +533,8 @@ export default function Index() {
                     followPending={followPending === personKey}
                     onToggleFollow={(p) => void onToggleFollow(p, 'candidate_card')}
                     actionText='查看'
-                    onAction={(p) => openPerson(p.name, p.domain)}
-                    onClick={(p) => openPerson(p.name, p.domain)}
+                    onAction={(p) => openPerson(p.name, p.domain, searchKeyword)}
+                    onClick={(p) => openPerson(p.name, p.domain, searchKeyword)}
                   />
                 )
               })}
@@ -571,7 +561,7 @@ export default function Index() {
             <EmptyState
               icon='🤔'
               title='未识别到该名人'
-              desc='试试补充领域关键词，如「雷军 科技」；或从下方热门推荐开始'
+              desc='试试补一句关键词，如「雷军 科技」；或从下方热门推荐开始'
             />
           </View>
         )}

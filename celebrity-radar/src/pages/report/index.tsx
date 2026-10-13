@@ -330,6 +330,15 @@ export default function ReportPage() {
   /** 发现页「关注」筛选（生成侧重，§2.3 六段可聚焦） */
   const focusParam = router.params.focus || 'all'
   const focus: FocusCode = isFocusCode(focusParam) ? focusParam : 'all'
+  /**
+   * 发现页「姓名 + 关键词」拆出的补充关键词（如「雷军 小米科技」的后半段，见 utils/query-split.ts）。
+   *
+   * 与 focus 同路：**只作检索补充，不参与 personKey、不进缓存键** —— 同一个人始终只有一份报告，
+   * 关键词只影响「这一次生成时去查什么」（见 utils/cache.ts#getOrBuildReport 的 opts.keyword）。
+   * 缺失 / 空串时**与改造前逐字一致**：下方以 `keywordParam || undefined` 传入，等价于「不传该可选形参」，
+   * getOrBuildReport 内部即按「没有关键词」走（见 utils/search-plan.ts#applyKeyword 对空值的处理）。
+   */
+  const keywordParam = decodeURIComponent(router.params.keyword || '')
   const [state, setState] = useState<PageState>({ phase: 'loading' })
   /**
    * 「手上已经有一份能读的报告」——供 `load` 判断这次 force 能不能不清屏。
@@ -508,6 +517,9 @@ export default function ReportPage() {
       const outcome: ReportOutcome = await getOrBuildReport(personKey, {
         force,
         focus,
+        /* 补充关键词（可选，见 keywordParam 注释）：空串按 undefined 传，即不传该形参 ——
+           既不进 personKey、也不进缓存键，缺失 / 为空时行为与改造前完全一致 */
+        keyword: keywordParam || undefined,
         /* 真实进度直通等待动画（见 progress 注释）；生成结束后立刻清掉（见下方复位那行） */
         onProgress: setProgress
       }).catch(
@@ -559,7 +571,7 @@ export default function ReportPage() {
           break
       }
     },
-    [personKey, focus]
+    [personKey, focus, keywordParam]
   )
 
   useEffect(() => {

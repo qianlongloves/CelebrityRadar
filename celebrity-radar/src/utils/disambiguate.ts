@@ -130,16 +130,20 @@ function buildSystemPrompt(domainHint: DomainCode | 'all'): string {
  * LLM 消歧（§4.2 关键交互流第一步）。
  * 返回：refused（敏感拒答）或候选列表（可能为空 = 未识别，需补充领域关键词）。
  * @param opts.domainHint 发现页行业筛选：限定候选领域（'all' = 不限）
+ * @param opts.keyword 用户输入里拆出的补充关键词（见 utils/query-split.ts）：仅作提示帮助模型
+ *   判断是哪个同名人物，**不改变 domain 的生成规则**。它只出现在 user 消息里，绝不进 personKey。
  */
 export async function disambiguate(
   name: string,
-  opts: { domainHint?: DomainCode | 'all' } = {}
+  opts: { domainHint?: DomainCode | 'all'; keyword?: string } = {}
 ): Promise<ChatJSONResult<{ refused: boolean; candidates: PersonCandidate[] }>> {
   const domainHint = opts.domainHint ?? 'all'
-  const userMessage =
-    domainHint === 'all'
-      ? `名字：${name.trim()}`
-      : `名字：${name.trim()}\n限定行业：${domainLabel(domainHint)}`
+  const keyword = (opts.keyword ?? '').trim()
+  const lines = [`名字：${name.trim()}`]
+  if (domainHint !== 'all') lines.push(`限定行业：${domainLabel(domainHint)}`)
+  /* 补充关键词只帮模型区分同名者，不参与领域生成 —— 且它是用户输入，放在 user 消息里 */
+  if (keyword) lines.push(`补充关键词：${keyword}`)
+  const userMessage = lines.join('\n')
   /*
    * purpose='aux'：消歧发生在生成**之前**，不该占用户当日的生成额度 ——
    * 否则额度用完的用户连名字都输入不了（会被报成「额度已用完」，而端上并未为消歧计数）。
