@@ -35,10 +35,16 @@
     gap: 6rpx;
   }
 
+  /* 昵称即编辑入口（2026-10-13 去掉「编辑」文字按钮）：用一条淡淡的虚线下划线
+     说明「这里可点」，不额外文字也看得懂。 */
   &__name {
     font-size: 34rpx;
     font-weight: 600;
     color: #fff;
+    text-decoration: underline;
+    text-decoration-style: dashed;
+    text-decoration-color: rgba(255, 255, 255, 0.5);
+    text-underline-offset: 8rpx;
   }
 
   &__uid {
@@ -124,15 +130,6 @@
     gap: 12rpx;
   }
 
-  &__edit {
-    flex-shrink: 0;
-    padding: 2rpx 14rpx;
-    border-radius: 999rpx;
-    background: rgba(255, 255, 255, 0.22);
-    font-size: 20rpx;
-    color: #fff;
-  }
-
   /* 会员标识：贴在昵称右侧（横幅是白字紫底，故徽章也用浅色系，不与背景打架） */
   &__vip {
     flex-shrink: 0;
@@ -152,13 +149,32 @@
     font-weight: 600;
   }
 
-  /* 昵称编辑浮层 */
+  /* 昵称编辑模态框（2026-10-13：由内联编辑行改为点昵称弹出的浮层）。
+     遮罩的 position:fixed / z-index 由 app.scss 的 .glow-overlay 放出（页面根容器带 .glow-page），
+     这里只负责「铺满 + 内容居中 + 压暗背景」，卡片本体仍是白底大圆角。 */
+  &__editor-mask {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 56rpx;
+    background: rgba(0, 0, 0, 0.45);
+  }
+
   &__editor {
-    margin: 0 32rpx 16rpx;
-    padding: 24rpx;
+    width: 100%;
+    padding: 36rpx 32rpx 28rpx;
     background: #fff;
     border-radius: $radius-lg;
     box-shadow: $shadow-card;
+  }
+
+  &__editor-title {
+    display: block;
+    margin-bottom: 24rpx;
+    text-align: center;
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
   }
 
   &__editor-input {
@@ -289,19 +305,27 @@
     color: $text-3;
   }
 
-  /* 档位标签（免费版 / 会员版）：与横幅上的会员标识同源，两处不会打架。
-     字号 / 行高与右侧「展开说明」一致，配合 head-right 的 align-items:center，两者文字严格居中对齐 */
+  /*
+   * 档位标签（免费版 / 会员版）。与右侧「展开说明 / 收起」**严格同行高、同盒高**：
+   * 二者都设了 height: 40rpx + line-height: 1 + 居中对齐，内容盒完全一致，
+   * 于是无论按「内容盒居中」还是「行盒/baseline」理解，文字都落在同一条水平线上。
+   * （改动前这里是一个带上下 padding 的行内 <Text>、右侧是带 padding 的 <View> 包 <Text>，
+   *  两盒高度不等 → align-items:center 之后仍会视觉错位。修复细节见下方 fold 注释。）
+   */
   &__quota-tag {
     flex-shrink: 0;
-    padding: 2rpx 16rpx;
+    display: flex;
+    align-items: center;
+    height: 40rpx;
+    padding: 0 16rpx;
     border-radius: 999rpx;
     background: $brand-weak;
     font-size: 22rpx;
-    line-height: 1.5;
+    line-height: 1;
     color: $brand;
   }
 
-  /* 标题行右侧：档位标签 + 折叠开关，同属「卡片状态」，一起靠右 */
+  /* 标题行右侧：档位标签 + 折叠开关，同属「卡片状态」，一起靠右、垂直居中对齐 */
   &__quota-head-right {
     display: flex;
     align-items: center;
@@ -309,11 +333,21 @@
     gap: 8rpx;
   }
 
-  /* 「展开说明 / 收起」：折叠的只是口径说明与权益清单这类解释性长文，
-     用量数字与开通入口任何状态下都在。22rpx 的小字本身太窄，
-     补 padding 撑大热区，避免点偏落到卡片上（hoverClass 只认 View，故外层是 View）。 */
+  /*
+   * 「展开说明 / 收起」：折叠的只是口径说明与权益清单这类解释性长文，
+   * 用量数字与开通入口任何状态下都在。
+   *
+   * 对齐修复（2026-10-13）：原先外层 <View> 是「padding: 8rpx 0 8rpx 8rpx」的块盒、
+   * 内层 <Text> 22rpx/1.5，而左侧档位标签是「padding: 2rpx 16rpx」的行内 <Text>，两者盒高
+   * 不等（≈49rpx vs ≈37rpx），align-items:center 只是把两个**不同高度**的盒居中，文字视觉上错开。
+   * 现改为：与标签**同高（40rpx）+ 同行高（line-height:1）**、内容竖直居中，二者即可严格对齐。
+   * 22rpx 的小字本身太窄，仍补左 padding 撑大热区（hoverClass 只认 View，故外层是 View）。
+   */
   &__quota-fold {
-    padding: 8rpx 0 8rpx 8rpx;
+    display: flex;
+    align-items: center;
+    height: 40rpx;
+    padding: 0 0 0 8rpx;
 
     &--tap {
       opacity: 0.6;
@@ -322,7 +356,7 @@
 
   &__quota-fold-text {
     font-size: 22rpx;
-    line-height: 1.5;
+    line-height: 1;
     color: $brand;
   }
 

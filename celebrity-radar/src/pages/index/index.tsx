@@ -28,7 +28,6 @@ import { listRecentHistory, HistoryRow } from '@/utils/history'
 import { listFollows, toggleFollow } from '@/utils/follows'
 import { resolvePersonKey } from '@/utils/person-index'
 import { loadMessages } from '@/utils/messages'
-import { loadInboxSummary } from '@/utils/inbox'
 import { personShareTitle, reportSharePath } from '@/utils/share'
 import { useTabBarSync } from '@/utils/tabbar'
 import { todayLabel8 } from '@/utils/time'
@@ -89,15 +88,6 @@ export default function Index() {
    * 与消息中心页共用 utils/messages 同一套判定，避免两处口径不一致。
    */
   const [unread, setUnread] = useState(0)
-  /**
-   * 舆情页的站内未读数（「舆情」入口红点）。
-   *
-   * 推送当前未配置（功能完整保留，个人主体 + 机械电子产品类目拿不到可用模板，见 config/public.ts），
-   * 召回改由站内承担：这里汇总「关键词预警 + 风险信号 + 舆情事件」三处未读（口径统一在
-   * utils/inbox，与该页角标同源）。**不含关注动态** —— 关注更新归旁边的铃铛（消息中心）管，
-   * 且 feed 的 hasNew 没有「清掉」的动作，并进来会让红点永远熄不掉（见 utils/inbox 文件头）。
-   */
-  const [opinionNew, setOpinionNew] = useState(0)
   const { nickname, userId, avatarUrl } = useAuth()
 
   /**
@@ -126,9 +116,9 @@ export default function Index() {
     /* 仅取未读数点亮铃铛：不阻塞首屏，也不带 force —— watch 的 60s 内存缓存与关注流页共用，
        从关注流切回发现页时基本命中，冷启动最多多打 2×关注数 次缓存读（默认缓存可读，无写扩散） */
     void loadMessages().then((feed) => setUnread(feed.unread))
-    /* 「舆情」入口红点：走 utils/inbox 汇总（预警 + 风险 + 事件）。feed 取 false ——
-       关注更新归铃铛管，不必为它在首页多做一次关注缓存读；只读、各模块失败降级为 0、不阻塞首屏 */
-    void loadInboxSummary({ feed: false }).then((s) => setOpinionNew(s.alert + s.risk + s.event))
+    /* 「舆情」入口（及其未读红点）已于 2026-10-13 移除：未读只在舆情 tab 内可见，首页不再做
+       loadInboxSummary 那次只读汇总（省掉 keyword_watches ×2 + keywords + risk_signals +
+       opinion_events + opinion_event_status 共 6 次只读）。铃铛仍在，关注更新照旧归它管。 */
     /* 本页不再读会员态：热门榜自 2026-10-08 起全员可见全部位数（见 utils/member.ts） */
   })
 
@@ -142,22 +132,17 @@ export default function Index() {
   }
 
   /**
-   * 关注动态 / 周报 / 关键词预警三个入口（2026-10-13 从首页移出）：
-   * 这三块内容已整体迁到新增的「舆情」页（pages/opinion，底部菜单第三格「盯」），
-   * 首页的图标按钮随之撤掉 —— 同一批内容不再在首屏重复占位，入口收在舆情页各处「查看全部」。
+   * 关注动态 / 周报 / 关键词预警三块内容（2026-10-13 从首页移出）：整体迁到「舆情」页
+   * （pages/opinion，底部菜单第三格），首页的图标按钮随之撤掉 —— 同一批内容不再在首屏重复占位。
    *
-   * 但推送当前未配置（功能保留，见 config/public.ts），召回不能也一起撤掉：问候区右侧因此保留一枚
-   * 极简的「舆情」入口（带红点），把「有新东西」这件事在首屏点出来，点了直达舆情 tab。
+   * ⚠ 问候区右侧那枚「舆情」入口（连同红点）也于 2026-10-13 移除（用户明确要求去掉）：
+   *   首页因此**不再有任何舆情未读提示**，未读只能在舆情 tab 内看到（进页面顶部「全部已读」收口）。
+   *   唯一保留的右侧入口是下列铃铛（消息中心），关注更新照旧归它管。
    */
 
   /** 铃铛：进消息中心（关注更新 / 周报提醒 / 平台公告，见 utils/messages） */
   const onBellTap = () => {
     void Taro.navigateTo({ url: '/pages/messages/index' })
-  }
-
-  /** 「舆情」入口：切到舆情 tab（关键词预警 / 风险信号 / 事件时间线的统一落点，见 pages/opinion） */
-  const goOpinion = () => {
-    void Taro.switchTab({ url: '/pages/opinion/index' })
   }
 
   /**
@@ -318,12 +303,8 @@ export default function Index() {
         <View className='page-index__greet'>
           <Text className='page-index__username'>{userId ? nickname || '名人观察员' : '名人观察员'}</Text>
         </View>
-        {/* 「舆情」入口（2026-10-13）：三个图标入口迁走后，站内召回改挂在问候区右侧。
-            红点口径与舆情页角标同源（utils/inbox）；无未读时不显示。 */}
-        <View className='page-index__opinion' onClick={goOpinion} hoverClass='page-index__tap'>
-          <Text className='page-index__opinion-text'>舆情</Text>
-          {opinionNew > 0 && <View className='page-index__opinion-dot' />}
-        </View>
+        {/* 问候区右侧只剩铃铛（消息中心）。曾有一枚「舆情」入口 + 红点，2026-10-13 按用户要求移除
+            （后果：首页不再有任何舆情未读提示，未读只能在舆情 tab 内看到）。 */}
         <View className='page-index__bell' onClick={onBellTap} hoverClass='page-index__tap'>
           {/* 红点按未读数显隐：铃铛图标自带的那颗紫点是装饰，这里才是「有消息」 */}
           {unread > 0 && <View className='page-index__bell-dot' />}

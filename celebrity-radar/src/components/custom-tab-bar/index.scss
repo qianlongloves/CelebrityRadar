@@ -39,18 +39,41 @@
   }
 
   /* ===== 普通槽位 ===== */
+  /* 整格即命中区（onClick 挂在外层 item 上）：flex:1 撑满五分之一宽、内容居中。
+     真正的「按钮」是里面的 .tabbar__btn pill（图标 + 文字一体），见下。 */
   &__item {
     flex: 1;
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 4rpx;
 
+    /* 选中态：加粗 + 品牌色 —— 纯文字形态下，这是「当前这一格」最直接的识别点 */
     &--active .tabbar__label {
       color: $brand;
-      font-weight: 600;
+      font-weight: 700;
     }
+
+    /* 选中态再给 pill 一层淡品牌底：与加粗文字一起把「一整个按钮」立起来 */
+    &--active .tabbar__btn {
+      background: $brand-weak;
+    }
+  }
+
+  /* 一体化按钮：图标与文字收进**同一个**圆角 pill ——
+     图标态时横排、统一间距；纯文字态时，它就是一整块「文字按钮」的底色。命中区仍是整格
+     （item），这里只管观感、不缩小热区。 */
+  &__btn {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 8rpx;
+    /* 纯文字态：给足左右内边距 + 最小宽度，让「发现 / 提问 / 舆情 / 我的」四个两字词
+       各占一块等宽的可点区域，读起来像 4 个图形按钮，而不是 4 段挨在一起的小字 */
+    min-width: 104rpx;
+    padding: 12rpx 24rpx;
+    border-radius: 999rpx;
+    transition: background 0.2s ease;
   }
 
   &__icon {
@@ -76,10 +99,17 @@
     }
   }
 
+  /* 纯文字形态（2026-10-13，TAB_SHOW_ICON=false）：把文字本身当图形来做 ——
+     字号由 18rpx 提到 26rpx、字距 +2rpx、行高收到 1，四个字在 112rpx 的栏里占比更饱满。
+     选中态（加粗 + 品牌色 + 淡品牌底 pill）由上面的 .tabbar__item--active 负责，
+     未选中态用弱化灰 $text-3 拉开层级 —— 于是四格看起来是「一个亮的 + 三个灰的」按钮，
+     而不是四段同权重的小字。 */
   &__label {
-    font-size: 18rpx;
+    font-size: 26rpx;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: 2rpx;
     color: $text-3;
-    line-height: 1.3;
   }
 
   /* ===== 中央凸起按钮 ===== */

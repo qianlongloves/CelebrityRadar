@@ -426,8 +426,12 @@ export default function Mine() {
               )}
             </Button>
             <View className='page-mine__info'>
-              <View className='page-mine__name-row' onClick={openNickEditor}>
-                <Text className='page-mine__name'>{nickname || '名人观察员'}</Text>
+              {/* 点昵称本身即弹出编辑浮层（2026-10-13：去掉右侧「编辑」文字按钮，
+                  昵称自己就是入口 —— 会员标识不参与触发） */}
+              <View className='page-mine__name-row'>
+                <Text className='page-mine__name' onClick={openNickEditor}>
+                  {nickname || '名人观察员'}
+                </Text>
                 {/*
                   会员标识贴在昵称右侧（就是用户要求的「最上面卡片」）。
                   判定与下方用量卡同源（peekGenerateQuota → utils/member.ts），
@@ -440,7 +444,6 @@ export default function Mine() {
                       : '会员'
                     : '免费版'}
                 </Text>
-                <Text className='page-mine__edit'>编辑</Text>
               </View>
               <Text className='page-mine__uid'>
                 {genQuota?.member && genQuota.expiresAt
@@ -467,28 +470,40 @@ export default function Mine() {
       </View>
 
       {/*
-        昵称编辑用页面内 <Input type="nickname">，而非 Taro.showModal({editable})：
-        只有原生 input 的 nickname 类型才会在键盘上方给出「使用微信昵称」快捷填充。
+        昵称编辑浮层（2026-10-13 由「内联编辑行」改为「点昵称弹出的模态框」）：
+        仍用 <Input type="nickname">，而非 Taro.showModal({editable}) —— 只有原生 input 的
+        nickname 类型才会在键盘上方给出「使用微信昵称」快捷填充（这是不能用 showModal 的原因）。
+        项目里没有通用模态组件，故按既有浮层约定自绘：遮罩挂 .glow-overlay（见 app.scss，
+        借它把 position/z-index 放到正文与自定义底栏之上），点遮罩或「取消」关闭、点卡片不冒泡。
+        校验与保存逻辑复用既有的 submitNick / saveProfile，未新写一套。
       */}
       {userId && editingNick && (
-        <View className='page-mine__editor'>
-          <Input
-            className='page-mine__editor-input'
-            type='nickname'
-            value={nickDraft}
-            maxlength={NICKNAME_MAX}
-            placeholder='输入昵称，或点击键盘上方的微信昵称'
-            onInput={(e) => setNickDraft(e.detail.value)}
-          />
-          <View className='page-mine__editor-actions'>
-            <View className='page-mine__editor-btn' onClick={() => setEditingNick(false)}>
-              <Text>取消</Text>
-            </View>
-            <View
-              className='page-mine__editor-btn page-mine__editor-btn--primary'
-              onClick={() => void submitNick()}
-            >
-              <Text>保存</Text>
+        <View
+          className='page-mine__editor-mask glow-overlay'
+          catchMove
+          onClick={() => setEditingNick(false)}
+        >
+          <View className='page-mine__editor' onClick={(e) => e.stopPropagation?.()}>
+            <Text className='page-mine__editor-title'>修改昵称</Text>
+            <Input
+              className='page-mine__editor-input'
+              type='nickname'
+              value={nickDraft}
+              focus
+              maxlength={NICKNAME_MAX}
+              placeholder='输入昵称，或点击键盘上方的微信昵称'
+              onInput={(e) => setNickDraft(e.detail.value)}
+            />
+            <View className='page-mine__editor-actions'>
+              <View className='page-mine__editor-btn' onClick={() => setEditingNick(false)}>
+                <Text>取消</Text>
+              </View>
+              <View
+                className='page-mine__editor-btn page-mine__editor-btn--primary'
+                onClick={() => void submitNick()}
+              >
+                <Text>保存</Text>
+              </View>
             </View>
           </View>
         </View>

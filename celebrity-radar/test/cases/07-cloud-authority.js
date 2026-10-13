@@ -2438,19 +2438,39 @@ describe('P4 关键词监控：新增上限按档判定（写入路径 action:ad
   const seedMember = (openid, expiresAt) =>
     env.db.__seed('memberships', [{ _id: openid, openid, plan: 'annual', expires_at: expiresAt }])
 
-  it('免费用户已达上限（1）再新增 → 显式 over_limit 回执，且不落库', async () => {
+  it('免费用户已达上限（3）再新增 → 显式 over_limit 回执，且不落库', async () => {
     const https = fakeHttps([])
     const { fn } = loadScheduled('keywordAlert', https, 'free-user')
-    env.db.__seed('keyword_watches', [wordWatch('free-user', '甲')])
+    /* 免费上限 2026-10-13 由 1 提到 3：先放满 3 个词，第 4 个即超限 */
+    env.db.__seed('keyword_watches', [
+      wordWatch('free-user', '甲'),
+      wordWatch('free-user', '乙'),
+      wordWatch('free-user', '丙')
+    ])
 
-    const res = await fn.main({ action: 'add', keyword: '乙' })
+    const res = await fn.main({ action: 'add', keyword: '丁' })
 
     eq(res.ok, false)
     eq(res.reason, 'over_limit')
-    eq(res.limit, 1)
+    eq(res.limit, 3)
     eq(res.tier, 'free')
-    eq(res.count, 1)
-    eq(env.db.__dump('keyword_watches').length, 1, '被拦下的新增绝不落库（不静默写入）')
+    eq(res.count, 3)
+    eq(env.db.__dump('keyword_watches').length, 3, '被拦下的新增绝不落库（不静默写入）')
+  })
+
+  it('免费用户在 1~3 之间可新增（第 3 个也放行，count 落到 3）', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('keywordAlert', https, 'free-user')
+    env.db.__seed('keyword_watches', [wordWatch('free-user', '甲'), wordWatch('free-user', '乙')])
+
+    const res = await fn.main({ action: 'add', keyword: '丙' })
+
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.reason, 'added')
+    eq(res.tier, 'free')
+    eq(res.limit, 3)
+    eq(res.count, 3)
+    eq(env.db.__dump('keyword_watches').length, 3)
   })
 
   it('有效会员在 1~10 之间可新增（第 10 个也放行）', async () => {
@@ -2472,18 +2492,22 @@ describe('P4 关键词监控：新增上限按档判定（写入路径 action:ad
     eq(env.db.__dump('keyword_watches').length, 10)
   })
 
-  it('会员到期后回落免费档（上限 1）：同一次新增被拦下', async () => {
+  it('会员到期后回落免费档（上限 3）：已达上限的同一次新增被拦下', async () => {
     const https = fakeHttps([])
     const { fn } = loadScheduled('keywordAlert', https, 'expired-user')
     seedMember('expired-user', past)
-    env.db.__seed('keyword_watches', [wordWatch('expired-user', '甲')])
+    env.db.__seed('keyword_watches', [
+      wordWatch('expired-user', '甲'),
+      wordWatch('expired-user', '乙'),
+      wordWatch('expired-user', '丙')
+    ])
 
-    const res = await fn.main({ action: 'add', keyword: '乙' })
+    const res = await fn.main({ action: 'add', keyword: '丁' })
 
     eq(res.ok, false)
     eq(res.reason, 'over_limit')
     eq(res.tier, 'free')
-    eq(res.limit, 1)
+    eq(res.limit, 3)
   })
 
   it('重复订阅 → reason:duplicate（不落库）', async () => {

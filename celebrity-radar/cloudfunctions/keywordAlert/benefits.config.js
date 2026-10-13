@@ -153,12 +153,8 @@ module.exports = {
     "askFreshnessDays": 7
   },
   "OPINION_LIMITS": {
-    "followCount": {
-      "free": 3,
-      "member": 30
-    },
     "watchCount": {
-      "free": 1,
+      "free": 3,
       "member": 10
     },
     "personWatchCount": {

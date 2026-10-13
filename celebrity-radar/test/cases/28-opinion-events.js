@@ -381,8 +381,8 @@ describe('舆情页：事件时间线视角已接入（静态约束）', () => {
   it('三张概要卡统一走 overviewSlice（概要不分档）；本页不再用 sliceDetail 截断列表', () => {
     ok(page.includes("from '@/utils/opinion-access'"), '页面应引用 utils/opinion-access')
     ok(
-      page.includes('overviewSlice(') && page.includes('EVENT_OVERVIEW_INITIAL') && page.includes('EVENT_OVERVIEW_BATCH'),
-      '概要卡应走 overviewSlice（固定首屏 + 按需加载），常量来自 utils/opinion-access'
+      page.includes('overviewSlice(') && page.includes('EVENT_OVERVIEW_INITIAL'),
+      '三张概要卡应走 overviewSlice（固定预览 3 条），常量来自 utils/opinion-access'
     )
     notOk(page.includes('sliceDetail('), '概要卡不得再用按会员档放全的 sliceDetail')
     notOk(page.includes('moreDetailNote('), '概要不分档 → 不再有「会员可见全部 N 条」明细提示行')

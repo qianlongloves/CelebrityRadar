@@ -7,8 +7,6 @@ import PersonAvatar from '@/components/person-avatar'
 import { listFollows, unfollow, FollowRow } from '@/utils/follows'
 import { loadFollowWatches, FollowWatch, WATCH_LIMIT } from '@/utils/watch'
 import { feedNewCount } from '@/utils/inbox'
-import { readMemberState } from '@/utils/member'
-import { followGate, followLimitNote } from '@/utils/opinion-access'
 import { useAuth } from '@/stores/auth'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { resolvePersonKey } from '@/utils/person-index'
@@ -33,14 +31,11 @@ export default function Following() {
   const [rows, setRows] = useState<FollowRow[]>([])
   const [watches, setWatches] = useState<Record<string, FollowWatch>>({})
   const [onlyNew, setOnlyNew] = useState(false)
-  /** 是否会员：决定关注上限的档位（免费 followCount.free / 会员 followCount.member） */
-  const [isMember, setIsMember] = useState(false)
 
   const load = async (force = false) => {
     setLoading(true)
-    const [list, member] = await Promise.all([listFollows(), readMemberState()])
+    const list = await listFollows()
     setRows(list)
-    setIsMember(member.member)
     /* 先出名单再补变化：变化要对每人多读两次缓存，等它一起出来白屏会明显更久。
        补数据是「基础信息 → 完整信息」的单向增补，不会回退，所以中间态不闪。 */
     setLoading(false)
@@ -132,20 +127,10 @@ export default function Following() {
           </View>
 
           {/*
-            关注上限提示（P2，2026-10-13）：达到上限后**只影响继续新增**，既有名单照常看 / 管（含取关）。
-            免费档在这里给一行不打断的升级引导（点了进会员页）；会员档已达上限时只如实说明、不给升级入口。
-            判定走 utils/opinion-access.ts#followGate —— 它只回答「还能不能再加」，绝不删 / 藏既有数据。
+            关注人数已**不设上限**（2026-10-13 移除）：此前的档位上限提示行（followGate /
+            followLimitNote）已随之删除，名单照常全量展示；关键词监测 / 风险监控的上限各自
+            留在对应入口，不受影响。
           */}
-          {!followGate(rows.length, isMember).allowed && (
-            <View
-              className='page-following__limit'
-              hoverClass={isMember ? '' : 'page-following__limit--tap'}
-              onClick={isMember ? undefined : () => Taro.navigateTo({ url: '/pages/member/index' })}
-            >
-              <Text className='page-following__limit-text'>{followLimitNote(isMember)}</Text>
-              {!isMember && <Text className='page-following__limit-go'>去升级 ›</Text>}
-            </View>
-          )}
 
           {/* 有新内容才给筛选：没变化时多一排 chip 只是噪音 */}
           {newCount > 0 && (

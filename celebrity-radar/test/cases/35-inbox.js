@@ -373,13 +373,15 @@ describe('站内触达收口：页面接入（静态约束）', () => {
   const SRC = path.resolve(__dirname, '..', '..', 'src')
   const read = (p) => fs.readFileSync(path.join(SRC, p), 'utf8')
 
-  it('首页：问候区有「舆情」入口 + 红点，口径走 utils/inbox', () => {
+  it('首页：已移除「舆情」入口 + 红点，也不再为首屏红点做汇总读（2026-10-13）', () => {
     const page = read('pages/index/index.tsx')
-    ok(page.includes("from '@/utils/inbox'"), '首页应引用 utils/inbox')
-    ok(page.includes('loadInboxSummary('), '首页应调用统一汇总')
-    ok(page.includes('page-index__opinion'), '缺「舆情」入口')
-    ok(page.includes('page-index__opinion-dot'), '缺红点')
-    ok(page.includes("switchTab({ url: '/pages/opinion/index' })"), '入口应切到舆情 tab')
+    /* 回归锁：去掉入口要连「只为首页红点的只读汇总」一起清掉，否则白留 6 次首屏只读 */
+    notOk(page.includes("from '@/utils/inbox'"), '首页不应再引用 utils/inbox')
+    notOk(page.includes('loadInboxSummary('), '首页不应再调用统一汇总（那是只为首页红点的只读 DB 请求）')
+    notOk(page.includes('page-index__opinion'), '首页不应再有「舆情」入口')
+    notOk(page.includes('goOpinion'), '首页不应再有「舆情」跳转函数')
+    /* 铃铛（消息中心）必须保留 */
+    ok(page.includes('page-index__bell') && page.includes('onBellTap'), '消息铃铛必须保留')
   })
 
   it('舆情页：三块「新 N 条」走 inbox 口径，并提供「全部已读」', () => {

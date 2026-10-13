@@ -4,8 +4,6 @@ import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { parsePersonKey } from '@/config/domains'
 import { diagLog } from './cloud-diagnostics'
-import { readMemberState } from './member'
-import { followGate, followLimitNote } from './opinion-access'
 
 /** 关注列表（§3.8 follows，主键 = openid#personKey） */
 export interface FollowRow {
@@ -78,21 +76,21 @@ export async function toggleFollow(personKey: string, source?: string): Promise<
   }
 
   /*
-   * 新增关注前的分档门禁（P2，2026-10-13）：免费档最多 followLimit(false) 人、会员档
-   * followLimit(true) 人（真源见 config/benefits.ts#OPINION_LIMITS）。
+   * 关注人数**不设上限**（2026-10-13 移除）。
    *
-   * ⚠ 判定**只在「新增」这一支**做 —— 上面的取消关注分支永远放行，listFollows 也从不截断：
-   *   线上已有用户可能已关注超过免费档的人，那些数据必须原样保留、照常可看可用（含取关），
-   *   超限只影响「继续新增」。任何把上限用在读 / 删 / 藏既有数据上的写法都是错的。
-   * ⚠ 端上上限是**体验层不是安全边界**：关注数据由端上写入，改包可绕过（见
-   *   utils/opinion-access.ts 文件头），这里只负责给用户一个合理的入口体验。
+   * 此前免费档 3 人 / 会员档 30 人的端上门禁（followGate + followLimitNote）已删除，
+   * 新增关注一律放行。
+   *
+   * 为什么现在可以不设上限：关注数**原本就只在端上拦** —— `follows` 集合是「仅创建者可读写」、
+   * 由端上直接写入，改包即可绕过，端上从来不是安全边界；而云端**没有**任何按关注数分档的校验
+   * （对比：关键词监控 / 风险监控的新增已由 keywordAlert / riskWatch 在云端按 memberships 校验）。
+   * 所以移除这道门禁后，关注数就是**完全不限**，并不是「云端还在兜底」。
+   *
+   * 成本上可以接受：关注动作本身不发起上游检索、不直接产生费用；成本发生在用户主动
+   * 「抓取关注动态」时，那由 refreshPerDay 的每日次数上限（utils/member.ts）约束。
+   * 若将来要让关注数驱动成本（例如按关注数预拉取动态），**必须先在云端补一道按 memberships
+   * 分档的数量校验**，再回来决定要不要恢复端上提示 —— 端上单方面设限只会被改包绕过。
    */
-  const isMember = (await readMemberState()).member
-  if (!followGate((await listFollows()).length, isMember).allowed) {
-    Taro.showToast({ title: followLimitNote(isMember), icon: 'none', duration: 2500 })
-    return null
-  }
-
   const { error } = await table('follows').insert({
     id,
     openid: userId,

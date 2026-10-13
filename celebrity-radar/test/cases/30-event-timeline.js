@@ -301,3 +301,29 @@ describe('事件时间线：每条带来源与来源性质（合规）', () => {
     ok(page.includes('官方通报') && page.includes('媒体报道'), '区分官方通报与媒体报道')
   })
 })
+
+/* ───────────────────────── 8. 打开不再自动标已读（2026-10-13 口径变更） ───────────────────────── */
+
+describe('事件时间线页：打开不再自动标已读，显式标记仍可用', () => {
+  const page = read('pages/event/index.tsx')
+
+  it('打开页面（load）不再自动标记已读：定位成功后不写 reads', () => {
+    /* 删除「定位到就标记」的自动分支，避免误清未读 / 替用户下判断 */
+    notOk(/if \(!eventStatus\.reads\[found\.key\]\)/.test(page), '打开即已读的自动标记分支应删除')
+    notOk(page.includes('void markRead(found.key)'), '打开不得自动调用 markRead(found.key)')
+    /* load 依赖里也不该再有 eventStatus.reads（它不再读已读态去做自动标记） */
+    ok(page.includes('}, [rawKey, collectInput])'), 'load 不应再依赖 eventStatus.reads')
+  })
+
+  it('显式「标记已读」按钮仍在并走 markRead / markEventRead（行为不变），已读态仍显示', () => {
+    ok(page.includes('onClick={() => void markRead(event.key)}'), '卡头上的「标记已读」按钮仍在（仅显式触发）')
+    ok(page.includes('markEventRead('), '显式标记仍写库（markEventRead）')
+    ok(page.includes("read ? '✓ 已读'"), '已读状态仍照常显示（read ? ✓ 已读）')
+  })
+
+  it('文件头注释已更新为「打开不再自动标已读」并说明原因', () => {
+    ok(page.includes('打开不再自动标已读'), '文件头应写明新口径')
+    notOk(page.includes('## 「打开即已读」规则'), '旧的「打开即已读」说明应移除')
+    ok(/避免误清未读|替用户下判断|没被标记/.test(page) || page.includes('误清未读'), '注释应说明「为什么不自动标」')
+  })
+})

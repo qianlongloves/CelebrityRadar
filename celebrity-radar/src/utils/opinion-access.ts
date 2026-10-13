@@ -10,9 +10,9 @@ import { OPINION_LIMITS } from '../config/benefits'
  * ## 两条硬约束（使用者必须遵守，改本文件前先读）
  *
  * 1. **只拦新增，绝不删存量、绝不阻塞查看**：
- *    `followGate` / `watchGate` / `personWatchGate` 只回答「**还能不能再加一个**」，它们
- *    **不删除、不隐藏、不过滤**任何既有数据。已有用户可能已经关注了超过免费档的人、订阅了
- *    超过免费档的词、或监控了超过免费档的名人 —— 那些数据必须原样保留、照常可看可用
+ *    `watchGate` / `personWatchGate` 只回答「**还能不能再加一个**」，它们
+ *    **不删除、不隐藏、不过滤**任何既有数据。已有用户可能已经订阅了超过免费档的词、
+ *    或监控了超过免费档的名人 —— 那些数据必须原样保留、照常可看可用
  *    （含取消/取关），超限的既有监控对象还必须**继续被云端每日扫描**。`sliceDetail` 只用于
  *    **页面展示截断**，绝不用于删数据。任何把上限用在「读列表 / 管理既有数据」上的写法都是错的。
  *
@@ -25,12 +25,9 @@ import { OPINION_LIMITS } from '../config/benefits'
  *    —— 这里只负责给用户一个提前提示。
  */
 
-/** 关注人数上限：会员 > 免费。**只用于「能否再关注一个」，不用于删 / 藏已有数据** */
-export function followLimit(isMember: boolean): number {
-  return isMember ? OPINION_LIMITS.followCount.member : OPINION_LIMITS.followCount.free
-}
-
-/** 关键词监控数上限：会员 > 免费。只算 `keyword_watches` 里 type='keyword' 的行 */
+/**
+ * 关键词监控数上限：会员 > 免费。只算 `keyword_watches` 里 type='keyword' 的行
+ */
 export function watchLimit(isMember: boolean): number {
   return isMember ? OPINION_LIMITS.watchCount.member : OPINION_LIMITS.watchCount.free
 }
@@ -75,11 +72,6 @@ function gateOf(current: number, limit: number): AddGate {
   return { current: n, limit, allowed: n < limit, over: n > limit }
 }
 
-/** 关注门禁：只决定「能否再关注一个」 */
-export function followGate(current: number, isMember: boolean): AddGate {
-  return gateOf(current, followLimit(isMember))
-}
-
 /** 关键词监控门禁：只决定「能否再订阅一个词」 */
 export function watchGate(current: number, isMember: boolean): AddGate {
   return gateOf(current, watchLimit(isMember))
@@ -88,11 +80,6 @@ export function watchGate(current: number, isMember: boolean): AddGate {
 /** 「监控某人」门禁：只决定「能否再盯一个人」 */
 export function personWatchGate(current: number, isMember: boolean): AddGate {
   return gateOf(current, personWatchLimit(isMember))
-}
-
-/** 能否再关注一个（`followGate(...).allowed` 的便捷读法） */
-export function canAddFollow(current: number, isMember: boolean): boolean {
-  return followGate(current, isMember).allowed
 }
 
 /** 能否再订阅一个监控词（`watchGate(...).allowed` 的便捷读法） */
@@ -117,12 +104,6 @@ export function sliceDetail<T>(items: T[] | null | undefined, isMember: boolean)
   const limit = detailLimit(isMember)
   if (limit === null || list.length <= limit) return { rows: list, hidden: 0 }
   return { rows: list.slice(0, limit), hidden: list.length - limit }
-}
-
-/** 关注上限提示（免费档带升级引导；会员档只报事实） */
-export function followLimitNote(isMember: boolean): string {
-  if (isMember) return `最多可关注 ${OPINION_LIMITS.followCount.member} 人，取消一位后才能再加`
-  return `免费版最多关注 ${OPINION_LIMITS.followCount.free} 人，开通会员可关注 ${OPINION_LIMITS.followCount.member} 人`
 }
 
 /** 关键词监控上限提示（免费档带升级引导；会员档只报事实） */
@@ -156,7 +137,7 @@ export function moreDetailNote(total: number): string {
  * ⚠ **口径变化（P6，2026-10-13）——「概要不分档」**：改完后舆情页三张概要卡对免费 / 会员
  *   **一视同仁**，于是**「明细条数」这一层分层在舆情页上不再体现**。这不是把分层删了 ——
  *   分层的**其余部分仍生效**：
- *     · 关注人数 / 关键词监控数 / 风险监控人数上限（`followGate` / `watchGate` / `personWatchGate`，P2）；
+ *     · 关键词监控数 / 风险监控人数上限（`watchGate` / `personWatchGate`，P2）；
  *     · 事件**时间线页**的明细门禁（pages/event：免费 5 / 会员全部，走 `sliceDetail`）。
  *   换言之：概要不是明细，「明细分档」只作用在真正的明细页 / 时间线上（见 pages/event）。
  *   （用户已明确选择「概要不分档」，故**不给「加载更多」加免费封顶**。）

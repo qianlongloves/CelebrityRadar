@@ -141,13 +141,14 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
   },
   {
     /*
-     * 2026-10-13（P2）起「关注名人」也是分档权益：免费最多关注 3 人、会员 30 人。
-     * 数值取自 config/benefits.ts#OPINION_LIMITS（真源），不在这里写死；收藏与浏览历史仍不分档，
-     * 故拆成两行，避免把「关注有人数上限」含糊进一句「不限次」里。
+     * 「关注名人」曾于 2026-10-13（P2）起分档（免费 3 / 会员 30）；同日随产品决策**取消关注
+     * 人数上限** —— 免费与会员都不再限制（端上提示与门禁一并移除，见 utils/follows.ts 的注释）。
+     * 这一行保留、两栏都写「不限人数」，与下面的「收藏 / 浏览历史」同性质：**明写**它对两档都开放，
+     * 而不是悄悄删掉一行让人以为「少了点什么」。关键词监测 / 风险监控仍分档，见下面两行。
      */
     name: '关注名人',
-    free: `最多 ${OPINION_LIMITS.followCount.free} 人`,
-    member: `最多 ${OPINION_LIMITS.followCount.member} 人`
+    free: '不限人数',
+    member: '不限人数'
   },
   {
     name: '收藏 / 浏览历史',
@@ -155,13 +156,13 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
     member: '不限次'
   },
   {
-    /* 关键词监测数同样于 2026-10-13 分档（免费 1 / 会员 10）；数值取自 OPINION_LIMITS */
+    /* 关键词监测数同样于 2026-10-13 分档（免费 3 / 会员 10）；数值取自 OPINION_LIMITS */
     name: '关键词监测',
     free: `最多 ${OPINION_LIMITS.watchCount.free} 个词`,
     member: `最多 ${OPINION_LIMITS.watchCount.member} 个词`
   },
   {
-    /* 「监控某人」（风险监控）人数同为 2026-10-13 分档（免费 1 / 会员 10）；
+    /* 「监控某人」（风险监控）人数同为 2026-10-13 分档（免费 3 / 会员 10）；
        与「关键词监测」是两个维度（一个盯人、一个盯词，各自计数），数值取自 OPINION_LIMITS */
     name: '风险监控',
     free: `最多 ${OPINION_LIMITS.personWatchCount.free} 位名人`,

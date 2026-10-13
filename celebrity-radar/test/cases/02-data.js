@@ -700,7 +700,7 @@ describe('关键词订阅与名人监控共用表 utils/keyword-alert', () => {
     const me = login()
     const { addWatch, listWatches } = load('utils/keyword-alert')
     /* 先塞满 5 个监控行：若上限把监控行算进去，下面的 addWatch 会被误拒
-       （P2-2026-10-13 起关键词上限分档：免费 1 / 会员 10，但只算 type='keyword' 的行） */
+       （P2-2026-10-13 起关键词上限分档：免费 3 / 会员 10，但只算 type='keyword' 的行） */
     db.__seed(
       'keyword_watches',
       Array.from({ length: 5 }, (_, i) => ({
@@ -775,7 +775,7 @@ describe('关键词订阅与名人监控共用表 utils/keyword-alert', () => {
     const { db, load } = fresh()
     const me = login()
     /*
-     * 关键词上限自 2026-10-13 起分档（免费 1 / 会员 10）：要复现「先查数、再插入」那个时间窗，
+     * 关键词上限自 2026-10-13 起分档（免费 3 / 会员 10）：要复现「先查数、再插入」那个时间窗，
      * 需要把计数停在**上限 - 1** 处，故这里用一个会员档场景（上限 10，先放 9 个）。
      */
     db.__seed('users', [

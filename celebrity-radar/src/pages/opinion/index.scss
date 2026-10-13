@@ -197,28 +197,6 @@
     color: $text-3;
   }
 
-  /* 免费档明细被截断时列表底部的一行升级引导（「会员可见全部 N 条 ›」）：
-     刻意做得克制 —— 右对齐、品牌色、无底色，不遮罩、不弹窗，只是列表下方多一行可点文字 */
-  &__more-detail {
-    display: block;
-    margin-top: 12rpx;
-    padding: 8rpx 0;
-    text-align: right;
-    font-size: 24rpx;
-    color: $brand;
-  }
-
-  /* 事件概要卡「没有更多」的到底文案：与「加载更多」同款克制文字，居中的灰字收尾
-     （事件卡首屏固定若干条 + 按需加载，见 utils/opinion-access.ts#overviewSlice） */
-  &__done {
-    display: block;
-    margin-top: 12rpx;
-    padding: 8rpx 0;
-    text-align: center;
-    font-size: 22rpx;
-    color: $text-3;
-  }
-
   /* 事件卡（P3/P5）：每个事件一条，**整卡可点**进独立的事件时间线页（不再内联展开）。
      与三块概要同一语言：标题用 __row-title、元信息用 __row-meta、分级用 __tags，不另起一套。 */
   &__event {

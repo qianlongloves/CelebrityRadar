@@ -315,10 +315,15 @@ export async function removeWatch(keyword: string): Promise<boolean> {
  *
  * 一次 `in` 查询取回全部（每人最多几个词由分档上限决定，见 utils/opinion-access.ts），不逐个关键词查：
  * 小程序端每次 get 都要一次网络往返，5 个词逐个查就是 5 倍等待。
+ *
+ * @param preRows 可选：调用方**已经读过** `listWatches`（例如舆情页要同时拿监控人行喂风险信号）时，
+ *   直接把那份行传进来，省掉本函数内部对 `keyword_watches` 的**重复读**。不传则照旧自己读一遍，
+ *   行为与从前完全一致（存量调用点无需改动）。
  */
-export async function loadAlerts(): Promise<{ groups: AlertGroup[]; watched: number }> {
+export async function loadAlerts(preRows?: WatchRow[]): Promise<{ groups: AlertGroup[]; watched: number }> {
   /* 只取关键词订阅：同一张表里的「监控某人」行（type='person'）由预警页的风险信号板块自己读 */
-  const { keywords: watches } = splitWatches(await listWatches())
+  const rows = Array.isArray(preRows) ? preRows : await listWatches()
+  const { keywords: watches } = splitWatches(rows)
   if (!watches.length) return { groups: [], watched: 0 }
 
   const { data, error } = await table('keywords')

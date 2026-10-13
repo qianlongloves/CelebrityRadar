@@ -85,8 +85,11 @@ export default function Feed() {
   /**
    * 当前页号（从 1 起）—— 关注动态是**客户端分段渲染**：
    * 数据一次取回全部（见 load 注释），分页只是「按页切片渲染」，触底时 `page+1` 追加下一批。
-   * 任何一次「重取数据」（首屏 / 重试 / 抓取 / 下拉刷新）与「切换筛选」都把页号重置回 1，
-   * 否则会出现「刷新后仍停在第 3 页」或「筛完只剩一批」的错觉。
+   *
+   * ⚠ **不是任何一次重读都重置页号**（2026-10-13 修「返回即回顶」）：从本页点进某位名人
+   * （`pages/profile`）再返回时，`useDidShow` 会 `load` 重取数据 —— 若此时把页号重置回 1，
+   * 用户之前翻到的位置就丢了。故只有**显式重取**（下拉刷新 / 抓取动态按钮）与**切换筛选**才回到
+   * 第一页；从子页返回的重读**保留页号**（数据仍照常刷新，见 `load` 的 `resetPage`）。
    */
   const [page, setPage] = useState(1)
 
@@ -95,11 +98,13 @@ export default function Feed() {
    *
    * `withSkeleton` 只在**首次进入 / 重试**时为 true：抓到新数据后再重读若还盖一层骨架屏，
    * 会把刚看到的内容整页闪掉（用户点了「抓取动态」，画面先白一下再回来）。
+   *
+   * `resetPage` 只在**显式重取数据**（下拉刷新 / 抓取动态）时为 true —— 从子页返回（`useDidShow`）
+   * 也走本函数重取数据（**数据一定刷新**），但**保留页号**，不把用户顶回第一页。
    */
-  const load = async (withSkeleton = true) => {
+  const load = async (withSkeleton = true, resetPage = false) => {
     if (withSkeleton) setLoading(true)
-    /* 重取数据一律回到第一页：首屏 / 重试 / 抓取 / 下拉刷新共用本函数，页号不能跨轮残留 */
-    setPage(1)
+    if (resetPage) setPage(1)
     try {
       const rows = await listFollows()
       setFollows(rows)
@@ -148,7 +153,8 @@ export default function Feed() {
   }
 
   useDidShow(() => {
-    /* 有快照 = 首帧已经有内容，就别再盖一层骨架屏（那才是「进页面先白一下」的来源） */
+    /* 重进本页（含从子页返回）：重取数据但**保留页号**（不重置），避免「返回即回顶」。
+       有快照 = 首帧已经有内容，就别再盖一层骨架屏（那才是「进页面先白一下」的来源） */
     void load(snapshot === null)
   })
 
@@ -157,13 +163,16 @@ export default function Feed() {
    *
    * 共用而不是各写一份：两者都是「花一次配额，联网抓一轮，然后重读列表」，
    * 分开写迟早会出现只有一边做了配额检查、或只有一边重读了缓存这类分叉。
+   *
+   * ⚠ 两者都是**显式重取数据**，故重读时 `resetPage = true`（回到第一页）—— 与「从子页返回」
+   *   的重读（保留页号）区分开。
    */
   const doFetch = async (): Promise<string> => {
     /* 关注名单以现场读到的为准：本页停留期间可能刚在别的页取关过 */
     const rows = follows.length > 0 ? follows : await listFollows()
     if (rows.length === 0) return '还没有关注名人，先去关注几位'
     const res = await refreshAllFeeds(rows)
-    await load(false)
+    await load(false, true)
     return res.message
   }
 

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import Taro, { useDidShow, usePullDownRefresh, useReachBottom } from '@tarojs/taro'
 import { Text, View } from '@tarojs/components'
 import { listFollows } from '@/utils/follows'
@@ -49,6 +49,11 @@ import './index.scss'
  * 云数据库无法对「端上聚类后的一维事件列表」做服务端分页 ⇒ 分页只能是**客户端分段渲染**：
  * 复用 `utils/opinion-access#pageSlice`（不再造第三套切片函数），每页 `EVENTS_PAGE_SIZE` 条；
  * 首屏只渲染第一页，触底追加下一页，到底给结束文案，下拉刷新重取并回到第一页。
+ *
+ * ⚠ **返回不重置页号**（2026-10-13 修「返回即回顶」）：从本页点进某条事件（pages/event）再返回时，
+ * `useDidShow` 会重取数据（数据一定刷新），但**不把页号重置回 1**，用户之前翻到的位置得以保留；
+ * 只有**下拉刷新**（用户显式「从头来」）才回到第一页。此外重进本页时**不闪加载态**，避免列表塌陷
+ * 把滚动位置顶回顶部（见 `page` / `loadedRef` 注释）。
  * **规模门槛写在 `EVENTS_PAGE_SIZE` 的注释里**（事件量涨到数千条时应改真分页）。
  *
  * ## 分层与合规
@@ -72,9 +77,21 @@ export default function Events() {
   const [eventStatus, setEventStatus] = useState<EventStatus>(emptyStatus())
   /**
    * 当前页号（从 1 起）—— 事件列表是**客户端分段渲染**：数据一次取回全部，分页只是按页切片。
-   * 任何一次「重取数据」（首屏 / 重试 / 下拉刷新）都把页号重置回 1。
+   *
+   * ⚠ **不是任何一次重取都重置页号**（2026-10-13 修「返回即回顶」）：从本页点进某条事件
+   *   （`pages/event`）再返回时，`useDidShow` 会重取数据 —— 若此时把页号重置回 1，用户
+   *   之前在列表里翻到的位置就丢了，观感上像「被顶回第 1 页」。故重取数据**不重置页号**，
+   *   只有**下拉刷新**（用户显式要求「从头来」）才回到第一页。数据仍然照常刷新（见 `load`）。
    */
   const [page, setPage] = useState(1)
+  /**
+   * 是否已经成功载入过一次数据：用于「从子页返回」时**不闪加载态**。
+   *
+   * `useDidShow`（重进本页）会重取数据，但若先切到 `loading` 会把已渲染的列表塌掉
+   * （内容变矮 → 平台把滚动位置顶回顶部），于是「保留页号」也保不住滚动位置。
+   * 首屏（还没有数据）/ 错误重试没有可保留的列表，照常显示加载态。
+   */
+  const loadedRef = useRef(false)
 
   /** 本端聚类所需的输入：复用舆情页同一批既有读取函数，每块各自 try/catch（一块读失败不拖垮整页） */
   const collectInput = useCallback(async (): Promise<OpinionInput> => {
@@ -162,43 +179,53 @@ export default function Events() {
 
   /**
    * 重读列表：落库优先、读不到回落本端聚类；并重读我的状态。任一步抛错 → 错误态（可重试），不白屏。
+   *
+   * `resetPage` 只在**下拉刷新**（用户显式要求从头来）时为 true —— 从子页返回（`useDidShow`）
+   * 虽然也调用本函数**重取数据**（数据一定刷新，不含「为了保位置就不更新」），但**不重置页号**，
+   * 用户之前翻到的位置得以保留。
    */
-  const load = useCallback(async () => {
-    setStatus('loading')
-    /* 重取数据一律回到第一页：首屏 / 重试 / 下拉刷新共用本函数，页号不能跨轮残留 */
-    setPage(1)
-    try {
-      const input = await collectInput()
-      const local = buildOpinionEvents(input)
-
-      let stored: Awaited<ReturnType<typeof loadStoredEvents>> = null
+  const load = useCallback(
+    async (resetPage = false) => {
+      if (resetPage) setPage(1)
+      /* 已有列表时不闪 loading（避免返回时列表塌陷、滚动位置被顶回顶部）；首屏 / 重试照常显示 */
+      if (!loadedRef.current) setStatus('loading')
       try {
-        stored = await loadStoredEvents()
-      } catch {
-        stored = null
-      }
+        const input = await collectInput()
+        const local = buildOpinionEvents(input)
 
-      const view = resolveDisplayEvents(stored, { keywords: input.keywords, watchNames: input.watchNames }, local)
-      setEvents(view.events)
-      setSource(view.source)
+        let stored: Awaited<ReturnType<typeof loadStoredEvents>> = null
+        try {
+          stored = await loadStoredEvents()
+        } catch {
+          stored = null
+        }
 
-      try {
-        setEventStatus(await loadEventStatus())
+        const view = resolveDisplayEvents(stored, { keywords: input.keywords, watchNames: input.watchNames }, local)
+        setEvents(view.events)
+        setSource(view.source)
+
+        try {
+          setEventStatus(await loadEventStatus())
+        } catch {
+          setEventStatus(emptyStatus())
+        }
+        setStatus('ready')
+        loadedRef.current = true
       } catch {
-        setEventStatus(emptyStatus())
+        setStatus('error')
       }
-      setStatus('ready')
-    } catch {
-      setStatus('error')
-    }
-  }, [collectInput])
+    },
+    [collectInput]
+  )
 
   useDidShow(() => {
+    /* 重进本页（含从子页返回）：重取数据但**保留页号**，不把用户顶回第一页 */
     void load()
   })
 
   usePullDownRefresh(async () => {
-    await load()
+    /* 下拉刷新 = 重新取数并回到第一页（用户显式要求从头来） */
+    await load(true)
     Taro.stopPullDownRefresh()
   })
 

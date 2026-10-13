@@ -179,11 +179,20 @@ describe('事件列表页：首屏只渲染第一页 + 触底追加（静态锁�
     notOk(page.includes('showNavigationBarLoading'), '切片渲染不该伪造加载态')
   })
 
-  it('下拉刷新重取数据并回到第一页', () => {
+  it('下拉刷新重取数据并回到第一页；从子页返回不重置页号（「返回即回顶」修复）', () => {
     ok(page.includes('usePullDownRefresh('), '缺下拉刷新')
     ok(page.includes('Taro.stopPullDownRefresh()'), '下拉刷新结束要收起原生指示器')
-    /* load 内 setPage(1)：任何重取数据的路径（首屏 / 重试 / 下拉）都回到第一页 */
-    ok(/const load = useCallback[\s\S]{0,240}setPage\(1\)/.test(page), '重取数据（load）应回到第一页')
+    /* 下拉刷新 = 显式重取 → load(true) 回到第一页 */
+    ok(page.includes('await load(true)'), '下拉刷新应显式要求重置页号（load(true)）')
+    ok(/const load = useCallback\(\s*async \(resetPage = false\)/.test(page), 'load 应带 resetPage 参数、默认不重置')
+    ok(/if \(resetPage\) setPage\(1\)/.test(page), '仅当显式要求时才回到第一页')
+    /* useDidShow（含从子页返回）重取数据但**不**重置页号 —— 保住用户翻到的位置。
+       只取 useDidShow 回调块本身来判断，避免把紧随其后的 usePullDownRefresh 里的 load(true) 误算进来。 */
+    const didShow = (page.match(/useDidShow\(\(\) => \{[\s\S]*?\n  \}\)/) || [''])[0]
+    ok(didShow.includes('void load()'), 'useDidShow 应重取数据（load() 不重置页号）')
+    notOk(/load\([^)]*true/.test(didShow), 'useDidShow 不得重置页号（否则返回即回顶）')
+    /* 仍不闪加载态：已有列表时保留内容，避免滚动位置被顶回顶部 */
+    ok(page.includes('loadedRef'), '应有「是否已载入」标记，避免返回重进时列表塌陷')
   })
 
   it('每页条数取共享常量 EVENTS_PAGE_SIZE（不写死数字）', () => {
@@ -219,31 +228,34 @@ describe('事件列表页：整卡跳事件时间线页（带 encode 参数）',
   })
 })
 
-/* ───────────────────── 6. 舆情页两卡改入口（回归锁） ───────────────────── */
+/* ───────────────────── 6. 舆情页三卡改入口（回归锁） ───────────────────── */
 
-describe('舆情页两张卡：不再「加载更多」，改为跳独立页的入口（回归锁）', () => {
+describe('舆情页三张卡：不再「加载更多」，改为跳独立页的入口（回归锁）', () => {
   const page = read('pages/opinion/index.tsx')
 
-  it('事件卡 / 关注动态卡不再出现「加载更多」相关文案与处理函数', () => {
+  it('事件卡 / 关注动态卡 / 关键词预警卡都不再出现「加载更多」相关文案与处理函数', () => {
     for (const dead of [
       '加载更多事件',
       '加载更多动态',
+      '加载更多预警',
       'loadMoreEvents',
       'loadMoreFeed',
+      'loadMoreAlerts',
       'eventShownCount',
       'feedShownCount',
+      'alertShownCount',
       '—— 没有更多事件 ——',
-      '—— 没有更多动态 ——'
+      '—— 没有更多动态 ——',
+      '—— 没有更多预警 ——'
     ]) {
       notOk(page.includes(dead), `舆情页不得再出现「${dead}」`)
     }
-    /* 关键词预警卡的「加载更多」本次不动（用户只点名了两处） */
-    ok(page.includes('加载更多预警'), '关键词预警卡的「加载更多」应保留（本次未改）')
   })
 
-  it('两张卡各自的跳转目标正确：事件 → pages/events；关注动态 → pages/feed', () => {
+  it('三张卡各自的跳转目标正确：事件 → pages/events；关注动态 → pages/feed；预警 → pages/alerts', () => {
     ok(page.includes("Taro.navigateTo({ url: '/pages/events/index' })"), '事件卡入口应指向 pages/events')
     ok(page.includes("Taro.navigateTo({ url: '/pages/feed/index' })"), '关注动态卡应指向已存在的 pages/feed')
+    ok(page.includes("Taro.navigateTo({ url: '/pages/alerts/index' })"), '预警卡应指向已存在的 pages/alerts')
   })
 
   it('每条事件仍可点进 pages/event（既有能力不丢）', () => {

@@ -162,10 +162,18 @@ describe('关注动态页：首屏只渲染第一页 + 触底追加（静态锁�
 
   it('下拉刷新保留原语义（重取数据）并回到第一页；抓取按钮走同一路径', () => {
     ok(page.includes('usePullDownRefresh('), '缺下拉刷新')
-    ok(page.includes('const load = async (withSkeleton = true)'), '下拉 / 抓取应共用 load')
+    ok(page.includes('const load = async (withSkeleton = true, resetPage = false)'), '下拉 / 抓取应共用 load')
     ok(page.includes('refreshAllFeeds('), '下拉刷新仍要联网重取数据（既有语义不变）')
-    /* load 内 setPage(1)：任何重取数据的路径都回到第一页 */
-    ok(/const load = async[\s\S]{0,220}setPage\(1\)/.test(page), '重取数据（load）应回到第一页')
+    /* 只有显式重取（下拉 / 抓取）才 setPage(1)；从子页返回的重读保留页号 */
+    ok(/if \(resetPage\) setPage\(1\)/.test(page), '仅当显式重取时才回到第一页')
+    ok(page.includes('await load(false, true)'), '显式抓取（doFetch）应要求重置页号（load(false, true)）')
+  })
+
+  it('从子页返回不重置页号（「返回即回顶」修复）：useDidShow 重取数据但保留页号', () => {
+    /* 只取 useDidShow 回调块本身判断，避免把后面的 doFetch（load(false, true)）误算进来 */
+    const didShow = (page.match(/useDidShow\(\(\) => \{[\s\S]*?\n  \}\)/) || [''])[0]
+    ok(didShow.includes('void load(snapshot === null)'), 'useDidShow 应重取数据但保留页号')
+    notOk(/load\([^)]*,\s*true/.test(didShow), 'useDidShow 不得重置页号')
   })
 
   it('筛选切换重置到第一页（含空态「查看全部」动作）', () => {

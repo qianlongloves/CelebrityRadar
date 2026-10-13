@@ -97,36 +97,8 @@
     }
   }
 
-  /* 「舆情」入口：与铃铛同一套「白底圆角钮 + 右上角红点」写法，钮里是文字而非图标。
-     橙点与铃铛红点同一令牌（$accent-orange），沿用既有视觉，不新造体系。 */
-  &__opinion {
-    flex-shrink: 0;
-    position: relative;
-    height: 56rpx;
-    padding: 0 20rpx;
-    border-radius: 28rpx;
-    background: #fff;
-    box-shadow: $shadow-card;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    &-text {
-      font-size: 24rpx;
-      font-weight: 500;
-      color: $brand;
-    }
-
-    &-dot {
-      position: absolute;
-      right: 10rpx;
-      top: 8rpx;
-      width: 12rpx;
-      height: 12rpx;
-      border-radius: 50%;
-      background: $accent-orange;
-    }
-  }
+  /* 「舆情」入口样式（&__opinion）随入口本体的移除一并删除（2026-10-13）：
+     问候区右侧只剩下面的 &__bell（消息中心）。 */
 
   /* ===== 主横幅卡（紫色，参照样例） ===== */
   &__banner {

@@ -29,6 +29,16 @@ const TABS: TabItem[] = [
   { path: '/pages/mine/index', label: '我的', icon: 'user' }
 ]
 
+/**
+ * **唯一**的「显示图标 / 纯文字」切换点。
+ *
+ * 2026-10-13 定为 `false`：四个 tab 只用文字，走「纯文字一体化按钮」形态 ——
+ * 文字被当成「图形按钮」来设计（字号放大、选中态加粗 + 品牌色 + 淡品牌底 pill），
+ * 见 index.scss 里 .tabbar__btn / .tabbar__label 的注释。开关保留在模块级，
+ * 左右两槽位共用（改回 true 即恢复图标 + 文字），故图标相关的代码仍然是活的、没有删。
+ */
+const TAB_SHOW_ICON = false
+
 /** 归一化路由：个别基础库给的是带前导斜杠的完整路径，不统一就一个都匹配不上、恒亮首项 */
 function currentRoute(): string {
   const pages = Taro.getCurrentPages()
@@ -82,8 +92,13 @@ export default function CustomTabBar() {
             className={`tabbar__item ${selected === t.path ? 'tabbar__item--active' : ''}`}
             onClick={() => switchTo(t.path)}
           >
-            <View className={`tabbar__icon tabbar__icon--${t.icon}`} />
-            <Text className='tabbar__label'>{t.label}</Text>
+            {/* 一体化按钮：图标与文字收进**同一个** pill 容器 `.tabbar__btn`（横排、统一间距与命中区），
+                不再像「图标一块 / 文字一块」两个分离元素。整格仍可点（onClick 在外层 item 上）。
+                图标由模块级开关 TAB_SHOW_ICON 统一控制（改它为 false 即纯文字形态）。 */}
+            <View className='tabbar__btn'>
+              {TAB_SHOW_ICON && <View className={`tabbar__icon tabbar__icon--${t.icon}`} />}
+              <Text className='tabbar__label'>{t.label}</Text>
+            </View>
           </View>
         ))}
 
@@ -99,8 +114,10 @@ export default function CustomTabBar() {
             className={`tabbar__item ${selected === t.path ? 'tabbar__item--active' : ''}`}
             onClick={() => switchTo(t.path)}
           >
-            <View className={`tabbar__icon tabbar__icon--${t.icon}`} />
-            <Text className='tabbar__label'>{t.label}</Text>
+            <View className='tabbar__btn'>
+              {TAB_SHOW_ICON && <View className={`tabbar__icon tabbar__icon--${t.icon}`} />}
+              <Text className='tabbar__label'>{t.label}</Text>
+            </View>
           </View>
         ))}
       </View>

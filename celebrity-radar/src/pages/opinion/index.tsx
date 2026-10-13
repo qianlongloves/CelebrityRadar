@@ -16,7 +16,7 @@ import {
   readInboxSeen,
   riskNewCount
 } from '@/utils/inbox'
-import { EVENT_OVERVIEW_BATCH, EVENT_OVERVIEW_INITIAL, overviewSlice } from '@/utils/opinion-access'
+import { EVENT_OVERVIEW_INITIAL, overviewSlice } from '@/utils/opinion-access'
 import {
   CRED_LABEL,
   IMPACT_LABEL,
@@ -96,12 +96,26 @@ import './index.scss'
  *
  * P7（2026-10-13）**两张卡去掉页内「加载更多」，改为入口**：
  *   · **事件卡（②）**：保留固定预览（`EVENT_OVERVIEW_INITIAL` = 3 条），**移除卡内「加载更多 / 到底」**，
- *     卡底新增「查看全部事件 ›」→ 新的事件列表页 `pages/events`（那里分页加载：首屏第一页 + 触底追加）；
+ *     入口 → 事件列表页 `pages/events`（那里分页加载：首屏第一页 + 触底追加）；
  *     每条事件仍可整卡点进单事件时间线页 `pages/event`（`goEvent` 行为不变）。
+ *     ⚠ 入口位置于 2026-10-13 统一：**移到卡头右上角**（与关注动态卡完全同款：同类名 `page-opinion__more`），
+ *       **卡底不再有入口** —— 两卡入口形态一致，不再一处卡头、一处卡底。
  *   · **关注动态卡（③）**：同样固定预览 3 条、**移除「加载更多」**；「看全部」由卡头既有的
  *     「查看全部 ›」承担（→ 已存在的 `pages/feed`，不再新增第二个入口）。
- *   · **关键词预警卡（⑤）本次不动**：仍保留页内「加载更多」（用户只点名了上面两处）。
- *   这样两张卡在数据很多时**长度恒定**，不会把舆情页撑长（正是用户诉求）。
+ *   · **关键词预警卡（⑤）**（2026-10-13 补统一）：同样固定预览 3 条、**移除卡内「加载更多 / 到底」**，
+ *     入口在卡头右上角（与事件卡 / 关注动态卡**完全同款**：同类名 `page-opinion__more`、同文案
+ *     「查看全部 ›」），→ 已存在的预警完整页 `pages/alerts`。统计信息（监测词数 / 监控人数 /
+ *     相关报道数 / 风险信号数）照常保留。
+ *   这样三张卡在数据很多时**长度恒定**，不会把舆情页撑长（正是用户诉求）。
+ *
+ * P8（2026-10-13）**首屏性能收敛**（本页加载慢的三处根因，逐条改）：
+ *   · 关注动态**预览**只读一次批量缓存（`getFeedDetails`），**不再 await** `loadFollowWatches`
+ *     （后者为每位关注人各读 report_cache + feed_cache，2N 次只读）—— 角标改为预览之后再补；
+ *   · **端上聚类降级不在首屏并发做**：`buildOpinionEvents` 只在落库事件**读完且确实没数据**时才现算
+ *     （见 `storedReady` 与 `eventView`）；库里有共享事件时一次都不算；
+ *   · 串行读改并行、同一集合只读一次：`loadAlerts(rows)` 复用已读到的订阅行；
+ *     「预警分组 ∥ 风险信号」「落库事件 ∥ 我的状态」各自并行。
+ *   ⚠ 口径不变：落库优先 / 降级 / 空态 / 错误态 / 合规说明一字未改，只是把重活挪出渲染关键路径。
  */
 type Status = 'loading' | 'ready' | 'error'
 
@@ -168,7 +182,7 @@ interface AlertState {
 /** 周报未生成时的状态文案：先说有没有可汇总的材料，再给出下一步 */
 function weeklyStatusText(kind: WeeklyState['materialKind'], count: number): string {
   if (kind === 'ok') return `关注的人近 ${WEEKLY_WINDOW_DAYS} 天有 ${count} 条动态可汇总，去完整页生成`
-  if (kind && kind !== 'ok') return MATERIAL_FAIL_TEXT[kind]
+  if (kind) return MATERIAL_FAIL_TEXT[kind]
   return `本周还没生成周报，去完整页看看（汇总最近 ${WEEKLY_WINDOW_DAYS} 天关注动态）`
 }
 
@@ -203,36 +217,36 @@ export default function Opinion() {
     personNames: []
   })
   /**
-   * **关键词预警卡**已渲染到第几条（P6 / 2026-10-13，端上分片渲染）：首屏固定
-   * `EVENT_OVERVIEW_INITIAL` 条，「加载更多」每次 +`EVENT_OVERVIEW_BATCH`。
-   * ⚠ 与会员态**无关** —— 该卡走「概要不分档」（见下方 alertSlice 注释）。
-   *
-   * 2026-10-13 二次调整：**事件卡与关注动态卡不再在页内「加载更多」**（否则内容越加载页越长，
-   * 这正是本次要修的问题）—— 两卡改为**固定 `EVENT_OVERVIEW_INITIAL` 条预览 + 入口跳独立页**
-   * （事件 → pages/events、关注动态 → pages/feed，后者复用卡头既有的「查看全部 ›」，不新增第二个入口）。
-   * 只有关键词预警卡仍保留页内按需加载（用户未点名它）。
-   */
-  const [alertShownCount, setAlertShownCount] = useState(EVENT_OVERVIEW_INITIAL)
-  /**
    * 落库事件（P4）：`null` = 还没读到 / 读失败（回落本端聚类）；`[]` = 集合为空（同样回落）。
    * 刻意不用页面的 `Status` 表达它 —— 它本就不算「一块读失败」：读不到就走本端聚类，用户无感，
    * 也不该多出第四处 `status:'error'`（那会让「每块独立降级」的既有断言失真）。
    */
   const [storedEvents, setStoredEvents] = useState<OpinionEventRow[] | null>(null)
+  /**
+   * 落库事件是否**已读完**（成功 / 失败都算读完）。
+   *
+   * 端上聚类（`buildOpinionEvents`，要遍历 feed/weekly/alert 多源）是首屏较重的计算，
+   * 只该在「确实没有共享事件可用」时才做 —— 而「读失败」与「集合为空」这两种情况都要等
+   * `loadStoredEvents` 返回后才谈得上。用它把聚类从首屏关键路径上摘掉（见下方 eventView）。
+   */
+  const [storedReady, setStoredReady] = useState(false)
   /** 我的事件状态（已读 / 跟进）；读失败 = 空状态（页面照常，只是显示为「都没读过」） */
   const [eventStatus, setEventStatus] = useState<EventStatus>(emptyStatus())
 
-  /** 关注动态概要：批量读缓存（与关注流页同一入口），归并后取最近若干条 */
+  /**
+   * 关注动态概要：**预览只读一次批量缓存**，把「新 N 条」角标挪到预览渲染之后再补 ——
+   * 预览（列表 / 今日要点 / 事件降级都吃 `feed.items`）因此不再等 `loadFollowWatches`。
+   */
   const loadFeed = useCallback(async () => {
     setFeed((s) => ({ ...s, status: 'loading' }))
     try {
       const rows = await listFollows()
-      /* 动态缓存与实际内容并发读；watch 带 60s 内存缓存（与关注流 / 消息中心共享），
-         这里只为拿到「自上次查看以来有变化的人数」，口径与关注列页完全一致（utils/inbox#feedNewCount） */
-      const [details, watches] = await Promise.all([
-        getFeedDetails(rows.map((f) => f.person_key)),
-        loadFollowWatches(rows)
-      ])
+      /*
+       * 预览只依赖这**一次**批量读（`getFeedDetails` 把全部关注人的 feed_cache 用一次 in 查询取回）。
+       * 刻意**不在这里 await `loadFollowWatches`** —— 它为每位关注人各读 report_cache + feed_cache
+       * （2N 次只读、分批并发），是首屏最重的一段，却只产出「新 N 条」这个角标。先渲染预览，角标随后补。
+       */
+      const details = await getFeedDetails(rows.map((f) => f.person_key))
       const merged: FeedPreview[] = []
       let failed = 0
       for (const f of rows) {
@@ -258,10 +272,15 @@ export default function Opinion() {
         followCount: rows.length,
         entryCount: merged.length,
         failedCount: failed,
-        newCount: feedNewCount(watches),
+        /* 角标先给 0，预览不等它；下面 `loadFollowWatches` 回来后补齐（口径不变） */
+        newCount: 0,
         items: merged,
         followNames: rows.map((r) => r.name)
       })
+      /* 角标后台补齐（口径 utils/inbox#feedNewCount，与关注流 / 消息中心一致）；读失败静默 —— 无非这次不显示角标 */
+      void loadFollowWatches(rows)
+        .then((watches) => setFeed((s) => ({ ...s, newCount: feedNewCount(watches) })))
+        .catch(() => {})
     } catch {
       setFeed((s) => ({ ...s, status: 'error' }))
     }
@@ -292,9 +311,16 @@ export default function Opinion() {
   const loadAlertBlock = useCallback(async () => {
     setAlerts((s) => ({ ...s, status: 'loading' }))
     try {
-      /* 与预警页同一套读法：一次 listWatches 拿到全部行，再拆成关键词 / 监控人两类 */
-      const [rows, res] = await Promise.all([listWatches(), loadAlerts()])
+      /*
+       * 一次 listWatches 拿到全部行，再拆成关键词 / 监控人两类；keyword_watches 只读这一次 ——
+       * 监控人行的 person_key 喂给风险信号、关键词行直接交给 `loadAlerts(rows)`，不再让它内部重读一遍。
+       */
+      const rows = await listWatches()
       const { keywords, persons } = splitWatches(rows)
+      const keys = persons.map((p) => p.person_key).filter((k): k is string => !!k)
+
+      /* 预警分组与风险信号互不依赖 → **并行**（此前风险信号串在预警之后，白白多等一次往返） */
+      const [res, riskRows] = await Promise.all([loadAlerts(rows), loadRiskSignals(keys)])
 
       const items: AlertPreview[] = []
       for (const g of res.groups) {
@@ -310,9 +336,6 @@ export default function Opinion() {
           })
         }
       }
-
-      const keys = persons.map((p) => p.person_key).filter((k): k is string => !!k)
-      const riskRows = await loadRiskSignals(keys)
 
       setAlerts({
         status: 'ready',
@@ -334,20 +357,18 @@ export default function Opinion() {
   }, [])
 
   /**
-   * 落库事件 + 我的状态（P4）：各自独立 try/catch。
-   * 事件读不到 → 存 `null`（回落本端聚类）；状态读不到 → 空状态。两者都不阻断页面。
+   * 落库事件 + 我的状态（P4）：**并行读**（此前串行，白白多等一次往返）；各自兜底、都不阻断页面。
+   * 事件读不到 → 存 `null`（回落本端聚类）；状态读不到 → 空状态。
+   * 两者都回来后把 `storedReady` 置真 —— 端上聚类降级据此才允许开始（见 storedReady / eventView）。
    */
   const loadEvents = useCallback(async () => {
-    try {
-      setStoredEvents(await loadStoredEvents())
-    } catch {
-      setStoredEvents(null)
-    }
-    try {
-      setEventStatus(await loadEventStatus())
-    } catch {
-      setEventStatus(emptyStatus())
-    }
+    const [stored, status] = await Promise.all([
+      loadStoredEvents().catch(() => null),
+      loadEventStatus().catch(() => emptyStatus())
+    ])
+    setStoredEvents(stored)
+    setStoredReady(true)
+    setEventStatus(status)
   }, [])
 
   useDidShow(() => {
@@ -415,23 +436,28 @@ export default function Opinion() {
   /** 统一队列：把三块数据合成一条排序好的列表（纯函数，脏数据自动跳过） */
   const queue = useMemo(() => buildOpinionQueue(opinionInput), [opinionInput])
 
-  /** 本端聚类（纯函数）：库未就绪 / 读失败时的**降级**结果，复用 P1 判据与排序 */
-  const localEvents = useMemo(() => buildOpinionEvents(opinionInput), [opinionInput])
-
   /**
-   * 事件视角（P4）：**优先读落库事件**（全站共享、跨会话保留），读库失败 / 集合为空则回落本端聚类。
+   * 事件视角（P4，2026-10-13 性能调整）：**落库优先、端上聚类只作降级，且不在首屏并发做**。
+   *
+   *   1. 库里读完且有可用事件 → 直接用云端事件（全站共享、跨会话保留），**完全不做端上聚类**；
+   *   2. 库读完但为空 / 读失败 / 行进不了（`toDisplayEvents` 过滤后为空）→ 才现算本端聚类；
+   *   3. 库还没读完 → 先渲染空（**不并发聚类**）—— 聚类要遍历 feed/weekly/alert 多源、是首屏较重的
+   *      计算，等一个「单集合只读」出结果远比它划算。
+   *
+   * 之前聚类写在一个无条件的 `useMemo(buildOpinionEvents, [opinionInput])`：首屏三块数据分批到达时
+   * 它会随之重算数遍，**就算库里早有共享事件也照算不误** —— 这次把它移出渲染关键路径。
    * 「与我相关」排序所需的 hitsKeyword / hitsFollow 在读库路径上按本用户的词 / 关注的人现算
    * （见 utils/opinion-store.ts#toDisplayEvents）；两条路产出的事件字段完全一致，渲染零分叉。
    */
-  const eventView = useMemo(
-    () =>
-      resolveDisplayEvents(
-        storedEvents,
-        { keywords: opinionInput.keywords, watchNames: opinionInput.watchNames },
-        localEvents
-      ),
-    [storedEvents, opinionInput.keywords, opinionInput.watchNames, localEvents]
-  )
+  const eventView = useMemo(() => {
+    const opts = { keywords: opinionInput.keywords, watchNames: opinionInput.watchNames }
+    if (storedReady && storedEvents && storedEvents.length > 0) {
+      const cloud = resolveDisplayEvents(storedEvents, opts, [])
+      if (cloud.source === 'cloud') return cloud
+    }
+    if (!storedReady) return { events: [] as OpinionEvent[], source: 'local' as const }
+    return { events: buildOpinionEvents(opinionInput), source: 'local' as const }
+  }, [storedReady, storedEvents, opinionInput])
   const events = eventView.events
 
   /** 今日要点：统一队列前 3 条（无来源 / 与我不相关的不凑数）—— 不受明细条数分层限制 */
@@ -450,14 +476,13 @@ export default function Opinion() {
   const inboxTotal = alerts.newTotal + alerts.riskNew + eventNew
 
   /**
-   * **事件卡 / 关注动态卡**只给**固定预览**（`overviewSlice`，条数 = `EVENT_OVERVIEW_INITIAL`），
-   * **不再页内「加载更多」** —— 用户诉求是「不要在舆情台加载更多，改成点进独立页看」：
-   *   · 数据多时这两张卡的长度恒定（永远只 3 条），不会把页面撑长；
-   *   · 要看全部 → 进独立页（事件 → pages/events，关注动态 → pages/feed），在那里分页加载。
+   * **三张概要卡**（事件 / 关注动态 / 关键词预警）都只给**固定预览**
+   * （`overviewSlice`，条数 = `EVENT_OVERVIEW_INITIAL` = 3），**都不再页内「加载更多」** ——
+   * 用户诉求是「不要在舆情台加载更多，改成点进独立页看」：
+   *   · 数据多时三张卡的长度恒定（永远只 3 条），不会把页面撑长；
+   *   · 要看全部 → 进独立页（事件 → pages/events，关注动态 → pages/feed，预警 → pages/alerts），
+   *     入口统一在**卡头右上角**（同类名 `page-opinion__more`、同文案「查看全部 ›」），在那里分页加载。
    * 复用既有纯函数 `overviewSlice`（不另造切片），其 `remaining` / `hasMore` 在预览场景不使用。
-   *
-   * **关键词预警卡**仍走「固定首屏 + 页内按需加载」（`alertShownCount` + `EVENT_OVERVIEW_BATCH`）——
-   * 用户本次只点名了事件卡与关注动态卡，未要求改它。
    *
    * ⚠ **概要不分档**（P6）：三张卡对免费 / 会员**一视同仁**，「明细条数」这一层分层**不在本页体现**；
    *   分层其余部分仍生效（关注人数 / 监控数 / 风险监控人数上限；以及事件**时间线页**的明细门禁
@@ -465,15 +490,15 @@ export default function Opinion() {
    */
   const eventPreview = overviewSlice(events, EVENT_OVERVIEW_INITIAL)
   const feedPreview = overviewSlice(feed.items, EVENT_OVERVIEW_INITIAL)
-  const alertSlice = overviewSlice(alerts.items, alertShownCount)
-  const loadMoreAlerts = () => setAlertShownCount((n) => n + EVENT_OVERVIEW_BATCH)
+  const alertSlice = overviewSlice(alerts.items, EVENT_OVERVIEW_INITIAL)
 
   const goFeed = () => void Taro.navigateTo({ url: '/pages/feed/index' })
   const goWeekly = () => void Taro.navigateTo({ url: '/pages/weekly/index' })
   const goAlerts = () => void Taro.navigateTo({ url: '/pages/alerts/index' })
   /**
-   * 事件卡底「查看全部事件 ›」→ 事件列表页（2026-10-13 新增）：本页只给固定预览，
+   * 事件卡**卡头右上角**「查看全部 ›」→ 事件列表页（2026-10-13）：本页只给固定预览，
    * 「看全部事件」挪到独立页分页加载（首屏第一页 + 触底追加），不再在本页越加载越长。
+   * 入口位置与关注动态卡统一（同为卡头 `page-opinion__more`，不再放在卡底）。
    */
   const goEvents = () => void Taro.navigateTo({ url: '/pages/events/index' })
   /** 今日要点点进对应完整页 —— 同一套入口，不新增页面 */
@@ -646,11 +671,17 @@ export default function Opinion() {
             {/* 「新 N 条」：口径来自 utils/inbox#countNewEvents（复用 opinion_event_status.reads） */}
             {eventNew > 0 && <Text className='count-badge'>新 {eventNew} 条</Text>}
           </View>
+          {/* 入口与「关注动态」卡**完全同款**：卡头右上角文字按钮，同位置、同类名（page-opinion__more），
+              跳独立的事件列表页 pages/events。（2026-10-13：此前在卡底，现移到卡头与关注动态卡统一。） */}
+          <Text className='page-opinion__more' onClick={goEvents}>
+            查看全部 ›
+          </Text>
         </View>
 
         {events.length === 0 ? (
           <Text className='page-opinion__empty'>
-            {feed.status === 'loading' || weekly.status === 'loading' || alerts.status === 'loading'
+            {/* 落库事件还没读完（`!storedReady`）时也算「进行中」—— 此时不该显示成「暂无可归并的事件」 */}
+            {!storedReady || feed.status === 'loading' || weekly.status === 'loading' || alerts.status === 'loading'
               ? '正在归并事件…'
               : '暂无可归并的事件，关注的人或监控词有新动态时会聚在这里'}
           </Text>
@@ -710,12 +741,9 @@ export default function Opinion() {
                 </View>
               )
             })}
-            {/* 事件卡不再页内「加载更多」（2026-10-13）：只给固定预览（`eventPreview`），
-                卡底改为入口 → 独立的事件列表页（pages/events），在那里分页加载。
+            {/* 事件卡不再页内「加载更多」，也**不在卡底放入口**（2026-10-13）：只给固定预览（`eventPreview`），
+                「查看全部」改到**卡头右上角**（与关注动态卡同款，见上面的 page-opinion__more）；
                 头部标题已给出事件总数（不让人以为只有首屏这几条）。 */}
-            <Text className='page-opinion__more-detail' onClick={goEvents}>
-              查看全部事件 ›
-            </Text>
           </>
         )}
 
@@ -881,15 +909,10 @@ export default function Opinion() {
                       {gradeTags(a.source, a.category, a.level)}
                     </View>
                   ))}
-                  {/* 概要卡「加载更多 / 到底」（与事件卡同一套口径，概要不分档）：每次追加一批，
-                      加载完显示到底文案。不再有「会员可见全部 N 条」的明细提示行。 */}
-                  {alertSlice.hasMore ? (
-                    <Text className='page-opinion__more-detail' onClick={loadMoreAlerts}>
-                      加载更多预警（还有 {alertSlice.remaining} 条）›
-                    </Text>
-                  ) : (
-                    <Text className='page-opinion__done'>—— 没有更多预警 ——</Text>
-                  )}
+                  {/* 关键词预警卡不再页内「加载更多」（2026-10-13 与事件卡 / 关注动态卡统一）：
+                      只给固定预览（`alertSlice` = 3 条），头部 stats 已给出相关报道 / 风险信号总数
+                      （不让人以为只有首屏这几条）；「看全部」由卡头既有的「查看全部 ›」入口承担
+                      （→ pages/alerts 分页加载），此处不新增第二个入口。 */}
                 </>
               )}
             </>
