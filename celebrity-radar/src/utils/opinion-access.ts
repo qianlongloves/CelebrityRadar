@@ -10,17 +10,19 @@ import { OPINION_LIMITS } from '../config/benefits'
  * ## 两条硬约束（使用者必须遵守，改本文件前先读）
  *
  * 1. **只拦新增，绝不删存量、绝不阻塞查看**：
- *    `followGate` / `watchGate` 只回答「**还能不能再加一个**」，它们**不删除、不隐藏、
- *    不过滤**任何既有数据。已有用户可能已经关注了超过免费档的人、或订阅了超过免费档的词
- *    —— 那些数据必须原样保留、照常可看可用（含取消/取关）。`sliceDetail` 只用于**页面展示
- *    截断**，绝不用于删数据。任何把上限用在「读列表 / 管理既有数据」上的写法都是错的。
+ *    `followGate` / `watchGate` / `personWatchGate` 只回答「**还能不能再加一个**」，它们
+ *    **不删除、不隐藏、不过滤**任何既有数据。已有用户可能已经关注了超过免费档的人、订阅了
+ *    超过免费档的词、或监控了超过免费档的名人 —— 那些数据必须原样保留、照常可看可用
+ *    （含取消/取关），超限的既有监控对象还必须**继续被云端每日扫描**。`sliceDetail` 只用于
+ *    **页面展示截断**，绝不用于删数据。任何把上限用在「读列表 / 管理既有数据」上的写法都是错的。
  *
  * 2. **端上上限是体验层，不是安全边界**：
  *    关注列表与监控词是用户自己的数据、由端上直接写入（`follows` / `keyword_watches` 集合
  *    权限为「仅创建者可读写」），改包即可绕过这里的任何数值。所以真正的成本边界在云端：
  *    关键词监控的新增已由云函数 `keywordAlert` 按 `memberships`（权威会员表）分档校验数量
- *    （P4，2026-10-13 落地）；「监控某人」那条仍由 riskWatch 按每人不分档的硬上限兜底。
- *    别把本文件的判定当成闸门 —— 这里只负责给用户一个提前提示。
+ *    （P4，2026-10-13 落地）；「监控某人」的新增同样已由云函数 `riskWatch` 按 `memberships`
+ *    分档校验（同为写入路径 `action:'add'`，2026-10-13 落地）。别把本文件的判定当成闸门
+ *    —— 这里只负责给用户一个提前提示。
  */
 
 /** 关注人数上限：会员 > 免费。**只用于「能否再关注一个」，不用于删 / 藏已有数据** */
@@ -31,6 +33,15 @@ export function followLimit(isMember: boolean): number {
 /** 关键词监控数上限：会员 > 免费。只算 `keyword_watches` 里 type='keyword' 的行 */
 export function watchLimit(isMember: boolean): number {
   return isMember ? OPINION_LIMITS.watchCount.member : OPINION_LIMITS.watchCount.free
+}
+
+/**
+ * 「监控某人」（风险监控）人数上限：会员 > 免费。只算 `keyword_watches` 里 type='person' 的行。
+ *
+ * 与 `watchLimit`（关键词监控）是**两个独立维度**：一个盯词、一个盯人，各自计数、互不占用额度。
+ */
+export function personWatchLimit(isMember: boolean): number {
+  return isMember ? OPINION_LIMITS.personWatchCount.member : OPINION_LIMITS.personWatchCount.free
 }
 
 /**
@@ -74,6 +85,11 @@ export function watchGate(current: number, isMember: boolean): AddGate {
   return gateOf(current, watchLimit(isMember))
 }
 
+/** 「监控某人」门禁：只决定「能否再盯一个人」 */
+export function personWatchGate(current: number, isMember: boolean): AddGate {
+  return gateOf(current, personWatchLimit(isMember))
+}
+
 /** 能否再关注一个（`followGate(...).allowed` 的便捷读法） */
 export function canAddFollow(current: number, isMember: boolean): boolean {
   return followGate(current, isMember).allowed
@@ -82,6 +98,11 @@ export function canAddFollow(current: number, isMember: boolean): boolean {
 /** 能否再订阅一个监控词（`watchGate(...).allowed` 的便捷读法） */
 export function canAddWatch(current: number, isMember: boolean): boolean {
   return watchGate(current, isMember).allowed
+}
+
+/** 能否再监控一位名人（`personWatchGate(...).allowed` 的便捷读法） */
+export function canAddPersonWatch(current: number, isMember: boolean): boolean {
+  return personWatchGate(current, isMember).allowed
 }
 
 /**
@@ -108,6 +129,12 @@ export function followLimitNote(isMember: boolean): string {
 export function watchLimitNote(isMember: boolean): string {
   if (isMember) return `最多同时监测 ${OPINION_LIMITS.watchCount.member} 个词，先取消一个再加`
   return `免费版最多监测 ${OPINION_LIMITS.watchCount.free} 个词，开通会员可监测 ${OPINION_LIMITS.watchCount.member} 个`
+}
+
+/** 「监控某人」上限提示（免费档带升级引导；会员档只报事实）—— 与关键词监控同风格 */
+export function personWatchLimitNote(isMember: boolean): string {
+  if (isMember) return `最多同时监控 ${OPINION_LIMITS.personWatchCount.member} 个人，先取消一个再加`
+  return `免费版最多监控 ${OPINION_LIMITS.personWatchCount.free} 个人，开通会员可监控 ${OPINION_LIMITS.personWatchCount.member} 个`
 }
 
 /** 舆情明细被截断时的那一行提示（不刺眼：列表底部一行，点了跳会员页） */

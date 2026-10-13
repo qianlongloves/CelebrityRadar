@@ -17,7 +17,7 @@ import {
 } from '@/utils/member'
 import type { MemberState } from '@/utils/member'
 import { dayKey8 } from '@/utils/time'
-/* 额度一览里「容量上限」一组的数字，各自取实现处的常量：这些上限分散在四个模块里，
+/* 额度一览里「容量上限」一组的数字，各自取实现处的常量：这些上限分散在多个模块里，
    页面不复制数值，只引用 —— 改上游一处，这一页跟着变 */
 import { HISTORY_LIMIT } from '@/utils/history'
 /* 报告模板的节数与名单也只有一个来源（utils/report-toc.ts），对比表同样只引用不复制 */
@@ -25,7 +25,6 @@ import { FREE_TOC_COUNT, TEMPLATE_SIZE } from '@/utils/report-toc'
 /* 舆情功能的免费 / 会员分层上限（关注人数 / 关键词监测 / 舆情明细）真源：config/benefits.ts */
 import { OPINION_LIMITS } from '@/config/benefits'
 import { QA_MAX_QUESTION } from '@/utils/qa'
-import { MAX_PERSON_WATCHES } from '@/utils/risk-watch'
 import {
   FALLBACK_MEMBERSHIP_PLANS,
   buyMembership,
@@ -162,6 +161,13 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
     member: `最多 ${OPINION_LIMITS.watchCount.member} 个词`
   },
   {
+    /* 「监控某人」（风险监控）人数同为 2026-10-13 分档（免费 1 / 会员 10）；
+       与「关键词监测」是两个维度（一个盯人、一个盯词，各自计数），数值取自 OPINION_LIMITS */
+    name: '风险监控',
+    free: `最多 ${OPINION_LIMITS.personWatchCount.free} 位名人`,
+    member: `最多 ${OPINION_LIMITS.personWatchCount.member} 位名人`
+  },
+  {
     /* 舆情页每块明细：免费截断到 N 条，会员显示全部（今日要点卡不受限，是留存钩子） */
     name: '舆情明细',
     free: `每块最多 ${OPINION_LIMITS.detailRows.free} 条`,
@@ -192,10 +198,10 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
  *
  * 为什么要在对比表之外**再列一遍**：对比表是「卖点表」，只挑得出差异的几行（模型档位、
  * 报告厚度、生成 / 提问次数），而用户真正会撞上的限制散在几个模块里 —— 抓取动态 10 次/日、
- * 周报占用生成额度、免费版 12 小时刷新冷却、风险监控 5 位容量、提问 120 字上限。
- * 这些此前只在撞上的一瞬间以 toast 出现（「今日刷新已达上限」「最多盯 5 位」），
+ * 周报占用生成额度、免费版 12 小时刷新冷却、提问 120 字上限。
+ * 这些此前只在撞上的一瞬间以 toast 出现（「今日刷新已达上限」「会员最多监测 10 个词」），
  * 用户不会为了知道规则而先把每一条都撞一遍。
- * （关注人数 / 关键词监测 已在 2026-10-13 起分档，是**差异权益**，故归上方对比表，不列在此。）
+ * （关注人数 / 关键词监测 / 风险监控人数 已在 2026-10-13 起分档，是**差异权益**，故归上方对比表，不列在此。）
  *
  * 三条硬口径（改动前先读）：
  *   1. **数字全部引用常量**，页面里不写死 —— 与对比表同一条规则（见文件头原则 2）；
@@ -203,8 +209,8 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
  *      utils/cache.ts 也从那里取，两处不可能对不上。
  *   2. **不美化**：免费与会员同额的行照实写成同额（抓取动态），不玩「会员专属」的措辞 ——
  *      这一页的说服力来自「说的和拦的一致」，把同额写成差异只会让会员开通后觉得被骗。
- *   3. **容量类不能混进「每日次数」**：关键词 5 个、监控 5 人是**存量上限**（删一个才能加一个），
- *      与每日重置的次数不是一回事，故另起一组、并写明「两版相同」。
+ *   3. **容量类不能混进「每日次数」**：这类上限是**存量上限**（删一个才能加一个），
+ *      与每日重置的次数不是一回事，故另起一组；仍留在此组的都是**两版相同**的容量 / 输入限制。
  */
 const QUOTA_ROWS: Array<{ name: string; free: string; member: string; note: string }> = [
   {
@@ -245,7 +251,6 @@ const QUOTA_ROWS: Array<{ name: string; free: string; member: string; note: stri
 
 /** 容量与输入上限（两版相同，不分档；数值取各自实现处的常量） */
 const QUOTA_CAPS: string[] = [
-  `风险监控：每人最多盯 ${MAX_PERSON_WATCHES} 位名人，云端每天自动检索一次`,
   `单条提问：≤ ${QA_MAX_QUESTION} 字`,
   `浏览历史：本机保留最近 ${HISTORY_LIMIT} 条，超出后丢弃最旧的`
 ]

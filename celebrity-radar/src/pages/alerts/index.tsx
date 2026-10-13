@@ -16,12 +16,11 @@ import {
   WatchRow
 } from '@/utils/keyword-alert'
 import { readMemberState } from '@/utils/member'
-import { watchGate, watchLimit, watchLimitNote } from '@/utils/opinion-access'
+import { personWatchLimit, watchGate, watchLimit, watchLimitNote } from '@/utils/opinion-access'
 import {
   groupSignals,
   isMonitoredName,
   loadRiskSignals,
-  MAX_PERSON_WATCHES,
   PersonSignalGroup,
   seenLabel,
   unmonitorPerson
@@ -391,7 +390,7 @@ export default function Alerts() {
         <View className='card'>
           <View className='card-title'>监控中的名人</View>
           <Text className='page-alerts__intro'>
-            {`正在监控 ${persons.length}/${MAX_PERSON_WATCHES} 位，云端每天按人检索一次公开报道。`}
+            {`正在监控 ${persons.length}/${personWatchLimit(isMember)} 位，云端每天按人检索一次公开报道。`}
           </Text>
           {/* 与上方「关键词监测」互为镜像的说明：一个讲「这里收什么」，一个讲「这里不收什么」 */}
           <Text className='page-alerts__intro'>

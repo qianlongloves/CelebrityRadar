@@ -7,9 +7,13 @@
  *   本函数把「关注」从「报告生成时的一次快照」变成「每天一次的持续检索」，
  *   词典与判定规则（字面命中 + 否定词排除）与端上 risk.ts **完全同源**（见取舍 1）。
  *
- * 触发：定时（cloudbaserc.json），每天 09:40 —— 排在 notifyFollowUpdates 09:00、
- * keywordAlert 09:20 之后，三个任务各错开 20 分钟（都要打博查，挤在一个 60s 窗口里
- * 会互相拖慢甚至半途超时；错开后上游限流也更容易扛住）。
+ * 触发 / 入口（2026-10-13 起两条路，靠 event.action 区分）：
+ *   · `event.action === 'add'` —— **新增监控**：端上在「监控此人」时调用。按 memberships
+ *     （权威会员表）分档判「还能不能再盯一个」（免费 3 / 会员 10），结果**显式回执**
+ *     （`{ ok, reason, limit, tier, count }`）——**绝不静默丢弃**（见 handleAdd）。
+ *   · 无 action 且无调用方 openid —— **定时扫描**：由 cloudbaserc.json 的触发器驱动
+ *     （每天 09:40 —— 排在 notifyFollowUpdates 09:00、keywordAlert 09:20 之后，三个任务
+ *     各错开 20 分钟：都要打博查，挤在一个 60s 窗口里会互相拖慢甚至半途超时）。
  *
  * 环境变量（控制台 → 云函数 → riskWatch → 配置 → 环境变量）：
  *   BOCHA_API_KEY    博查搜索 key（与其它三个函数共用同一枚）**缺失则整轮跳过**
@@ -18,6 +22,13 @@
  *                    模板要单独去公众平台申请，没申请之前这功能也该能长出东西来。
  *
  * 消息模板字段：thing1 提醒内容（≤20 字符）、date2 更新时间（与预警模板同键名）。
+ *
+ * ⚠ 两个「上限」是两件事，改代码前必须分清（与 keywordAlert 同一口径）：
+ *   ① **新增上限（按档）** PERSON_WATCH_LIMITS.free / .member —— 只拦「还能不能再盯一个」，
+ *      写入路径判定（见 handleAdd）；
+ *   ② **扫描口径** —— 定时扫描**不按①裁剪存量**：存量用户（免费档历史上可能已监控 >1 位）
+ *      与会员的第 6~10 位都必须照常被扫，否则既有监控会静默停摆（违反「只拦新增，不删存量」）。
+ *      每轮成本由**单轮 MAX_PERSONS 上限 + RISK_GAP_MS 重扫间隔**兜住，不靠「每人裁几个」。
  *
  * ⚠ 与 keywordAlert 的授权**不能共用**：微信一次性订阅按**模板**消耗授权，
  * 两个任务共用一个授权位就会出现「先跑的吃掉授权，后跑的必得 43101」。
@@ -39,6 +50,13 @@
 const cloud = require('wx-server-sdk')
 const https = require('https')
 
+/**
+ * 分档新增上限的数值**不手写**：取自真源 `src/config/benefits.ts#OPINION_LIMITS`
+ * （经 `npm run config:sync` 生成同目录的 benefits.config.js），与端上
+ * utils/opinion-access.ts#personWatchLimit 读的是同一份数据（用例 14 钉住副本一致性）。
+ */
+const { OPINION_LIMITS } = require('./benefits.config')
+
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const db = cloud.database()
@@ -48,11 +66,15 @@ const TIMEOUT_MS = 15000
 /** 单轮最多扫多少位名人：博查按次计费，云函数默认 60s 超时也撑不住更多 */
 const MAX_PERSONS = 20
 /**
- * 每人监控上限。云侧**兜底判定**（见 main 里的 perUser / overLimit）：端上
- * utils/risk-watch.ts#MAX_PERSON_WATCHES 也拦一道，但那道判定可被改包绕过 ——
- * 只靠端上，等于把「每人 5 个」交给客户端自证（改包者能把单轮 20 人的预算全吃光）。
+ * 「监控某人」的**分档新增上限**（免费 3 / 会员 10）—— 这是「**能不能再盯一个**」的上限，
+ * 只在**写入路径**（见 handleAdd）上判；数值取自 benefits.config.js（真源 config/benefits.ts）。
+ *
+ * ⚠ 它**不是**定时扫描的裁剪线（与 keywordAlert 同一口径）：拿它当扫描线就是把存量用户
+ *   （免费档历史上可能已监控 >1 位）静默停扫 —— 用户以为在盯、实际没扫，等于对用户撒谎。
+ *   故本轮删掉了原先「每人最多 5、超出的整行忽略」的那段裁剪，扫描改为照单全收：
+ *   成本边界由 ① 写入路径按档拦新增（权威在云端）+ ② 单轮 MAX_PERSONS 上限 + ③ 重扫间隔承担。
  */
-const MAX_PERSON_WATCHES_PER_USER = 5
+const PERSON_WATCH_LIMITS = OPINION_LIMITS.personWatchCount
 /** 同一个人的最短重扫间隔：定时任务与人工补跑不重复打上游 */
 const RISK_GAP_MS = 20 * 60 * 60 * 1000
 /** 每人保留的 url 快照上限（只用于判断「哪些条目是新的」） */
@@ -69,6 +91,8 @@ const PUSH_LEVELS = ['high', 'mid']
 const WATCH_TABLE = 'keyword_watches'
 const SCAN_TABLE = 'risk_scans'
 const SIGNAL_TABLE = 'risk_signals'
+/** 服务端权威会员表（_id = openid，客户端完全不可读写，见下方 isActiveMember） */
+const MEMBERSHIP_TABLE = 'memberships'
 
 /**
  * 风险词典（**与 src/utils/risk.ts#RISK_TERMS 同源，改动须两处同步**，见取舍 1）。
@@ -244,6 +268,119 @@ const signalId = (personKey, url) => `${personKey}#${hashOf(url)}`
 /** 监控文档主键：带 person# 前缀，避免与关键词订阅行（openid#关键词）撞主键 */
 const personWatchId = (openid, personKey) => `${openid}#person#${personKey}`
 
+/* ───────────── 分档新增上限（2026-10-13）：写入路径的服务端权威判定 ───────────── */
+
+/**
+ * 调用者是不是**有效期内的会员**。口径与云端既有闸门**逐字同源**：
+ * `quotaGuard/index.js#isActiveMember`、`aiProxy/index.js` 与 `keywordAlert/index.js`
+ * 读的是同一张 `memberships`（_id = openid，客户端完全不可读写），只认 `expires_at`
+ * （未过期即有效）、不校验 plan（plan 只决定天数）。
+ *
+ * **刻意不读 `users.membership`**：那张表权限是「仅创建者可读写」，端上能改自己那一行 ——
+ * 以它为准等于把「谁能盯几个人」交给改包者自证。读不到 / 读库异常一律按**非会员**
+ * （fail-closed：宁可少给，不留白拿口子）。
+ */
+async function isActiveMember(openid) {
+  try {
+    const res = await db.collection(MEMBERSHIP_TABLE).doc(openid).get()
+    const m = (res && res.data) || null
+    const t = m && m.expires_at ? Date.parse(m.expires_at) : NaN
+    return Number.isFinite(t) && t > Date.now()
+  } catch (err) {
+    return false
+  }
+}
+
+/**
+ * 「新增监控对象」的服务端权威写入路径（2026-10-13）。
+ *
+ * 与 `keywordAlert#handleAdd` 同一套：端上 utils/risk-watch.ts 那道分档门禁是**体验层**
+ * （读 `users.membership` 镜像，且整段可被改包绕过）；而每一条监控都会在每天定时扫描里
+ * 持续消耗上游检索预算 —— 所以「能不能再加一个」必须由读 `memberships` 权威表的这一处说了算。
+ *
+ * ⚠ 「监控某人」与「关键词监控」是**两个维度、两档上限**（personWatchCount / watchCount），
+ *   但同住 `keyword_watches` 一张表：这里**只数 type='person' 的行**，关键词行不占本额度。
+ *
+ * 失败一律**显式结构化回执**（reason + limit + tier + count），**绝不静默丢弃 / 静默截断**
+ * ——静默会让用户以为在监控、实际没扫（本项目铁律）。
+ *
+ * 身份来源：优先 `WXContext.OPENID`（小程序端调用必带，客户端无法伪造）；仅当**没有
+ * WXContext**（控制台 / 运维调用）时才接受 `event.openid`。
+ */
+async function handleAdd(event, ctxOpenid) {
+  const openid = ctxOpenid || (event && event.openid)
+  if (!openid) {
+    return { ok: false, reason: 'no_auth', message: '取不到调用者 openid：请从小程序端监控' }
+  }
+
+  const personKey = String((event && event.person_key) || '').trim()
+  const name = String((event && event.name) || '').trim() || personKey
+  /* personKey 是主键组成部分，禁掉路径分隔符（与 quotaGuard 的 target 校验同一理由） */
+  if (!personKey || personKey.includes('/')) {
+    return { ok: false, reason: 'invalid', message: '缺少要监控的 personKey' }
+  }
+
+  const tier = (await isActiveMember(openid)) ? 'member' : 'free'
+  const limit = tier === 'member' ? PERSON_WATCH_LIMITS.member : PERSON_WATCH_LIMITS.free
+
+  /* 只数「监控某人」行：同表还住着关键词订阅（type='keyword'），它有自己的一档上限 */
+  const mine = (await listAll(WATCH_TABLE, { openid })).filter((w) => w && w.type === 'person')
+  const count = mine.length
+  if (mine.some((w) => w.person_key === personKey)) {
+    return { ok: false, reason: 'duplicate', limit, tier, count, message: '这个人已经在监控中了' }
+  }
+  if (count >= limit) {
+    return {
+      ok: false,
+      reason: 'over_limit',
+      limit,
+      tier,
+      count,
+      message:
+        tier === 'member'
+          ? `最多同时监控 ${limit} 个人，先取消一个再加`
+          : `免费版最多监控 ${limit} 个人，开通会员可监控 ${PERSON_WATCH_LIMITS.member} 个`
+    }
+  }
+
+  const now = new Date().toISOString()
+  try {
+    await db.collection(WATCH_TABLE).add({
+      data: {
+        _id: personWatchId(openid, personKey),
+        /* 云函数是管理员身份，不会像端上写入那样自动注入 _openid；缺了它，端上按
+           「仅创建者可读写」规则读不到这一行（与 keywordAlert / quotaGuard 同一原因）。 */
+        _openid: openid,
+        openid,
+        /* 人名存在 keyword 字段里：预警页与云函数复用同一套「读一行拿显示名」的逻辑 */
+        keyword: name,
+        person_key: personKey,
+        type: 'person',
+        created_at: now,
+        seen_at: now
+      }
+    })
+  } catch (err) {
+    const code = err && (err.errCode != null ? err.errCode : err.code)
+    const text = String((err && err.errMsg) || (err && err.message) || err)
+    /* -502001 主键冲突 / duplicate：并发同一个人监控时另一个请求刚插好 —— 归一成「已在监控中」 */
+    if (code === -502001 || /already exists|duplicate/i.test(text)) {
+      return { ok: false, reason: 'duplicate', limit, tier, count, message: '这个人已经在监控中了' }
+    }
+    console.warn(`[riskWatch] 监控写入失败：${text}`)
+    return { ok: false, reason: 'write_failed', limit, tier, count, message: '监控失败，请重试' }
+  }
+  return {
+    ok: true,
+    reason: 'added',
+    limit,
+    tier,
+    count: count + 1,
+    person_key: personKey,
+    message: `已开始监控「${name}」`
+  }
+}
+
 /** 字面命中：返回第一个未被否定的命中词，没有则 null（与 risk.ts#matchTerm 同一套规则） */
 function matchTerm(text) {
   for (const term of RISK_TERMS) {
@@ -335,17 +472,26 @@ async function listAll(collection, where) {
 }
 
 /**
- * 调用方闸门（P0-21，2026-10-09）：本函数只该由**定时器**触发，端上一次都不该调它
- * （端上「监控某人」只是写一条 watch 行，从不触发云端检索）。
+ * 入口。两条路，靠 `event.action` 区分：
  *
- * 判据：端上 `wx.cloud.callFunction` 调用时 `getWXContext().OPENID` 必有值，
- * 而定时器触发、控制台「云端测试」都没有 openid。
+ * 1. **新增监控（`action:'add'`）**：端上在「监控此人」时调用，走 handleAdd ——
+ *    按 `memberships` 分档判「还能不能再加一个」，并把结果**显式回执**（见 handleAdd）。
+ * 2. **定时扫描（无 action，且无调用方 openid）**：本函数的本职，按人检索并提醒。
  *
- * 挡的是「改包后循环调用」：本函数一轮按监控对象打 BOCHA 检索并群发预警，
+ * 调用方闸门（P0-21，2026-10-09）：除上面那条已授权的写入路径外，端上**调用一律拒绝** ——
+ * 判据是「端上 `callFunction` 时 `getWXContext().OPENID` 必有值，而定时器 / 控制台没有」。
+ * 挡的是「改包后循环触发扫描」：一轮扫描要按监控对象打 BOCHA 检索并群发预警，
  * 端上能反复触发就等于把上游额度与推送配额交给任何人点火。
  */
-exports.main = async () => {
-  if ((cloud.getWXContext() || {}).OPENID) {
+exports.main = async (event) => {
+  const ctxOpenid = (cloud.getWXContext() || {}).OPENID
+
+  /* 新增监控的服务端权威写入路径：允许端上调用（那是它的正当用途） */
+  if (event && event.action === 'add') {
+    return handleAdd(event, ctxOpenid)
+  }
+
+  if (ctxOpenid) {
     console.warn('[riskWatch] 拒绝端上调用：本函数只由定时器触发')
     return { ok: false, skipped: '本函数只由定时器触发，不接受端上调用' }
   }
@@ -357,21 +503,15 @@ exports.main = async () => {
   // 1. 监控关系：一次读全表按 person_key 分组（跨用户去重，同一人只查一次上游）
   const byPerson = new Map()
   /*
-   * 每人监控上限的**云侧兜底**（P2-22）：端上 utils/risk-watch.ts#monitorPerson 拦一道
-   * （MAX_PERSON_WATCHES），但那道判定可被改包绕过。云端原先只按 person_key 去重、
-   * 不做每人计数 —— 改包者能监控上千个人，把每天 MAX_PERSONS 次的上游检索预算吃光
-   * （其余用户的监控对象永远排不进队列）。按 listAll 的 `_id` 升序取前 N 个，顺序确定可复现。
+   * ⚠ **扫描不按分档上限裁存量**（2026-10-13 修）：这里原先有一段「每人最多 5 个、
+   * 超出的整行忽略」的裁剪 —— 它会把存量用户（免费档历史上可能已监控 >1 位）静默停扫，
+   * 用户以为在盯、实际一次都没扫（对用户撒谎）。现改为**照单全收**（只过滤非本队列的行）。
+   * 成本边界不在这里，而在 ① 写入路径已按档拦住超额新增（见 handleAdd，权威在云端）；
+   * ② 单轮 MAX_PERSONS 限定每轮最多检索多少位名人，其内按 scanned_at 升序轮转保证公平轮到；
+   * ③ RISK_GAP_MS 重扫间隔让定时任务与人工补跑不重复打上游。
    */
-  const perUser = new Map()
-  const overLimit = []
   for (const w of await listAll(WATCH_TABLE)) {
     if (!w || w.type !== 'person' || !w.openid || !w.person_key) continue
-    const kept = (perUser.get(w.openid) || 0) + 1
-    perUser.set(w.openid, kept)
-    if (kept > MAX_PERSON_WATCHES_PER_USER) {
-      overLimit.push(`${w.openid}#person#${w.person_key}: 超出每人 ${MAX_PERSON_WATCHES_PER_USER} 个监控上限，本轮忽略`)
-      continue
-    }
     if (!byPerson.has(w.person_key)) {
       byPerson.set(w.person_key, { personKey: w.person_key, name: String(w.keyword || '').trim(), watchers: [] })
     }
@@ -385,8 +525,7 @@ exports.main = async () => {
       signals: 0,
       users: 0,
       pushed: 0,
-      over_limit: overLimit.length,
-      skipped: overLimit
+      skipped: []
     }
   }
 
@@ -419,9 +558,9 @@ exports.main = async () => {
     signals: 0,
     users: 0,
     pushed: 0,
-    /* 被每人上限挡下的监控数（P2-22）：正常用户恒为 0，非 0 就是有人在绕过端上写监控 */
-    over_limit: overLimit.length,
-    skipped: overLimit.slice()
+    /* 扫描不按每人上限裁剪（见上），故不再有 over_limit 字段；被写入路径挡下的超额新增
+       在 handleAdd 的回执里（reason:'over_limit'），不会静默丢弃。 */
+    skipped: []
   }
 
   // 3. 逐个名人：检索 → 词典命中 → 落 signal → 更新快照
@@ -576,5 +715,7 @@ exports.main = async () => {
 /* 供运维排查用：确认「监控文档主键」与端上 utils/risk-watch.ts 同口径 */
 exports.personWatchId = personWatchId
 exports.signalId = signalId
+/* 供运维排查用：确认「分档新增上限」与端上（utils/opinion-access.ts）同源 */
+exports.PERSON_WATCH_LIMITS = PERSON_WATCH_LIMITS
 
 

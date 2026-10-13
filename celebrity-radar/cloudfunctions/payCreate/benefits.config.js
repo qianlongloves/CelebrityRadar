@@ -161,6 +161,10 @@ module.exports = {
       "free": 1,
       "member": 10
     },
+    "personWatchCount": {
+      "free": 3,
+      "member": 10
+    },
     "detailRows": {
       "free": 5,
       "member": null

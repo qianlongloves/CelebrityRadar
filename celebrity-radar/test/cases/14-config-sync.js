@@ -98,6 +98,10 @@ describe('权益配置真源 / 云端副本（config:sync 机制）', () => {
       ['aiProxy/index.js', './benefits.config'],
       ['quotaGuard/index.js', './benefits.config'],
       ['payCreate/index.js', './benefits.config'],
+      /* 关键词监控的新增上限（OPINION_LIMITS.watchCount）读取方 */
+      ['keywordAlert/index.js', './benefits.config'],
+      /* 「监控某人」的新增上限（OPINION_LIMITS.personWatchCount）读取方 */
+      ['riskWatch/index.js', './benefits.config'],
       /* 用户配置真源的读取方：ensure 的默认值、set 的白名单与版本号都从副本取 */
       ['userInit/index.js', './user-defaults.config'],
       /* 一次性运维（存量行补齐）与 ensure 同语义：缺的键该补成什么，必须来自同一份真源 */

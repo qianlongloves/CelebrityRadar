@@ -58,10 +58,12 @@ function fnBody(src, signature) {
 /* ───────────────────────── 1. 真源取值与两档关系 ───────────────────────── */
 
 describe('舆情分层：上限真源 config/benefits#OPINION_LIMITS', () => {
-  it('三档取值正确（口径由产品确认）', () => {
+  it('四档取值正确（口径由产品确认）', () => {
     const L = sync.loadSource().OPINION_LIMITS
     deepEq(L.followCount, { free: 3, member: 30 })
     deepEq(L.watchCount, { free: 1, member: 10 })
+    /* 「监控某人」人数：免费 3 / 会员 10，是**另一个维度** */
+    deepEq(L.personWatchCount, { free: 3, member: 10 })
     eq(L.detailRows.free, 5)
     eq(L.detailRows.member, null, '会员明细用 null 表示「不截断 / 显示全部」')
   })
@@ -70,6 +72,7 @@ describe('舆情分层：上限真源 config/benefits#OPINION_LIMITS', () => {
     const L = sync.loadSource().OPINION_LIMITS
     ok(L.followCount.member > L.followCount.free, '关注：会员上限应高于免费')
     ok(L.watchCount.member > L.watchCount.free, '关键词监测：会员上限应高于免费')
+    ok(L.personWatchCount.member > L.personWatchCount.free, '风险监控人数：会员上限应高于免费')
     ok(L.detailRows.free > 0, '免费档明细是有限的正整数')
     eq(L.detailRows.member, null, '会员档明细不设上限')
   })
@@ -84,18 +87,20 @@ describe('舆情分层：上限真源 config/benefits#OPINION_LIMITS', () => {
 /* ───────────────────────── 2. 门禁判定（只拦新增） ───────────────────────── */
 
 describe('舆情分层：门禁判定（只拦新增，不删存量）', () => {
-  it('按身份返回上限：followLimit / watchLimit 会员 > 免费；detailLimit 会员=null', () => {
-    const { followLimit, watchLimit, detailLimit } = OA()
+  it('按身份返回上限：followLimit / watchLimit / personWatchLimit 会员 > 免费；detailLimit 会员=null', () => {
+    const { followLimit, watchLimit, personWatchLimit, detailLimit } = OA()
     eq(followLimit(false), 3)
     eq(followLimit(true), 30)
     eq(watchLimit(false), 1)
     eq(watchLimit(true), 10)
+    eq(personWatchLimit(false), 3)
+    eq(personWatchLimit(true), 10)
     eq(detailLimit(false), 5)
     eq(detailLimit(true), null)
   })
 
   it('边界：未达上限允许、达到上限拦住；存量超限同样只表示「不能再加」', () => {
-    const { followGate, canAddFollow, canAddWatch, watchGate } = OA()
+    const { followGate, canAddFollow, canAddWatch, watchGate, personWatchGate, canAddPersonWatch } = OA()
 
     ok(canAddFollow(2, false), '未到免费上限（3）可继续加')
     notOk(canAddFollow(3, false), '达到免费上限即拦住新增')
@@ -112,6 +117,23 @@ describe('舆情分层：门禁判定（只拦新增，不删存量）', () => {
     ok(watchGate(3, false).over, '免费档存量超限 → over=true')
     ok(canAddWatch(9, true))
     notOk(canAddWatch(10, true))
+
+    /* 「监控某人」：免费 3 / 会员 10，口径同样「只拦新增」 */
+    ok(canAddPersonWatch(2, false), '免费档未到上限（3）可继续加')
+    notOk(canAddPersonWatch(3, false), '免费档到 3 位即拦住')
+    ok(personWatchGate(5, false).over, '免费档存量超限 → over=true（既有监控原样保留、继续被扫描）')
+    ok(canAddPersonWatch(9, true))
+    notOk(canAddPersonWatch(10, true))
+  })
+
+  it('上限提示文案：免费档带升级引导、会员档只说事实（与关键词监控同风格）', () => {
+    const { watchLimitNote, personWatchLimitNote } = OA()
+    ok(/免费版最多监测 1 个词/.test(watchLimitNote(false)))
+    ok(/最多同时监测 10 个词/.test(watchLimitNote(true)))
+    ok(/免费版最多监控 3 个人/.test(personWatchLimitNote(false)), '免费档说清上限并给升级引导')
+    ok(/开通会员可监控 10 个/.test(personWatchLimitNote(false)))
+    ok(/最多同时监控 10 个人/.test(personWatchLimitNote(true)), '会员档只报事实')
+    notOk(/开通会员/.test(personWatchLimitNote(true)), '会员档不再提升级')
   })
 
   it('sliceDetail：免费切到 5 条并带回隐藏数；会员全部且返回原引用', () => {
@@ -296,6 +318,16 @@ describe('舆情分层：只拦新增的落点（源码钉住）', () => {
     ok(body.length > 0, '应能定位 listWatches')
     notOk(body.includes('.slice('), 'listWatches 不得截断（存量必须全部可读）')
     notOk(body.includes('.delete('), 'listWatches 不得删除任何行')
+  })
+
+  it('风险监控：门禁在 monitorPerson 内，写入优先走云端，且 listPersonWatches 不截断 / 删除', () => {
+    const src = read('utils/risk-watch.ts')
+    ok(src.includes('personWatchGate('), 'monitorPerson 回退路径应调用 personWatchGate')
+    ok(src.includes("callCloudFunction('riskWatch'"), '写入路径应优先走云端 riskWatch(action:add)')
+    const body = fnBody(src, 'export async function listPersonWatches')
+    ok(body.length > 0, '应能定位 listPersonWatches')
+    notOk(body.includes('.slice('), 'listPersonWatches 不得截断（存量必须全部可读）')
+    notOk(body.includes('.delete('), 'listPersonWatches 不得删除任何行')
   })
 
   it('follows.ts：listFollows 不做截断 / 删除（存量必须全部可读）', () => {

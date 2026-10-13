@@ -56,9 +56,10 @@ const SOURCES = [
        单次检索条数上限、对话字符上限 → aiProxy；
        每日「抓取关注动态」次数上限（REFRESH_DAILY_LIMIT） → quotaGuard；
        套餐白名单（唯一价格源：价格 / 天数 / 订单标题） → payCreate；
-       舆情功能的免费 / 会员分层上限（OPINION_LIMITS，其中 watchCount 是
-       关键词监控的新增上限）→ keywordAlert（写入路径按档判定，P4 2026-10-13） */
-    targets: ['aiProxy', 'quotaGuard', 'payCreate', 'keywordAlert']
+       舆情功能的免费 / 会员分层上限（OPINION_LIMITS）：
+         · watchCount 是关键词监控的新增上限 → keywordAlert（写入路径按档判定，P4 2026-10-13）
+         · personWatchCount 是「监控某人」的新增上限 → riskWatch（同样写入路径按档判定，2026-10-13） */
+    targets: ['aiProxy', 'quotaGuard', 'payCreate', 'keywordAlert', 'riskWatch']
   },
   {
     key: 'user-defaults',

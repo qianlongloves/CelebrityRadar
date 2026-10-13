@@ -1,8 +1,11 @@
 import { useAuth } from '@/stores/auth'
+import { callCloudFunction } from './cloud'
 import { diagLog } from './cloud-diagnostics'
 import { explainDbFailure, table } from './db'
 import { normalizeKeyword, splitWatches, WatchRow } from './keyword-alert'
+import { readMemberState } from './member'
 import { requestRiskNotify, riskNotifyConfigured } from './notify'
+import { personWatchGate, personWatchLimit, personWatchLimitNote } from './opinion-access'
 import { shortDay8 } from './time'
 import { RiskSignalRow } from '@/types/db'
 
@@ -31,8 +34,15 @@ import { RiskSignalRow } from '@/types/db'
  *    —— 不能让用户以为「没授权 = 没监控」。
  */
 
-/** 每人最多监控几位名人（与关键词订阅同上限；云端单轮总量上限见云函数 MAX_PERSONS） */
-export const MAX_PERSON_WATCHES = 5
+/*
+ * 监控人数上限（2026-10-13 起分档）：免费 `personWatchLimit(false)` 位 / 会员 `personWatchLimit(true)` 位，
+ * 数值真源见 `config/benefits.ts#OPINION_LIMITS`，取用与门禁见 `utils/opinion-access.ts`。
+ *
+ * ⚠ 与「关键词监控数」（watchCount）是**两个独立维度**：一个盯人、一个盯词，各自计数、互不占用额度
+ *   （同住 keyword_watches 表，靠 type 区分）。此前这里写死 5、与云函数「每人不分档的 5」对齐 ——
+ *   现云端 riskWatch 已按 `memberships`（权威表）分档校验新增数量（写入走 action:'add'），
+ *   且定时扫描**不再按上限裁剪存量**；本文件的分档门禁只在云端不可用时兜底，是**体验层**。
+ */
 /** 每人最多列多少条信号：够看清最近发生了什么，又不至于把页面撑成流水账 */
 export const SIGNALS_PER_PERSON = 12
 
@@ -82,6 +92,44 @@ export function isMonitoredName(rows: WatchRow[], raw: string): WatchRow | null 
 }
 
 /**
+ * 经云函数 riskWatch 权威写入一条监控（2026-10-13）。
+ *
+ * 与 keyword-alert.ts#addWatchViaCloud 同一取舍：端上 `personWatchLimit` 读的是
+ * `users.membership` **镜像**（端上可改、可被改包绕过），而每一条监控都会在每天定时扫描里
+ * 持续消耗上游检索预算 —— 所以「能不能再加一个」必须由云端按 `memberships`（权威表）说了算。
+ * 云端回的是**结构化回执**，超限时带 `reason:'over_limit'` 与 `limit` / `tier`，**不会静默丢弃**。
+ *
+ * 返回 `null` = 云端不可用（函数未部署 / 网络抖动），调用方回退端上原有路径 ——
+ * 与 utils/quota-guard.ts「云端优先、静默回退本机」同一取舍。
+ */
+async function monitorPersonViaCloud(
+  personKey: string,
+  name: string
+): Promise<{ ok: boolean; message: string; fatal?: boolean } | null> {
+  try {
+    const res = (await callCloudFunction('riskWatch', {
+      action: 'add',
+      person_key: personKey,
+      name
+    })) as { ok?: boolean; reason?: string; limit?: number; tier?: string; message?: string } | null
+    if (!res || typeof res.ok !== 'boolean') {
+      diagLog('warn', 'db', 'riskWatch(add) 无有效回执，回退端上监控')
+      return null
+    }
+    if (res.ok) return { ok: true, message: res.message || `已开始监控「${name}」` }
+    /* over_limit 的文案按云端回执的档位生成（端上 mirror 可能已过期，以云端 tier 为准） */
+    if (res.reason === 'over_limit') {
+      return { ok: false, message: res.message || personWatchLimitNote(res.tier === 'member') }
+    }
+    return { ok: false, message: res.message || '监控失败，请重试' }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    diagLog('warn', 'db', `riskWatch(add) 调用失败，回退端上监控：${msg}`)
+    return null
+  }
+}
+
+/**
  * 加监控。
  *
  * ⚠ **顺序不能动**：`requestSubscribeMessage` 必须是点击之后的第一个异步调用（微信要求，
@@ -90,6 +138,10 @@ export function isMonitoredName(rows: WatchRow[], raw: string): WatchRow | null 
  * 这个代价小得多。
  *
  * 授权被拒也继续写监控（取舍 3）。
+ *
+ * 上限（2026-10-13 起分档，免费 / 会员各一档，真源见 config/benefits.ts#OPINION_LIMITS）：
+ * 写入路径**优先走云端权威判定**（见 monitorPersonViaCloud，读 memberships 判档）；
+ * 云端不可用时回退端上门禁 + 直接写库。
  *
  * 失败时若判定为**环境问题**（`keyword_watches` 集合没建 / 权限不允许端上写入），
  * 返回值带 `fatal: true`，调用方改用弹窗把「该做什么」说完（见 db.ts#explainDbFailure）。
@@ -107,9 +159,24 @@ export async function monitorPerson(
     notifyNote = res.ok ? '（有新情况会推送提醒）' : `（${res.message}，仍会出现在预警页）`
   }
 
+  /* 云端权威判定优先（分档上限读 memberships，端上改包绕不过）。null = 云端不可用，走下面的回退。 */
+  const viaCloud = await monitorPersonViaCloud(personKey, name)
+  if (viaCloud) {
+    return viaCloud.ok ? { ok: true, message: `${viaCloud.message}${notifyNote}` } : viaCloud
+  }
+
+  /*
+   * 回退路径（云端未部署 / 调用失败）：端上门禁 + 直接写库，与 P2 改造后的行为一致。
+   * ⚠ 端上这道上限是**体验层不是安全边界**（读 users.membership 镜像、整段可被改包绕过），
+   *   真正的成本边界在云端 riskWatch（读 memberships 权威表）。回退期间可被绕过，属已知过渡态。
+   * ⚠ 判定**只在「新增」这一支**做 —— listPersonWatches / 预警页读取从不截断：存量用户可能
+   *   已监控超过免费档的人，那些数据原样保留、照常可看可用（且必须继续被云端扫描）。
+   */
+  const isMember = (await readMemberState()).member
+  const limit = personWatchLimit(isMember)
   const rows = await listPersonWatches()
-  if (rows.length >= MAX_PERSON_WATCHES) {
-    return { ok: false, message: `最多同时监控 ${MAX_PERSON_WATCHES} 个人，先取消一个再加` }
+  if (!personWatchGate(rows.length, isMember).allowed) {
+    return { ok: false, message: personWatchLimitNote(isMember) }
   }
 
   const now = new Date().toISOString()
@@ -133,18 +200,18 @@ export async function monitorPerson(
   }
 
   /*
-   * P2-29：与 keyword-alert.ts#addWatch 同一处理。上面的 `rows.length >= MAX_PERSON_WATCHES`
-   * 是「先查数、再插入」，并发点击会落到第 6 条；而云端 riskWatch 的每人上限判定会把
-   * **第 6 行整行忽略**（永不扫描），端上却显示「已开始监控」—— 静默失效。
-   * 端上做不了原子计数，故插完复核一次：超了就撤回刚插的这条。
+   * P2-29：与 keyword-alert.ts#addWatch 同一处理。上面的门禁是「先查数、再插入」，
+   * 并发点击会落到 limit+1 条；而云端扫描不再裁存量、但写入路径按档拦新增 ——
+   * 端上做不了原子计数，故插完复核一次：真超了就把**刚插的这条**撤回，如实报错。
+   * ⚠ 这里删的只是本次刚插入的那一行，绝不触碰既有监控（既有存量一律保留）。
    */
   const afterCount = (await listPersonWatches()).length
-  if (afterCount > MAX_PERSON_WATCHES) {
+  if (afterCount > limit) {
     const { error: rollbackErr } = await table('keyword_watches')
       .delete()
       .eq('id', personWatchId(userId, personKey))
     if (rollbackErr) diagLog('warn', 'db', `回滚超限监控失败：${rollbackErr.message ?? rollbackErr}`)
-    return { ok: false, message: `最多同时监控 ${MAX_PERSON_WATCHES} 个人，先取消一个再加` }
+    return { ok: false, message: personWatchLimitNote(isMember) }
   }
 
   return { ok: true, message: `已开始监控「${name}」${notifyNote}` }

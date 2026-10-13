@@ -2229,7 +2229,7 @@ describe('P2-22 / P4 定时任务：每人订阅上限的云侧兜底与扫描�
     }
   })
 
-  it('riskWatch：同一人的第 6 个监控对象被挡下', async () => {
+  it('riskWatch：扫描不按每人上限裁剪存量 —— 同一人的 6 个监控全部照扫', async () => {
     const https = fakeHttps(Array.from({ length: 30 }, () => searchOk(1)))
     const { fn, calls } = loadScheduled('riskWatch', https)
     env.db.__seed('keyword_watches', [
@@ -2240,14 +2240,183 @@ describe('P2-22 / P4 定时任务：每人订阅上限的云侧兜底与扫描�
     const res = await fn.main({})
 
     eq(res.ok, true)
-    eq(res.over_limit, 1, '第 6 个监控必须被云端挡下（每天只有 20 次上游预算）')
+    /*
+     * 2026-10-13：原先这里有一段「每人最多 5 个、超出整行忽略」的裁剪 —— 它会把存量用户
+     * （免费档历史上可能已监控 >1 位）静默停扫（用户以为在盯、实际没扫）。现改为照单全收，
+     * 该字段已移除（成本边界交给写入路径的分档判定 + 单轮 MAX_PERSONS + RISK_GAP_MS）。
+     */
+    eq(res.over_limit, undefined, '扫描不再按每人上限裁剪（over_limit 字段已移除）')
     const queries = calls.map((c) => (c.body && c.body.query) || '').filter(Boolean)
     eq(
       queries.length,
-      6,
-      `7 条监控（同一人 6 条 + 别人 1 条）只该检索 6 位名人，实际 ${JSON.stringify(queries)}`
+      7,
+      `7 条监控必须全部进入扫描（不再按人裁到 5），实际 ${JSON.stringify(queries)}`
     )
-    ok(queries.indexOf('名人九') >= 0, '别人的监控照常检索')
+    for (const n of ['名人1', '名人2', '名人3', '名人4', '名人5', '名人6', '名人九']) {
+      ok(queries.indexOf(n) >= 0, `${n} 应被扫描（存量超额也不能被停扫）`)
+    }
+  })
+})
+
+/*
+ * 2026-10-13：「监控某人」（风险监控）的**分档新增上限**由云端判定（写入路径 action:'add'）。
+ *
+ * 分档口径读 `memberships`（服务端权威表，只认 expires_at 未过期），与 quotaGuard / aiProxy /
+ * keywordAlert 的 isActiveMember 逐字同源。失败一律**显式结构化回执**（reason/limit/tier/count），
+ * 绝不静默丢弃 —— 静默会让用户以为在监控、实际没扫（本项目铁律）。
+ */
+describe('「监控某人」：新增上限按档判定（写入路径 action:add）', () => {
+  const future = new Date(Date.now() + 30 * 864e5).toISOString()
+  const past = new Date(Date.now() - 864e5).toISOString()
+  const seedMember = (openid, expiresAt) =>
+    env.db.__seed('memberships', [{ _id: openid, openid, plan: 'annual', expires_at: expiresAt }])
+
+  it('免费用户已达上限（3）再新增 → 显式 over_limit 回执，且不落库', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'free-user')
+    env.db.__seed(
+      'keyword_watches',
+      [1, 2, 3].map((i) => personWatch('free-user', `P${i}#tech`, `名人${i}`))
+    )
+
+    const res = await fn.main({ action: 'add', person_key: 'P4#tech', name: '名人四' })
+
+    eq(res.ok, false)
+    eq(res.reason, 'over_limit')
+    eq(res.limit, 3)
+    eq(res.tier, 'free')
+    eq(res.count, 3)
+    eq(env.db.__dump('keyword_watches').length, 3, '被拦下的新增绝不落库（不静默写入）')
+  })
+
+  it('免费用户未达上限（2/3）→ 第 3 个成功放行', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'free-user')
+    env.db.__seed(
+      'keyword_watches',
+      [1, 2].map((i) => personWatch('free-user', `P${i}#tech`, `名人${i}`))
+    )
+
+    const res = await fn.main({ action: 'add', person_key: 'P3#tech', name: '名人三' })
+
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.reason, 'added')
+    eq(res.tier, 'free')
+    eq(res.limit, 3)
+    eq(res.count, 3)
+    eq(env.db.__dump('keyword_watches').length, 3)
+  })
+
+  it('有效会员在 1~10 之间可新增（第 10 个也放行）', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'vip-user')
+    seedMember('vip-user', future)
+    env.db.__seed(
+      'keyword_watches',
+      Array.from({ length: 9 }, (_, i) => personWatch('vip-user', `P${i}#tech`, `名人${i}`))
+    )
+
+    const res = await fn.main({ action: 'add', person_key: 'P9#tech', name: '第十人' })
+
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.reason, 'added')
+    eq(res.tier, 'member')
+    eq(res.limit, 10)
+    eq(res.count, 10)
+    eq(env.db.__dump('keyword_watches').length, 10)
+  })
+
+  it('会员到期后回落免费档（上限 3）：已达上限的同一次新增被拦下', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'expired-user')
+    seedMember('expired-user', past)
+    env.db.__seed(
+      'keyword_watches',
+      [1, 2, 3].map((i) => personWatch('expired-user', `P${i}#tech`, `名人${i}`))
+    )
+
+    const res = await fn.main({ action: 'add', person_key: 'P4#tech', name: '名人四' })
+
+    eq(res.ok, false)
+    eq(res.reason, 'over_limit')
+    eq(res.tier, 'free')
+    eq(res.limit, 3)
+  })
+
+  it('读不到 memberships（无行）按非会员 fail-closed（上限 3）', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'stranger')
+    env.db.__seed(
+      'keyword_watches',
+      [1, 2, 3].map((i) => personWatch('stranger', `P${i}#tech`, `名人${i}`))
+    )
+
+    const res = await fn.main({ action: 'add', person_key: 'P4#tech', name: '名人四' })
+
+    eq(res.ok, false)
+    eq(res.reason, 'over_limit')
+    eq(res.tier, 'free', '读不到权威表一律按非会员（宁可少给，不留白拿口子）')
+    eq(res.limit, 3)
+  })
+
+  it('重复监控同一个人 → reason:duplicate（不落库）', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'vip-user')
+    seedMember('vip-user', future)
+    env.db.__seed('keyword_watches', [personWatch('vip-user', 'P1#tech', '名人一')])
+
+    const res = await fn.main({ action: 'add', person_key: 'P1#tech', name: '名人一' })
+
+    eq(res.ok, false)
+    eq(res.reason, 'duplicate')
+    eq(env.db.__dump('keyword_watches').length, 1)
+  })
+
+  it('只数「监控某人」行：同表的关键词订阅不占本额度', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'free-user')
+    env.db.__seed('keyword_watches', [wordWatch('free-user', '甲')])
+
+    const res = await fn.main({ action: 'add', person_key: 'P1#tech', name: '名人一' })
+
+    eq(res.ok, true, JSON.stringify(res))
+    eq(res.count, 1)
+    eq(env.db.__dump('keyword_watches').length, 2)
+  })
+
+  it('缺少 personKey → reason:invalid（不落库）', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'vip-user')
+    seedMember('vip-user', future)
+    const res = await fn.main({ action: 'add', name: '没主键' })
+    eq(res.ok, false)
+    eq(res.reason, 'invalid')
+    eq(env.db.__dump('keyword_watches').length, 0)
+  })
+
+  it('无 openid（且未带 event.openid）→ reason:no_auth', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https)
+    const res = await fn.main({ action: 'add', person_key: 'P1#tech', name: '名人一' })
+    eq(res.ok, false)
+    eq(res.reason, 'no_auth')
+  })
+
+  it('身份以 WXContext 优先：端上带 event.openid 也不能冒充他人', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'real-caller')
+    const res = await fn.main({ action: 'add', person_key: 'P1#tech', name: '名人一', openid: 'victim' })
+    eq(res.ok, true, JSON.stringify(res))
+    const row = env.db.__dump('keyword_watches')[0]
+    eq(row.openid, 'real-caller', '写入的 openid 必须是真实调用者，而不是 event 里报的')
+  })
+
+  it('只有 action:add 放行端上调用；带 openid 的其它调用仍走 P0-21 闸门', async () => {
+    const https = fakeHttps([])
+    const { fn } = loadScheduled('riskWatch', https, 'attacker')
+    const res = await fn.main({})
+    eq(res.ok, false)
+    ok(/只由定时器触发/.test(res.skipped), `实际 ${res.skipped}`)
   })
 })
 

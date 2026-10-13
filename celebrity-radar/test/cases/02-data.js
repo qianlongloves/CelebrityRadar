@@ -915,17 +915,19 @@ describe('名人监控写库 utils/risk-watch', () => {
 
   it('P2-29：监控并发超限同样撤回刚插的那条（与关键词订阅同一处理）', async () => {
     const { db, load } = fresh()
+    /* 免费档上限 3（真源 OPINION_LIMITS.personWatchCount）：先放 2 个，把计数停在「上限 - 1」处，
+       并发挤进一位后即超过 3 —— 复现「先查数、再插入」那个时间窗。 */
     const me = login()
     db.__seed(
       'keyword_watches',
-      [0, 1, 2, 3].map((i) => ({
+      [2, 3].map((i) => ({
         _id: `${me}#person#P${i}#tech`,
         openid: me,
-        keyword: `P${i}`,
+        keyword: `名人${i}`,
         type: 'person',
         person_key: `P${i}#tech`,
-        created_at: `2026-10-01T00:00:0${i}.000Z`,
-        seen_at: `2026-10-01T00:00:0${i}.000Z`
+        created_at: '2026-10-09T00:00:00.000Z',
+        seen_at: '2026-10-09T00:00:00.000Z'
       }))
     )
     const ghost = {
@@ -944,10 +946,10 @@ describe('名人监控写库 utils/risk-watch', () => {
       const res = await monitorPerson('雷军#tech', '雷军')
 
       notOk(res.ok)
-      ok(res.message.includes('最多同时监控 5'), `实际：${res.message}`)
+      ok(res.message.includes('免费版最多监控 3'), `实际：${res.message}`)
       const ids = db.__dump('keyword_watches').map((r) => r._id)
-      notOk(ids.includes(`${me}#person#雷军#tech`), '超限的监控行要撤回，否则永不扫描')
-      eq(ids.length, 5)
+      notOk(ids.includes(`${me}#person#雷军#tech`), '超限的监控行要撤回，否则等于没生效')
+      eq(ids.length, 3, '2 个原有 + 1 行并发 = 3，本次刚插的撤回')
     } finally {
       env.wxMock.cloud.database = restore
     }
