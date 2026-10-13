@@ -29,7 +29,7 @@
  * 而本地为放开额度把 debug 置 true 的改动，混在本文件里也总有误提交的风险。
  *
  * 【llm】大模型调用统一走云函数 aiProxy 代打（默认云开发 AI，也可在云端配 DeepSeek /
- * 智谱 / Kimi 的 key），端上不直连上游、不持有任何厂商 key 或模型名，只上报
+ * 智谱 / Kimi / 通义千问 / 火山方舟的 key），端上不直连上游、不持有任何厂商 key 或模型名，只上报
  * 「厂商 + 质量档」（见 llm.vendors / llm.qualities）；报告走结构化槽、问答走推理槽，
  * 槽位由云端按用途裁决（见 cloudfunctions/aiProxy/llm.config.js）。
  *
@@ -67,14 +67,16 @@ declare const __TCB_ENV_ID__: string
  * aiProxy 的免口令 action:'vendors' 拉就绪状态，选择器只展示就绪厂商（cloudbase 恒在）。
  *
  * `icon` 是给「我的」页厂商卡片用的表情图标（项目无厂商 logo 资源、也不便引入品牌图），
- * 只影响展示，不参与任何路由 / 请求。
+ * 只影响展示，不参与任何路由 / 请求。挑选依据：优先厂商标识本身（DeepSeek 的鲸鱼），
+ * 其次公司名 / 产品名的字面借喻（月之暗面→月亮、火山方舟→火山、千问→对话、腾讯云→云）。
  */
 const LLM_VENDORS = [
-  { key: 'cloudbase', icon: '🔵', label: '腾讯云', desc: '腾讯云，默认通道、零配置、开箱即用' },
+  { key: 'cloudbase', icon: '☁️', label: '腾讯云', desc: '腾讯云，默认通道、零配置、开箱即用' },
   { key: 'deepseek', icon: '🐋', label: 'DeepSeek', desc: '深度求索，性价比与长文生成' },
   { key: 'zhipu', icon: '🧠', label: '智谱 GLM', desc: '智谱 AI，中文理解稳定' },
   { key: 'moonshot', icon: '🌙', label: 'Kimi', desc: '月之暗面，长文与深度推理' },
-  { key: 'qwen', icon: '⚡', label: '通义千问', desc: '阿里云百炼，双模模型覆盖报告与问答' }
+  { key: 'qwen', icon: '💬', label: '通义千问', desc: '阿里云百炼，双模模型覆盖报告与问答' },
+  { key: 'ark', icon: '🌋', label: '火山方舟', desc: '字节跳动火山引擎，豆包双模模型' }
 ] as const
 
 /** 单个厂商（key 是路由标识，label/desc 是给用户看的文案） */

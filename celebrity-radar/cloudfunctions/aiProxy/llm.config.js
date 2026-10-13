@@ -3,7 +3,7 @@
  *
  * ── 选型模型（用户选什么 / 系统怎么路由）─────────────────────────
  * 用户在「我的」页选择两样东西，可随时切换：
- *   ① 厂商 vendor：云开发 AI / DeepSeek / 智谱 GLM / Kimi / 通义千问（VENDORS 的键）；
+ *   ① 厂商 vendor：云开发 AI / DeepSeek / 智谱 GLM / Kimi / 通义千问 / 火山方舟（VENDORS 的键）；
  *   ② 质量档 quality：基础版 basic（免费）/ 标准版 standard（会员）/ 高级版 premium（会员）。
  * 具体用哪个模型由**用途**在该档的两个能力槽里选，用户不直接选模型：
  *   · 报告生成 generate / 辅助 aux → structured 槽（输出型：稳定长 JSON，**绝不发给纯推理模型**）；
@@ -31,7 +31,7 @@
  * ── 环境变量（全部可选；不设即用本文件默认值，默认厂商零 key 可用）──────────
  *     LLM_VENDOR                              端上没带厂商 / 定时任务用的默认厂商
  *     LLM_TIER                                默认质量档（也兼容旧值 fast/standard/reason）
- *     <VENDOR>_API_KEY                        各厂 key（DEEPSEEK / ZHIPU / MOONSHOT）
+ *     <VENDOR>_API_KEY                        各厂 key（DEEPSEEK / ZHIPU / MOONSHOT / DASHSCOPE / ARK）
  *     LLM_MODEL_<VENDOR>_<QUALITY>_<CAP>      覆盖任一槽位模型名
  *                                             （如 LLM_MODEL_DEEPSEEK_STANDARD_REASONING）
  *     LLM_HTTP_ENDPOINT_<VENDOR>              覆盖厂商端点（接代理 / 兼容网关时用）
@@ -80,7 +80,7 @@ const CHAT_MAX_TOKENS = 8192
 
 /*
  * 思考开关（extraBody 透传，各厂参数形状以官方文档为准）：
- *   DeepSeek v4 / 智谱 GLM-4.5+ / Kimi k2.6：thinking:{type:'enabled'|'disabled'}
+ *   DeepSeek v4 / 智谱 GLM-4.5+ / Kimi k2.6 / 火山方舟豆包：thinking:{type:'enabled'|'disabled'}
  *   Kimi k3 无此开关（思考永久开启），改用 reasoning_effort:'low'|'high'|'max'
  *   通义千问（百炼）双模模型：enable_thinking:true|false（布尔，与上面的 thinking.type 不是一套）
  * 双模模型靠它在同一质量档里占两个槽：报告槽显式关思考，问答槽开思考。
@@ -106,6 +106,11 @@ const QWEN_THINK_OFF = { enable_thinking: false }
  *         qwen3.7-plus（双模，1M 上下文）/ qwen3.8-max（旗舰双模）。思考开关是 enable_thinking
  *         布尔（OpenAI 兼容模式经 extra_body 透传，落到报文体就是与 model 平级的字段）；
  *         三家都是双模，两槽互相补齐，故三档皆无缺槽（不会触发向下降档）。
+ *   火山方舟（字节跳动 / 火山引擎 Ark，OpenAI 兼容模式）：豆包 Doubao 系列
+ *         doubao-seed-2-1-lite-260915（双模，最便宜）/ doubao-seed-2-1-turbo-260628（双模，主力）/
+ *         doubao-seed-2-1-pro-260915（旗舰双模）。思考开关与 DeepSeek / GLM 同形：thinking.type；
+ *         三档都是双模，两槽互相补齐，故三档皆无缺槽（不会触发向下降档）。
+ *         方舟模型 ID 带日期后缀、会上下架，下方三个于 2026-10-13 核过（均 ACTIVE、可调通）。
  */
 const VENDORS = {
   /* ── 云开发 AI（默认通道，零 key）：模型名以当前环境实际开通为准，可用 LLM_MODEL_CLOUDBASE_* 覆盖 ── */
@@ -228,6 +233,42 @@ const VENDORS = {
       premium: {
         structured: { model: 'qwen3.8-max', extraBody: QWEN_THINK_OFF },
         reasoning: { model: 'qwen3.8-max', extraBody: QWEN_THINK_ON }
+      }
+    }
+  },
+
+  /*
+   * 火山方舟（字节跳动 / 火山引擎 Ark，OpenAI 兼容模式）。
+   * key 是火山方舟 API Key（ARK_API_KEY，控制台「API Key 管理」里建）；endpoint 用
+   * **华北（北京）**兼容基址，其它地域 / 代理网关可用 LLM_HTTP_ENDPOINT_ARK 覆盖。
+   * 思考开关与 DeepSeek / GLM 同形（thinking.type），报告槽关思考、问答槽开思考。
+   * ⚠ 方舟也支持用「推理接入点 ID」（ep-xxxxxxxx）当 model：需先在控制台建接入点，
+   *   再设 LLM_MODEL_ARK_<档>_<槽>=ep-xxxxxxxx；下方默认写**模型名**（免建接入点、开箱可用），
+   *   模型名会上下架，以方舟控制台「开通管理」为准，临时换名优先走环境变量。
+   * 三档都是双模，两槽互相补齐，故三档皆无缺槽：
+   *   basic   doubao-seed-2-1-lite-260915  —— 2.1 lite，最便宜，日常报告与问答
+   *   standard doubao-seed-2-1-turbo-260628 —— 2.1 turbo，主力，能力与成本平衡
+   *   premium doubao-seed-2-1-pro-260915    —— 2.1 pro，旗舰，质量优先
+   * ⚠ 方舟模型 ID 带日期后缀（形如 -260915）且会上下架；以上三个于 2026-10-13 经
+   *   GET /api/v3/models 列目录 + 实调 chat/completions 核过（均 ACTIVE、thinking 开关可用）。
+   */
+  ark: {
+    label: '火山方舟',
+    channel: 'http',
+    endpoint: 'https://ark.cn-beijing.volces.com/api/v3',
+    keyEnv: 'ARK_API_KEY',
+    tiers: {
+      basic: {
+        structured: { model: 'doubao-seed-2-1-lite-260915', extraBody: THINK_OFF },
+        reasoning: { model: 'doubao-seed-2-1-lite-260915', extraBody: THINK_ON }
+      },
+      standard: {
+        structured: { model: 'doubao-seed-2-1-turbo-260628', extraBody: THINK_OFF },
+        reasoning: { model: 'doubao-seed-2-1-turbo-260628', extraBody: THINK_ON }
+      },
+      premium: {
+        structured: { model: 'doubao-seed-2-1-pro-260915', extraBody: THINK_OFF },
+        reasoning: { model: 'doubao-seed-2-1-pro-260915', extraBody: THINK_ON }
       }
     }
   }

@@ -16,6 +16,7 @@
         "ZHIPU_API_KEY": "{{env.ZHIPU_API_KEY}}",
         "MOONSHOT_API_KEY": "{{env.MOONSHOT_API_KEY}}",
         "DASHSCOPE_API_KEY": "{{env.DASHSCOPE_API_KEY}}",
+        "ARK_API_KEY": "{{env.ARK_API_KEY}}",
         "LLM_VENDOR": "{{env.LLM_VENDOR}}",
         "LLM_TIER": "{{env.LLM_TIER}}",
         "AI_PROXY_QUOTA_GUARD": "{{env.AI_PROXY_QUOTA_GUARD}}",
@@ -104,6 +105,7 @@
         "ZHIPU_API_KEY": "{{env.ZHIPU_API_KEY}}",
         "MOONSHOT_API_KEY": "{{env.MOONSHOT_API_KEY}}",
         "DASHSCOPE_API_KEY": "{{env.DASHSCOPE_API_KEY}}",
+        "ARK_API_KEY": "{{env.ARK_API_KEY}}",
         "LLM_VENDOR": "{{env.LLM_VENDOR}}",
         "LLM_TIER": "{{env.LLM_TIER}}"
       },

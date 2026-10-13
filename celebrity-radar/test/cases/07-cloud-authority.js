@@ -302,8 +302,8 @@ describe('A3 test 探针要口令', () => {
       eq(res.modelList.ok, true)
       const vendorCount = Object.keys(VENDORS).length
       eq(res.modelList.count, vendorCount * QUALITIES.length * 2, '厂商数 × 3 档 × 2 能力槽')
-      eq(res.modelList.count, 30, '当前注册表：5 家 × 3 档 × 2 槽 = 30 条路由')
-      eq(res.modelList.slots.length, 30)
+      eq(res.modelList.count, 36, '当前注册表：6 家 × 3 档 × 2 槽 = 36 条路由')
+      eq(res.modelList.slots.length, 36)
       ok(
         res.modelList.models.every((m) => typeof m === 'string' && m),
         'models 是与 slots 对齐的模型名数组（同名模型在不同槽里会重复出现）'
@@ -345,14 +345,14 @@ describe('A3 test 探针要口令', () => {
 
     eq(res.ok, true)
     eq(res.vendors.length, Object.keys(VENDORS).length, '注册几家就回几家')
-    eq(res.vendors.length, 5, '当前：云开发 AI / DeepSeek / 智谱 / Kimi / 通义千问')
+    eq(res.vendors.length, 6, '当前：云开发 AI / DeepSeek / 智谱 / Kimi / 通义千问 / 火山方舟')
     eq(calls.length, 0, '只读注册表 + 读环境变量，一次上游都不许触达')
     ok(!JSON.stringify(res).includes('sk-'), '只回布尔 ready，绝不回 key 内容')
 
     const byKey = Object.fromEntries(res.vendors.map((v) => [v.key, v]))
     eq(byKey.cloudbase.channel, 'cloudai')
     eq(byKey.cloudbase.ready, true, '云开发 AI 恒就绪（零 key 兜底厂）')
-    for (const k of ['deepseek', 'zhipu', 'moonshot', 'qwen']) {
+    for (const k of ['deepseek', 'zhipu', 'moonshot', 'qwen', 'ark']) {
       eq(byKey[k].channel, 'http', `${k} 是 http 厂`)
       eq(byKey[k].ready, false, `${k}：没配 key 就是未就绪`)
       /* 三档槽位有无也要公开（UI 可据此提示「该厂商高级档报告会降档」） */
@@ -609,9 +609,12 @@ function clearLlmEnv() {
     'LLM_HTTP_ENDPOINT_DEEPSEEK',
     'LLM_HTTP_ENDPOINT_ZHIPU',
     'LLM_HTTP_ENDPOINT_MOONSHOT',
+    'LLM_HTTP_ENDPOINT_ARK',
     'DEEPSEEK_API_KEY',
     'ZHIPU_API_KEY',
     'MOONSHOT_API_KEY',
+    'DASHSCOPE_API_KEY',
+    'ARK_API_KEY',
     'AI_PROXY_TEST_TOKEN',
     cfg.QUOTA_GUARD_ENV
   ]) {
@@ -2616,7 +2619,7 @@ describe('模型档位：三处口径不许漂（端上清单 / 云函数档位�
     eq(cloud.DEFAULT_VENDOR, client.defaultVendor, '默认厂商端云同值')
     eq(cloud.DEFAULT_QUALITY, client.defaultQuality, '默认质量档端云同值（端上没带档位时云端按它兜底）')
 
-    /* ③ 4 厂 × 3 档 × 2 槽全矩阵：每条路由都能裁决出模型（缺槽靠同厂商向下降档补齐），不允许 configError */
+    /* ③ 6 厂 × 3 档 × 2 槽全矩阵：每条路由都能裁决出模型（缺槽靠同厂商向下降档补齐），不允许 configError */
     for (const vendorKey of Object.keys(cloud.VENDORS)) {
       for (const q of cloud.QUALITIES) {
         for (const [purpose, capability] of [
@@ -2646,7 +2649,7 @@ describe('模型档位：三处口径不许漂（端上清单 / 云函数档位�
     eq(kimiAsk.qualityDowngraded, false)
   })
 
-  it('cloudbaserc.json 只注入 key 的 {{env.*}} 占位，绝不固化任何密钥字面值（4 厂商变量体系）', () => {
+  it('cloudbaserc.json 只注入 key 的 {{env.*}} 占位，绝不固化任何密钥字面值（5 厂商变量体系）', () => {
     const rc = JSON.parse(read(path.join(ROOT, 'cloudbaserc.json')))
     for (const name of ['aiProxy', 'hotBoardRefresh']) {
       const fn = (rc.functions || []).filter((f) => f.name === name)[0]
@@ -2678,10 +2681,10 @@ describe('模型档位：三处口径不许漂（端上清单 / 云函数档位�
         }
       }
     }
-    /* 四家 http 厂 key + 检索 key 都在（只在 aiProxy 一侧也没关系，hotBoardRefresh 用到的在其各自 vars 里） */
+    /* 五家 http 厂 key + 检索 key 都在（只在 aiProxy 一侧也没关系，hotBoardRefresh 用到的在其各自 vars 里） */
     const ai = (rc.functions || []).filter((f) => f.name === 'aiProxy')[0]
     const aiVars = ai.envVariables || {}
-    for (const k of ['BOCHA_API_KEY', 'DEEPSEEK_API_KEY', 'ZHIPU_API_KEY', 'MOONSHOT_API_KEY', 'DASHSCOPE_API_KEY']) {
+    for (const k of ['BOCHA_API_KEY', 'DEEPSEEK_API_KEY', 'ZHIPU_API_KEY', 'MOONSHOT_API_KEY', 'DASHSCOPE_API_KEY', 'ARK_API_KEY']) {
       ok(/^\{\{\s*env\./.test(aiVars[k]), `${k} 照旧从部署环境注入`)
     }
   })

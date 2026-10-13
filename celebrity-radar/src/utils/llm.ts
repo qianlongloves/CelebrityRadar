@@ -158,7 +158,7 @@ export function hasLlmChannel(): boolean {
 
 /** 一次生成实际会用的路由（厂商 + 质量档 + 能力槽；设置页展示与请求取值共用同一份判定） */
 export interface ChatSelection {
-  /** 厂商标识：cloudbase / deepseek / zhipu / moonshot / qwen */
+  /** 厂商标识：cloudbase / deepseek / zhipu / moonshot / qwen / ark */
   vendor: string
   /** 厂商展示名 */
   vendorLabel: string

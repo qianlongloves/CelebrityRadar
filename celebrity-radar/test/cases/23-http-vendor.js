@@ -4,7 +4,7 @@
  * 外部厂商直连通道（channel='http'，2026-10-12 v3：厂商 × 质量档 × 能力槽）
  *
  * 钉住四件事：
- *   ① resolveLlm 的路由矩阵：4 厂 × 3 档（basic/standard/premium）× 2 能力槽
+ *   ① resolveLlm 的路由矩阵：5 厂 × 3 档（basic/standard/premium）× 2 能力槽
  *      （structured=报告/辅助、reasoning=问答），含同厂向下降档与 LLM_MODEL_* 覆盖；
  *   ② handleChat 真跑：http 槽位的请求确实走 https POST /chat/completions（不碰 cloud.ai），
  *      报文是 OpenAI 协议：双模模型靠 extraBody 的思考开关占两个槽，思考时不下发 temperature；
@@ -28,10 +28,12 @@ const VENDOR_ENV = [
   'LLM_HTTP_ENDPOINT_DEEPSEEK',
   'LLM_HTTP_ENDPOINT_ZHIPU',
   'LLM_HTTP_ENDPOINT_MOONSHOT',
+  'LLM_HTTP_ENDPOINT_ARK',
   'DEEPSEEK_API_KEY',
   'ZHIPU_API_KEY',
   'MOONSHOT_API_KEY',
-  'DASHSCOPE_API_KEY'
+  'DASHSCOPE_API_KEY',
+  'ARK_API_KEY'
 ]
 function resetEnv() {
   for (const k of VENDOR_ENV) delete process.env[k]
@@ -174,7 +176,14 @@ const MATRIX = [
   ['qwen', 'standard', 'generate', 'qwen3.7-plus', 'qwen-off'],
   ['qwen', 'standard', 'ask', 'qwen3.7-plus', 'qwen-on'],
   ['qwen', 'premium', 'generate', 'qwen3.8-max', 'qwen-off'],
-  ['qwen', 'premium', 'ask', 'qwen3.8-max', 'qwen-on']
+  ['qwen', 'premium', 'ask', 'qwen3.8-max', 'qwen-on'],
+  /* 火山方舟：三档各一个豆包双模模型（thinking.type 开关，与 DeepSeek 同形），两槽齐全、不降档 */
+  ['ark', 'basic', 'generate', 'doubao-seed-2-1-lite-260915', 'off'],
+  ['ark', 'basic', 'ask', 'doubao-seed-2-1-lite-260915', 'on'],
+  ['ark', 'standard', 'generate', 'doubao-seed-2-1-turbo-260628', 'off'],
+  ['ark', 'standard', 'ask', 'doubao-seed-2-1-turbo-260628', 'on'],
+  ['ark', 'premium', 'generate', 'doubao-seed-2-1-pro-260915', 'off'],
+  ['ark', 'premium', 'ask', 'doubao-seed-2-1-pro-260915', 'on']
 ]
 const expectedExtra = (shape) =>
   shape === 'off'
@@ -190,7 +199,7 @@ const expectedExtra = (shape) =>
 /* ==================== ① resolveLlm 路由（纯配置，不碰网络） ==================== */
 
 describe('23-http-vendor 配置路由', () => {
-  it('不配置时零参落 cloudbase/basic 零 key；4×3×2 全矩阵模型名/通道/思考参数逐槽正确', () => {
+  it('不配置时零参落 cloudbase/basic 零 key；6×3×2 全矩阵模型名/通道/思考参数逐槽正确', () => {
     resetEnv()
     const cfg = loadConfig()
 
@@ -428,6 +437,48 @@ describe('23-http-vendor handleChat 行为', () => {
       notOk(
         Object.prototype.hasOwnProperty.call(calls[1].body, 'temperature'),
         'enable_thinking:true 也算思考开启，必须识别出来不下发 temperature'
+      )
+    } finally {
+      resetEnv()
+    }
+  })
+
+  it('火山方舟豆包双模：thinking.type 开关随槽位透传（与 DeepSeek 同形），思考槽不下发 temperature', async () => {
+    resetEnv()
+    const up = fakeUpstream([chatOk('报告'), chatOk('回答')])
+    const { fn, calls } = loadProxy(up)
+    process.env.ARK_API_KEY = 'sk-ark'
+    try {
+      /* 基础版报告：structured 槽关思考（thinking.disabled），非思考模式可带 temperature */
+      const r1 = await fn.main({
+        action: 'chat',
+        vendor: 'ark',
+        quality: 'basic',
+        purpose: 'generate',
+        messages: DS_MSG
+      })
+      eq(r1.ok, true)
+      eq(r1.model, 'doubao-seed-2-1-lite-260915')
+      eq(calls[0].path, '/api/v3/chat/completions', '走方舟华北兼容基址（hostname 在另一字段）')
+      eq(calls[0].body.model, 'doubao-seed-2-1-lite-260915')
+      eq(calls[0].body.thinking && calls[0].body.thinking.type, 'disabled', '报告槽显式关思考（与 model 平级透传）')
+      eq(calls[0].body.temperature, 0.7, '关思考才带 temperature')
+      eq(calls[0].headers.Authorization, 'Bearer sk-ark', 'key 以 Bearer 发出（ARK_API_KEY）')
+
+      /* 基础版问答：reasoning 槽开思考（thinking.enabled）→ 不下发 temperature */
+      const r2 = await fn.main({
+        action: 'chat',
+        vendor: 'ark',
+        quality: 'basic',
+        purpose: 'ask',
+        messages: DS_MSG
+      })
+      eq(r2.ok, true)
+      eq(calls[1].body.model, 'doubao-seed-2-1-lite-260915', '同一个双模模型，靠 thinking.type 切槽')
+      eq(calls[1].body.thinking && calls[1].body.thinking.type, 'enabled')
+      notOk(
+        Object.prototype.hasOwnProperty.call(calls[1].body, 'temperature'),
+        '思考开启时不下发 temperature'
       )
     } finally {
       resetEnv()
