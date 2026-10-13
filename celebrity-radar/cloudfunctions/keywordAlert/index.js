@@ -120,6 +120,126 @@ const DEEP_DIVE_TABLE = 'deep_dive_quota'
  */
 const DEEP_DIVE_SUFFIXES = ['最新进展', '回应']
 
+/* ───────────── 风险词典（**与 src/utils/risk.ts / cloudfunctions/riskWatch 同源**）─────────────
+ *
+ * P4-B（2026-10-13）**分级字段上游化**：关键词预警的条目（写入 keywords.items 的那些）原先
+ * **不带**类别 / 级别，端上舆情判断层（utils/opinion-rank.ts）对它们恒判「未评级 / 未知」，
+ * 事件聚合的「影响面取成员最高」也因此失效。这里在**写入缓存前**用本地词典给每条命中词加
+ * category / category_label / level 三个字段（字段名与 risk_signals 完全一致）。
+ *
+ * ⚠ 与 riskWatch 的词典**逐字同源**（云函数各自独立打包、不能跨函数 require，故复制一份；
+ *   一致性由 test/cases/34-field-grading.js 的词典用例读源码字面量比对，漂移即红 —— 改一处须改多处）。
+ * ⚠ **未命中的条目不加任何字段**：覆盖率天然有限（只能识别词典里的表述），没命中的在端上
+ *   仍按「未评级 / 未知」对待。这是刻意设计（同 risk.ts 三条边界），不给默认值、不猜级别。
+ *
+ * 全部是可核对的事实类表述，不含「翻车 / 塌房 / 抵制 / 风波」这类评价性词汇（同 risk.ts 词表口径）。
+ */
+const RISK_TERMS = [
+  { word: '偷税', category: 'tax' },
+  { word: '逃税', category: 'tax' },
+  { word: '漏税', category: 'tax' },
+  { word: '补缴税款', category: 'tax' },
+  { word: '税务稽查', category: 'tax' },
+  { word: '起诉', category: 'judicial' },
+  { word: '立案', category: 'judicial' },
+  { word: '诉讼', category: 'judicial' },
+  { word: '判决', category: 'judicial' },
+  { word: '败诉', category: 'judicial' },
+  { word: '庭审', category: 'judicial' },
+  { word: '传唤', category: 'judicial' },
+  { word: '拘留', category: 'judicial' },
+  { word: '逮捕', category: 'judicial' },
+  { word: '强制执行', category: 'judicial' },
+  { word: '通报批评', category: 'judicial' },
+  { word: '行政处罚', category: 'judicial' },
+  { word: '罚款', category: 'judicial' },
+  { word: '律师函', category: 'judicial' },
+  { word: '调查', category: 'judicial' },
+  { word: '查封', category: 'judicial' },
+  { word: '冻结', category: 'judicial' },
+  { word: '限制高消费', category: 'judicial' },
+  { word: '失信被执行人', category: 'judicial' },
+  { word: '解约', category: 'contract' },
+  { word: '终止合作', category: 'contract' },
+  { word: '停止合作', category: 'contract' },
+  { word: '合作终止', category: 'contract' },
+  { word: '代言取消', category: 'contract' },
+  { word: '撤换', category: 'contract' },
+  { word: '下架', category: 'contract' },
+  { word: '索赔', category: 'contract' },
+  { word: '违约', category: 'contract' },
+  { word: '解聘', category: 'contract' },
+  { word: '辞退', category: 'contract' },
+  { word: '撤档', category: 'contract' },
+  { word: '名誉权', category: 'rights' },
+  { word: '肖像权', category: 'rights' },
+  { word: '诽谤', category: 'rights' },
+  { word: '造谣', category: 'rights' },
+  { word: '侵权', category: 'rights' },
+  { word: '维权', category: 'rights' },
+  { word: '盗用', category: 'rights' },
+  { word: '假冒', category: 'rights' },
+  { word: '道歉', category: 'statement' },
+  { word: '致歉', category: 'statement' },
+  { word: '澄清', category: 'statement' },
+  { word: '辟谣', category: 'statement' }
+]
+
+/* 双向词方向判定（与 src/utils/risk.ts / riskWatch 同源）：「起诉 / 诉讼」原告被告都在用，
+   命中后要看动词后面是否跟着维权对象 ——「起诉造谣者」是名誉维权、「被起诉」才是司法监管。 */
+const BIDIRECTIONAL_TERMS = ['起诉', '诉讼']
+const RIGHTS_OBJECTS = [
+  '造谣', '诽谤', '侵权', '名誉', '肖像', '网暴', '黑粉', '抹黑', '诋毁', '抄袭', '盗用', '假冒', '维权'
+]
+const RIGHTS_AFTER_WINDOW = 8
+
+/** 类别 → 级别：只表示「命中词属于哪一类」，不是对事件的定性（与 riskWatch#LEVEL_OF 同源） */
+const LEVEL_OF = { judicial: 'high', tax: 'high', contract: 'mid', rights: 'mid', statement: 'low' }
+const CATEGORY_LABEL = {
+  judicial: '司法监管',
+  tax: '税务合规',
+  contract: '商业合作',
+  rights: '名誉维权',
+  statement: '回应表态'
+}
+
+/* 否定词：命中词前 NEG_WINDOW 个字符内出现即整条丢弃（「未被起诉」「否认解约」）。
+   与 risk.ts / riskWatch 同源、同窗口 —— 这是启发式，窗口一大就会吃掉「团队否认，此前已被起诉」。 */
+const NEG_WORDS = ['未', '没', '无', '否认', '不实', '谣言', '造谣', '辟谣']
+const NEG_WINDOW = 6
+
+/** 字面命中：返回第一个未被否定的命中词，没有则 null（与 risk.ts#matchTerm / riskWatch 同一套规则） */
+function matchTerm(text) {
+  for (const term of RISK_TERMS) {
+    const at = text.indexOf(term.word)
+    if (at < 0) continue
+    const before = text.slice(Math.max(0, at - NEG_WINDOW), at)
+    if (NEG_WORDS.some((n) => before.includes(n))) continue
+    /* 双向词再看宾语方向：「起诉造谣者」是维权、「被起诉」才是司法监管 */
+    if (BIDIRECTIONAL_TERMS.indexOf(term.word) >= 0) {
+      const after = text.slice(at + term.word.length, at + term.word.length + RIGHTS_AFTER_WINDOW)
+      if (RIGHTS_OBJECTS.some((o) => after.includes(o))) return { word: term.word, category: 'rights' }
+    }
+    return term
+  }
+  return null
+}
+
+/**
+ * 条目级分级字段：命中词典才产出的三件套，**未命中返回空对象**（展开后不落任何字段）。
+ *
+ * 未命中不产出 = 端上保持「未评级 / 未知」，这是刻意设计（覆盖率天然有限：只能识别词典里的表述）。
+ */
+function riskFieldsOf(text) {
+  const hit = matchTerm(String(text || ''))
+  if (!hit) return {}
+  return {
+    category: hit.category,
+    category_label: CATEGORY_LABEL[hit.category],
+    level: LEVEL_OF[hit.category]
+  }
+}
+
 function readEnv(name) {
   const v = process.env[name]
   return typeof v === 'string' && v.trim() ? v.trim() : null
@@ -658,6 +778,9 @@ exports.main = async (event) => {
           source: i.source,
           summary: i.summary || '',
           ...(i.published_date ? { published_date: i.published_date } : {}),
+          /* 分级字段上游化（P4-B）：命中风险词典才有 category/category_label/level；
+             未命中的条目**不落这三个字段**（riskFieldsOf 返回 {}），端上据此保持「未评级 / 未知」。 */
+          ...riskFieldsOf(`${i.title} ${i.summary || ''}`),
           first_seen_at: (prevByUrl.get(i.url) || {}).first_seen_at || nowIso
         }))
       /* ⚠ 推送 / 预警口径仍只看**扫描**条目（results 里只放 items）：深挖只做事件补充，
@@ -777,3 +900,6 @@ exports.deepDiveQueries = deepDiveQueries
 /* 深挖条目的相关性判定（纯函数，与 riskWatch 同源）：供用例直接调用 + 数据清理复用 */
 exports.isDeepDiveRelated = isDeepDiveRelated
 exports.normalizeName = normalizeName
+/* 条目级分级（P4-B，与 risk.ts / riskWatch 同源的词典）：供用例直接调用 + 断言命中/未命中口径 */
+exports.matchTerm = matchTerm
+exports.riskFieldsOf = riskFieldsOf

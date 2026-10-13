@@ -34,6 +34,7 @@ import {
 } from '@/utils/opinion-store'
 import type { EventStatus } from '@/utils/opinion-store'
 import type { OpinionEventRow, RiskSignalRow } from '@/types/db'
+import type { RiskCategory } from '@/utils/risk'
 import { domainLabel, parsePersonKey } from '@/config/domains'
 import { formatMoment8, fromNow } from '@/utils/time'
 import { useTabBarSync } from '@/utils/tabbar'
@@ -82,6 +83,9 @@ interface FeedPreview {
   title: string
   source: string
   date: string
+  /** 条目级分级字段（feed_cache 写入前由 cache.ts 用例行词典补齐；未命中则无） */
+  category?: RiskCategory
+  level?: string
 }
 
 interface AlertPreview {
@@ -89,6 +93,9 @@ interface AlertPreview {
   title: string
   source: string
   date: string
+  /** 条目级分级字段（云端 keywordAlert 写入 keywords.items 时补齐；未命中 / 旧缓存则无） */
+  category?: RiskCategory
+  level?: string
 }
 
 interface FeedState {
@@ -203,7 +210,10 @@ export default function Opinion() {
             domain: parsed?.domain ?? 'other',
             title: it.title,
             source: it.source,
-            date: it.publishedDate ?? ''
+            date: it.publishedDate ?? '',
+            /* 条目级字段（缓存里命中词典才有；旧缓存没有 = 保持未评级） */
+            category: it.category,
+            level: it.level
           })
         }
       }
@@ -259,7 +269,10 @@ export default function Opinion() {
             keyword: g.keyword,
             title: it.title,
             source: it.source,
-            date: it.published_date ?? it.first_seen_at ?? ''
+            date: it.published_date ?? it.first_seen_at ?? '',
+            /* 条目级字段（云端写入缓存时命中词典才有；旧缓存没有 = 保持未评级） */
+            category: it.category,
+            level: it.level
           })
         }
       }
@@ -332,7 +345,10 @@ export default function Opinion() {
         title: e.title,
         source: e.source,
         date: e.date,
-        person: e.personName
+        person: e.personName,
+        /* 条目级分级字段透传给判断层：有则参与分级，无（旧缓存 / 未命中词典）则维持未评级 */
+        category: e.category,
+        level: e.level
       })),
       weekly: weeklyEntries,
       alerts: [
@@ -341,7 +357,10 @@ export default function Opinion() {
           title: a.title,
           source: a.source,
           date: a.date,
-          keyword: a.keyword
+          keyword: a.keyword,
+          /* 同上：关键词预警条目也带条目级分级字段（云端写入时补齐） */
+          category: a.category,
+          level: a.level
         })),
         ...alerts.riskRows.map((s) => ({
           block: 'alert' as const,
@@ -470,7 +489,8 @@ export default function Opinion() {
 
   /**
    * 单条的分级标签（影响面 / 可信度 / 是否需回应）。
-   * feed 与关键词预警条目没有风险级别字段，故这里是「未评级 / 未知」——**如实透出，不猜**。
+   * feed 与关键词预警条目现在**可能**带条目级分级字段（命中风险词典时才有，见 cache.ts /
+   * keywordAlert）；没有字段的（旧缓存 / 未命中）仍如实显示「未评级 / 未知」，不猜。
    */
   const gradeTags = (source: string, category?: RiskSignalRow['category'], level?: string) =>
     tagsView(impactOf(level), credibilityOf([source]), responseOf(category, level))
@@ -645,7 +665,7 @@ export default function Opinion() {
                       .filter(Boolean)
                       .join(' · ')}
                   </Text>
-                  {gradeTags(e.source)}
+                  {gradeTags(e.source, e.category, e.level)}
                 </View>
               ))}
               {/* 免费档明细被截断：列表底部一行不刺眼的升级引导（会员显示全部，故不出现） */}
@@ -737,7 +757,7 @@ export default function Opinion() {
                           .filter(Boolean)
                           .join(' · ')}
                       </Text>
-                      {gradeTags(a.source)}
+                      {gradeTags(a.source, a.category, a.level)}
                     </View>
                   ))}
                   {/* 免费档明细被截断：列表底部一行不刺眼的升级引导（会员显示全部，故不出现） */}

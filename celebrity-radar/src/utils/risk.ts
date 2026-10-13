@@ -40,6 +40,22 @@ export const RISK_CATEGORY_LABEL: Record<RiskCategory, string> = {
   statement: '回应表态'
 }
 
+/** 级别：只表示「命中的是哪一类词」，不是对事件的定性（司法/税务高、合作/维权中、回应低） */
+export type RiskLevel = 'high' | 'mid' | 'low'
+
+/**
+ * 类别 → 级别。**与云端 cloudfunctions/riskWatch 与 cloudfunctions/keywordAlert 的 `LEVEL_OF` 同源**：
+ * 三份都由同一批「命中词类别」推导，改动须三处同步（一致性由 test/cases 的词典用例钉住）。
+ * 它给出的每一级都能回放到触发它的那条素材（见 riskWatch 文件头取舍 5）。
+ */
+export const RISK_LEVEL_OF: Record<RiskCategory, RiskLevel> = {
+  judicial: 'high',
+  tax: 'high',
+  contract: 'mid',
+  rights: 'mid',
+  statement: 'low'
+}
+
 /** 信号来自报告的哪一段（界面用于说明「这条是从哪挑出来的」） */
 export type RiskFrom = 'dynamics' | 'controversies' | 'quotes' | 'timeline'
 
@@ -261,6 +277,32 @@ function matchTerm(text: string): { word: string; category: RiskCategory } | nul
     return term
   }
   return null
+}
+
+/**
+ * 条目级分级字段：命中词典才产出的「类别 / 类别标签 / 级别」三件套，**未命中返回 null**。
+ *
+ * 用途：云端产出侧（feed_cache 在 cache.ts 写入前、keywords.items 在 keywordAlert 云端写入前）
+ * 给每条补上这三个字段，让端上判断层（utils/opinion-rank.ts）不再恒判「未评级 / 未知」。
+ * 字段名与 risk_signals 现有字段完全一致（category / category_label / level）。
+ *
+ * ⚠ **未命中一律不产出任何字段**（返回 null，调用方据此原样写回，不落任何默认值）：
+ *   覆盖率天然有限 —— 只能识别词典里列举的表述。没命中的条目在端上仍按「未评级 / 未知」对待，
+ *   这是刻意设计（见本文件边界 1/3 与 utils/opinion-rank.ts 文件头红线 4）：算不出就说算不出，
+ *   绝不为界面好看去猜一个级别或给默认值。
+ *
+ * 判定规则与 buildRiskSignals 一致（同词表、同否定词窗口、同双向词方向判定）—— 只是复用给单条文本。
+ */
+export function riskFieldsOf(
+  text: string
+): { category: RiskCategory; category_label: string; level: RiskLevel } | null {
+  const hit = matchTerm(String(text || ''))
+  if (!hit) return null
+  return {
+    category: hit.category,
+    category_label: RISK_CATEGORY_LABEL[hit.category],
+    level: RISK_LEVEL_OF[hit.category]
+  }
 }
 
 function clip(s: string): string {

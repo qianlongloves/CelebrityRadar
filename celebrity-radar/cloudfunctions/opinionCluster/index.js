@@ -321,7 +321,11 @@ async function collectSources() {
         summary: asText(it && it.content),
         source: asText(it && it.source),
         date: asText(it && (it.publishedDate || it.published_date)),
-        label
+        label,
+        /* 条目级分级字段（P4-B，可能没有）：feed_cache 写入前已由 cache.ts 用风险词典补齐，
+           有则透传给 deriveEvent（影响面 / 需回应据此计算），没有则维持「未评级 / 未知」。 */
+        category: asRiskCategory(it && it.category),
+        level: normLevel(it && it.level)
       })
     }
   }
@@ -335,7 +339,11 @@ async function collectSources() {
         summary: asText(it && it.summary),
         source: asText(it && it.source),
         date: asText(it && it.published_date),
-        label
+        label,
+        /* 条目级分级字段（P4-B，可能没有）：keywords.items 写入前已由 keywordAlert 用风险词典补齐
+           （与 riskWatch / risk.ts 同源），有则透传，没有则维持「未评级 / 未知」。 */
+        category: asRiskCategory(it && it.category),
+        level: normLevel(it && it.level)
       })
     }
   }

@@ -8,6 +8,8 @@ import { cleanText } from './text'
 import { SEARCH_LANES, SearchLane } from './report-toc'
 /* 规划结果（模型给的检索词，见 utils/search-plan.ts）—— 只作类型用，不引运行时依赖 */
 import type { SearchPlan } from './search-plan'
+/* 风险类别（仅类型，供 NewsItem 的分级字段用）—— 类型导入会被编译期擦除，不引入运行时依赖 */
+import type { RiskCategory } from './risk'
 
 /** 检索结果条目（附录 A） */
 export interface NewsItem {
@@ -17,6 +19,14 @@ export interface NewsItem {
   source: string
   /** 结果自带的发布时间（用于 N30/N7 计数，§1.6） */
   publishedDate?: string
+  /**
+   * 条目级分级字段（写入 feed_cache 前由 cache.ts#writeFeedCache 用本地词典补齐）——
+   * **只有命中风险词典（utils/risk.ts）的条目才有**，未命中则三个字段都不存在
+   * （端上判断层据此保持「未评级 / 未知」，见 utils/opinion-rank.ts）。字段名与 risk_signals 一致。
+   */
+  category?: RiskCategory
+  category_label?: string
+  level?: string
 }
 
 /** 博查 {url} 的主机名，用作 NewsItem.source 的兜底（siteName 缺失时） */

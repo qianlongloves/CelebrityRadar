@@ -5,6 +5,8 @@ import { diagLog } from './cloud-diagnostics'
 import { explainDbFailure, table } from './db'
 import { readMemberState } from './member'
 import { watchGate, watchLimit, watchLimitNote } from './opinion-access'
+/* 风险类别（仅类型，供 AlertItem 的分级字段用）—— 类型导入编译期擦除，不引运行时依赖 */
+import type { RiskCategory } from './risk'
 
 /**
  * 关键词舆情预警（2026-10-08）。
@@ -61,6 +63,14 @@ export interface AlertItem {
   published_date?: string
   /** 我们第一次看到它的时间：判断「是不是新的」只看这个 */
   first_seen_at: string
+  /**
+   * 条目级分级字段（云端 keywordAlert 写入 keywords.items 前用风险词典补齐）——
+   * **只有命中风险词典的条目才有**，未命中则三个字段都不存在（端上判断层据此保持「未评级 / 未知」，
+   * 见 utils/opinion-rank.ts）。字段名与 risk_signals 一致；旧缓存没有这些字段，读取时按缺失处理。
+   */
+  category?: RiskCategory
+  category_label?: string
+  level?: string
 }
 
 /** 关键词检索缓存行（keywords，云端写、端上只读） */
