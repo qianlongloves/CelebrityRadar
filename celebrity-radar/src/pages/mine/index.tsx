@@ -726,9 +726,6 @@ export default function Mine() {
           <Text className='page-mine__contact-note'>名誉投诉核实后下线对应内容</Text>
         </Button>
       </View>
-
-      {/* 隐私说明：昵称头像为「可选授权」，用户不设置也能正常使用 */}
-      <Text className='page-mine__tip'>昵称与头像为可选设置，仅用于本机展示，不设置不影响使用</Text>
     </View>
   )
 }

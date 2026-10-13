@@ -150,9 +150,18 @@
   }
 
   /* 昵称编辑模态框（2026-10-13：由内联编辑行改为点昵称弹出的浮层）。
-     遮罩的 position:fixed / z-index 由 app.scss 的 .glow-overlay 放出（页面根容器带 .glow-page），
-     这里只负责「铺满 + 内容居中 + 压暗背景」，卡片本体仍是白底大圆角。 */
+     层级（position:fixed + z-index:1200）由 app.scss 的 `.glow-page > .glow-overlay` 给死
+     （页面根容器带 .glow-page，本遮罩是它的直接子级），稳定压过自定义 tabBar 的 999。
+
+     ⚠ 修「不居中 / 盖不住悬浮栏」（2026-10-13 二次修）：`.glow-overlay` 只给 fixed 与 z-index，
+     **不给四边偏移**。只写 fixed 而不写 left/right/top/bottom 时，元素停在文档流的静态位置、
+     宽度按内容收缩 —— 既不铺满整屏，也无法把卡片居中（report-loading / share-poster 都各自补了
+     四边归零，这里此前漏了）。故此处显式四边归零铺满整屏（含底部悬浮栏区域），再用 flex 双向居中。 */
   &__editor-mask {
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
     display: flex;
     align-items: center;
     justify-content: center;

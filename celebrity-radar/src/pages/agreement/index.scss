@@ -1,15 +1,16 @@
 @import '../../styles/variables.scss';
 
-/* 隐私 / 免责：合同 · 协议阅览式版式（2026-10-13 改）。
-   两个版块共用同一套 __doc* / __clause* 类 —— 想让两页观感一致，只需维护这里一份。 */
+/* 隐私与免责：合并成一份连续文档（2026-10-13 二次改）。
+   参考常见 APP 协议页：顶部「标题 + 更新/生效日期一行小字」→ 静态目录（大纲）→ 大纲式条款。
+   一级条款用 __section*（一、二…），二级条款用 __clause*（1.1 / 1.2…），正文小字但行距放宽。 */
 .page-agreement {
   min-height: 100vh;
   padding-top: 24rpx;
 
-  /* 一份文档：白底卡 + 大圆角，内容按「标题 → 日期 → 条款」纵向排列 */
+  /* 一份文档：白底卡 + 大圆角，内容按「标题 → 日期 → 目录 → 条款」纵向连续排列 */
   &__doc {
     margin: 0 32rpx 24rpx;
-    padding: 44rpx 40rpx 12rpx;
+    padding: 44rpx 40rpx 40rpx;
     background: #fff;
     border-radius: $radius-lg;
     box-shadow: $shadow-card;
@@ -25,7 +26,7 @@
     color: $text-1;
   }
 
-  /* 生效 / 更新日期：居中、小字弱化，下方一条细线与正文分开 */
+  /* 更新 / 生效日期：居中、小字弱化，下方一条细线与正文分开 */
   &__doc-meta {
     display: block;
     margin-top: 12rpx;
@@ -36,24 +37,61 @@
     color: $text-3;
   }
 
-  &__clause {
-    margin-top: 32rpx;
+  /* 静态目录（大纲）：浅品牌底，列出两级条款编号与标题，不跳转（避免引入滚动定位依赖） */
+  &__toc {
+    margin-top: 28rpx;
+    padding: 20rpx 24rpx;
+    border-radius: $radius-md;
+    background: $brand-weak;
   }
 
-  /* 条款标题（一、二、三…）：比正文重一级，与正文拉开层级 */
-  &__clause-title {
+  &__toc-title {
+    display: block;
+    margin-bottom: 8rpx;
+    font-size: 22rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__toc-item {
+    display: block;
+    font-size: 24rpx;
+    line-height: 1.9;
+    color: $text-2;
+  }
+
+  /* 一级条款（一、二…）：比二级更重一级 */
+  &__section {
+    margin-top: 36rpx;
+  }
+
+  &__section-title {
     display: block;
     font-size: 30rpx;
-    font-weight: 600;
+    font-weight: 700;
     line-height: 1.5;
     color: $text-1;
   }
 
-  /* 条款正文：行距放宽到 2 倍、首行缩进两字、两端对齐 —— 长文读起来不挤、不散 */
+  /* 二级条款（1.1 / 1.2…）：小节标题，与正文拉开层级 */
+  &__clause {
+    margin-top: 20rpx;
+  }
+
+  &__clause-title {
+    display: block;
+    font-size: 26rpx;
+    font-weight: 600;
+    line-height: 1.6;
+    color: $text-1;
+  }
+
+  /* 条款正文：小字（25rpx，比原来的 27rpx 更小）+ 2 倍行距（不因字小而变密）+
+     首行缩进 / 两端对齐，长文读起来不挤不散 */
   &__clause-body {
     display: block;
-    margin-top: 12rpx;
-    font-size: 27rpx;
+    margin-top: 8rpx;
+    font-size: 25rpx;
     line-height: 2;
     color: $text-2;
     text-indent: 2em;

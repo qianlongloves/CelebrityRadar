@@ -240,12 +240,6 @@ export default function Messages() {
           })}
         </View>
       )}
-
-      {!loading && truncated && (
-        <View className='disclaimer'>
-          关注更新仅覆盖最近关注的 30 位（每位需读两次缓存，不做无上限拉取）
-        </View>
-      )}
       <View className='disclaimer'>
         消息仅自己可见；本机已读与删除记录随「清空我的数据」一并清除
       </View>

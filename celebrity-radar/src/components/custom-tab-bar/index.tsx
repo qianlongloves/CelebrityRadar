@@ -5,7 +5,7 @@ import { exploreRandomPerson } from '../../utils/explore'
 import { TABBAR_SYNC_EVENT } from '../../utils/tabbar'
 import './index.scss'
 
-/** 自定义底部菜单（参照 Figma：半透明浅紫底栏 + 中央凸起紫色圆钮 + 四图标槽位） */
+/** 自定义底部菜单（悬浮胶囊底栏 + 中央凸起紫色圆钮 + 四个 tab 槽位） */
 
 interface TabItem {
   path: string
@@ -30,14 +30,19 @@ const TABS: TabItem[] = [
 ]
 
 /**
- * **唯一**的「显示图标 / 纯文字」切换点。
+ * **唯一**的「图标+文字 / 纯文字」切换点。
  *
- * 2026-10-13 定为 `false`：四个 tab 只用文字，走「纯文字一体化按钮」形态 ——
- * 文字被当成「图形按钮」来设计（字号放大、选中态加粗 + 品牌色 + 淡品牌底 pill），
- * 见 index.scss 里 .tabbar__btn / .tabbar__label 的注释。开关保留在模块级，
- * 左右两槽位共用（改回 true 即恢复图标 + 文字），故图标相关的代码仍然是活的、没有删。
+ * 2026-10-13 定为 `true`：四个 tab 走**传统垂直排布** —— 图标在上、文字在下，两者不重叠；
+ * 图标 48rpx、文字收小到 22rpx（原 28rpx）。
+ * 选中语义按传统 tab：**选中时图标与文字一起高亮**（图标满不透明 + 文字品牌色），
+ * 未选中整体弱化（图标半透明 + 文字弱灰）—— 已把上一版「选中图标反而退淡」的反转强调反转回来。
+ * 详见 index.scss 的 .tabbar--icon。
+ * 置为 `false` 则回到纯文字 + 下方短指示条的「tab 标签页」形态（见 index.scss
+ * 的 .tabbar--text / 基础 __btn::after）。
+ * 开关留在模块级、左右两槽位共用；两种形态的样式互不污染：根容器按开关挂
+ * `tabbar--icon` / `tabbar--text`，各自在自己的作用域里覆盖。
  */
-const TAB_SHOW_ICON = false
+const TAB_SHOW_ICON = true
 
 /** 归一化路由：个别基础库给的是带前导斜杠的完整路径，不统一就一个都匹配不上、恒亮首项 */
 function currentRoute(): string {
@@ -83,7 +88,8 @@ export default function CustomTabBar() {
   }
 
   return (
-    <View className='tabbar'>
+    /* 根容器按开关挂形态类：icon 态与纯文字态的样式各在自己的作用域里，互不污染 */
+    <View className={`tabbar ${TAB_SHOW_ICON ? 'tabbar--icon' : 'tabbar--text'}`}>
       <View className='tabbar__inner'>
         {/* 左侧两槽位 */}
         {TABS.slice(0, 2).map((t) => (
@@ -92,9 +98,9 @@ export default function CustomTabBar() {
             className={`tabbar__item ${selected === t.path ? 'tabbar__item--active' : ''}`}
             onClick={() => switchTo(t.path)}
           >
-            {/* 一体化按钮：图标与文字收进**同一个** pill 容器 `.tabbar__btn`（横排、统一间距与命中区），
-                不再像「图标一块 / 文字一块」两个分离元素。整格仍可点（onClick 在外层 item 上）。
-                图标由模块级开关 TAB_SHOW_ICON 统一控制（改它为 false 即纯文字形态）。 */}
+            {/* 传统垂直排布：图标在上、文字在下（见 .tabbar--icon 的 flex-direction: column）。
+                图标由模块级开关 TAB_SHOW_ICON 统一控制（false 即回到纯文字 + 指示条形态）。
+                整格仍可点（onClick 在外层 item 上）。 */}
             <View className='tabbar__btn'>
               {TAB_SHOW_ICON && <View className={`tabbar__icon tabbar__icon--${t.icon}`} />}
               <Text className='tabbar__label'>{t.label}</Text>

@@ -76,36 +76,47 @@ describe('底部菜单：四格文案与路由（静态约束）', () => {
     ok(scss.includes('&--eye { background-image: $icon-eye; }'), 'tabbar__icon--eye 未绑定 $icon-eye')
   })
 
-  it('一体化按钮：图标与文字收进同一容器 .tabbar__btn，整格仍可点（命中区不缩小）', () => {
+  it('传统垂直排布：图标与文字收进同一容器 .tabbar__btn，图标在上、文字在下、不重叠，整格仍可点', () => {
     const scss = read(path.join(SRC, 'components', 'custom-tab-bar', 'index.scss'))
-    /* 图标与文字在**同一个** pill 容器内（不再「图标一块 / 文字一块」） */
+    /* 图标与文字在**同一个**内容容器 .tabbar__btn 内（垂直排布：图标在上、文字在下） */
     ok(tabbarTsx.includes("className='tabbar__btn'"), '每个 tab 应把图标与文字收进同一容器 .tabbar__btn')
     const btnBlocks = tabbarTsx.match(/<View className='tabbar__btn'>[\s\S]*?<\/View>/g) || []
     ok(btnBlocks.length === 2, `左右两槽位应各有一个 .tabbar__btn（实际 ${btnBlocks.length}）`)
     for (const b of btnBlocks) {
       ok(
         b.includes('tabbar__icon--${t.icon}') && b.includes("className='tabbar__label'"),
-        '同一个 .tabbar__btn 内应同时含图标与文字（一体化按钮）'
+        '同一个 .tabbar__btn 内应同时含图标与文字'
       )
     }
-    /* 唯一切换点：模块级 TAB_SHOW_ICON；2026-10-13 定为 false（纯文字形态），两处渲染共用同一开关 */
-    ok(tabbarTsx.includes('const TAB_SHOW_ICON = false'), '应关闭图标、走纯文字形态（唯一切换点）')
+    /* 唯一切换点：模块级 TAB_SHOW_ICON；2026-10-13 定为 true（传统垂直图标），两处渲染共用同一开关 */
+    ok(tabbarTsx.includes('const TAB_SHOW_ICON = true'), '应开启图标、走传统垂直形态（唯一切换点）')
     ok((tabbarTsx.match(/TAB_SHOW_ICON &&/g) || []).length === 2, '两处渲染都应受同一开关控制')
-    /* 整格可点：onClick 在 item 上（包裹 pill），不是只点图标 / 只点文字 */
+    /* 整格可点：onClick 在 item 上（包裹 .tabbar__btn），不是只点图标 / 只点文字 */
     ok(
       /className=\{`tabbar__item [\s\S]*?onClick=\{\(\) => switchTo\(t\.path\)\}[\s\S]*?className='tabbar__btn'/.test(
         tabbarTsx
       ),
-      '整格可点：onClick 挂在外层 item 上，pill 在其内部'
+      '整格可点：onClick 挂在外层 item 上，内容容器在其内部'
     )
     ok(
       !/tabbar__btn'[^>]*onClick/.test(tabbarTsx) && !/tabbar__icon[^}]*onClick/.test(tabbarTsx),
       '点击处理不应只挂在图标或文字上（否则命中区缩小）'
     )
-    /* 样式：pill 用横排、统一间距 */
+    /* 传统垂直形态：图标态样式收在 .tabbar--icon 作用域 —— 图标回静态流（非绝对定位 / 非背景层），
+       内容容器改竖排、图标在上文字在下 */
     ok(scss.includes('&__btn'), '缺 .tabbar__btn 样式')
-    ok(/&__btn\s*\{[\s\S]*?flex-direction:\s*row/.test(scss), '一体化按钮应横排（图标 + 文字同一行）')
-    ok(/&__btn\s*\{[\s\S]*?gap:\s*\d+rpx/.test(scss), '一体化按钮应统一间距')
+    ok(
+      /\.tabbar--icon[\s\S]*?\.tabbar__btn\s*\{[\s\S]*?flex-direction:\s*column/.test(scss),
+      '内容容器应改竖排（flex-direction: column，图标在上、文字在下）'
+    )
+    ok(
+      !/\.tabbar--icon[\s\S]*?\.tabbar__icon\s*\{[\s\S]*?position:\s*absolute/.test(scss),
+      '图标不应再绝对定位（不再是垫在文字后的背景层）'
+    )
+    ok(
+      !/\.tabbar--icon[\s\S]*?\.tabbar__label\s*\{[\s\S]*?z-index/.test(scss),
+      '文字不应再有 z-index 分层（不再压图层）'
+    )
   })
 })
 
