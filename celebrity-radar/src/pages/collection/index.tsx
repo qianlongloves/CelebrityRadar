@@ -2,12 +2,15 @@ import { useRef, useState } from 'react'
 import { useDidShow } from '@tarojs/taro'
 import { View } from '@tarojs/components'
 import FavoritesView from '@/components/favorites-view'
-import { useTabBarSync } from '@/utils/tabbar'
 
-/** 收藏（tabBar 页面，switchTab 进入故无返回箭头）
- *  浏览历史已独立为 pages/history；「我的」里带返回按钮的收藏入口见 pages/records */
+/**
+ * 收藏页。
+ *
+ * 2026-10-13 起收藏不再是 tab（第三格让给「盯」舆情页），本页保留但降为普通页：
+ * 不再同步 tabBar 选中态、也不再为悬浮底栏预留底部空间（.safe-bottom 即可）；
+ * 「我的」里带返回按钮的收藏入口见 pages/records。浏览历史已独立为 pages/history。
+ */
 export default function Collection() {
-  useTabBarSync()
   const [reloadKey, setReloadKey] = useState(0)
   const firstShow = useRef(true)
 
@@ -22,7 +25,7 @@ export default function Collection() {
   })
 
   return (
-    <View className='glow-page safe-tab'>
+    <View className='glow-page safe-bottom'>
       <FavoritesView reloadKey={reloadKey} />
     </View>
   )

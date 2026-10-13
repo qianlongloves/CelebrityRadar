@@ -2,16 +2,24 @@
 @import '../../styles/tabbar-icons.scss';
 
 .tabbar {
-  /* 贴屏幕最底部：背景放在根容器（含安全区 padding，避免底部透明缝） */
+  /*
+   * 悬浮胶囊（替代原「贴底通栏」）：四周留白、四角一致圆角，
+   * 底部间距里含安全区，避免压到 Home 指示条。
+   *
+   * 背景分两层：先给一层足够不透明的兜底色，再叠毛玻璃。部分机型 / 低版本
+   * WebView 不支持 backdrop-filter，此时只剩兜底色 —— 它必须自己就能让栏内
+   * 文字与下方内容拉开对比，不能指望模糊来救。
+   */
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 24rpx;
+  right: 24rpx;
+  bottom: calc(24rpx + env(safe-area-inset-bottom));
   z-index: 999;
-  padding-bottom: env(safe-area-inset-bottom);
-  background: rgba(238, 233, 255, 0.92);
-  border-radius: 44rpx 44rpx 0 0;
-  box-shadow: 0 -8rpx 40rpx rgba(95, 51, 225, 0.08);
+  background: rgba(238, 233, 255, 0.94);
+  border-radius: 40rpx;
+  box-shadow: 0 12rpx 48rpx rgba(95, 51, 225, 0.16);
+  -webkit-backdrop-filter: blur(20rpx);
+  backdrop-filter: blur(20rpx);
 
   &__inner {
     display: flex;
@@ -48,6 +56,8 @@
     &--calendar { background-image: $icon-calendar; }
     &--doc { background-image: $icon-doc; }
     &--user { background-image: $icon-user; }
+    /* 舆情页（「盯」）槽位：眼睛造型，见 styles/tabbar-icons.scss 的 $icon-eye */
+    &--eye { background-image: $icon-eye; }
 
     .tabbar__item--active & {
       opacity: 1;

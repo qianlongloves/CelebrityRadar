@@ -13,12 +13,20 @@ interface TabItem {
   icon: string
 }
 
+/**
+ * 四格主菜单：查 / 问 / 盯 / 管。
+ *
+ * 2026-10-13 由「发现 / AI 提问 / 收藏 / 我的」改成这四字，第三格从收藏换成
+ * 新增的舆情页（盯）：关注动态 / 周报 / 预警三件事都是「持续看」，凑成一格比
+ * 让用户分别去三级页更顺；收藏不再是 tab，改由「我的」进入（见 pages/records）。
+ * icon 与路径一一对应，顺序仍按前 2 / 后 2 分组渲染（见下方 render）。
+ */
 const TABS: TabItem[] = [
-  { path: '/pages/index/index', label: '发现', icon: 'home' },
-  /* 第二格原为「关注」：关注流改二级页后，这里让给「AI 提问」（对话气泡图标） */
-  { path: '/pages/ask/index', label: 'AI 提问', icon: 'chat' },
-  { path: '/pages/collection/index', label: '收藏', icon: 'doc' },
-  { path: '/pages/mine/index', label: '我的', icon: 'user' }
+  { path: '/pages/index/index', label: '查', icon: 'home' },
+  { path: '/pages/ask/index', label: '问', icon: 'chat' },
+  /* 第三格：舆情聚合页（眼睛 = 盯），见 pages/opinion */
+  { path: '/pages/opinion/index', label: '盯', icon: 'eye' },
+  { path: '/pages/mine/index', label: '管', icon: 'user' }
 ]
 
 /** 归一化路由：个别基础库给的是带前导斜杠的完整路径，不统一就一个都匹配不上、恒亮首项 */

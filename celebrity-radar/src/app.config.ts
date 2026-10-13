@@ -19,6 +19,8 @@ export default defineAppConfig({
     'pages/messages/index',
     /* AI 提问频道页（底部菜单第二格：选名人后共用问答面板，见 pages/ask） */
     'pages/ask/index',
+    /* 舆情聚合页（底部菜单第三格「盯」：关注动态 / 周报 / 关键词预警三块概要，见 pages/opinion） */
+    'pages/opinion/index',
     /* AI 问答（报告页底部进入，只读缓存报告、不消耗生成额度，见 pages/qa + utils/qa） */
     'pages/qa/index',
     /* 会员中心（「我的」页会员卡进入：权益对比 + 档位选择 + 吸底支付，见 pages/member） */
@@ -38,16 +40,17 @@ export default defineAppConfig({
     selectedColor: '#5F33E1',
     backgroundColor: '#EEE9FF',
     borderStyle: 'white',
+    /*
+     * 四格：查 / 问 / 盯 / 管（2026-10-13 由「发现 / AI 提问 / 收藏 / 我的」改来）。
+     * 第三格从收藏换成新增的舆情页（盯），收藏不再是 tab、改由「我的」进入（见 pages/records）；
+     * 关注动态 / 周报 / 预警三件事都收进这一格（见 pages/opinion）。
+     * 顺序不能随意调：自定义 tabBar 的槽位按这里的前 2 / 后 2 分组渲染（见 components/custom-tab-bar）。
+     */
     list: [
-      { pagePath: 'pages/index/index', text: '发现' },
-      /*
-       * 第二格是「AI 提问」（2026-10-07 由「关注」换成此页）：
-       * 关注流改为二级页，入口在发现页顶部（见 pages/feed + pages/index 的关注入口）。
-       * 顺序不能随意调：自定义 tabBar 的槽位按这里的前 2 / 后 2 分组渲染。
-       */
-      { pagePath: 'pages/ask/index', text: 'AI 提问' },
-      { pagePath: 'pages/collection/index', text: '收藏' },
-      { pagePath: 'pages/mine/index', text: '我的' }
+      { pagePath: 'pages/index/index', text: '查' },
+      { pagePath: 'pages/ask/index', text: '问' },
+      { pagePath: 'pages/opinion/index', text: '盯' },
+      { pagePath: 'pages/mine/index', text: '管' }
     ]
   },
   window: {

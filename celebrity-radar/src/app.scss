@@ -270,5 +270,6 @@ page {
 /* ===== 安全区 ===== */
 .safe-bottom { padding-bottom: calc(24rpx + env(safe-area-inset-bottom)); }
 
-/* tab 页：为自定义底栏（112rpx + 凸起余量）留空间 */
-.safe-tab { padding-bottom: calc(160rpx + env(safe-area-inset-bottom)); }
+/* tab 页：为自定义底栏留空间。悬浮后底栏离底还有 24rpx 间距，故在 160rpx 基础上加 40rpx
+   （112rpx 栏高 + 24rpx 底距 + 凸起/呼吸余量），保证内容不被悬浮栏遮住 */
+.safe-tab { padding-bottom: calc(200rpx + env(safe-area-inset-bottom)); }

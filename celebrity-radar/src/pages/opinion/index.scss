@@ -1,0 +1,131 @@
+@import '../../styles/variables.scss';
+
+/* 舆情页（底部菜单第三格「盯」）：三块概要卡 + 各块的「查看全部」入口。
+   三块都复用 .card（底色/圆角/内边距/外边距由它给），这里只管卡内布局。 */
+.page-opinion {
+  min-height: 100vh;
+
+  /* 顶部一句标题：说清这页把三件「持续关注」的事凑在一起 */
+  &__hero {
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+    padding: 24rpx 44rpx 0;
+  }
+
+  &__hero-title {
+    font-size: 40rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__hero-sub {
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  /* 区块头：标题 + 右侧「查看全部 ›」 */
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12rpx;
+  }
+
+  &__head-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__more {
+    font-size: 24rpx;
+    color: $brand;
+  }
+
+  /* 加载 / 失败降级：失败那一行可点重试，只影响本区块 */
+  &__hint {
+    display: block;
+    padding: 12rpx 0;
+    font-size: 24rpx;
+    color: $text-3;
+
+    &--err {
+      color: $domain-business;
+    }
+  }
+
+  /* 空态：一句话说清「为什么没有」以及去哪补 */
+  &__empty {
+    display: block;
+    padding: 8rpx 0;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 区块内统计胶囊行 */
+  &__stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12rpx;
+    margin: 4rpx 0 4rpx;
+  }
+
+  &__stat {
+    padding: 6rpx 16rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    font-size: 22rpx;
+    color: $text-2;
+
+    /* 需要引起注意的计数（读取失败 / 新增 / 风险信号）用暖色区分 */
+    &--warn {
+      background: $accent-orange;
+      color: #fff;
+    }
+  }
+
+  /* 概要行：一条动态 / 一条预警，点击进对应完整页 */
+  &__row {
+    padding: 16rpx 0;
+    border-top: 1rpx solid $line;
+  }
+
+  &__row-title {
+    font-size: 28rpx;
+    font-weight: 500;
+    line-height: 1.5;
+    color: $text-1;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+
+  &__row-meta {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 周报区块：覆盖范围 + 综述摘要 */
+  &__weekly-range {
+    display: block;
+    font-size: 24rpx;
+    font-weight: 500;
+    color: $text-2;
+  }
+
+  &__weekly-summary {
+    margin-top: 12rpx;
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    overflow: hidden;
+  }
+}
