@@ -234,6 +234,25 @@ export const TIMELINE_PAGE_SIZE = 10
  */
 export const FEED_PAGE_SIZE = 10
 
+/**
+ * 事件列表页（`pages/events`）**每页条数**（产品口径；真源在此，页面与用例共用）。
+ *
+ * ⚠ 与关注动态页 / 事件时间线页是**同一取舍**：事件列表的数据也是**一次取回全部** ——
+ *   `opinion-store#loadStoredEvents` 一次读回 `opinion_events` 最近 `EVENT_READ_LIMIT` 条；
+ *   库里取不到再回落端上 `buildOpinionEvents` 聚类。云数据库无法对「端上聚类后的一维事件列表」
+ *   做服务端分页 —— 分页只能是**客户端分段渲染**（按页切片，复用 `pageSlice`）。
+ *   · 事件一轮聚类实测约 200 条（见 `opinion-store#EVENT_READ_LIMIT` 的取值依据），本做法足够；
+ *   · 当事件量增长到**数千条**（例如 `opinion_events` 稳定超过一两千）时，一次把整集合读回会
+ *     明显变重（首屏数据量、端上聚类耗时都上来了），此时应改成像时间线明细那样**按
+ *     `event_key` 落一张可 `skip().limit()` 的集合**、或让云函数支持按 `last_at` 游标翻页。
+ *     **本轮不新建集合 / 不改云函数**（零新增云调用是硬约束，且现规模未到）。
+ *
+ * 取 10 而非概要卡的 3：本页是「查看全部事件」之后的**完整页**，用户带着「我要看全部」的预期进来；
+ * 与关注动态页 `FEED_PAGE_SIZE`、事件时间线页 `TIMELINE_PAGE_SIZE` 取同一档（都是 10），
+ * 减少心智与代码分叉。
+ */
+export const EVENTS_PAGE_SIZE = 10
+
 /** 分页切片结果：`rows` 是「累计到第 page 页应渲染的行」（第 1..page 页，非单页） */
 export interface PageSlice<T> {
   /** 累计渲染的行（`items.slice(0, page × pageSize)`） */

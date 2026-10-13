@@ -1,20 +1,26 @@
 'use strict'
 
 /**
- * 舆情页三张**概要卡**「固定首屏 + 按需加载」（P6，2026-10-13）—— 修「内容过多」。
+ * 舆情页概要卡「固定首屏 + 按需加载」（P6，2026-10-13）与
+ * 「两张卡去掉页内加载更多、改为入口」（P7，2026-10-13）。
  *
- * 背景：事件 / 关注动态 / 关键词预警三张概要卡此前走 `sliceDetail(<items>, isMember)`，
- * 会员档「全部」→ 概要列表按明细口径把整库一次渲染。概要数据都是**会累积**的（事件一轮聚类
- * 实测约 200 条；关注动态 = 关注人数 × 条目；预警 = 各监测词条目之和），故三张概要卡统一改为：
- * **固定首屏 3 条 + 「加载更多」每次 3 条**，**与会员态无关**（概要不分档）；会员的明细分层
- * 仍作用在单个事件的**时间线**上（pages/event）。
+ * P6 背景：事件 / 关注动态 / 关键词预警三张概要卡此前走 `sliceDetail(<items>, isMember)`，
+ * 会员档「全部」→ 概要列表按明细口径把整库一次渲染。故改为**固定首屏 3 条 + 「加载更多」**、
+ * **与会员态无关**（概要不分档）；会员的明细分层仍作用在单个事件的**时间线**上（pages/event）。
+ *
+ * P7 背景（用户诉求「不要在舆情台加载更多，新建页面点击跳转、分页加载」）：
+ *   · **事件卡 / 关注动态卡不再页内「加载更多」** —— 只给固定预览（`overviewSlice(<items>, EVENT_OVERVIEW_INITIAL)`，
+ *     即 3 条），改为入口跳独立页：事件 → `pages/events`（卡底「查看全部事件 ›」）、关注动态 → `pages/feed`
+ *     （复用卡头既有的「查看全部 ›」）。这样数据再多两卡长度也恒定，不会把页面撑长。
+ *   · **关键词预警卡仍保留页内「加载更多」**（用户本次未点名它）。
  *
  * 钉住：
  *   1. `overviewSlice` 纯函数：累计行数 / 剩余数 / hasMore 的边界（空、不足、跨批、越界、脏输入）；
  *   2. 概要卡首屏条数**与会员态无关**（overviewSlice 不含会员入参；页面不把 isMember 喂给它）；
  *   3. 静态断言：三张概要卡**都**走 `overviewSlice`（三处调用），**都不再用**按会员档放全的
  *      `sliceDetail` / `moreDetailNote`；头部各自显示总数 / 计数；
- *   4. 到底文案 / 空态由页面按 `hasMore` / 列表长度分支渲染。
+ *   4. **事件 / 关注动态卡无「加载更多」（回归锁）、卡底/卡头有跳独立页的入口**；
+ *      关键词预警卡仍按 `hasMore` 分支「加载更多 / 到底」。
  *
  * 纯函数直接 require 编译产物；页面是 .tsx（不进测试编译），与既有页面用例同法读源码文本断言。
  */
@@ -112,64 +118,84 @@ describe('概要卡：首屏条数与会员态无关（回归锁）', () => {
 
 /* ───────────────────── 3. 页面交互（静态） ───────────────────── */
 
-describe('概要卡：加载更多 / 到底 / 总数（页面静态约束）', () => {
+describe('概要卡：预览 / 入口 / 总数（页面静态约束）', () => {
   const page = read('pages/opinion/index.tsx')
   const scss = read('pages/opinion/index.scss')
 
-  it('头部显示事件总数（不让人以为只有首屏 3 条）', () => {
+  it('事件卡头部显示事件总数（不让人以为只有首屏 3 条）', () => {
     ok(page.includes('事件时间线 · ${events.length} 件事'), '事件卡标题应显示事件总数')
   })
 
-  it('底部「加载更多（还有 N 条）」→ 追加一批；没有更多显示到底文案', () => {
-    ok(page.includes('加载更多事件'), '缺「加载更多」入口')
-    ok(page.includes('还有 {eventSlice.remaining} 条'), '缺剩余条数提示')
-    ok(page.includes('—— 没有更多事件 ——'), '缺到底文案')
-    ok(page.includes('loadMoreEvents'), '缺加载更多的处理函数')
-    ok(page.includes('eventSlice.hasMore'), '应以 hasMore 分支「加载更多 / 到底」')
+  it('事件卡不再页内「加载更多」：只给固定预览，卡底改为「查看全部事件 ›」入口', () => {
+    /* 原口径「卡内加载更多事件」已废弃，这里改为钉新口径（不是弱化：加载更多改为**禁止出现**） */
+    notOk(page.includes('加载更多事件'), '事件卡不得再有页内「加载更多」')
+    notOk(page.includes('loadMoreEvents'), '不得保留事件卡的加载更多处理函数')
+    notOk(page.includes('eventSlice'), '事件卡不再有「按需增长」的切片')
+    ok(page.includes('eventPreview'), '事件卡应走固定预览（overviewSlice(events, EVENT_OVERVIEW_INITIAL)）')
+    ok(page.includes('查看全部事件 ›'), '卡底应新增「查看全部事件 ›」入口')
+    ok(
+      page.includes("goEvents = () => void Taro.navigateTo({ url: '/pages/events/index' })"),
+      '入口应跳到新的事件列表页 pages/events'
+    )
   })
 
   it('既有的空态 / 加载态与其它块不受影响（不含第四处 status:error）', () => {
     ok(page.includes('暂无可归并的事件'), '空态文案仍在')
     ok(page.includes('正在归并事件'), '加载态文案仍在')
     ok(page.includes('pickDailyFocus(') && page.includes('buildOpinionQueue('), '今日要点 / 统一队列未被替换')
-    notOk(page.includes('sliceDetail('), '本页三张概要卡都不再用 sliceDetail（明细分档只留在时间线页）')
-    ok(scss.includes('&__done'), '缺到底文案样式钩子')
+    notOk(page.includes('sliceDetail('), '本页概要卡都不再用 sliceDetail（明细分档只留在时间线页）')
+    ok(scss.includes('&__done'), '缺到底文案样式钩子（关键词预警卡仍在用）')
   })
 })
 
-/* ─────────────── 4. 三张概要卡「统一按需加载」（静态回归锁） ─────────────── */
+/* ─────────────── 4. 两张卡改入口 / 词预警卡保留按需加载（静态回归锁） ─────────────── */
 
-describe('三张概要卡统一按需加载（事件 / 关注动态 / 关键词预警）', () => {
+describe('事件 / 关注动态两卡去掉页内「加载更多」改为入口；关键词预警卡保留按需加载', () => {
   const page = read('pages/opinion/index.tsx')
 
-  it('三处都走同一套 overviewSlice + EVENT_OVERVIEW_*（首屏 / 批次常量共用，不另造切片）', () => {
-    /* 三张概要卡各调用一次 overviewSlice（事件 / 关注动态 / 关键词预警）—— 共用同一函数，别留两套 */
-    eq((page.match(/overviewSlice\(/g) || []).length, 3, '三张概要卡应各走一次 overviewSlice')
-    ok(page.includes('overviewSlice(events,'), '事件卡走 overviewSlice')
-    ok(page.includes('overviewSlice(feed.items,'), '关注动态卡走 overviewSlice')
-    ok(page.includes('overviewSlice(alerts.items,'), '关键词预警卡走 overviewSlice')
-    /* 首屏 / 批次常量三处共用（三处 useState 初值 + 三处「加载更多」都取这两个常量） */
-    eq((page.match(/useState\(EVENT_OVERVIEW_INITIAL\)/g) || []).length, 3, '三处首屏都用 EVENT_OVERVIEW_INITIAL')
-    eq((page.match(/n \+ EVENT_OVERVIEW_BATCH/g) || []).length, 3, '三处「加载更多」都按 EVENT_OVERVIEW_BATCH 追加')
-  })
-
-  it('三张卡各自的「加载更多（还有 N 条）」/ 到底文案 / hasMore 分支齐全', () => {
-    for (const [name, slice] of [['事件', 'eventSlice'], ['动态', 'feedSlice'], ['预警', 'alertSlice']]) {
-      ok(page.includes(`加载更多${name}`), `缺「加载更多${name}」入口`)
-      ok(page.includes(`还有 {${slice}.remaining} 条`), `缺 ${name} 剩余条数提示`)
-      ok(page.includes(`—— 没有更多${name} ——`), `缺 ${name} 到底文案`)
-      ok(page.includes(`${slice}.hasMore`), `${name}卡应以 hasMore 分支「加载更多 / 到底」`)
+  it('事件卡 / 关注动态卡：固定预览（各 3 条），不再有「加载更多」与相关 state / 处理函数', () => {
+    /* 三张概要卡仍各走一次 overviewSlice；但前两张的 shown 固定为 EVENT_OVERVIEW_INITIAL（不再按需增长） */
+    ok(page.includes('overviewSlice(events, EVENT_OVERVIEW_INITIAL)'), '事件卡固定预览 3 条')
+    ok(page.includes('overviewSlice(feed.items, EVENT_OVERVIEW_INITIAL)'), '关注动态卡固定预览 3 条')
+    ok(page.includes('overviewSlice(alerts.items,'), '关键词预警卡仍走 overviewSlice')
+    for (const dead of [
+      'eventShownCount',
+      'feedShownCount',
+      'loadMoreEvents',
+      'loadMoreFeed',
+      '加载更多事件',
+      '加载更多动态',
+      '—— 没有更多事件 ——',
+      '—— 没有更多动态 ——'
+    ]) {
+      notOk(page.includes(dead), `两张卡不得残留「${dead}」（去掉加载更多要连 state / 文案一起清干净）`)
     }
-    ok(page.includes('loadMoreEvents') && page.includes('loadMoreFeed') && page.includes('loadMoreAlerts'), '缺三处加载更多处理函数')
   })
 
-  it('三张卡头部各自显示总数 / 计数（不因按需加载丢掉已有信息）', () => {
+  it('两卡各有跳独立页的入口：事件 → pages/events；关注动态复用卡头 pages/feed（不新增第二个入口）', () => {
+    ok(page.includes("Taro.navigateTo({ url: '/pages/events/index' })"), '事件卡入口应指向 pages/events')
+    ok(page.includes("Taro.navigateTo({ url: '/pages/feed/index' })"), '关注动态卡应复用既有的 pages/feed 入口')
+    /* 「查看全部 ›」文字入口只在卡头出现 3 次（关注动态 / 周报 / 预警）—— 不给关注动态再加第二个入口 */
+    eq(
+      (page.match(/className='page-opinion__more'/g) || []).length,
+      3,
+      '「查看全部 ›」卡头入口应恰好 3 个（关注动态例外地复用已有的，不新增）'
+    )
+  })
+
+  it('关键词预警卡本次不动：仍保留页内「加载更多 / 到底」与按需加载 state', () => {
+    ok(page.includes('加载更多预警'), '预警卡的「加载更多」应保留')
+    ok(page.includes('还有 {alertSlice.remaining} 条'), '预警卡应保留剩余条数提示')
+    ok(page.includes('—— 没有更多预警 ——'), '预警卡应保留到底文案')
+    ok(page.includes('alertSlice.hasMore'), '预警卡仍以 hasMore 分支「加载更多 / 到底」')
+    ok(page.includes('loadMoreAlerts') && page.includes('alertShownCount'), '预警卡仍保留按需加载 state / 处理函数')
+    ok(page.includes('n + EVENT_OVERVIEW_BATCH'), '预警卡仍按 EVENT_OVERVIEW_BATCH 追加')
+  })
+
+  it('两卡头部仍显示总数 / 计数（不因去加载更多丢掉已有信息）', () => {
     ok(page.includes('🧩 事件时间线 · ${events.length} 件事'), '事件卡显示事件总数')
     ok(page.includes('近期 {feed.entryCount} 条'), '关注动态卡显示近期条数（总数）')
     ok(page.includes('已关注 {feed.followCount} 人'), '关注动态卡保留关注人数')
-    ok(page.includes('监测 {alerts.keywordCount} 个词'), '预警卡保留监测词数')
-    ok(page.includes('相关报道 {alerts.items.length} 条'), '预警卡显示列表总数')
-    ok(page.includes('风险信号 {alerts.riskCount} 条'), '预警卡保留风险信号数')
   })
 
   it('回归锁：三张概要卡一律不按会员档放全（无 sliceDetail/moreDetailNote/isMember 渲染路径）', () => {

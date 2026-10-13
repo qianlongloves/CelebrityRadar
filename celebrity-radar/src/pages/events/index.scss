@@ -1,0 +1,174 @@
+@import '../../styles/variables.scss';
+
+/* 事件列表页（从舆情页事件卡的「查看全部事件 ›」进入的二级页）：全部事件的列表 +
+   分页加载（首屏第一页 + 触底追加 + 下拉刷新）。与事件时间线页 / 舆情页同一套视觉语言
+   （.card / 分级标签 / 已读跟进），但服务的是「事件列表」这一层。 */
+.page-events {
+  min-height: 100vh;
+
+  &__hero {
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+    padding: 24rpx 44rpx 0;
+  }
+
+  &__hero-sub {
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  /* 列表头：标题 + 「新 N 条」角标同排 */
+  &__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__head-main {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    min-width: 0;
+  }
+
+  &__head-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  /* 单条事件：一张卡，整卡可点进事件时间线页 */
+  &__item {
+    display: flex;
+    flex-direction: column;
+  }
+
+  &__title {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+  }
+
+  &__title-text {
+    font-size: 30rpx;
+    font-weight: 600;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  /* 「新事件」角标：NEW（未读）/ 有新进展（读过但有新报道）。品牌色系，克制不刺眼 */
+  &__badge {
+    flex-shrink: 0;
+    margin-top: 4rpx;
+    padding: 2rpx 10rpx;
+    border-radius: 6rpx;
+    font-size: 18rpx;
+    line-height: 1.7;
+    background: $brand-weak;
+    color: $brand;
+
+    &--update {
+      background: $accent-orange-bg;
+      color: $accent-orange;
+    }
+  }
+
+  &__meta {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 分级标签行：影响面 / 可信度 / 是否需回应（与舆情页同一口径） */
+  &__tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8rpx;
+    margin-top: 10rpx;
+  }
+
+  &__tag {
+    padding: 2rpx 12rpx;
+    border-radius: 6rpx;
+    background: $bg;
+    color: $text-3;
+    font-size: 20rpx;
+    line-height: 1.8;
+
+    &--respond {
+      background: $accent-orange-bg;
+      color: $accent-orange;
+    }
+
+    &--watch {
+      background: $brand-weak;
+      color: $brand;
+    }
+  }
+
+  /* 已读 / 跟进操作行：小文字按钮 + 右侧跳转提示（沿用舆情页交互，不弹窗） */
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 24rpx;
+    margin-top: 10rpx;
+  }
+
+  &__action {
+    font-size: 22rpx;
+    color: $text-3;
+
+    &--on {
+      color: $brand;
+    }
+  }
+
+  /* 右对齐的小字提示：整卡可点，进独立的事件时间线页 */
+  &__go {
+    margin-left: auto;
+    font-size: 22rpx;
+    color: $brand;
+  }
+
+  /* 触底状态行：切片渲染无真实网络加载，故只如实区分「还有 N 条」与到底 */
+  &__foot {
+    display: block;
+    margin-top: 16rpx;
+    padding: 8rpx 0;
+    text-align: center;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 加载 / 空态 / 失败提示 */
+  &__hint {
+    display: block;
+    padding: 24rpx 0;
+    font-size: 24rpx;
+    text-align: center;
+    color: $text-3;
+
+    &--err {
+      color: $domain-business;
+    }
+  }
+
+  &__empty {
+    display: block;
+    padding: 24rpx 44rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 克制的说明行（「聚合 ≠ 认定」/ 降级提示） */
+  &__note {
+    display: block;
+    margin: 12rpx 44rpx 0;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+}

@@ -93,6 +93,15 @@ import './index.scss'
  *   落在各自新增入口），以及事件**时间线页**的明细门禁（pages/event：免费 5 / 会员全部）。
  *   ⚠ 「今日要点」卡（①）本就不受分层限制 —— 它最多 3 条（utils/opinion-rank.ts#DAILY_FOCUS_MAX），
  *     是留存钩子，免费用户照常看到。
+ *
+ * P7（2026-10-13）**两张卡去掉页内「加载更多」，改为入口**：
+ *   · **事件卡（②）**：保留固定预览（`EVENT_OVERVIEW_INITIAL` = 3 条），**移除卡内「加载更多 / 到底」**，
+ *     卡底新增「查看全部事件 ›」→ 新的事件列表页 `pages/events`（那里分页加载：首屏第一页 + 触底追加）；
+ *     每条事件仍可整卡点进单事件时间线页 `pages/event`（`goEvent` 行为不变）。
+ *   · **关注动态卡（③）**：同样固定预览 3 条、**移除「加载更多」**；「看全部」由卡头既有的
+ *     「查看全部 ›」承担（→ 已存在的 `pages/feed`，不再新增第二个入口）。
+ *   · **关键词预警卡（⑤）本次不动**：仍保留页内「加载更多」（用户只点名了上面两处）。
+ *   这样两张卡在数据很多时**长度恒定**，不会把舆情页撑长（正是用户诉求）。
  */
 type Status = 'loading' | 'ready' | 'error'
 
@@ -194,12 +203,15 @@ export default function Opinion() {
     personNames: []
   })
   /**
-   * 三张**概要卡**已渲染到第几条（P6，2026-10-13，端上分片渲染）：首屏固定
+   * **关键词预警卡**已渲染到第几条（P6 / 2026-10-13，端上分片渲染）：首屏固定
    * `EVENT_OVERVIEW_INITIAL` 条，「加载更多」每次 +`EVENT_OVERVIEW_BATCH`。
-   * ⚠ 与会员态**无关** —— 三张概要卡统一走「概要不分档」（见下方 feedSlice / alertSlice 注释）。
+   * ⚠ 与会员态**无关** —— 该卡走「概要不分档」（见下方 alertSlice 注释）。
+   *
+   * 2026-10-13 二次调整：**事件卡与关注动态卡不再在页内「加载更多」**（否则内容越加载页越长，
+   * 这正是本次要修的问题）—— 两卡改为**固定 `EVENT_OVERVIEW_INITIAL` 条预览 + 入口跳独立页**
+   * （事件 → pages/events、关注动态 → pages/feed，后者复用卡头既有的「查看全部 ›」，不新增第二个入口）。
+   * 只有关键词预警卡仍保留页内按需加载（用户未点名它）。
    */
-  const [eventShownCount, setEventShownCount] = useState(EVENT_OVERVIEW_INITIAL)
-  const [feedShownCount, setFeedShownCount] = useState(EVENT_OVERVIEW_INITIAL)
   const [alertShownCount, setAlertShownCount] = useState(EVENT_OVERVIEW_INITIAL)
   /**
    * 落库事件（P4）：`null` = 还没读到 / 读失败（回落本端聚类）；`[]` = 集合为空（同样回落）。
@@ -438,31 +450,32 @@ export default function Opinion() {
   const inboxTotal = alerts.newTotal + alerts.riskNew + eventNew
 
   /**
-   * 三张**概要卡**统一走同一套「固定首屏 + 按需加载」（P6，2026-10-13 修正口径）：
-   * 事件 / 关注动态 / 关键词预警**都**用 `overviewSlice`，**不再按会员档放全**。
+   * **事件卡 / 关注动态卡**只给**固定预览**（`overviewSlice`，条数 = `EVENT_OVERVIEW_INITIAL`），
+   * **不再页内「加载更多」** —— 用户诉求是「不要在舆情台加载更多，改成点进独立页看」：
+   *   · 数据多时这两张卡的长度恒定（永远只 3 条），不会把页面撑长；
+   *   · 要看全部 → 进独立页（事件 → pages/events，关注动态 → pages/feed），在那里分页加载。
+   * 复用既有纯函数 `overviewSlice`（不另造切片），其 `remaining` / `hasMore` 在预览场景不使用。
    *
-   * 为什么改：概要数据都是**会累积**的 —— 事件一轮聚类实测约 200 条；关注动态 = 关注人数 × 条目；
-   * 关键词预警 = 各监测词的条目之和。此前这两张卡与事件卡一样走 `sliceDetail` 的**明细口径**
-   * （会员档「全部」），于是会员一进这一页就把整库一次渲染出来，页面「内容过多」。根因是
-   * **口径用错了位置**：`sliceDetail` 的会员档「全部」是**明细**口径（给「查看全部」之后的明细页 /
-   * 单个事件的时间线用），不该安在**概要卡**上。
+   * **关键词预警卡**仍走「固定首屏 + 页内按需加载」（`alertShownCount` + `EVENT_OVERVIEW_BATCH`）——
+   * 用户本次只点名了事件卡与关注动态卡，未要求改它。
    *
-   * ⚠ **口径变化 —— 概要不分档**：改完后舆情页三张概要卡对免费 / 会员**一视同仁**，
-   *   **「明细条数」这一层分层在舆情页上不再体现**。分层**其余部分仍生效**，并非被删：
-   *     · 关注人数 / 关键词监控数 / 风险监控人数上限（followGate / watchGate / personWatchGate，P2）；
-   *     · 事件**时间线页**的明细门禁（pages/event：免费 5 / 会员全部，走 sliceDetail）。
-   *   故**不给「加载更多」加免费封顶**（用户已明确选择「概要不分档」）。
+   * ⚠ **概要不分档**（P6）：三张卡对免费 / 会员**一视同仁**，「明细条数」这一层分层**不在本页体现**；
+   *   分层其余部分仍生效（关注人数 / 监控数 / 风险监控人数上限；以及事件**时间线页**的明细门禁
+   *   pages/event：免费 5 / 会员全部）。**本页不引入会员态变量**。
    */
-  const eventSlice = overviewSlice(events, eventShownCount)
-  const feedSlice = overviewSlice(feed.items, feedShownCount)
+  const eventPreview = overviewSlice(events, EVENT_OVERVIEW_INITIAL)
+  const feedPreview = overviewSlice(feed.items, EVENT_OVERVIEW_INITIAL)
   const alertSlice = overviewSlice(alerts.items, alertShownCount)
-  const loadMoreEvents = () => setEventShownCount((n) => n + EVENT_OVERVIEW_BATCH)
-  const loadMoreFeed = () => setFeedShownCount((n) => n + EVENT_OVERVIEW_BATCH)
   const loadMoreAlerts = () => setAlertShownCount((n) => n + EVENT_OVERVIEW_BATCH)
 
   const goFeed = () => void Taro.navigateTo({ url: '/pages/feed/index' })
   const goWeekly = () => void Taro.navigateTo({ url: '/pages/weekly/index' })
   const goAlerts = () => void Taro.navigateTo({ url: '/pages/alerts/index' })
+  /**
+   * 事件卡底「查看全部事件 ›」→ 事件列表页（2026-10-13 新增）：本页只给固定预览，
+   * 「看全部事件」挪到独立页分页加载（首屏第一页 + 触底追加），不再在本页越加载越长。
+   */
+  const goEvents = () => void Taro.navigateTo({ url: '/pages/events/index' })
   /** 今日要点点进对应完整页 —— 同一套入口，不新增页面 */
   const goBlock = (block: OpinionBlock) => {
     if (block === 'feed') goFeed()
@@ -643,7 +656,7 @@ export default function Opinion() {
           </Text>
         ) : (
           <>
-            {eventSlice.rows.map((ev) => {
+            {eventPreview.rows.map((ev) => {
               /* 「新事件」角标：没读过 → NEW；读过但最近有报道 → 有新进展（规则见 opinion-store） */
               const newness = eventNewness({ event_key: ev.key, last_at: ev.date }, eventStatus)
               const badge = newnessLabel(newness)
@@ -697,16 +710,12 @@ export default function Opinion() {
                 </View>
               )
             })}
-            {/* 概要卡「加载更多 / 到底」：端上分片渲染（不新增页面、不新增云调用）。
-                首屏只渲染固定若干条，头部标题已给出事件总数（不让人以为只有首屏这几条）；
-                这里每次追加一批，加载完显示到底文案。 */}
-            {eventSlice.hasMore ? (
-              <Text className='page-opinion__more-detail' onClick={loadMoreEvents}>
-                加载更多事件（还有 {eventSlice.remaining} 条）›
-              </Text>
-            ) : (
-              <Text className='page-opinion__done'>—— 没有更多事件 ——</Text>
-            )}
+            {/* 事件卡不再页内「加载更多」（2026-10-13）：只给固定预览（`eventPreview`），
+                卡底改为入口 → 独立的事件列表页（pages/events），在那里分页加载。
+                头部标题已给出事件总数（不让人以为只有首屏这几条）。 */}
+            <Text className='page-opinion__more-detail' onClick={goEvents}>
+              查看全部事件 ›
+            </Text>
           </>
         )}
 
@@ -756,7 +765,7 @@ export default function Opinion() {
                   <Text className='page-opinion__stat page-opinion__stat--warn'>{feed.failedCount} 人读取失败</Text>
                 )}
               </View>
-              {feedSlice.rows.map((e, i) => (
+              {feedPreview.rows.map((e, i) => (
                 <View key={`${e.personName}-${i}`} className='page-opinion__row' onClick={goFeed}>
                   <Text className='page-opinion__row-title'>{e.title}</Text>
                   <Text className='page-opinion__row-meta'>
@@ -772,16 +781,9 @@ export default function Opinion() {
                   {gradeTags(e.source, e.category, e.level)}
                 </View>
               ))}
-              {/* 概要卡「加载更多 / 到底」（与事件卡同一套口径，概要不分档）：首屏只渲染固定若干条，
-                  头部 stats 已给出关注人数 / 近期条数（不让人以为只有首屏这几条）；每次追加一批，
-                  加载完显示到底文案。不再有「会员可见全部 N 条」的明细提示行。 */}
-              {feedSlice.hasMore ? (
-                <Text className='page-opinion__more-detail' onClick={loadMoreFeed}>
-                  加载更多动态（还有 {feedSlice.remaining} 条）›
-                </Text>
-              ) : (
-                <Text className='page-opinion__done'>—— 没有更多动态 ——</Text>
-              )}
+              {/* 关注动态卡不再页内「加载更多」（2026-10-13）：只给固定预览（`feedPreview`）。
+                  头部 stats 已给出关注人数 / 近期条数（不让人以为只有首屏这几条）；「看全部动态」
+                  由卡头既有的「查看全部 ›」入口承担（→ pages/feed 分页加载），此处不新增第二个入口。 */}
             </>
           ))}
       </View>

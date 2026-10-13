@@ -23,6 +23,8 @@ export default defineAppConfig({
     'pages/opinion/index',
     /* 事件时间线（舆情页事件卡跳转的独立二级页；**不是 tab 页**，见 pages/event） */
     'pages/event/index',
+    /* 事件列表（舆情页事件卡「查看全部事件」进入的独立二级页；分页加载，**不是 tab 页**，见 pages/events） */
+    'pages/events/index',
     /* AI 问答（报告页底部进入，只读缓存报告、不消耗生成额度，见 pages/qa + utils/qa） */
     'pages/qa/index',
     /* 会员中心（「我的」页会员卡进入：权益对比 + 档位选择 + 吸底支付，见 pages/member） */
