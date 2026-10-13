@@ -19,8 +19,20 @@ import {
   pickDailyFocus,
   responseOf
 } from '@/utils/opinion-rank'
-import type { OpinionBlock } from '@/utils/opinion-rank'
-import type { RiskSignalRow } from '@/types/db'
+import type { CredTier, ImpactLevel, OpinionBlock, OpinionInput, ResponseNeed } from '@/utils/opinion-rank'
+import { SOURCE_NATURE_LABEL, buildOpinionEvents } from '@/utils/opinion-events'
+import {
+  emptyStatus,
+  eventNewness,
+  loadEventStatus,
+  loadStoredEvents,
+  markEventRead,
+  newnessLabel,
+  resolveDisplayEvents,
+  setEventFollow
+} from '@/utils/opinion-store'
+import type { EventStatus } from '@/utils/opinion-store'
+import type { OpinionEventRow, RiskSignalRow } from '@/types/db'
 import { domainLabel, parsePersonKey } from '@/config/domains'
 import { formatMoment8, fromNow } from '@/utils/time'
 import { useTabBarSync } from '@/utils/tabbar'
@@ -39,9 +51,13 @@ import './index.scss'
  * P1（2026-10-13）：页首新增「今日需要注意的 N 件事」——判断入口。判断规则（分级 / 排序 /
  * 去重 / 挑要点）全在纯函数 utils/opinion-rank.ts 里，本页只负责取数与渲染。
  *
- * ⚠ 合规红线（本页同样适用，见 utils/opinion-rank.ts 文件头）：
- *   · 涉政涉军仍是拒答 —— 本页只重排**已过滤**的存量条目，不新增任何内容来源；
- *   · 每条必带来源与时间，无来源的不进「今日要点」（显示为「来源未标注」而不是编一个）；
+ * P3（2026-10-13）：新增「事件时间线」视角 —— 把同一件事的多条来源聚成一条、给出可展开的时间线。
+ * 聚类与归因同样是纯函数（utils/opinion-events.ts，复用 P1 的 sameEvent / normalizeTitle 判据），
+ * 本页只负责渲染与「展开 / 收起」的本地交互。**聚合 ≠ 认定**：事件卡保留一句克制的轻量说明。
+ *
+ * ⚠ 合规红线（本页同样适用，见 utils/opinion-rank.ts 与 utils/opinion-events.ts 文件头）：
+ *   · 涉政涉军仍是拒答 —— 本页只重排 / 归拢**已过滤**的存量条目，不新增任何内容来源；
+ *   · 每条必带来源与时间，无来源的不进「今日要点」与事件时间线（显示为「来源未标注」而不是编一个）；
  *   · 分级标签来自「报道里出现的表述类别」，不是平台对人和事的定性（页面底部有免责说明）。
  *
  * 刻意不做的事：不在这里调 generateWeekly（生成要花额度且需用户确认，交给完整页）；
@@ -147,6 +163,19 @@ export default function Opinion() {
    *   用户开通后重新进入即生效（沿用项目既有的 readMemberState 口径）。
    */
   const [isMember, setIsMember] = useState(false)
+  /**
+   * 事件卡展开态（P3）：默认全部收起（避免页面过长），点事件头才展开时间线。
+   * 纯本地 UI 状态，重新进入页面即重置 —— 不持久化，也不影响任何数据。
+   */
+  const [openEvents, setOpenEvents] = useState<Record<string, boolean>>({})
+  /**
+   * 落库事件（P4）：`null` = 还没读到 / 读失败（回落本端聚类）；`[]` = 集合为空（同样回落）。
+   * 刻意不用页面的 `Status` 表达它 —— 它本就不算「一块读失败」：读不到就走本端聚类，用户无感，
+   * 也不该多出第四处 `status:'error'`（那会让「每块独立降级」的既有断言失真）。
+   */
+  const [storedEvents, setStoredEvents] = useState<OpinionEventRow[] | null>(null)
+  /** 我的事件状态（已读 / 跟进）；读失败 = 空状态（页面照常，只是显示为「都没读过」） */
+  const [eventStatus, setEventStatus] = useState<EventStatus>(emptyStatus())
 
   /** 会员态：读库失败按非会员处理（保守，只影响展示条数） */
   const loadMember = useCallback(async () => {
@@ -255,19 +284,38 @@ export default function Opinion() {
     }
   }, [])
 
+  /**
+   * 落库事件 + 我的状态（P4）：各自独立 try/catch。
+   * 事件读不到 → 存 `null`（回落本端聚类）；状态读不到 → 空状态。两者都不阻断页面。
+   */
+  const loadEvents = useCallback(async () => {
+    try {
+      setStoredEvents(await loadStoredEvents())
+    } catch {
+      setStoredEvents(null)
+    }
+    try {
+      setEventStatus(await loadEventStatus())
+    } catch {
+      setEventStatus(emptyStatus())
+    }
+  }, [])
+
   useDidShow(() => {
     /* 每次进入都重读会员态：开通后重新进入即看到更高上限 / 更多条数（不引入额外缓存） */
     void loadMember()
     void loadFeed()
     void loadWeekly()
     void loadAlertBlock()
+    void loadEvents()
   })
 
   /**
-   * 统一队列：把三块数据合成一条排序好的列表（纯函数，脏数据自动跳过）。
+   * 三块数据的**统一输入**（摊平后的原始条目）：统一队列与事件聚合共用同一份，
+   * 从而「排序去重」与「事件时间线」看到的是同一批条目、走同一套判据（不会两处漂移）。
    * 输入里 `watchNames` = 关注的人 ∪ 监控的人 —— 两者都是用户主动盯上的对象（见 opinion-rank.ts）。
    */
-  const queue = useMemo(() => {
+  const opinionInput = useMemo<OpinionInput>(() => {
     const weeklyEntries =
       weekly.report?.persons?.flatMap((p) =>
         p.entries.map((it) => ({
@@ -279,7 +327,7 @@ export default function Opinion() {
         }))
       ) ?? []
 
-    return buildOpinionQueue({
+    return {
       feed: feed.items.map((e) => ({
         block: 'feed' as const,
         title: e.title,
@@ -308,8 +356,30 @@ export default function Opinion() {
       ],
       keywords: alerts.keywords,
       watchNames: [...feed.followNames, ...alerts.personNames]
-    })
+    }
   }, [feed.items, feed.followNames, weekly.report, alerts.items, alerts.riskRows, alerts.keywords, alerts.personNames])
+
+  /** 统一队列：把三块数据合成一条排序好的列表（纯函数，脏数据自动跳过） */
+  const queue = useMemo(() => buildOpinionQueue(opinionInput), [opinionInput])
+
+  /** 本端聚类（纯函数）：库未就绪 / 读失败时的**降级**结果，复用 P1 判据与排序 */
+  const localEvents = useMemo(() => buildOpinionEvents(opinionInput), [opinionInput])
+
+  /**
+   * 事件视角（P4）：**优先读落库事件**（全站共享、跨会话保留），读库失败 / 集合为空则回落本端聚类。
+   * 「与我相关」排序所需的 hitsKeyword / hitsFollow 在读库路径上按本用户的词 / 关注的人现算
+   * （见 utils/opinion-store.ts#toDisplayEvents）；两条路产出的事件字段完全一致，渲染零分叉。
+   */
+  const eventView = useMemo(
+    () =>
+      resolveDisplayEvents(
+        storedEvents,
+        { keywords: opinionInput.keywords, watchNames: opinionInput.watchNames },
+        localEvents
+      ),
+    [storedEvents, opinionInput.keywords, opinionInput.watchNames, localEvents]
+  )
+  const events = eventView.events
 
   /** 今日要点：统一队列前 3 条（无来源 / 与我不相关的不凑数）—— 不受明细条数分层限制 */
   const focus = useMemo(() => pickDailyFocus(queue), [queue])
@@ -321,6 +391,13 @@ export default function Opinion() {
    */
   const feedShown = sliceDetail(feed.items, isMember)
   const alertShown = sliceDetail(alerts.items, isMember)
+  /**
+   * 事件视角的两层截断（P3，沿用同一套 opinion-access 门禁，不新写门槛）：
+   *   · 事件列表：免费档切到 detailRows.free 条，会员档全部；
+   *   · 每个事件展开后的**时间线条目**同样按会员态截断（免费也不放全）。
+   * 与今日要点不同 —— 事件卡属于「明细」，免费档受限；今日要点是留存钩子，照常 3 条。
+   */
+  const eventShown = sliceDetail(events, isMember)
 
   const goFeed = () => void Taro.navigateTo({ url: '/pages/feed/index' })
   const goWeekly = () => void Taro.navigateTo({ url: '/pages/weekly/index' })
@@ -332,23 +409,63 @@ export default function Opinion() {
     else if (block === 'weekly') goWeekly()
     else goAlerts()
   }
+  /** 事件卡展开 / 收起（默认收起，见 openEvents） */
+  const toggleEvent = (id: string) => setOpenEvents((s) => ({ ...s, [id]: !s[id] }))
+
+  /**
+   * 「标记已读」（P4）：沿用页面既有交互风格 —— 事件卡头部一个小文字按钮，不弹窗、不遮罩。
+   * 乐观更新本地态，写库失败则回滚并轻提示；状态落在 opinion_event_status（跨会话 / 跨端生效）。
+   */
+  const markRead = async (key: string) => {
+    if (eventStatus.reads[key]) return
+    const now = new Date().toISOString()
+    setEventStatus((s) => ({ ...s, reads: { ...s.reads, [key]: now } }))
+    if (!(await markEventRead(key))) {
+      setEventStatus((s) => {
+        const reads = { ...s.reads }
+        delete reads[key]
+        return { ...s, reads }
+      })
+      Taro.showToast({ title: '标记失败，请重试', icon: 'none' })
+    }
+  }
+
+  /** 「跟进 / 已跟进」切换（P4）：与标记已读同一套乐观更新 + 回滚，不弹窗 */
+  const toggleFollow = async (key: string) => {
+    const following = !!eventStatus.follows[key]
+    const now = new Date().toISOString()
+    setEventStatus((s) => {
+      const follows = { ...s.follows }
+      if (following) delete follows[key]
+      else follows[key] = now
+      return { ...s, follows }
+    })
+    if (!(await setEventFollow(key, !following))) {
+      setEventStatus((s) => {
+        const follows = { ...s.follows }
+        if (following) follows[key] = now
+        else delete follows[key]
+        return { ...s, follows }
+      })
+      Taro.showToast({ title: '操作失败，请重试', icon: 'none' })
+    }
+  }
+
+  /** 分级标签行（影响面 / 可信度 / 是否需回应）的可复用渲染：单条与事件卡共用 */
+  const tagsView = (impact: ImpactLevel, cred: CredTier, resp: ResponseNeed) => (
+    <View className='page-opinion__tags'>
+      <Text className={`page-opinion__tag page-opinion__tag--${impact}`}>{IMPACT_LABEL[impact]}</Text>
+      <Text className={`page-opinion__tag page-opinion__tag--cred-${cred}`}>{CRED_LABEL[cred]}</Text>
+      <Text className={`page-opinion__tag page-opinion__tag--${resp}`}>{RESPONSE_LABEL[resp]}</Text>
+    </View>
+  )
 
   /**
    * 单条的分级标签（影响面 / 可信度 / 是否需回应）。
    * feed 与关键词预警条目没有风险级别字段，故这里是「未评级 / 未知」——**如实透出，不猜**。
    */
-  const gradeTags = (source: string, category?: RiskSignalRow['category'], level?: string) => {
-    const impact = impactOf(level)
-    const cred = credibilityOf([source])
-    const resp = responseOf(category, level)
-    return (
-      <View className='page-opinion__tags'>
-        <Text className={`page-opinion__tag page-opinion__tag--${impact}`}>{IMPACT_LABEL[impact]}</Text>
-        <Text className={`page-opinion__tag page-opinion__tag--cred-${cred}`}>{CRED_LABEL[cred]}</Text>
-        <Text className={`page-opinion__tag page-opinion__tag--${resp}`}>{RESPONSE_LABEL[resp]}</Text>
-      </View>
-    )
-  }
+  const gradeTags = (source: string, category?: RiskSignalRow['category'], level?: string) =>
+    tagsView(impactOf(level), credibilityOf([source]), responseOf(category, level))
 
   return (
     <View className='page-opinion glow-page safe-tab'>
@@ -383,6 +500,122 @@ export default function Opinion() {
 
         <Text className='page-opinion__note'>
           以上均为公开报道的转载与检索结果，不是平台对任何人、任何事的定性；分级来自报道里出现的表述类别。
+        </Text>
+      </View>
+
+      {/* ===== 事件时间线（P3：同一事件的多来源聚合 + 可展开时间线） ===== */}
+      <View className='card page-opinion__events'>
+        <View className='page-opinion__head'>
+          <Text className='page-opinion__head-title'>
+            {events.length > 0 ? `🧩 事件时间线 · ${events.length} 件事` : '🧩 事件时间线'}
+          </Text>
+        </View>
+
+        {events.length === 0 ? (
+          <Text className='page-opinion__empty'>
+            {feed.status === 'loading' || weekly.status === 'loading' || alerts.status === 'loading'
+              ? '正在归并事件…'
+              : '暂无可归并的事件，关注的人或监控词有新动态时会聚在这里'}
+          </Text>
+        ) : (
+          <>
+            {eventShown.rows.map((ev) => {
+              const open = !!openEvents[ev.id]
+              /* 时间线也按会员态截断（免费档不放全） —— 与事件列表同一套 opinion-access 门禁 */
+              const tl = sliceDetail(ev.timeline, isMember)
+              /* 「新事件」角标：没读过 → NEW；读过但最近有报道 → 有新进展（规则见 opinion-store） */
+              const newness = eventNewness({ event_key: ev.key, last_at: ev.date }, eventStatus)
+              const badge = newnessLabel(newness)
+              const read = !!eventStatus.reads[ev.key]
+              const following = !!eventStatus.follows[ev.key]
+              return (
+                <View key={ev.key} className='page-opinion__event'>
+                  <View className='page-opinion__event-head'>
+                    <View className='page-opinion__event-title' onClick={() => toggleEvent(ev.id)}>
+                      <Text className='page-opinion__row-title'>{ev.title}</Text>
+                      {badge ? (
+                        <Text className={`page-opinion__badge page-opinion__badge--${newness}`}>{badge}</Text>
+                      ) : null}
+                    </View>
+                    <Text className='page-opinion__row-meta' onClick={() => toggleEvent(ev.id)}>
+                      {[
+                        `${ev.memberCount} 条来源`,
+                        ev.labels.length ? ev.labels.join('、') : '',
+                        ev.date ? `最近 ${formatMoment8(ev.date)}` : '',
+                        `${ev.timeline.length} 个节点`
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                    {tagsView(ev.impact, ev.credibility, ev.response)}
+                    {/* 已读 / 跟进：克制的两个小文字按钮，不用弹窗、不遮罩 */}
+                    <View className='page-opinion__event-actions'>
+                      <Text
+                        className={`page-opinion__action${read ? ' page-opinion__action--on' : ''}`}
+                        onClick={() => void markRead(ev.key)}
+                      >
+                        {read ? '✓ 已读' : '标记已读'}
+                      </Text>
+                      <Text
+                        className={`page-opinion__action${following ? ' page-opinion__action--on' : ''}`}
+                        onClick={() => void toggleFollow(ev.key)}
+                      >
+                        {following ? '★ 已跟进' : '☆ 跟进'}
+                      </Text>
+                      <Text className='page-opinion__event-toggle' onClick={() => toggleEvent(ev.id)}>
+                        {open ? '收起时间线 ▲' : '展开时间线 ▼'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {open && (
+                    <View className='page-opinion__timeline'>
+                      {tl.rows.map((t, i) => (
+                        <View key={`${ev.key}-${i}`} className='page-opinion__timeline-item'>
+                          <View className='page-opinion__timeline-dot' />
+                          <View className='page-opinion__timeline-body'>
+                            <Text className='page-opinion__timeline-meta'>
+                              {[
+                                t.date ? formatMoment8(t.date) : '',
+                                t.source || '来源未标注',
+                                SOURCE_NATURE_LABEL[t.nature],
+                                t.label
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')}
+                            </Text>
+                            <Text className='page-opinion__timeline-text'>{t.text}</Text>
+                          </View>
+                        </View>
+                      ))}
+                      {/* 免费档时间线被截断：沿用与明细同一行升级引导（不新造弹窗） */}
+                      {tl.hidden > 0 && (
+                        <Text className='page-opinion__more-detail' onClick={goMember}>
+                          {moreDetailNote(ev.timeline.length)}
+                        </Text>
+                      )}
+                    </View>
+                  )}
+                </View>
+              )
+            })}
+            {/* 免费档事件列表被截断：列表底部一行升级引导 */}
+            {eventShown.hidden > 0 && (
+              <Text className='page-opinion__more-detail' onClick={goMember}>
+                {moreDetailNote(events.length)}
+              </Text>
+            )}
+          </>
+        )}
+
+        {/* 降级提示：云端事件库还没产出（或读失败）时，如实说明是本机临时归并（不遮不弹） */}
+        {eventView.source === 'local' && events.length > 0 && (
+          <Text className='page-opinion__note'>云端事件库暂未产出，以上为本机临时归并（稍后自动切换为共享事件）。</Text>
+        )}
+
+        <Text className='page-opinion__note'>
+          把多条报道归到同一件事只是为了方便阅读，不代表平台已核实任何事实：每条都带来源与时间，
+          「官方通报」与「媒体报道」分别标注，聚合本身不等于认定。
         </Text>
       </View>
 

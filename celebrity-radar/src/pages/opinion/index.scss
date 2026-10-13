@@ -182,4 +182,126 @@
     font-size: 24rpx;
     color: $brand;
   }
+
+  /* 事件卡（P3）：每个事件一条，点头部展开 / 收起时间线（默认收起，避免页面过长）。
+     与三块概要同一语言：标题用 __row-title、元信息用 __row-meta、分级用 __tags，不另起一套。 */
+  &__event {
+    padding: 16rpx 0;
+    border-top: 1rpx solid $line;
+  }
+
+  &__event-head {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 展开 / 收起提示：右对齐的小字，比「查看全部」更轻，只作可点提示 */
+  &__event-toggle {
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    color: $brand;
+  }
+
+  /* 事件标题行：标题 + 新事件角标（角标靠右，不抢标题） */
+  &__event-title {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+  }
+
+  /* 新事件角标：NEW（未读）/ 有新进展（读过但有新报道）。品牌色系，克制不刺眼 */
+  &__badge {
+    flex-shrink: 0;
+    margin-top: 4rpx;
+    padding: 2rpx 10rpx;
+    border-radius: 6rpx;
+    font-size: 18rpx;
+    line-height: 1.7;
+    background: $brand-weak;
+    color: $brand;
+
+    &--update {
+      background: $accent-orange-bg;
+      color: $accent-orange;
+    }
+  }
+
+  /* 已读 / 跟进操作行：三个小文字按钮平铺（含原有的展开 / 收起提示），克制、不弹窗 */
+  &__event-actions {
+    display: flex;
+    align-items: center;
+    gap: 24rpx;
+    margin-top: 10rpx;
+  }
+
+  &__action {
+    font-size: 22rpx;
+    color: $text-3;
+
+    /* 已生效的态（已读 / 已跟进）用品牌色点一下，未生效保持灰调 */
+    &--on {
+      color: $brand;
+    }
+  }
+
+  /* 时间线：左侧一条竖线 + 各节点圆点，节点的日期 / 来源 / 来源性质 / 归属排在日期行，
+     正文在下一行。刻意只做信息陈列，不加任何「进展到哪一步」的模型判断。 */
+  &__timeline {
+    margin-top: 8rpx;
+    padding-left: 8rpx;
+  }
+
+  &__timeline-item {
+    display: flex;
+    gap: 16rpx;
+    position: relative;
+    padding: 10rpx 0 10rpx;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 8rpx;
+      top: 28rpx;
+      bottom: 0;
+      width: 1rpx;
+      background: $line;
+    }
+
+    &:last-child::before {
+      display: none;
+    }
+  }
+
+  &__timeline-dot {
+    flex-shrink: 0;
+    width: 12rpx;
+    height: 12rpx;
+    margin-top: 8rpx;
+    border-radius: 50%;
+    background: $brand-weak;
+    border: 3rpx solid $brand-soft;
+    box-sizing: content-box;
+    z-index: 1;
+  }
+
+  &__timeline-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  /* 日期行：时间 · 来源 · 来源性质 · 归属。每条都必须能看出「谁在何时、从什么渠道」说的 */
+  &__timeline-meta {
+    display: block;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__timeline-text {
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+  }
 }

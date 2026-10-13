@@ -280,33 +280,46 @@ interface Ordered {
   ord: number
 }
 
-function hitTier(e: OpinionEntry): number {
-  return e.hitsKeyword ? 2 : e.hitsFollow ? 1 : 0
-}
-
 function dateMs(date: string): number {
   const t = Date.parse(date)
   return Number.isFinite(t) ? t : 0
 }
 
 /**
- * 排序比较器（**实现即需求里写死的优先级**，从高到低依次比较，全相等则按原始顺序稳定）：
+ * 排序口径（**P1 统一队列与 P3 事件聚合共用同一份实现**，避免两处各写一套而漂移）。
+ *
+ * 只比较四档（不含「原始顺序」兜底那一档，那由调用方补）：
  *   1. 命中监控的关键词(2) > 命中关注/监控的人(1) > 其余(0)；
  *   2. 影响面高者优先（高>中>低>未评级）；
  *   3. 需回应者优先（建议回应>建议关注>其余）；
- *   4. 时间新者优先（不可解析的时间按最旧算，垫底）；
- *   5. 兜底：原始顺序（保证稳定，不因同分而抖动）。
+ *   4. 时间新者优先（不可解析的时间按最旧算，垫底）。
+ *
+ * 输入刻意收窄成「能排序的最小字段集」：`OpinionEntry` 与 `OpinionEvent` 都天然满足它，
+ * 于是事件聚合可以对事件直接排序，不必再抄一遍权重表。
  */
-function compareOrdered(a: Ordered, b: Ordered): number {
-  const t = hitTier(b.e) - hitTier(a.e)
-  if (t !== 0) return t
-  const l = IMPACT_RANK[b.e.impact] - IMPACT_RANK[a.e.impact]
+export interface OpinionOrderKey {
+  hitsKeyword?: boolean
+  hitsFollow?: boolean
+  impact: ImpactLevel
+  response: ResponseNeed
+  date: string
+}
+
+export function compareOpinionOrder(a: OpinionOrderKey, b: OpinionOrderKey): number {
+  const ta = a.hitsKeyword ? 2 : a.hitsFollow ? 1 : 0
+  const tb = b.hitsKeyword ? 2 : b.hitsFollow ? 1 : 0
+  if (tb !== ta) return tb - ta
+  const l = IMPACT_RANK[b.impact] - IMPACT_RANK[a.impact]
   if (l !== 0) return l
-  const r = RESPONSE_RANK[b.e.response] - RESPONSE_RANK[a.e.response]
+  const r = RESPONSE_RANK[b.response] - RESPONSE_RANK[a.response]
   if (r !== 0) return r
-  const d = dateMs(b.e.date) - dateMs(a.e.date)
-  if (d !== 0) return d
-  return a.ord - b.ord
+  return dateMs(b.date) - dateMs(a.date)
+}
+
+/** 在 compareOpinionOrder 之上补「原始顺序」兜底：全相等时保持入参先后（稳定，不因同分抖动） */
+function compareOrdered(a: Ordered, b: Ordered): number {
+  const c = compareOpinionOrder(a.e, b.e)
+  return c !== 0 ? c : a.ord - b.ord
 }
 
 /* ─────────────────────────── 组装 ─────────────────────────── */
@@ -361,13 +374,10 @@ function reasonOf(e: OpinionEntry): string {
 }
 
 /**
- * 合成统一队列（纯函数）：
- *   1. 三块条目摊平 → 逐条生成判断信息（脏数据跳过）；
- *   2. 按 sameEvent 去重分组，组内保留**排序最靠前**的那条为代表；
- *   3. 可信度用**整组的去重来源**算（同事件的多个来源才算「多方报道」）；
- *   4. 全队列按 compareOrdered 排序，编号并生成「为什么值得注意」。
+ * 摊平三块条目 → 逐条生成判断信息（脏数据跳过），并记录入参序号用于稳定排序。
+ * 三块的收集顺序固定为 feed → weekly → alert（与既有排序的兜底口径一致）。
  */
-export function buildOpinionQueue(input: OpinionInput = {}): OpinionEntry[] {
+function collectOrdered(input: OpinionInput): Ordered[] {
   const keywords = normList(input.keywords)
   const watchNames = normList(input.watchNames)
 
@@ -383,8 +393,24 @@ export function buildOpinionQueue(input: OpinionInput = {}): OpinionEntry[] {
   collect(input.feed, 'feed')
   collect(input.weekly, 'weekly')
   collect(input.alerts, 'alert')
+  return ordered
+}
 
-  /* 去重分组：逐条找已有组里是否有同事件的代表，没有则开新组 */
+/** 同事件分组内部结构：组内成员 + 排序代表 + 整组去重来源 */
+interface OrderedGroup {
+  rows: Ordered[]
+  representative: Ordered
+  sources: string[]
+}
+
+/**
+ * 按 `sameEvent` 去重分组，并算出每组的**排序代表**（组内按 compareOrdered 最靠前的那条）与
+ * 整组去重来源。可信度用整组来源重算 —— 同事件的多个来源才算「多方报道」。
+ *
+ * ⚠ 这是 P1 去重与 P3 事件聚合的**唯一分组实现**：两处必须走同一条判据、同一套代表选取，
+ *   否则会出现「排序认为是一条、时间线却分成两条」的漂移。
+ */
+function groupOrdered(ordered: Ordered[]): OrderedGroup[] {
   const groups: Ordered[][] = []
   for (const row of ordered) {
     const g = groups.find((grp) => sameEvent(grp[0].e.title, row.e.title))
@@ -392,24 +418,60 @@ export function buildOpinionQueue(input: OpinionInput = {}): OpinionEntry[] {
     else groups.push([row])
   }
 
-  const reps: Ordered[] = []
-  for (const g of groups) {
+  return groups.map((g) => {
     let best = g[0]
     for (const row of g) if (compareOrdered(row, best) < 0) best = row
 
-    const sources = g.map((m) => m.e.source)
-    const filedSource = best.e.source || sources.find(Boolean) || ''
-    reps.push({
+    const sources = g.map((m) => m.e.source).filter(Boolean)
+    const uniq = [...new Set(sources)]
+    const filedSource = best.e.source || sources[0] || ''
+    const representative: Ordered = {
       e: {
         ...best.e,
         source: filedSource,
-        credibility: credibilityOf(sources),
-        sourceCount: [...new Set(sources.filter(Boolean))].length
+        credibility: credibilityOf(g.map((m) => m.e.source)),
+        sourceCount: uniq.length
       },
       ord: best.ord
-    })
-  }
+    }
+    return { rows: g, representative, sources: uniq }
+  })
+}
 
+/** 一个「同一事件」分组（P3 事件聚合的输入；成员保留各自来源 / 时间 / 判断） */
+export interface OpinionGroup {
+  /** 组内成员条目（含无来源者；组内顺序 = 入参顺序） */
+  members: OpinionEntry[]
+  /** 整组去重来源 */
+  sources: string[]
+  /** 排序代表：P1 去重后保留的那条（点击跳转 / 今日要点所用的块以它为准） */
+  representative: OpinionEntry
+}
+
+/**
+ * 分出「同一事件」的多来源分组（纯函数，脏数据跳过）。
+ *
+ * 这是 P1 去重内部那一步的**对外投影**：`buildOpinionQueue` 直接取每组的代表，
+ * 而 P3 的事件聚合需要组内**全部成员**去拼时间线，两者共用同一分组，判据不会漂移。
+ * 返回顺序 = 各组首次出现的顺序（未排序），由调用方决定怎么排。
+ */
+export function buildOpinionGroups(input: OpinionInput = {}): OpinionGroup[] {
+  return groupOrdered(collectOrdered(input)).map((g) => ({
+    members: g.rows.map((r) => r.e),
+    sources: g.sources,
+    representative: g.representative.e
+  }))
+}
+
+/**
+ * 合成统一队列（纯函数）：
+ *   1. 三块条目摊平 → 逐条生成判断信息（脏数据跳过）；
+ *   2. 按 sameEvent 去重分组，组内保留**排序最靠前**的那条为代表；
+ *   3. 可信度用**整组的去重来源**算（同事件的多个来源才算「多方报道」）；
+ *   4. 全队列按 compareOrdered 排序，编号并生成「为什么值得注意」。
+ */
+export function buildOpinionQueue(input: OpinionInput = {}): OpinionEntry[] {
+  const reps = groupOrdered(collectOrdered(input)).map((g) => g.representative)
   reps.sort(compareOrdered)
   return reps.map((r, i) => ({ ...r.e, id: `${r.e.block}#${i}`, reason: reasonOf(r.e) }))
 }

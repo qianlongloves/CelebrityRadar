@@ -425,6 +425,50 @@ const collections = [
       })
     ]
   },
+  /* ↓ 舆情事件落库（P4，2026-10-13）：两张表分工 = 「事件本体（全站共享、只读）」与「个人状态（各人一份）」 */
+  {
+    name: 'opinion_events',
+    purpose:
+      '舆情事件（_id = event_key，云函数 opinionCluster 定时**读库**聚类后写、端上只读）：全站共享，字段与端上 OpinionEvent 同名同义（少 hitsKeyword/hitsFollow 这两项按用户现算的）',
+    acl: ACL.publicReadOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      /* 稳定主题键（= _id）：由 objectKey(#themeToken) 哈希而来，同事件新增报道时保持不变（见 utils/opinion-events.ts） */
+      f('event_key', 'string', { required: true }),
+      f('object_key', 'string', { def: '' }),
+      f('block', 'string', { required: true, enumHint: ['feed', 'weekly', 'alert'] }),
+      f('title', 'string', { required: true }),
+      f('members', 'array', { required: true }),
+      f('memberCount', 'number', { def: 0 }),
+      f('timeline', 'array', { def: [] }),
+      f('sources', 'array', { def: [] }),
+      f('labels', 'array', { def: [] }),
+      f('impact', 'string', { required: true, enumHint: ['high', 'mid', 'low', 'unknown'] }),
+      f('credibility', 'string', { required: true, enumHint: ['official', 'multi', 'single', 'unknown'] }),
+      f('response', 'string', { required: true, enumHint: ['respond', 'watch', 'none', 'unknown'] }),
+      f('first_at', 'string', { def: '' }),
+      f('last_at', 'string', { def: '' }),
+      f('updated_at', 'string', { required: true })
+    ],
+    indexes: [
+      ix('idx_last_at', [['last_at', 'desc']], { optional: true, supports: '端上按最近活动时间取事件' })
+    ]
+  },
+  {
+    name: 'opinion_event_status',
+    purpose:
+      '用户对舆情事件的个人状态（_id = openid，端上读写自己那一行）：只放**已读标记**与**跟进状态（含时间）**两项，map 有条数上限与裁剪（见 utils/opinion-store.ts）',
+    acl: ACL.creator,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      /* event_key → 已读时刻（ISO）。用对象而非数组：按 key 直接取，且天然去重 */
+      f('reads', 'object', { def: {} }),
+      /* event_key → 跟进时刻（ISO）。缺省 = 未跟进 */
+      f('follows', 'object', { def: {} }),
+      f('updated_at', 'string', { def: null })
+    ],
+    indexes: []
+  },
   {
     name: 'person_assets',
     /*

@@ -1,5 +1,7 @@
 import type { NewsItem } from '@/utils/search'
 import type { Report } from '@/utils/report'
+import type { CredTier, ImpactLevel, OpinionBlock, ResponseNeed } from '@/utils/opinion-rank'
+import type { OpinionEventMember, TimelineItem } from '@/utils/opinion-events'
 
 /**
  * 云 DB 行类型（§3.8，PostgREST 口径：主键列名 id）。
@@ -133,3 +135,55 @@ export interface RiskScanRow {
  * 接到会员权威上去读（那就把「会员身份不由端上自证」这条边界又绕回去了）。
  * 端上要显示的会员信息读 `users.membership` 那份镜像（见 utils/member.ts#readMemberState）。
  */
+
+/**
+ * opinion_events：舆情事件（P4 落库，2026-10-13；`_id = event_key`，云函数 `opinionCluster` 写、端上只读）。
+ *
+ * 全站共享、只读（权限同 `report_cache` / `person_assets`：`{"read": true, "write": false}`）。
+ * 字段与端上 `utils/opinion-events.ts#OpinionEvent` **同名同义**，端上能直接读来渲染 ——
+ * 只少 `hitsKeyword` / `hitsFollow` 这两项「与我相关」：它们要按**当前用户**的关键词 / 关注的人现算，
+ * 而事件是全站共享的，存库事件不带（端上读到后由 utils/opinion-store.ts 现算）。
+ */
+export interface OpinionEventRow {
+  /** = event_key（稳定主题键，见 utils/opinion-events.ts#eventKeyOf） */
+  id: string
+  event_key: string
+  /** 对象键：事件归属的「谁 / 什么词」（成员里出现最多的非空 label；都没有则空串） */
+  object_key: string
+  block: OpinionBlock
+  title: string
+  /** 成员条目（含来源、时间、来源性质）—— 与端上 OpinionEventMember 逐字同构 */
+  members: OpinionEventMember[]
+  memberCount: number
+  /** 时间线：时间正序、每条带来源（红线：无来源的条目不入） */
+  timeline: TimelineItem[]
+  sources: string[]
+  labels: string[]
+  impact: ImpactLevel
+  credibility: CredTier
+  response: ResponseNeed
+  /** 最早一条报道的时间（不可解析则为空串） */
+  first_at: string
+  /** 最近一条报道的时间（排序 / 展示用；端上 OpinionEvent.date 与它同义） */
+  last_at: string
+  /** 我们这一轮重算该事件的时刻（每轮都会前移，**不**用于「是不是新的」判定，见 opinion-store） */
+  updated_at: string
+}
+
+/**
+ * opinion_event_status：用户对舆情事件的**个人状态**（P4，2026-10-13；`_id = openid`，端上读写自己那一行）。
+ *
+ * 只保留两项（产品明确锁定，不做备注、不做不感兴趣）：**已读标记**与**跟进状态（含时间）**。
+ * 每个用户一行、两个 map（键是 event_key），行权限「仅创建者可读写」⇒ 端上写不到别人的行，
+ * 写也只动这一行的这两个 map，**绝不触碰 users 文档的任何字段**。
+ * map 有条数上限与裁剪策略（见 utils/opinion-store.ts#MAX_STATUS_ENTRIES），不会无界增长。
+ */
+export interface OpinionEventStatusRow {
+  /** = openid */
+  id: string
+  /** event_key → 已读时刻（ISO）。缺省 = 未读 */
+  reads: Record<string, string>
+  /** event_key → 跟进时刻（ISO）。缺省 = 未跟进 */
+  follows: Record<string, string>
+  updated_at: string
+}

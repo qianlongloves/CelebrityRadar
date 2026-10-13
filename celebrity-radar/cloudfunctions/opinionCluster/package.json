@@ -1,0 +1,9 @@
+{
+  "name": "opinionCluster",
+  "version": "1.0.0",
+  "description": "舆情事件落库：定时读库（feed_cache / keywords / risk_signals）后聚类写 opinion_events，零上游成本",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

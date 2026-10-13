@@ -81,6 +81,19 @@
       ]
     },
     {
+      "name": "opinionCluster",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "triggers": [
+        {
+          "name": "dailyOpinionCluster",
+          "type": "timer",
+          "config": "0 0 10 * * * *"
+        }
+      ]
+    },
+    {
       "name": "hotBoardRefresh",
       "timeout": 60,
       "runtime": "Nodejs16.13",
