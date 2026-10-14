@@ -1019,4 +1019,17 @@ describe('清空我的数据 utils/data-deletion', () => {
     const { clearAllMyData } = load('utils/data-deletion')
     eq(await clearAllMyData(), false, '云端没删掉就必须返回 false，调用方据此提示失败')
   })
+
+  it('埋点 events 一并删除（存 openid = 可关联到人，政策承诺行为计数随清空删除），且不动别人的行', async () => {
+    const { db, load } = fresh()
+    const me = login('u-me')
+    db.__seed('events', [
+      { _id: 'e1', openid: me, event: 'search', person_key: '甲#tech', props: {}, created_at: '2026-10-01T00:00:00.000Z' },
+      { _id: 'e2', openid: 'u-other', event: 'search', person_key: '乙#tech', props: {}, created_at: '2026-10-01T00:00:00.000Z' }
+    ])
+
+    const { clearAllMyData } = load('utils/data-deletion')
+    eq(await clearAllMyData(), true)
+    deepEq(db.__dump('events').map((r) => r.openid), ['u-other'], '自己的埋点应删除，别人的保留')
+  })
 })

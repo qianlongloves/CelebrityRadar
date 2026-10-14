@@ -50,6 +50,15 @@ function writeCachedProfile(p: CachedProfile): void {
   }
 }
 
+/** 清本地登录缓存（注销账号时调用）：清掉后下次登录会重新走云端 ensure 建行 */
+function clearCachedProfile(): void {
+  try {
+    Taro.removeStorageSync(PROFILE_KEY)
+  } catch {
+    /* 清不掉最多是下次冷启仍带旧身份，不影响本次流程 */
+  }
+}
+
 /** 模块加载即恢复：冷启后首屏就按登录态渲染，且不产生任何网络请求 */
 const cached = readCachedProfile()
 
@@ -62,6 +71,8 @@ interface AuthState {
   error: string | null
   setLogin: (p: { userId: string; nickname?: string | null; avatarUrl?: string | null }) => void
   setError: (msg: string | null) => void
+  /** 注销账号：清本地身份缓存并回到「未登录」态（云端数据已由云函数删除） */
+  clearLogin: () => void
 }
 
 export const useAuth = create<AuthState>((set) => ({
@@ -87,5 +98,9 @@ export const useAuth = create<AuthState>((set) => ({
       })
       return next
     }),
-  setError: (msg) => set({ ready: true, error: msg })
+  setError: (msg) => set({ ready: true, error: msg }),
+  clearLogin: () => {
+    clearCachedProfile()
+    set({ ready: true, userId: null, nickname: null, avatarUrl: null, error: null })
+  }
 }))

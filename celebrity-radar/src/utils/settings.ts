@@ -232,6 +232,18 @@ export function settingLocalKeyMap(): Record<string, string> {
  * 用户点了「清空我的数据」，看到的却是设置原样还在。
  */
 export function clearLocalSettings(): void {
+  clearLocalSettingsCache()
+  for (const key of SETTINGS_KEYS) pushUserSetting(key, DEFAULT_USER_SETTINGS[key])
+}
+
+/**
+ * 只清**本机**设置缓存（含待同步队列），**不推送云端**。
+ *
+ * 为什么单独抽出：给「注销账号」用。账号行此时已被云函数删除，若沿用 clearLocalSettings
+ * 会把默认值推送回 `userInit` 的 `set`，而其内部 `ensure()` 会**重新把 users 行建回来** ——
+ * 等于注销没生效。注销后只清本机、不再触发任何云端写入。
+ */
+export function clearLocalSettingsCache(): void {
   for (const key of [...LEGACY_KEYS, PROVIDER_KEY, TIER_KEY]) Taro.removeStorageSync(key)
   /*
    * ⚠ 促销条的关闭记忆（member:promo_dismissed）**不在这里清**：它归 utils/member.ts 管
@@ -239,5 +251,4 @@ export function clearLocalSettings(): void {
    * 本文件若反过来 import member.ts，就会与 member.ts → auth.ts → 本文件 的依赖链成环。
    */
   writePending({})
-  for (const key of SETTINGS_KEYS) pushUserSetting(key, DEFAULT_USER_SETTINGS[key])
 }

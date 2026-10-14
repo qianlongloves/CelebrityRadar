@@ -24,6 +24,9 @@
  *                    端上每次登录后调一次，失败不阻塞（离线仍可用本地缓存）。
  *   'set'            改一个配置项：`{ action:'set', key, value }`。
  *                    只接受 `user-defaults.config.js` 白名单里的键，类型必须与默认值一致。
+ *   'deleteAccount'  注销账号：删除本人**全部个人信息**（关注 / 收藏 / 历史 / 监控 / 订阅 / 用量 /
+ *                    舆情状态 / 埋点 / 会员镜像），订单按《电子商务法》留存要求**去标识化保留**。
+ *                    不可逆，端上须二次确认后才调（见 pages/mine 的「注销账号」）。
  *
  * ── 权限与信任边界 ───────────────────────────────────────────────────
  *   · 身份只认 `getWXContext().OPENID`，**不信任端上传来的任何 openid**（端上也没传）。
@@ -37,6 +40,7 @@
  *   先 `npm run config:sync` 再部署。
  */
 const cloud = require('wx-server-sdk')
+const crypto = require('crypto')
 const { DEFAULT_USER_SETTINGS, SETTINGS_KEYS, SETTINGS_VERSION } = require('./user-defaults.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
@@ -207,6 +211,89 @@ async function setSetting(openid, key, value) {
 }
 
 /**
+ * 注销账号：删除本人全部个人信息（不可逆）。
+ *
+ * ── 删什么、留什么 ──────────────────────────────────────────────────
+ *   · 删：users（账号与配置）、memberships（会员镜像的权威）、follows / favorites /
+ *         history / keyword_watches（关注 / 收藏 / 历史 / 监控）、opinion_event_status
+ *         （舆情已读与跟进）、四张用量表（generate / ask / refresh_quota、ai_calls）、
+ *         events（埋点）。
+ *   · 留：orders（订单与退款）。依《电子商务法》等要求，交易记录须留存（不少于三年）；
+ *         对账也依赖它。为兼顾「删除权」与「留存义务」，这里把订单**去标识化**——
+ *         把 `_openid` 换成不可逆散列（`anon:<sha256 前 16 位>`）并记 `account_deleted_at`，
+ *         即与自然人**解除关联**后保留。
+ *   · 共享数据（report_cache / feed_cache / hot_board / keywords / opinion_events /
+ *     risk_* / person_assets）与个人无关，一律不动。
+ *
+ * ── 幂等与容错 ──────────────────────────────────────────────────────
+ *   逐表删除并各自 try/catch：某张表失败只记进 `failed`，不影响其余表 ——
+ *   注销不该因为一张用量表删不掉就整体中止（那样用户反而更删不干净）。
+ *   重复调用安全：删 0 行也算成功。
+ */
+const PURGE_BY_OPENID = ['follows', 'favorites', 'history', 'keyword_watches', 'events']
+const PURGE_BY__OPENID = ['generate_quota', 'ask_quota', 'refresh_quota', 'ai_calls', 'users']
+const PURGE_BY_ID = ['memberships', 'opinion_event_status']
+
+/** 订单去标识化后的 `_openid`：不可逆散列，与自然人解除关联，仅用于「同一单只保留一次」的记账 */
+function anonId(openid) {
+  return 'anon:' + crypto.createHash('sha256').update(String(openid)).digest('hex').slice(0, 16)
+}
+
+async function deleteAccount(openid) {
+  const now = new Date().toISOString()
+  const removed = {}
+  const failed = []
+
+  for (const name of PURGE_BY_OPENID) {
+    try {
+      const res = await db.collection(name).where({ openid }).remove()
+      removed[name] = (res && res.stats && res.stats.removed) || 0
+    } catch (err) {
+      failed.push(`${name}: ${(err && (err.errMsg || err.message)) || String(err)}`)
+    }
+  }
+  for (const name of PURGE_BY__OPENID) {
+    try {
+      const res = await db.collection(name).where({ _openid: openid }).remove()
+      removed[name] = (res && res.stats && res.stats.removed) || 0
+    } catch (err) {
+      failed.push(`${name}: ${(err && (err.errMsg || err.message)) || String(err)}`)
+    }
+  }
+  for (const name of PURGE_BY_ID) {
+    try {
+      const res = await db.collection(name).where({ _id: openid }).remove()
+      removed[name] = (res && res.stats && res.stats.removed) || 0
+    } catch (err) {
+      failed.push(`${name}: ${(err && (err.errMsg || err.message)) || String(err)}`)
+    }
+  }
+
+  /* 订单：去标识化保留（失败不阻断注销，只如实回报） */
+  let ordersAnonymized = 0
+  let ordersError = null
+  try {
+    const res = await db
+      .collection('orders')
+      .where({ _openid: openid })
+      .update({ data: { _openid: anonId(openid), account_deleted_at: now } })
+    ordersAnonymized = (res && res.stats && res.stats.updated) || 0
+  } catch (err) {
+    ordersError = (err && (err.errMsg || err.message)) || String(err)
+  }
+
+  return {
+    ok: failed.length === 0,
+    action: 'deleteAccount',
+    deleted: removed,
+    ordersAnonymized,
+    ordersError,
+    failed,
+    at: now
+  }
+}
+
+/**
  * 入口。
  *
  * 永远返回 `{ ok: ... }` 形态而不抛错：调用方是端上登录路径，
@@ -229,7 +316,10 @@ exports.main = async (event) => {
       const r = await setSetting(OPENID, event.key, event.value)
       return Object.assign({ action }, r)
     }
-    return { ok: false, error: `未知 action：${String(action)}（只允许 ensure / set）` }
+    if (action === 'deleteAccount') {
+      return await deleteAccount(OPENID)
+    }
+    return { ok: false, error: `未知 action：${String(action)}（只允许 ensure / set / deleteAccount）` }
   } catch (err) {
     return { ok: false, error: (err && (err.errMsg || err.message)) || String(err) }
   }

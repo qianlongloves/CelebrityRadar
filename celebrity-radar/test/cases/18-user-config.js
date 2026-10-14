@@ -554,3 +554,200 @@ describe('用户配置 · 端上读写', () => {
     notOk(env.rawStorage.has('settings:pending'), '复位推送成功后队列应清空')
   })
 })
+
+/* ────────────────── 注销账号（P1-4）：userInit/deleteAccount 云端删净 ────────────────── */
+
+/**
+ * 注销账号（P1-4，政策 §2.4 承诺的入口）：端上只管确认与善后，**删库全在云函数里**。
+ *
+ * 与「清空我的数据」（02-data.js）的分工：清空只删内容、留账号与同意；注销连账号行一起删，
+ * 订单按《电子商务法》去标识化**保留行**（不删，只把 `_openid` 换成不可逆散列）。
+ *
+ * 五件事必须钉住：
+ *   ① 本人全部个人数据删净，且**只删自己的**（跨用户误删是灾难级）；
+ *   ② 订单去标识化、不再含原 openid；
+ *   ③ 某张表删不掉时**不整体中止**（否则用户反而更删不干净），失败如实回报；
+ *   ④ 重复调用安全；拿不到 OPENID 一律拒绝（控制台 / 定时器调不到注销）；
+ *   ⑤ 删表清单与 `schema.js` 对齐 —— 日后新增带用户标识的集合时，这条会失败。
+ */
+describe('注销账号 · userInit/deleteAccount（P1-4）', () => {
+  const OTHER = 'u-other'
+
+  /** 按 openid 归属的集合（端上写口用 openid，云端记的账用 _openid，两种口径都要造） */
+  const OWNED = [
+    'users',
+    'follows',
+    'favorites',
+    'history',
+    'keyword_watches',
+    'events',
+    'generate_quota',
+    'ask_quota',
+    'refresh_quota',
+    'ai_calls'
+  ]
+
+  /**
+   * 共享集合：**行内不含任何用户标识**（全站共享的缓存 / 事件本体 / 平台成本计数），
+   * 故注销时本就无需按用户删 —— 删了反而害了别人（它们不是「我的那一行」）。
+   */
+  const SHARED_NO_USER_ID = [
+    'report_cache',
+    'feed_cache',
+    'hot_board',
+    'keywords',
+    'risk_scans',
+    'risk_signals',
+    'opinion_events',
+    'person_assets',
+    'deep_dive_quota'
+  ]
+
+  /** 造一份「本人 + 别人」都有的库：每张归属表两行，才验得出「只删自己的」 */
+  function seedAll(db) {
+    db.__seed('users', [
+      { _id: 'me-row', _openid: ME, nickname: '我', settings: {}, created_at: '2026-01-01T00:00:00.000Z' },
+      { _id: 'other-row', _openid: OTHER, nickname: '别人', settings: {}, created_at: '2026-01-01T00:00:00.000Z' }
+    ])
+    for (const name of OWNED) {
+      if (name === 'users') continue
+      db.__seed(name, [
+        { _id: `${name}-me`, openid: ME, _openid: ME, used: 3, event: 'search', props: {} },
+        { _id: `${name}-other`, openid: OTHER, _openid: OTHER, used: 1, event: 'search', props: {} }
+      ])
+    }
+    db.__seed('memberships', [
+      { _id: ME, _openid: ME, plan: 'annual', expires_at: '2027-01-01T00:00:00.000Z' },
+      { _id: OTHER, _openid: OTHER, plan: 'annual', expires_at: '2027-01-01T00:00:00.000Z' }
+    ])
+    db.__seed('opinion_event_status', [
+      { _id: ME, _openid: ME, read: { ev1: 1 }, follow: { ev1: 'done' } },
+      { _id: OTHER, _openid: OTHER, read: { ev1: 1 }, follow: {} }
+    ])
+    db.__seed('orders', [
+      {
+        _id: 'o-me',
+        _openid: ME,
+        plan: 'annual',
+        amount_fen: 9900,
+        days: 365,
+        status: 'paid',
+        created_at: '2026-05-01T00:00:00.000Z'
+      },
+      {
+        _id: 'o-other',
+        _openid: OTHER,
+        plan: 'annual',
+        amount_fen: 9900,
+        days: 365,
+        status: 'paid',
+        created_at: '2026-05-01T00:00:00.000Z'
+      }
+    ])
+  }
+
+  /** 该表里还剩几行属于本人（三种归属口径：openid / _openid / `_id = openid`） */
+  const mineLeft = (db, name) =>
+    db.__dump(name).filter((r) => r.openid === ME || r._openid === ME || r._id === ME).length
+
+  it('端上注销 → 云端删净本人全部个人数据、只留别人的；订单去标识化保留行', async () => {
+    const { db, load } = fresh()
+    seedAll(db)
+    env.registerCloudFn('userInit', loadCloudFn('userInit', ME))
+
+    const { deleteAccount } = load('utils/data-deletion')
+    const res = await deleteAccount()
+    eq(res.ok, true, `注销应成功：${res.message || ''}`)
+
+    for (const name of OWNED) {
+      eq(mineLeft(db, name), 0, `${name} 里还留着本人那一行`)
+      eq(db.__dump(name).length, 1, `${name} 里别人的行不该被动`)
+    }
+    for (const name of ['memberships', 'opinion_event_status']) {
+      deepEq(db.__dump(name).map((r) => r._id), [OTHER], `${name} 应只余别人的行（_id = openid）`)
+    }
+
+    const mineOrder = db.__dump('orders').find((r) => r._id === 'o-me')
+    const otherOrder = db.__dump('orders').find((r) => r._id === 'o-other')
+    ok(mineOrder, '订单不删行（《电子商务法》留存口径）')
+    eq(otherOrder._openid, OTHER, '别人的订单不该被动')
+    ok(
+      typeof mineOrder.account_deleted_at === 'string',
+      '应记下注销时刻，客服对账时才知道这单属销号用户'
+    )
+    ok(String(mineOrder._openid).indexOf('anon:') === 0, `订单必须去标识化，实际 ${mineOrder._openid}`)
+    notOk(String(mineOrder._openid).includes(ME), '去标识化后的 _openid 不能再含原 openid')
+    eq(mineOrder.amount_fen, 9900, '记账字段不该被顺手清掉（对账要用）')
+  })
+
+  it('某张表删不掉：如实回报 failed、其余照删（不为一张表失败而整体中止）', async () => {
+    const { db, load } = fresh()
+    seedAll(db)
+    db.__setFailing('keyword_watches', true)
+    env.registerCloudFn('userInit', loadCloudFn('userInit', ME))
+
+    const { deleteAccount } = load('utils/data-deletion')
+    const res = await deleteAccount()
+    eq(res.ok, false, '有表没删掉就不能谎报成功（用户会以为已经注销干净）')
+    ok(String(res.message).includes('keyword_watches'), `失败信息要点出是哪张表：${res.message}`)
+    eq(mineLeft(db, 'users'), 0, 'users 行仍应删除（一张表删不掉不等于什么都不删）')
+    eq(db.__dump('follows').length, 1, '其余表仍应删净')
+    eq(db.__dump('keyword_watches').length, 2, '注入故障的表原样保留，且别人的行没被牵连')
+  })
+
+  it('幂等：已注销的账号再调一次仍 ok，且一行都不再删', async () => {
+    const { db, load } = fresh()
+    seedAll(db)
+    const main = loadCloudFn('userInit', ME)
+    env.registerCloudFn('userInit', main)
+
+    const { deleteAccount } = load('utils/data-deletion')
+    eq((await deleteAccount()).ok, true, '第一次注销应成功')
+
+    const again = await main({ action: 'deleteAccount' })
+    eq(again.ok, true, '重复注销不该报错（用户连点两次是常态）')
+    ok(
+      Object.values(again.deleted).every((n) => n === 0),
+      `第二次应删 0 行，实际 ${JSON.stringify(again.deleted)}`
+    )
+    eq(db.__dump('users').length, 1, '不该动到别人的行')
+  })
+
+  it('拿不到 OPENID 一律拒绝：控制台 / 定时器调不到注销', async () => {
+    const { db } = fresh()
+    seedAll(db)
+    const main = loadCloudFn('userInit', '')
+
+    const res = await main({ action: 'deleteAccount' })
+    eq(res.ok, false, '没有身份时必须拒绝')
+    ok(String(res.error).includes('OPENID'), `应说明缺的是身份：${res.error}`)
+    eq(mineLeft(db, 'users'), 1, '拒绝时一行都不该删')
+    eq(db.__dump('follows').length, 2, '拒绝时一行都不该删')
+  })
+
+  it('删表清单与 schema 对齐：新增带用户标识的集合时这条必须失败（否则注销留残留）', () => {
+    const schemaSrc = read(rel('cloudfunctions/dbInit/schema.js'))
+    const fnSrc = read(rel('cloudfunctions/userInit/index.js'))
+
+    /* 只认行首 4 空格缩进的集合声明；`deprecated: [{ name: 'note', ... }]` 是行尾内联的，不算集合 */
+    const all = [...schemaSrc.matchAll(/^ {4}name: '([a-z_0-9]+)',$/gm)].map((m) => m[1])
+    ok(all.length >= 20, `解析 schema 失败：只认出 ${all.length} 个集合（正则要跟着 schema 写法改）`)
+
+    const purgeSrc = [...fnSrc.matchAll(/const PURGE_BY_[A-Z_]+ = \[([\s\S]*?)\]/g)]
+      .map((m) => m[1])
+      .join(',')
+    ok(purgeSrc.length > 0, '解析不出 PURGE_BY_* 删表清单（正则要跟着云函数写法改）')
+    const listed = new Set((purgeSrc.match(/'[a-z_0-9]+'/g) || []).map((s) => s.replace(/'/g, '')))
+    listed.add('orders') /* 订单走「去标识化保留」而不是删除，故不在 PURGE_* 里 */
+
+    const missing = all.filter((n) => !listed.has(n) && SHARED_NO_USER_ID.indexOf(n) === -1)
+    deepEq(
+      missing,
+      [],
+      `这些集合既不在注销删表清单里、也不在「行内无用户标识」白名单里，注销后会留残留：${missing.join('、')}`
+    )
+    /* 反向也要看一眼：白名单里的集合若哪天真的带上了用户标识，这份白名单就成了漏删的借口 */
+    const wrong = SHARED_NO_USER_ID.filter((n) => all.indexOf(n) === -1)
+    deepEq(wrong, [], `白名单里有 schema 中不存在的集合（写错了或是已改名）：${wrong.join('、')}`)
+  })
+})

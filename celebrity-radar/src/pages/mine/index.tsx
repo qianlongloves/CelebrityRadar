@@ -5,6 +5,7 @@ import { useAuth } from '@/stores/auth'
 import { ensureLogin, updateProfile } from '@/utils/auth'
 import {
   clearLocalSettings,
+  clearLocalSettingsCache,
   getPreferredTier,
   setPreferredTier,
   getPreferredProvider,
@@ -15,10 +16,13 @@ import type { ChatSelection, ReadyVendor } from '@/utils/llm'
 import { publicConfig } from '@/config/public'
 import type { LlmVendor, LlmQuality } from '@/config/public'
 import { notifyConfigured, requestNotify } from '@/utils/notify'
-import { clearAllMyData } from '@/utils/data-deletion'
+import { clearAllMyData, deleteAccount } from '@/utils/data-deletion'
+import { deleteCloudFile } from '@/utils/cloud'
+import { useConsent } from '@/stores/consent'
 import { listFollows } from '@/utils/follows'
 import { listFavorites } from '@/utils/favorites'
 import { listHistory, HISTORY_LIMIT } from '@/utils/history'
+import { exportMyDataToClipboard } from '@/utils/data-export'
 import { peekGenerateQuota, GenerateQuotaSummary } from '@/utils/quota'
 import {
   FREE_FEATURES_NOTE,
@@ -53,6 +57,11 @@ function formatDay(iso: string): string {
 export default function Mine() {
   useTabBarSync()
   const { userId, nickname, avatarUrl, error } = useAuth()
+  /**
+   * 是否已同意当前版本隐私政策（PIPL 第 15 条）：决定「撤回同意」入口是否展示 ——
+   * 只能撤回已给出的同意。撤回后本值变 false，app.tsx 会即时重现同意网关。
+   */
+  const consented = useConsent((s) => s.consented)
   /** 昵称编辑态：点昵称/「编辑」展开内联编辑行 */
   const [editingNick, setEditingNick] = useState(false)
   const [nickDraft, setNickDraft] = useState('')
@@ -241,11 +250,11 @@ export default function Mine() {
     }
   }
 
-  /** 清空我的数据：本地设置 + 云端（follows / favorites / history，§六.6） */
+  /** 清空我的数据：本地设置 + 云端（follows / favorites / history / keyword_watches / events，§六.6） */
   const clearMyData = async () => {
     const res = await Taro.showModal({
       title: '清空我的数据',
-      content: '将清除本地偏好设置与缓存，并删除云端的关注、收藏、历史记录，不可恢复。',
+      content: '将清除本地偏好设置与缓存，并删除云端的关注、收藏、历史、监控与行为计数，不可恢复。',
       confirmText: '清除',
       confirmColor: '#EF4444'
     })
@@ -267,6 +276,96 @@ export default function Mine() {
     clearQaUsage()
     void loadCounts()
     Taro.showToast({ title: ok ? '已清空全部数据' : '本地已清空，云端删除失败请稍后重试', icon: 'none' })
+  }
+
+  /**
+   * 注销账号（P0 合规项）：删除云端**全部个人信息**并解除登录态，是隐私政策 §2.4
+   * 「通过『我的 → 注销账号』可注销账号」承诺的实际入口（此前该入口缺失，政策承诺落空）。
+   *
+   * 不可逆，故**两次确认**；云端删除集中在云函数 `userInit(action:'deleteAccount')`，
+   * 端上只负责确认、发起与善后。
+   *
+   * ⚠ 善后必须用 `clearLocalSettingsCache`（只清本机）而**不是** `clearLocalSettings`：
+   * 后者会把默认配置推回 `userInit.set`，其内部 `ensure()` 会把刚删掉的 users 行**重建回来**，
+   * 等于注销没生效。此处也不能再调用任何会写 `users` 的接口。
+   */
+  const cancelAccount = async () => {
+    const first = await Taro.showModal({
+      title: '注销账号',
+      content: '注销后将删除你的关注、收藏、历史、监控与全部个人信息，订单按法律规定去标识化留存。此操作不可恢复。',
+      confirmText: '继续',
+      confirmColor: '#EF4444'
+    })
+    if (!first.confirm) return
+    const second = await Taro.showModal({
+      title: '确认注销？',
+      content: '再次确认：账号注销后不可恢复，将立即退出登录。',
+      confirmText: '确认注销',
+      confirmColor: '#EF4444'
+    })
+    if (!second.confirm) return
+
+    Taro.showLoading({ title: '注销中', mask: true })
+    const res = await deleteAccount()
+    Taro.hideLoading()
+    if (!res.ok) {
+      Taro.showToast({ title: res.message ?? '注销失败，请稍后重试', icon: 'none' })
+      return
+    }
+
+    /* 云端已删：头像云文件不在云函数的删除清单里，这里顺手删掉，避免个人信息残留 */
+    if (avatarUrl && avatarUrl.indexOf('cloud://') === 0) void deleteCloudFile(avatarUrl)
+    useAuth.getState().clearLogin()
+    clearLocalSettingsCache()
+    /* 注销 = 彻底解除关系：同意记录一并撤销（走 store，撤后 app 会即时重现同意网关） */
+    useConsent.getState().withdraw()
+    clearPromoDismiss()
+    clearWeeklyCache()
+    clearMessageState()
+    clearInboxSeen()
+    clearQaUsage()
+    void loadCounts()
+    Taro.showToast({ title: '账号已注销', icon: 'none' })
+  }
+
+  /**
+   * 撤回同意（PIPL 第 15 条：个人有权撤回同意，处理者应提供便捷的撤回方式）。
+   *
+   * 与「清空数据」「注销账号」的区别：
+   *   · 清空数据：只删内容，账号与同意**都保留**；
+   *   · 撤回同意：撤销授权 → **停止处理**（退出登录 + 删云端个人数据 + 清本机）→ 回到「未同意」态；
+   *   · 注销账号：在撤回的基础上，连账号行本身一并删除。
+   *
+   * 撤回即失去处理依据，故基于该同意收集的数据（关注 / 收藏 / 历史 / 监控 / 埋点）**一并删除**；
+   * 订单按法定留存要求不在此动作内（走注销的去标识化路径）。撤回经 store（`withdraw`），
+   * 使 app.tsx 即时重现同意网关 —— 撤回后不会出现「没同意却还能用 / 还能再登录」的漏洞。
+   */
+  const withdrawConsent = async () => {
+    const res = await Taro.showModal({
+      title: '撤回同意',
+      content: '撤回后将停止处理你的个人信息并退出登录，云端与本机的关注、收藏、历史、监控与行为计数一并删除，不可恢复；如需继续使用可重新同意。',
+      confirmText: '撤回',
+      confirmColor: '#EF4444'
+    })
+    if (!res.confirm) return
+
+    Taro.showLoading({ title: '处理中', mask: true })
+    /* 先删云端个人数据（要用到登录态，故在清登录之前）；删除属于「停止处理」，即便失败也继续退出 */
+    const ok = await clearAllMyData()
+    Taro.hideLoading()
+
+    if (avatarUrl && avatarUrl.indexOf('cloud://') === 0) void deleteCloudFile(avatarUrl)
+    useAuth.getState().clearLogin()
+    clearLocalSettingsCache()
+    clearPromoDismiss()
+    clearWeeklyCache()
+    clearMessageState()
+    clearInboxSeen()
+    clearQaUsage()
+    /* 撤销同意（走 store）：app.tsx 订阅到变化 → 同意网关即时重现 */
+    useConsent.getState().withdraw()
+    void loadCounts()
+    Taro.showToast({ title: ok ? '已撤回同意' : '已退出登录，云端删除失败请稍后重试', icon: 'none' })
   }
 
   /**
@@ -329,6 +428,24 @@ export default function Mine() {
   const onSubscribeTap = async () => {
     const res = await requestNotify()
     Taro.showToast({ title: res.message, icon: 'none', duration: 2500 })
+  }
+
+  /**
+   * 导出个人信息副本（PIPL 第 45 条「复制」）。
+   *
+   * 只读动作：把本人的关注 / 收藏 / 历史 / 监控与偏好拼成一份 JSON，复制到剪贴板。
+   * 刻意不做「保存成文件」：小程序沙箱里要 saveFile + openDocument 两步，用户还得再去找文件；
+   * 剪贴板可以直接粘进备忘录或聊天，零权限、够用。
+   */
+  const exportMyData = async () => {
+    Taro.showLoading({ title: '整理中', mask: true })
+    const res = await exportMyDataToClipboard()
+    Taro.hideLoading()
+    await Taro.showModal({
+      title: res.ok ? '已复制到剪贴板' : '导出失败',
+      content: res.message,
+      showCancel: false
+    })
   }
 
   /** 菜单项类型：danger 为破坏性操作，走警示色分级 */
@@ -396,6 +513,14 @@ export default function Mine() {
       onTap: () => Taro.navigateTo({ url: '/pages/agreement/index' })
     },
     {
+      /* PIPL 第 45 条「查阅、复制」：查阅已有各页，这里补齐「把副本带走」 */
+      icon: '📤',
+      iconBg: 'brand',
+      title: '导出我的数据',
+      note: userId ? '复制为 JSON 到剪贴板' : '登录后可用',
+      onTap: () => void exportMyData()
+    },
+    {
       /* §四 合规阻塞项：声明页承诺「可删除云端数据」，此处提供实际入口 */
       icon: '🗑',
       iconBg: 'danger',
@@ -403,7 +528,33 @@ export default function Mine() {
       note: '删除云端关注 / 收藏 / 历史',
       danger: true,
       onTap: () => void clearMyData()
-    }
+    },
+    /* 撤回同意：PIPL 第 15 条的独立入口。仅已同意时展示 —— 只能撤回已给出的同意 */
+    ...(consented
+      ? [
+          {
+            icon: '↩️',
+            iconBg: 'danger' as const,
+            title: '撤回同意',
+            note: '停止处理并删除个人数据',
+            danger: true,
+            onTap: () => void withdrawConsent()
+          }
+        ]
+      : []),
+    /* 注销账号：隐私政策 §2.4 承诺的入口（P0）。仅登录后展示 —— 未登录没有账号可注销 */
+    ...(userId
+      ? [
+          {
+            icon: '⚠️',
+            iconBg: 'danger' as const,
+            title: '注销账号',
+            note: '删除全部个人信息并退出登录',
+            danger: true,
+            onTap: () => void cancelAccount()
+          }
+        ]
+      : [])
   ]
 
   return (

@@ -1,0 +1,91 @@
+@import '../../styles/variables.scss';
+
+/*
+ * 隐私授权弹窗（P0-3）：遮罩铺满整屏 + 卡片居中，层级高于底部悬浮栏（999）。
+ * 四边显式给 0（只写 fixed + z-index 会停在静态位置），与站内其它弹层同一套写法。
+ */
+.privacy-gate {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &__mask {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  &__card {
+    position: relative;
+    width: 560rpx;
+    padding: 48rpx 40rpx 32rpx;
+    background: #ffffff;
+    border-radius: 24rpx;
+    box-shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.18);
+  }
+
+  &__title {
+    display: block;
+    text-align: center;
+    font-size: 32rpx;
+    font-weight: 700;
+    color: $text-1;
+  }
+
+  &__body {
+    display: block;
+    margin-top: 24rpx;
+    font-size: 26rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 24rpx;
+    margin-top: 40rpx;
+  }
+
+  /* 两枚按钮同高、同宽、同行高：拒绝（描边）/ 同意（品牌实底） */
+  &__btn {
+    flex: 1;
+    height: 80rpx;
+    line-height: 80rpx;
+    text-align: center;
+    font-size: 28rpx;
+    border-radius: 999rpx;
+    margin: 0;
+    padding: 0;
+
+    &::after {
+      border: none;
+    }
+
+    &--ghost {
+      color: $text-2;
+      background: transparent;
+      border: 2rpx solid $line;
+
+      &::after {
+        border: none;
+      }
+    }
+
+    &--primary {
+      color: #ffffff;
+      font-weight: 600;
+      background: $brand;
+      border: none;
+    }
+  }
+}

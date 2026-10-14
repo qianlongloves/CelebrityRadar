@@ -1,4 +1,15 @@
 export default defineAppConfig({
+  /*
+   * 平台隐私协议校验开关：微信要求小程序在 app 配置里显式声明本字段，端上的
+   * `onNeedPrivacyAuthorization` / `agreePrivacyAuthorization` 才会被回调（见
+   * components/privacy-gate）。不声明时该项校验不生效，那道网关会「静静退化」成不存在
+   * （组件注释里写明了这种退化），于是「用了头像 / 昵称能力却没有平台级授权闭环」。
+   *
+   * ⚠ 开启前提：微信公众平台「设置 → 基本设置 → 用户隐私保护指引」已配置并通过审核。
+   *   指引未配置而本字段为 true 时，调用头像 / 昵称等隐私接口会被平台**直接拒绝** ——
+   *   这不是端上能兜住的错，故上线前必须先在后台把指引配好再发这一版。
+   */
+  __usePrivacyCheck__: true,
   pages: [
     'pages/index/index',
     'pages/feed/index',

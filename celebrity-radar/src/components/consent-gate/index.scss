@@ -1,0 +1,145 @@
+@import '../../styles/variables.scss';
+
+/*
+ * 首次知情同意网关（PIPL 第 14 / 17 条）：遮罩铺满整屏 + 卡片居中。
+ * 层级 4500 **高于** privacy-gate 的 4000：同意政策是比「平台隐私接口授权」更前置的一道，
+ * 两者万一同时出现，也应先把我们自己的政策同意处理掉。
+ * 四边显式给 0（只写 fixed + z-index 会停在静态位置），与站内其它弹层同一套写法。
+ */
+.consent-gate {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 4500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &__mask {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  &__card {
+    position: relative;
+    width: 580rpx;
+    padding: 48rpx 40rpx 32rpx;
+    background: #ffffff;
+    border-radius: 24rpx;
+    box-shadow: 0 16rpx 48rpx rgba(0, 0, 0, 0.18);
+  }
+
+  &__title {
+    display: block;
+    text-align: center;
+    font-size: 32rpx;
+    font-weight: 700;
+    color: $text-1;
+  }
+
+  &__body {
+    display: block;
+    margin-top: 24rpx;
+    font-size: 26rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  /* 政策链接：品牌色 + 下划线，与正文同段内联，点开二级页读全文 */
+  &__link {
+    color: $brand;
+    font-weight: 600;
+  }
+
+  /* 年龄 / 监护人同意确认（PIPL 第 31 条）：整行可点，切换勾选 */
+  &__check {
+    display: flex;
+    align-items: flex-start;
+    gap: 16rpx;
+    margin-top: 28rpx;
+  }
+
+  &__box {
+    flex-shrink: 0;
+    width: 36rpx;
+    height: 36rpx;
+    margin-top: 2rpx;
+    border-radius: 8rpx;
+    border: 2rpx solid $line;
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    /* 选中：品牌实底 + 白勾 */
+    &--on {
+      background: $brand;
+      border-color: $brand;
+    }
+  }
+
+  &__tick {
+    color: #ffffff;
+    font-size: 26rpx;
+    line-height: 1;
+    font-weight: 700;
+  }
+
+  &__check-text {
+    flex: 1;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $text-2;
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 24rpx;
+    margin-top: 40rpx;
+  }
+
+  /* 两枚按钮同高、同宽、同行高：暂不同意（描边）/ 同意并继续（品牌实底） */
+  &__btn {
+    flex: 1;
+    height: 80rpx;
+    line-height: 80rpx;
+    text-align: center;
+    font-size: 28rpx;
+    border-radius: 999rpx;
+    margin: 0;
+    padding: 0;
+
+    &::after {
+      border: none;
+    }
+
+    &--ghost {
+      color: $text-2;
+      background: transparent;
+      border: 2rpx solid $line;
+
+      &::after {
+        border: none;
+      }
+    }
+
+    &--primary {
+      color: #ffffff;
+      font-weight: 600;
+      background: $brand;
+      border: none;
+
+      /* 未勾选年龄确认时的弱化态：仍可点（点了会说明原因，不静默失败） */
+      &.consent-gate__btn--gated {
+        opacity: 0.5;
+      }
+    }
+  }
+}
