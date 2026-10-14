@@ -384,15 +384,16 @@ describe('站内触达收口：页面接入（静态约束）', () => {
     ok(page.includes('page-index__bell') && page.includes('onBellTap'), '消息铃铛必须保留')
   })
 
-  it('舆情页：三块「新 N 条」走 inbox 口径，并提供「全部已读」', () => {
+  it('舆情页：入口化后保留「新 N 条」inbox 口径（预警/风险/事件），并提供「全部已读」', () => {
     const page = read('pages/opinion/index.tsx')
     ok(page.includes("from '@/utils/inbox'"), '舆情页应引用 utils/inbox')
-    ok(page.includes('feedNewCount(') && page.includes('alertNewCount(') && page.includes('riskNewCount('))
+    /* P9 入口化后，关注动态的「新 N 条」角标随卡一起移到 feed 完整页，舆情页不再有 feedNewCount */
+    ok(page.includes('alertNewCount(') && page.includes('riskNewCount('), '预警/风险信号的新计数走 inbox 口径')
     ok(page.includes('countNewEvents('), '事件维度走 inbox（复用 reads）')
     ok(page.includes('markAllSeen('), '「全部已读」应复用既有 markAllSeen 清关键词')
     ok(page.includes('markModuleSeen('), '风险信号基线应被推进')
     ok(page.includes('markEventsRead('), '事件应批量走 opinion_event_status.reads')
-    ok(page.includes('新 {feed.newCount} 条') || page.includes('新 {eventNew} 条'), '缺「新 N 条」角标')
+    ok(page.includes('新 {eventNew} 条'), '事件卡保留「新 N 条」角标')
   })
 
   it('预警页 / 关注列表：既有「新」计数接到同一口径函数上', () => {

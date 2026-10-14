@@ -39,15 +39,10 @@ function configureCloud() {
 describe('舆情台首屏：预览不阻塞、端上聚类降级只在必要时发生（性能回归锁）', () => {
   const page = read('pages/opinion/index.tsx')
 
-  it('关注动态预览只走一次批量缓存读，不 await loadFollowWatches（2N 次只读）', () => {
-    ok(page.includes('getFeedDetails('), '预览应走批量缓存读 getFeedDetails')
-    ok(page.includes('loadFollowWatches('), '「新 N 条」角标仍走既有 watch 口径（口径不变）')
-    /* 不得再与 getFeedDetails 出现在同一个 Promise.all 里（那会让预览等 2N 次只读） */
-    notOk(
-      /Promise\.all\(\[[\s\S]{0,160}loadFollowWatches/.test(page),
-      '关注动态预览不得 await loadFollowWatches（会让预览等 2N 次只读）'
-    )
-    ok(/void loadFollowWatches\(/.test(page), 'loadFollowWatches 应改为后台补角标（不阻塞预览）')
+  it('关注动态入口化：统一队列仍走批量缓存读 getFeedDetails，不再加载 loadFollowWatches', () => {
+    ok(page.includes('getFeedDetails('), '统一队列 / 今日要点应走批量缓存读 getFeedDetails')
+    /* P9 入口化后不再内联「关注动态预览 + 新 N 条角标」，loadFollowWatches 随卡一起移除 */
+    notOk(page.includes('loadFollowWatches('), '入口化后 loadFollowWatches 应移除（角标随卡移到 feed 完整页）')
   })
 
   it('端上聚类（buildOpinionEvents）不在首屏无条件执行：由 storedReady 门控', () => {
@@ -84,18 +79,19 @@ describe('舆情台首屏：预览不阻塞、端上聚类降级只在必要时�
 describe('事件卡入口与关注动态卡统一（卡头右上角 · 同款类名）（形态回归锁）', () => {
   const page = read('pages/opinion/index.tsx')
 
-  it('事件卡入口在卡头右上角，与关注动态卡同用 page-opinion__more 类名', () => {
+  it('事件卡入口在卡头右上角；关注动态/周报/预警改为页首 nav 入口按钮（不再有卡头 more）', () => {
     ok(
       page.includes("<Text className='page-opinion__more' onClick={goEvents}>"),
       '事件卡应在卡头用「查看全部 ›」文字按钮（同款类名 page-opinion__more）'
     )
-    /* 事件卡的 more 必须在 head 内、head-main 之后（与关注动态卡同位置） */
+    /* 事件卡的 more 必须在 head 内、head-main 之后 */
     ok(
       /<View className='page-opinion__head'>[\s\S]*?page-opinion__head-main[\s\S]*?<Text className='page-opinion__more' onClick=\{goEvents\}>/.test(page),
       '事件卡 more 应在卡头（head 内、head-main 之后）'
     )
-    eq((page.match(/className='page-opinion__more'/g) || []).length, 4, '卡头「查看全部 ›」入口应恰好 4 个')
-    ok(page.includes("<Text className='page-opinion__more' onClick={goFeed}>"), '关注动态卡卡头同款入口仍在')
+    eq((page.match(/className='page-opinion__more'/g) || []).length, 1, '卡头「查看全部 ›」入口应只剩事件卡 1 个（其余三块改页首 nav 按钮）')
+    notOk(page.includes("<Text className='page-opinion__more' onClick={goFeed}>"), '关注动态卡头入口应移除')
+    ok(page.includes("className='page-opinion__nav-item' onClick={goFeed}"), '关注动态应改为页首 nav 入口按钮')
   })
 
   it('卡底不再有事件入口（也不再借 __more-detail 承载）', () => {

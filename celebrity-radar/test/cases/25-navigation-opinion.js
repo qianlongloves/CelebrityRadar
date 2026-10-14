@@ -183,30 +183,31 @@ describe('舆情页：三块内容与页面骨架（静态约束）', () => {
     }
   })
 
-  it('三块内容齐备：关注动态 / 本周周报 / 监控', () => {
-    ok(page.includes('📡 关注动态'), '缺「关注动态」块')
-    ok(page.includes('📰 本周周报'), '缺「本周周报」块')
-    ok(page.includes('🔔 监控'), '缺「监控」块')
+  it('三个入口按钮齐备：关注动态 / 本周周报 / 监控（P9 入口化，纯跳转不加载）', () => {
+    /* 图标与文字已拆成两个 Text（📡 + 关注动态），不再有「📡 关注动态」连写 */
+    ok(page.includes('📡') && page.includes('关注动态'), '缺「关注动态」入口按钮')
+    ok(page.includes('📰') && page.includes('本周周报'), '缺「本周周报」入口按钮')
+    ok(page.includes('🔔') && page.includes('监控'), '缺「监控」入口按钮')
+    ok(page.includes('page-opinion__nav'), '三个入口按钮应统一挂在 page-opinion__nav 容器下')
   })
 
   it('每块都能进完整页：feed / weekly / alerts', () => {
     for (const url of ['/package/feed/index', '/package/weekly/index', '/package/alerts/index']) {
       ok(page.includes(url), `舆情页缺少进入 ${url} 的入口`)
     }
-    ok(page.includes('查看全部'), '每块要有「查看全部」入口')
+    ok(page.includes('查看全部'), '事件卡仍要有「查看全部」入口')
   })
 
-  it('三块各自具备加载态 / 空态 / 失败降级（失败只降级本块）', () => {
-    ok(page.includes('正在读取关注动态…'), '关注动态缺加载态')
-    ok(page.includes('正在读取周报状态…'), '周报缺加载态')
-    ok(page.includes('正在读取预警…'), '预警缺加载态')
-    ok(page.includes('还没有关注的动态'), '关注动态缺空态文案')
-    ok(page.includes('还没有监测中的关键词'), '预警缺空态文案')
-    ok(page.includes('page-opinion__hint--err'), '缺失败降级行样式')
-    ok(page.includes('点此重试'), '失败降级要能重试')
-    /* 三块各写一次 status: 'error' —— 正好 3 处，证明每块独立降级（不是整页一个兜底） */
+  it('入口按钮不加载数据（无「正在读取」态），底层三源仍各自失败降级（供队列/简报/事件用）', () => {
+    /* P9 入口化后，关注动态 / 周报 / 预警不再在舆情页内联渲染列表，故加载态与空态文案全部移除 */
+    notOk(page.includes('正在读取关注动态'), '入口按钮不再有「正在读取关注动态」加载态')
+    notOk(page.includes('正在读取周报状态'), '入口按钮不再有「正在读取周报状态」加载态')
+    notOk(page.includes('正在读取预警'), '入口按钮不再有「正在读取预警」加载态')
+    notOk(page.includes('还没有关注的动态'), '关注动态空态移到 feed 完整页，不在舆情页')
+    notOk(page.includes('还没有监测中的关键词'), '预警空态移到 alerts 完整页，不在舆情页')
+    /* 三源仍各写一次 status: 'error' —— 正好 3 处，供统一队列 / 每日简报 / 事件降级用（不是整页一个兜底） */
     const errCount = (page.match(/status: 'error'/g) || []).length
-    ok(errCount === 3, `每块各自 catch 降级，期望 3 处 status:'error'，实际 ${errCount}`)
+    ok(errCount === 3, `每源各自 catch 降级，期望 3 处 status:'error'，实际 ${errCount}`)
   })
 
   it('是 tab 页：挂 .safe-tab 并同步 tabBar 选中态', () => {

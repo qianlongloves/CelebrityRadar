@@ -23,12 +23,50 @@
     color: $domain-business;
   }
 
-  /* ===== 顶部聚合卡：统计 + 下拉筛选 + 抓取按钮（2026-10-10） =====
-     .card 已提供底色/圆角/外边距，这里只管卡内布局：统计在上、动作行在下。
-     三块原先分散在页面上下不同区块，现在收进同一格，信息与动作各归其位。 */
+  /* ===== 顶部聚合卡（2026-10-14 重排）：搜索框 → 统计 → 筛选行 → 抓取按钮 → 脚注 =====
+     .card 已提供底色/圆角/外边距，这里只管卡内布局。 */
   &__stats {
     display: flex;
     gap: 20rpx;
+  }
+
+  /* ===== 搜索框（2026-10-14）：标题 / 摘要 / 人名模糊匹配 ===== */
+  &__search {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    height: 76rpx;
+    padding: 0 26rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    border: 2rpx solid $line;
+  }
+
+  &__search-input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    font-size: 26rpx;
+    color: $text-1;
+  }
+
+  &__search-clear {
+    flex-shrink: 0;
+    width: 40rpx;
+    height: 40rpx;
+    border-radius: 50%;
+    background: $text-3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    &--tap { opacity: 0.7; }
+  }
+
+  &__search-clear-text {
+    font-size: 26rpx;
+    line-height: 1;
+    color: #fff;
   }
 
   &__stat {
@@ -54,12 +92,19 @@
     }
   }
 
-  /* ===== 动作行：下拉筛选（左）+ 抓取按钮（右） ===== */
-  &__actions {
+  /* ===== 筛选行（2026-10-14）：人物 + 领域两个下拉并排 ===== */
+  &__filters {
     margin-top: 24rpx;
     display: flex;
     align-items: center;
     gap: 20rpx;
+  }
+
+  /* ===== 抓取按钮行（2026-10-14 独立成行） ===== */
+  &__actions {
+    margin-top: 20rpx;
+    display: flex;
+    align-items: center;
   }
 
   /* Picker 外壳：占满剩余宽度，与抓取按钮同高 */
@@ -102,10 +147,11 @@
   /* 主按钮：与「搜索名人」同色同圆角风格（实心品牌紫 + 胶囊），
      它是本页唯一会花掉配额的主动作，值得占满视觉重量。 */
   &__fetch {
-    flex-shrink: 0;
+    flex: 1;
     height: 76rpx;
     display: flex;
     align-items: center;
+    justify-content: center;
     padding: 0 34rpx;
     border-radius: 999rpx;
     background: $brand;

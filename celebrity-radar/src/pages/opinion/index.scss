@@ -306,4 +306,172 @@
       color: $brand;
     }
   }
+
+  /* ===== 每日舆情简报卡（P10，2026-10-14）：规模四格 + CSS 自绘图表 ===== */
+  &__brief-date {
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 规模四格：关注 / 监控词 / 动态 / 风险信号 */
+  &__brief-stats {
+    display: flex;
+    gap: 16rpx;
+    margin-bottom: 8rpx;
+  }
+
+  &__brief-stat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4rpx;
+    padding: 20rpx 0 16rpx;
+    border-radius: $radius-md;
+    background: $bg;
+  }
+
+  &__brief-stat-value {
+    font-size: 36rpx;
+    font-weight: 600;
+    line-height: 1.2;
+    color: $text-1;
+  }
+
+  &__brief-stat-label {
+    font-size: 22rpx;
+    color: $text-2;
+  }
+
+  /* 图表的子区块 */
+  &__brief-block {
+    margin-top: 24rpx;
+  }
+
+  &__brief-block-title {
+    display: block;
+    font-size: 24rpx;
+    font-weight: 500;
+    color: $text-2;
+    margin-bottom: 14rpx;
+  }
+
+  /* 横向条形图（风险类别分布）：固定宽标签 + 弹性轨道 + 计数 */
+  &__brief-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 14rpx;
+  }
+
+  &__brief-bar {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+  }
+
+  &__brief-bar-label {
+    flex-shrink: 0;
+    width: 112rpx;
+    font-size: 22rpx;
+    color: $text-2;
+  }
+
+  &__brief-bar-track {
+    flex: 1;
+    height: 20rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    overflow: hidden;
+  }
+
+  &__brief-bar-fill {
+    height: 100%;
+    border-radius: 999rpx;
+
+    /* 五类风险类别各一色（语义：司法/税务偏警示红橙，合作/维权偏中性蓝紫，回应偏灰） */
+    &--judicial { background: $danger; }
+    &--tax { background: $warning; }
+    &--contract { background: $accent-blue; }
+    &--rights { background: $brand; }
+    &--statement { background: $text-3; }
+  }
+
+  &__brief-bar-count {
+    flex-shrink: 0;
+    width: 40rpx;
+    text-align: right;
+    font-size: 22rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  /* 柱状图（影响面）：计数 + 柱体 + 档位标签 */
+  &__brief-cols {
+    display: flex;
+    align-items: flex-end;
+    gap: 24rpx;
+  }
+
+  &__brief-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8rpx;
+  }
+
+  &__brief-col-count {
+    font-size: 22rpx;
+    font-weight: 600;
+    line-height: 1.2;
+    color: $text-1;
+  }
+
+  &__brief-col-track {
+    width: 100%;
+    height: 120rpx;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+
+  &__brief-col-fill {
+    width: 48rpx;
+    border-radius: 8rpx 8rpx 0 0;
+
+    /* 影响面档位各一色（高→红、中→琥珀、低→蓝、未评级→灰） */
+    &--high { background: $danger; }
+    &--mid { background: $warning; }
+    &--low { background: $accent-blue; }
+    &--unknown { background: $text-3; }
+  }
+
+  &__brief-col-label {
+    font-size: 22rpx;
+    color: $text-2;
+  }
+
+  /* 建议回应 / 建议关注：两枚胶囊，与 __tag--respond / __tag--watch 同一套颜色语义 */
+  &__brief-actions {
+    display: flex;
+    gap: 16rpx;
+    margin-top: 24rpx;
+  }
+
+  &__brief-action {
+    padding: 10rpx 20rpx;
+    border-radius: 999rpx;
+    font-size: 22rpx;
+    font-weight: 500;
+
+    &--respond {
+      background: $accent-orange-bg;
+      color: $accent-orange;
+    }
+
+    &--watch {
+      background: $brand-weak;
+      color: $brand;
+    }
+  }
 }

@@ -119,6 +119,8 @@ export interface OpinionEntry {
   date: string
   /** 展示用归属：人名或关键词（都缺时为空串） */
   label: string
+  /** 本质归属的监控词（alert 里 keyword 归属才有；其余为空串）——用于「命中监控词」文案，与跳转身份一致 */
+  keyword?: string
   /** 归属名人的稳定键（feed 来源才有；其余为空串）——今日要点精准跳转用 */
   personKey?: string
   impact: ImpactLevel
@@ -362,6 +364,7 @@ function toEntry(raw: unknown, block: OpinionBlock, keywords: string[], watchNam
     source,
     date,
     label: person || keyword,
+    keyword,
     personKey,
     impact: impactOf(level),
     credibility: credibilityOf([source]),
@@ -376,7 +379,16 @@ function toEntry(raw: unknown, block: OpinionBlock, keywords: string[], watchNam
 }
 
 function reasonOf(e: OpinionEntry): string {
-  if (e.hitsKeyword) return '命中你的监控词'
+  /*
+   * 「为什么值得注意」的文案要跟**点击去向**一致，故只认条目的**本质归属**，不认 `hitsKeyword`
+   * （后者含「标题/摘要正文恰好出现监控词」的松散命中，见 toEntry）。
+   *
+   * 反例（2026-10-14 修）：一条海来阿木的 feed 动态，标题里碰巧出现你监控的词「霍尔木兹海峡」，
+   * `hitsKeyword` 会为真；若据此写「命中你的监控词」，而点击却按 feed 的 personKey 跳海来阿木主页，
+   * 就出现「命中监控词却跳名人主页」的文不对题。改成按本质归属：只有真正的关键词预警（alert 且带
+   * keyword）才说「命中你的监控词」；feed 动态一律是「来自你关注/监控的名人」，与跳转一致。
+   */
+  if (e.keyword) return '命中你的监控词'
   if (e.category) return `命中「${RISK_CATEGORY_LABEL[e.category]}」类风险词`
   if (e.hitsFollow) return '来自你关注/监控的名人'
   return ''

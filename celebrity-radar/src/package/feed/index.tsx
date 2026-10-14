@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import Taro, { useDidShow, usePullDownRefresh, useReachBottom } from '@tarojs/taro'
-import { View, Text, Picker } from '@tarojs/components'
+import { View, Text, Input, Picker } from '@tarojs/components'
 import EmptyState from '@/components/empty-state'
 import NoticeClose from '@/components/notice-close'
 import Skeleton from '@/components/skeleton'
@@ -75,6 +75,10 @@ export default function Feed() {
   const [lastFetchedAt, setLastFetchedAt] = useState<string | null>(snapshot?.lastFetchedAt ?? null)
   /** 按人物筛选，'' = 全部 */
   const [personFilter, setPersonFilter] = useState('')
+  /** 搜索关键词（标题 / 摘要 / 人名模糊匹配，忽略大小写），空 = 不搜索 */
+  const [query, setQuery] = useState('')
+  /** 按领域筛选（自由短串，2026-10-12 领域自由化），'' = 全部领域 */
+  const [domainFilter, setDomainFilter] = useState('')
   /** 正在联网抓取：按钮置灰并换文案，防连点（抓取一次要花一次当日配额） */
   const [fetching, setFetching] = useState(false)
   /**
@@ -214,8 +218,20 @@ export default function Feed() {
     if (keys.length > 0) void readPortraits(keys)
   }, [entries])
 
-  /* 当前筛选下的**全部**条目：它是分页的输入，也是头部「N 条」用来表达总规模的依据 */
-  const visible = personFilter ? entries.filter((e) => e.personKey === personFilter) : entries
+  /*
+   * 当前筛选下的**全部**条目：它是分页的输入，也是头部「N 条」用来表达总规模的依据。
+   *
+   * 2026-10-14 叠加三把筛子（人物 / 领域 / 搜索关键词），逐层过滤：
+   * 人物与领域是精确匹配，搜索是标题 / 摘要 / 人名三处的忽略大小写模糊匹配。
+   * 三把筛子都设在**本地内存**上（数据一次取回，见 load 注释），不额外发请求。
+   */
+  const q = query.trim().toLowerCase()
+  const visible = entries.filter((e) => {
+    if (personFilter && e.personKey !== personFilter) return false
+    if (domainFilter && e.domain !== domainFilter) return false
+    if (q && !`${e.title} ${e.content} ${e.personName}`.toLowerCase().includes(q)) return false
+    return true
+  })
   const filterName = follows.find((f) => f.person_key === personFilter)?.name ?? ''
 
   /*
@@ -254,6 +270,34 @@ export default function Feed() {
     setPage(1)
   }
 
+  /*
+   * 领域筛选项（2026-10-14 新增）：从**当前关注人实际出现过的领域**去重而来，而非写死 12 个。
+   * 领域自 2026-10-12 起是自由短串，写死枚举会漏掉自创领域；从 entries 现取则永远与数据一致，
+   * 且关注的人若只跨两三个领域，下拉也不会塞一堆永远筛不中的选项。
+   */
+  const domains = Array.from(new Set(entries.map((e) => e.domain)))
+  const domainFilterLabels = ['全部领域', ...domains.map((d) => domainLabel(d))]
+  const domainFilterIndex = domainFilter ? domains.indexOf(domainFilter) + 1 : 0
+
+  /** 领域下拉：0 号为「全部领域」，其余映射回 domains 的原始领域串（越界一律回落全部） */
+  const onDomainFilterChange = (e: { detail: { value: string | number } }) => {
+    const idx = Number(e.detail.value)
+    setDomainFilter(idx > 0 ? domains[idx - 1] ?? '' : '')
+    setPage(1)
+  }
+
+  /** 搜索输入：实时过滤并回到第一页（避免在第 N 页上输入后只见残留的一两条） */
+  const onSearch = (e: { detail: { value: string } }) => {
+    setQuery(e.detail.value)
+    setPage(1)
+  }
+
+  /** 清空搜索：同样回到第一页 */
+  const clearSearch = () => {
+    setQuery('')
+    setPage(1)
+  }
+
   return (
     <View className='page-feed glow-page'>
       {loading && <Skeleton variant='feed' rows={3} withStats />}
@@ -273,6 +317,22 @@ export default function Feed() {
       */}
       {!loading && follows.length > 0 && (
         <View className='card page-feed__panel'>
+          {/* 搜索框（2026-10-14 新增）：标题 / 摘要 / 人名三处模糊匹配，实时过滤 */}
+          <View className='page-feed__search'>
+            <Input
+              className='page-feed__search-input'
+              value={query}
+              placeholder='搜索动态标题 / 摘要 / 人名'
+              confirmType='search'
+              onInput={onSearch}
+            />
+            {query && (
+              <View className='page-feed__search-clear' hoverClass='page-feed__search-clear--tap' onClick={clearSearch}>
+                <Text className='page-feed__search-clear-text'>×</Text>
+              </View>
+            )}
+          </View>
+
           {/* 统计双列：已关注人数 / 已聚合动态条数 */}
           <View className='page-feed__stats'>
             <View className='page-feed__stat page-feed__stat--brand'>
@@ -285,8 +345,8 @@ export default function Feed() {
             </View>
           </View>
 
-          {/* 动作行：左侧下拉筛选（按人物），右侧抓取按钮 */}
-          <View className='page-feed__actions'>
+          {/* 筛选行（2026-10-14 重排）：人物 + 领域两个下拉并排，抓取按钮下移单独成行 */}
+          <View className='page-feed__filters'>
             <Picker
               className='page-feed__picker'
               mode='selector'
@@ -300,6 +360,22 @@ export default function Feed() {
               </View>
             </Picker>
 
+            <Picker
+              className='page-feed__picker'
+              mode='selector'
+              range={domainFilterLabels}
+              value={domainFilterIndex}
+              onChange={onDomainFilterChange}
+            >
+              <View className='page-feed__select'>
+                <Text className='page-feed__select-text'>{domainFilterLabels[domainFilterIndex] ?? domainFilterLabels[0]}</Text>
+                <Text className='page-feed__select-caret'>▾</Text>
+              </View>
+            </Picker>
+          </View>
+
+          {/* 抓取按钮：独占一行，更醒目 */}
+          <View className='page-feed__actions'>
             <View
               className={`page-feed__fetch ${fetching ? 'page-feed__fetch--busy' : ''}`}
               hoverClass='page-feed__fetch--tap'

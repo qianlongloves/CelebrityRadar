@@ -172,6 +172,28 @@ describe('舆情判断：统一队列排序优先级', () => {
     eq(byTitle('风险信号报道').reason, '命中「税务合规」类风险词')
     eq(byTitle('普通关注动态').reason, '来自你关注/监控的名人')
   })
+
+  it('feed 条目正文命中监控词：reason 仍按「名人归属」，不与跳转（名人主页）打架', () => {
+    const { buildOpinionQueue } = U()
+    const queue = buildOpinionQueue({
+      keywords: ['霍尔木兹海峡'],
+      watchNames: ['海来阿木'],
+      feed: [
+        {
+          title: '霍尔木兹海峡局势最新进展',
+          source: 'A',
+          date: '2026-10-09',
+          person: '海来阿木',
+          personKey: '海来阿木#ent'
+        }
+      ]
+    })
+    const e = queue[0]
+    ok(e.hitsKeyword, '正文命中监控词 → hitsKeyword 仍为真（排序权重不变）')
+    ok(e.keyword === '', '本质归属不是关键词预警 → keyword 为空')
+    eq(e.label, '海来阿木', '归属仍是名人')
+    eq(e.reason, '来自你关注/监控的名人', 'reason 按本质身份，不再误报「命中你的监控词」')
+  })
 })
 
 describe('今日需要注意的 N 件事', () => {

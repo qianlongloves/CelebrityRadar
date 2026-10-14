@@ -1,26 +1,32 @@
 'use strict'
 
 /**
- * 舆情页概要卡「固定首屏 + 按需加载」（P6，2026-10-13）与
- * 「两张卡去掉页内加载更多、改为入口」（P7，2026-10-13）。
+ * 舆情页概要卡「固定首屏 + 按需加载」（P6，2026-10-13）、
+ * 「去掉页内加载更多、改为入口」（P7，2026-10-13），
+ * 以及 P9/P10（2026-10-14）「关注动态 / 周报 / 预警改为页首入口按钮、只留事件卡 + 每日简报」。
  *
  * P6 背景：事件 / 关注动态 / 关键词预警三张概要卡此前走 `sliceDetail(<items>, isMember)`，
  * 会员档「全部」→ 概要列表按明细口径把整库一次渲染。故改为**固定首屏 3 条 + 「加载更多」**、
  * **与会员态无关**（概要不分档）；会员的明细分层仍作用在单个事件的**时间线**上（pages/event）。
  *
  * P7 背景（用户诉求「不要在舆情台加载更多，新建页面点击跳转、分页加载」）：
- *   · **事件卡 / 关注动态卡不再页内「加载更多」** —— 只给固定预览（`overviewSlice(<items>, EVENT_OVERVIEW_INITIAL)`，
- *     即 3 条），改为入口跳独立页：事件 → `pages/events`、关注动态 → `pages/feed`
- *     （复用卡头既有的「查看全部 ›」）。这样数据再多两卡长度也恒定，不会把页面撑长。
- *   · **关键词预警卡**后于 2026-10-13 一并统一：同样固定预览 3 条、移除页内「加载更多 / 到底」，
- *     入口在卡头右上角（同类名 `page-opinion__more`、同文案「查看全部 ›」）→ `pages/alerts`。
+ *   三张概要卡都改为固定预览（`overviewSlice(<items>, EVENT_OVERVIEW_INITIAL)` = 3 条）、
+ *   移除页内「加载更多 / 到底」，入口统一在卡头右上角（同类名 `page-opinion__more`、
+ *   同文案「查看全部 ›」）→ 事件 `pages/events`、关注动态 `pages/feed`、预警 `pages/alerts`。
+ *
+ * P9（2026-10-14）布局重构：关注动态 / 本周周报 / 监控三块由「概要数据卡」改为**页首入口按钮**
+ *   （`page-opinion__nav-item`，纯图标 + 文字、不加载不渲染列表），只保留「今日要点」与「事件时间线」
+ *   两张真正的数据卡。随之关注动态 / 预警的空态、加载态、页内统计文案随卡一并移到各自完整页。
+ *   P10（2026-10-14）在此基础上新增「每日舆情简报」卡（纯前端聚合，见 utils/opinion-brief.ts）。
  *
  * 钉住：
  *   1. `overviewSlice` 纯函数：累计行数 / 剩余数 / hasMore 的边界（空、不足、跨批、越界、脏输入）；
  *   2. 概要卡首屏条数**与会员态无关**（overviewSlice 不含会员入参；页面不把 isMember 喂给它）；
- *   3. 静态断言：三张概要卡**都**走 `overviewSlice`（三处调用），**都不再用**按会员档放全的
- *      `sliceDetail` / `moreDetailNote`；头部各自显示总数 / 计数；
- *   4. **三张卡都无「加载更多」（回归锁）**、卡头都有跳独立页的入口（同类名 `page-opinion__more`）。
+ *   3. 静态断言：**只剩事件卡**走 `overviewSlice`（`overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)`），
+ *      都不再用按会员档放全的 `sliceDetail` / `moreDetailNote`；本页不出现 `isMember`；
+ *   4. 卡头 `page-opinion__more`「查看全部 ›」**只剩事件卡 1 个**；关注动态 / 周报 / 预警改为
+ *      `page-opinion__nav-item` 入口按钮（`goFeed` / `goWeekly` / `goAlerts`）；
+ *   5. 关注动态 / 预警的空态、加载态、页内统计不再在舆情页内联（随卡移到各自完整页）。
  *
  * 纯函数直接 require 编译产物；页面是 .tsx（不进测试编译），与既有页面用例同法读源码文本断言。
  */
@@ -153,16 +159,16 @@ describe('概要卡：预览 / 入口 / 总数（页面静态约束）', () => {
   })
 })
 
-/* ─────────────── 4. 三张卡去掉页内「加载更多」改为卡头入口（静态回归锁） ─────────────── */
+/* ─────────────── 4. P9/P10 布局回归锁：事件卡保留，其余三块改页首入口按钮 ─────────────── */
 
-describe('事件 / 关注动态 / 关键词预警三卡去掉页内「加载更多」改为卡头入口', () => {
+describe('事件卡保留固定预览；关注动态 / 周报 / 预警改为页首入口按钮（P9/P10）', () => {
   const page = read('pages/opinion/index.tsx')
 
-  it('三张卡：固定预览（各 3 条），不再有「加载更多」与相关 state / 处理函数', () => {
-    /* 三张概要卡各走一次 overviewSlice，shown 均固定为 EVENT_OVERVIEW_INITIAL（不再按需增长） */
+  it('事件卡固定预览（3 条）；关注动态 / 预警改为入口按钮（不再内联预览）', () => {
+    /* P9 入口化：只剩事件卡走 overviewSlice 固定首屏，关注动态 / 预警不再内联渲染列表 */
     ok(page.includes('overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)'), '事件卡固定预览 3 条')
-    ok(page.includes('overviewSlice(feed.items, EVENT_OVERVIEW_INITIAL)'), '关注动态卡固定预览 3 条')
-    ok(page.includes('overviewSlice(alerts.items, EVENT_OVERVIEW_INITIAL)'), '关键词预警卡固定预览 3 条')
+    notOk(page.includes('overviewSlice(feed.items'), '关注动态不再内联预览（改入口按钮）')
+    notOk(page.includes('overviewSlice(alerts.items'), '预警不再内联预览（改入口按钮）')
     for (const dead of [
       'eventShownCount',
       'feedShownCount',
@@ -177,29 +183,25 @@ describe('事件 / 关注动态 / 关键词预警三卡去掉页内「加载更�
     }
   })
 
-  it('三卡入口都在卡头：事件 → pages/events；关注动态 → pages/feed；预警 → pages/alerts', () => {
+  it('事件卡入口在卡头；关注动态 / 周报 / 预警改为页首 nav 入口按钮（P9）', () => {
     ok(page.includes("Taro.navigateTo({ url: '/package/events/index' })"), '事件卡入口应指向 pages/events')
-    ok(page.includes("Taro.navigateTo({ url: '/package/feed/index' })"), '关注动态卡应复用既有的 pages/feed 入口')
-    ok(page.includes("Taro.navigateTo({ url: '/package/alerts/index' })"), '预警卡入口应指向已存在的 pages/alerts')
-    /* 「查看全部 ›」文字入口在卡头出现 4 次（事件 / 关注动态 / 周报 / 预警）——
-       三张概要卡入口形态统一（卡头右上角、同类名 page-opinion__more） */
+    /* 「查看全部 ›」卡头入口只剩事件卡 1 个（其余三块改页首 nav 按钮） */
     eq(
       (page.match(/className='page-opinion__more'/g) || []).length,
-      4,
-      '「查看全部 ›」卡头入口应恰好 4 个（事件 / 关注动态 / 周报 / 预警）'
+      1,
+      '「查看全部 ›」卡头入口应只剩事件卡 1 个（关注动态 / 周报 / 预警改页首 nav 按钮）'
     )
+    for (const [nav, url, label] of [
+      ['goFeed', '/package/feed/index', '关注动态'],
+      ['goWeekly', '/package/weekly/index', '本周周报'],
+      ['goAlerts', '/package/alerts/index', '监控']
+    ]) {
+      ok(page.includes(`className='page-opinion__nav-item' onClick={${nav}}`), `${label}应是页首 nav 入口按钮`)
+      ok(page.includes(url), `${label}入口应指向 ${url}`)
+    }
   })
 
-  it('关键词预警卡（2026-10-13 一并统一）：固定预览 3 条、卡头同款入口、无页内「加载更多 / 到底」', () => {
-    ok(page.includes('overviewSlice(alerts.items, EVENT_OVERVIEW_INITIAL)'), '预警卡应固定预览 3 条')
-    ok(
-      page.includes("<Text className='page-opinion__more' onClick={goAlerts}>"),
-      '预警卡卡头入口应与事件卡 / 关注动态卡**同款**（同类名 + 同「查看全部 ›」文案）'
-    )
-    ok(
-      page.includes("goAlerts = () => void Taro.navigateTo({ url: '/package/alerts/index' })"),
-      '预警卡入口应跳已存在的预警完整页 pages/alerts'
-    )
+  it('关键词预警 / 关注动态的空态与页内统计随卡移到各自完整页，舆情页不再内联（P9）', () => {
     for (const dead of [
       '加载更多预警',
       'alertSlice.hasMore',
@@ -208,30 +210,27 @@ describe('事件 / 关注动态 / 关键词预警三卡去掉页内「加载更�
       'alertShownCount',
       '—— 没有更多预警 ——',
       'page-opinion__more-detail',
-      'page-opinion__done'
+      'page-opinion__done',
+      '关注的人暂无公开动态',
+      '已开始监测，暂无相关报道',
+      '监测 {alerts.keywordCount} 个词',
+      '监控 {alerts.personCount} 位名人',
+      '相关报道 {alerts.items.length} 条',
+      '风险信号 {alerts.riskCount} 条'
     ]) {
-      notOk(page.includes(dead), `预警卡不得再残留「${dead}」`)
+      notOk(page.includes(dead), `舆情页不得再残留「${dead}」`)
     }
-    /* 统计信息保留（不因简化而丢） */
-    ok(page.includes('监测 {alerts.keywordCount} 个词'), '保留「监测词数」')
-    ok(page.includes('监控 {alerts.personCount} 位名人'), '保留「监控人数」')
-    ok(page.includes('相关报道 {alerts.items.length} 条'), '保留「相关报道数」')
-    ok(page.includes('风险信号 {alerts.riskCount} 条'), '保留「风险信号数」')
   })
 
-  it('三卡头部仍显示总数 / 计数（不因去加载更多丢掉已有信息）', () => {
+  it('事件卡头部仍显示事件总数（唯一保留的数据卡，不因固定预览丢掉已有信息）', () => {
     ok(page.includes('🧩 事件时间线 · ${events.length} 件事'), '事件卡显示事件总数')
-    ok(page.includes('近期 {feed.entryCount} 条'), '关注动态卡显示近期条数（总数）')
-    ok(page.includes('已关注 {feed.followCount} 人'), '关注动态卡保留关注人数')
-    ok(page.includes('相关报道 {alerts.items.length} 条'), '预警卡显示相关报道总数')
   })
 
-  it('回归锁：三张概要卡一律不按会员档放全（无 sliceDetail/moreDetailNote/isMember 渲染路径）', () => {
+  it('回归锁：本页不再有按会员档放全的概要路径（无 sliceDetail / moreDetailNote / isMember）', () => {
     notOk(/sliceDetail\(/.test(page), '概要列表不得再走 sliceDetail')
     notOk(page.includes('moreDetailNote('), '概要卡不得再用「会员可见全部 N 条」明细提示')
     notOk(page.includes('isMember'), '概要不分档 → 本页不应再出现 isMember')
-    /* 空态仍在（三张卡各自的空态文案） */
-    ok(page.includes('关注的人暂无公开动态'), '关注动态空态仍在')
-    ok(page.includes('已开始监测，暂无相关报道'), '预警空态仍在')
+    ok(page.includes('暂无可归并的事件'), '事件卡空态仍在（唯一保留的数据卡）')
+    ok(page.includes('正在归并事件'), '事件卡加载态仍在')
   })
 })

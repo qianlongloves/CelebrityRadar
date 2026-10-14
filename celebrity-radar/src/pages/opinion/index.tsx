@@ -26,6 +26,7 @@ import {
   responseOf
 } from '@/utils/opinion-rank'
 import type { CredTier, ImpactLevel, OpinionEntry, OpinionInput, ResponseNeed } from '@/utils/opinion-rank'
+import { buildDailyBrief } from '@/utils/opinion-brief'
 import { buildOpinionEvents } from '@/utils/opinion-events'
 import type { OpinionEvent } from '@/utils/opinion-events'
 import {
@@ -428,6 +429,15 @@ export default function Opinion() {
   /** 今日要点：统一队列前 3 条（无来源 / 与我不相关的不凑数）—— 不受明细条数分层限制 */
   const focus = useMemo(() => pickDailyFocus(queue), [queue])
 
+  /** 每日舆情简报（P10，2026-10-14）：统一队列的数字 + 图表聚合（纯函数，见 utils/opinion-brief.ts） */
+  const brief = useMemo(() => buildDailyBrief(queue), [queue])
+
+  /** 简报日期标签（本地当天，仅作展示，不参与任何判定） */
+  const briefDate = useMemo(() => {
+    const d = new Date()
+    return `${d.getMonth() + 1}月${d.getDate()}日`
+  }, [])
+
   /**
    * 事件维度的「新」：复用 opinion_event_status.reads（已读且无新进展 → 不算新），
    * 与每张事件卡上的角标同源（utils/inbox#countNewEvents → opinion-store#eventNewness）。
@@ -618,6 +628,90 @@ export default function Opinion() {
           <Text className='page-opinion__nav-icon'>🔔</Text>
           <Text className='page-opinion__nav-label'>监控</Text>
         </View>
+      </View>
+
+      {/* ===== 每日舆情简报（P10，2026-10-14）：数字 + CSS 图表，纯前端聚合、不新增模型调用 ===== */}
+      <View className='card page-opinion__brief'>
+        <View className='page-opinion__head'>
+          <Text className='page-opinion__head-title'>📊 每日舆情简报</Text>
+          <Text className='page-opinion__brief-date'>{briefDate}</Text>
+        </View>
+
+        {/* 规模四格：关注 / 监控词 / 动态 / 风险信号 */}
+        <View className='page-opinion__brief-stats'>
+          <View className='page-opinion__brief-stat'>
+            <Text className='page-opinion__brief-stat-value'>{feed.followNames.length}</Text>
+            <Text className='page-opinion__brief-stat-label'>关注</Text>
+          </View>
+          <View className='page-opinion__brief-stat'>
+            <Text className='page-opinion__brief-stat-value'>{alerts.keywords.length}</Text>
+            <Text className='page-opinion__brief-stat-label'>监控词</Text>
+          </View>
+          <View className='page-opinion__brief-stat'>
+            <Text className='page-opinion__brief-stat-value'>{brief.total}</Text>
+            <Text className='page-opinion__brief-stat-label'>动态</Text>
+          </View>
+          <View className='page-opinion__brief-stat'>
+            <Text className='page-opinion__brief-stat-value'>{brief.riskCount}</Text>
+            <Text className='page-opinion__brief-stat-label'>风险信号</Text>
+          </View>
+        </View>
+
+        {/* 风险类别分布：横向条形图（条形宽度按相对最大值换算） */}
+        {brief.categories.length > 0 && (
+          <View className='page-opinion__brief-block'>
+            <Text className='page-opinion__brief-block-title'>风险类别分布</Text>
+            <View className='page-opinion__brief-bars'>
+              {brief.categories.map((b) => (
+                <View key={b.key} className='page-opinion__brief-bar'>
+                  <Text className='page-opinion__brief-bar-label'>{b.label}</Text>
+                  <View className='page-opinion__brief-bar-track'>
+                    <View
+                      className={`page-opinion__brief-bar-fill page-opinion__brief-bar-fill--${b.key}`}
+                      style={{ width: `${Math.round(b.ratio * 100)}%` }}
+                    />
+                  </View>
+                  <Text className='page-opinion__brief-bar-count'>{b.count}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* 影响面：柱状图（柱高按相对最大值换算） */}
+        {brief.impacts.length > 0 && (
+          <View className='page-opinion__brief-block'>
+            <Text className='page-opinion__brief-block-title'>影响面</Text>
+            <View className='page-opinion__brief-cols'>
+              {brief.impacts.map((b) => (
+                <View key={b.key} className='page-opinion__brief-col'>
+                  <Text className='page-opinion__brief-col-count'>{b.count}</Text>
+                  <View className='page-opinion__brief-col-track'>
+                    <View
+                      className={`page-opinion__brief-col-fill page-opinion__brief-col-fill--${b.key}`}
+                      style={{ height: `${Math.round(b.ratio * 100)}%` }}
+                    />
+                  </View>
+                  <Text className='page-opinion__brief-col-label'>{b.label}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* 建议回应 / 建议关注：有行动价值的条目单独拎出来 */}
+        {(brief.respondCount > 0 || brief.watchCount > 0) && (
+          <View className='page-opinion__brief-actions'>
+            <Text className='page-opinion__brief-action page-opinion__brief-action--respond'>
+              建议回应 {brief.respondCount}
+            </Text>
+            <Text className='page-opinion__brief-action page-opinion__brief-action--watch'>
+              建议关注 {brief.watchCount}
+            </Text>
+          </View>
+        )}
+
+        <Text className='page-opinion__note'>分级来自报道里出现的表述类别，不是平台定性</Text>
       </View>
 
       {/* ===== 今日要点（判断入口，置于三个入口按钮之后） ===== */}
