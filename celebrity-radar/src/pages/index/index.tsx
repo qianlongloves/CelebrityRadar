@@ -142,7 +142,7 @@ export default function Index() {
 
   /** 铃铛：进消息中心（关注更新 / 周报提醒 / 平台公告，见 utils/messages） */
   const onBellTap = () => {
-    void Taro.navigateTo({ url: '/pages/messages/index' })
+    void Taro.navigateTo({ url: '/package/messages/index' })
   }
 
   /**
@@ -221,14 +221,14 @@ export default function Index() {
     track('disambiguate_selected', { personKey, focus })
     const extra = kw ? `&keyword=${encodeURIComponent(kw)}` : ''
     Taro.navigateTo({
-      url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}&focus=${focus}${extra}`
+      url: `/package/report/index?personKey=${encodeURIComponent(personKey)}&focus=${focus}${extra}`
     })
   }
 
   /** 复访历史名人：history 已存 personKey，直接进报告页（与 openPerson 同一出口） */
   const openHistory = (row: HistoryRow) => {
     track('disambiguate_selected', { personKey: row.person_key, from: 'history' })
-    Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(row.person_key)}` })
+    Taro.navigateTo({ url: `/package/report/index?personKey=${encodeURIComponent(row.person_key)}` })
   }
 
   /**

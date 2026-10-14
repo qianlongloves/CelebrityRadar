@@ -731,6 +731,9 @@ function portraitCloudPath(personKey, ext) {
 async function handlePortrait(event) {
   const personKey = trimStr(event.personKey)
   const name = trimStr(event.name)
+  /* 领域（中文标签）由端上传入：同名不同人（张三#文娱 vs 张三#科技）若只按名字查图，
+     会拿到同一批图、选出同一张 —— 把领域拼进查询词，两个同名者各查到各行业的照片。 */
+  const domain = trimStr(event.domain)
   if (!personKey || !name) return { ok: false, error: '缺少 personKey / name' }
   if (personKey.length > 120 || name.length > 40) return { ok: false, error: 'personKey / name 过长' }
 
@@ -749,7 +752,7 @@ async function handlePortrait(event) {
    * 两次都没有可用图，才认「这个人就是没有图」——并把每次的候选数带回去，便于排障。
    */
   const attempts = []
-  for (const q of [`${name} 照片`, name]) {
+  for (const q of domain ? [`${name} ${domain}`, `${name} 照片`, name] : [`${name} 照片`, name]) {
     const params = { query: q, freshness: 'oneMonth', summary: true, count: 5 }
     const res = await postJson(BOCHA_ENDPOINT, { Authorization: `Bearer ${key}` }, params, TIMEOUT_MS)
     if (!res || res.status !== 200) {
@@ -1042,10 +1045,24 @@ async function probeBackup(provider) {
  */
 function failDetail(err) {
   const msg = err instanceof Error ? err.message : String(err)
+  const status = (err && (err.status || err.statusCode || (err.response && err.response.status))) || 0
   const hint = /超时|timeout|socket hang up/i.test(msg)
     ? '（请把云函数超时时间调到 60s：控制台 → 云函数 → aiProxy → 配置）'
     : ''
-  return `请求失败：${msg}${hint}`
+  /*
+   * 用户文案映射（2026-10-14）：把 5xx / 纯网络错误翻译成人话，别让用户看英文技术串。
+   * 401/402/403 等账户类**刻意不映射**——保留上游原话与状态码供运维定位（07/23 用例钉住），
+   * 且它们的含义已由 handleChat 的 upstream_quota 分支用「上游账户」前缀说清。
+   */
+  const friendly =
+    status >= 500 && status < 600
+      ? '上游服务暂时故障（请稍后重试）'
+      : /internal server error|bad gateway|service unavailable|gateway timeout/i.test(msg)
+        ? '上游服务暂时故障（请稍后重试）'
+        : /ECONNREFUSED|ENOTFOUND|getaddrinfo|ENETUNREACH|ECONNRESET/i.test(msg)
+          ? '网络连接失败（请检查网络后重试）'
+          : ''
+  return `请求失败：${friendly || msg}${hint}`
 }
 
 /**

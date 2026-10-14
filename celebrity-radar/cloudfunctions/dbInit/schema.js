@@ -425,6 +425,35 @@ const collections = [
       })
     ]
   },
+  {
+    name: 'scan_logs',
+    purpose: '监控执行日志（关键词 / 名人各一条流，云函数 keywordAlert / riskWatch 写、端上只读）',
+    acl: ACL.publicReadOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      /* keyword = 关键词预警那一路；person = 名人风险监控那一路 */
+      f('kind', 'string', { required: true, enumHint: ['keyword', 'person'] }),
+      /* 被扫描的对象：关键词原文（keyword）或 personKey（person） */
+      f('object_key', 'string', { required: true }),
+      /* 显示名：关键词 = 词本身；名人 = 姓名 */
+      f('object_name', 'string', { required: true }),
+      /* 本轮执行时刻（我们自己的时钟，ISO） */
+      f('ran_at', 'string', { required: true }),
+      /* ok = 扫到结果；skipped = 缓存够新、本轮未打上游；error = 上游失败 */
+      f('status', 'string', { required: true, enumHint: ['ok', 'skipped', 'error'] }),
+      /* 命中数：关键词 = 本轮新报道条数；名人 = 本轮新信号条数 */
+      f('hit', 'number', { def: 0 }),
+      /* 结果总数：关键词 = 本轮检索返回条数；名人 = 本轮检索返回条数 */
+      f('total', 'number', { def: 0 }),
+      /* 简短说明：error 的失败原因 / skipped 的复用理由 / ok 的命中摘要 */
+      f('note', 'string?', { def: '' })
+    ],
+    indexes: [
+      ix('idx_kind_object_ran_at', [['kind', 'asc'], ['object_key', 'asc'], ['ran_at', 'desc']], {
+        supports: '监控页按「类型 + 对象」取最近执行日志'
+      })
+    ]
+  },
   /* ↓ 事件驱动深挖的单日预算计数（P4-A，2026-10-13）—— 见 benefits.ts#DEEP_DIVE */
   {
     name: 'deep_dive_quota',

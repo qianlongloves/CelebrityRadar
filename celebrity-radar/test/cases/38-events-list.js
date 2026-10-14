@@ -37,20 +37,20 @@ function OA() {
 
 describe('事件列表页：已注册且不是 tab 页（静态约束）', () => {
   const appConfig = read('app.config.ts')
-  const page = read('pages/events/index.tsx')
-  const config = read('pages/events/index.config.ts')
-  const scss = read('pages/events/index.scss')
+  const page = read('package/events/index.tsx')
+  const config = read('package/events/index.config.ts')
+  const scss = read('package/events/index.scss')
 
-  it('app.config 的 pages 注册了 pages/events/index', () => {
-    const pages = appConfig.slice(appConfig.indexOf('pages: ['), appConfig.indexOf(']', appConfig.indexOf('pages: [')))
-    ok(pages.includes("'pages/events/index'"), 'pages/events/index 必须注册，否则入口跳转打不开')
+  it('app.config 的 subpackages 注册了 package/events/index', () => {
+    const sub = appConfig.slice(appConfig.indexOf('subpackages: ['))
+    ok(sub.includes("'events/index'"), 'events/index 必须注册进 package 分包，否则入口跳转打不开')
   })
 
   it('不是 tab 页：tabBar.list 里没有它，页面用 .safe-bottom 而非 .safe-tab', () => {
     const tab = appConfig.slice(appConfig.indexOf('tabBar:'))
     const start = tab.indexOf('list: [')
     const tabBarList = tab.slice(start, tab.indexOf(']', start))
-    notOk(tabBarList.includes('pages/events/index'), '事件列表页不是 tab，不应进 tabBar.list')
+    notOk(tabBarList.includes('package/events/index'), '事件列表页不是 tab，不应进 tabBar.list')
 
     ok(page.includes('safe-bottom'), '非 tab 页底部预留用 .safe-bottom')
     notOk(page.includes('safe-tab'), '非 tab 页不得用 .safe-tab（那是给悬浮底栏留空间的）')
@@ -67,7 +67,7 @@ describe('事件列表页：已注册且不是 tab 页（静态约束）', () =>
 /* ───────────────────── 2. 数据来源：复用既有 utils + 降级 ───────────────────── */
 
 describe('事件列表页：同舆情页事件卡同一套读取口径（不另写读库代码）', () => {
-  const page = read('pages/events/index.tsx')
+  const page = read('package/events/index.tsx')
 
   it('复用既有 utils：opinion-store / opinion-events / opinion-access', () => {
     for (const imp of [
@@ -152,8 +152,8 @@ describe('事件列表页分页：EVENTS_PAGE_SIZE 与 pageSlice 纯函数', () 
 /* ───────────────────── 4. 页面分页交互（静态锁定） ───────────────────── */
 
 describe('事件列表页：首屏只渲染第一页 + 触底追加（静态锁定）', () => {
-  const page = read('pages/events/index.tsx')
-  const scss = read('pages/events/index.scss')
+  const page = read('package/events/index.tsx')
+  const scss = read('package/events/index.scss')
 
   it('首屏只渲染第一页：渲染 paged.rows，绝不直接渲染全量', () => {
     ok(page.includes('pageSlice(events, page, EVENTS_PAGE_SIZE)'), '应对全量事件按 EVENTS_PAGE_SIZE 切片')
@@ -204,10 +204,10 @@ describe('事件列表页：首屏只渲染第一页 + 触底追加（静态锁�
 /* ───────────────────── 5. 每条事件跳单事件时间线页 + 卡内按钮不冲突 ───────────────────── */
 
 describe('事件列表页：整卡跳事件时间线页（带 encode 参数）', () => {
-  const page = read('pages/events/index.tsx')
+  const page = read('package/events/index.tsx')
 
-  it('整卡跳 /pages/event/index，带 encode 过的 eventKey + title', () => {
-    ok(page.includes('/pages/event/index'), '每条事件应跳单事件时间线页')
+  it('整卡跳 /package/event/index，带 encode 过的 eventKey + title', () => {
+    ok(page.includes('/package/event/index'), '每条事件应跳单事件时间线页')
     ok(page.includes('Taro.navigateTo'), '跳转用 navigateTo')
     ok(
       page.includes('eventKey=${encodeURIComponent(ev.key)}&title=${encodeURIComponent(ev.title)}'),
@@ -253,13 +253,13 @@ describe('舆情页三张卡：不再「加载更多」，改为跳独立页的�
   })
 
   it('三张卡各自的跳转目标正确：事件 → pages/events；关注动态 → pages/feed；预警 → pages/alerts', () => {
-    ok(page.includes("Taro.navigateTo({ url: '/pages/events/index' })"), '事件卡入口应指向 pages/events')
-    ok(page.includes("Taro.navigateTo({ url: '/pages/feed/index' })"), '关注动态卡应指向已存在的 pages/feed')
-    ok(page.includes("Taro.navigateTo({ url: '/pages/alerts/index' })"), '预警卡应指向已存在的 pages/alerts')
+    ok(page.includes("Taro.navigateTo({ url: '/package/events/index' })"), '事件卡入口应指向 pages/events')
+    ok(page.includes("Taro.navigateTo({ url: '/package/feed/index' })"), '关注动态卡应指向已存在的 pages/feed')
+    ok(page.includes("Taro.navigateTo({ url: '/package/alerts/index' })"), '预警卡应指向已存在的 pages/alerts')
   })
 
   it('每条事件仍可点进 pages/event（既有能力不丢）', () => {
-    ok(page.includes('/pages/event/index'), '舆情页事件卡仍应能点进单事件时间线页')
+    ok(page.includes('/package/event/index'), '舆情页事件卡仍应能点进单事件时间线页')
     ok(page.includes('eventKey=${encodeURIComponent(ev.key)}'), 'eventKey 必须 encode 后带上')
   })
 })

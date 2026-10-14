@@ -7,7 +7,7 @@ import { readMemberState } from './member'
 import { requestRiskNotify, riskNotifyConfigured } from './notify'
 import { personWatchGate, personWatchLimit, personWatchLimitNote } from './opinion-access'
 import { shortDay8 } from './time'
-import { RiskSignalRow } from '@/types/db'
+import { RiskScanRow, RiskSignalRow } from '@/types/db'
 
 /**
  * 名人风险监控（第 1 期，2026-10-09）。
@@ -248,6 +248,23 @@ export async function loadRiskSignals(personKeys: string[]): Promise<RiskSignalR
     return []
   }
   return (data as RiskSignalRow[]) ?? []
+}
+
+/**
+ * 读名人扫描快照（risk_scans，id = personKey）：拿「最近扫描时间 / 累计信号数」，
+ * 供名人监控表格的「最近执行 / 结果」列填数（与 scan_logs 的执行日志是互补的两份数据：
+ * 快照回答「现状」，日志回答「历史」）。
+ */
+export async function loadRiskScans(personKeys: string[]): Promise<RiskScanRow[]> {
+  if (!personKeys.length) return []
+  const { data, error } = await table('risk_scans')
+    .select('*')
+    .in('id', personKeys)
+  if (error) {
+    diagLog('warn', 'db', `风险扫描快照读取失败：${error.message ?? error}`)
+    return []
+  }
+  return (data as RiskScanRow[]) ?? []
 }
 
 /**

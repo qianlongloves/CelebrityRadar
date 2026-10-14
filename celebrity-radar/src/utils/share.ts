@@ -11,7 +11,7 @@ import { Report } from './report'
  *
  * 三条口径：
  *
- * 1) **落地页统一是 `pages/report/index`**。深度报告是唯一「点开就看得懂」的内容，
+ * 1) **落地页统一是 `package/report/index`**。深度报告是唯一「点开就看得懂」的内容，
  *    且 tabBar 页不能作为分享落地页（微信限制），所以发现页 / 提问页这类 tab 页
  *    也必须落到报告页而不是自己。
  * 2) **标题只用可核对的一句简介**（报告 `intro` 的首句）—— 与推荐卡的 brief 同源，
@@ -36,7 +36,7 @@ function briefOf(report?: Report | null): string {
  * focus 非 all 时带上：对方点开即落在同一侧重，不必自己再切一次。
  */
 export function reportSharePath(personKey: string, focus?: string): string {
-  const base = `/pages/report/index?personKey=${encodeURIComponent(personKey)}`
+  const base = `/package/report/index?personKey=${encodeURIComponent(personKey)}`
   return focus && focus !== 'all' ? `${base}&focus=${focus}` : base
 }
 

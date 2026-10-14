@@ -112,6 +112,8 @@ const CACHE_TABLE = 'keywords'
 const MEMBERSHIP_TABLE = 'memberships'
 /** 深挖单日预算计数表（_id = yyyy-MM-dd，+8 时区，客户端完全不可读写）—— P4-A 成本闸门 */
 const DEEP_DIVE_TABLE = 'deep_dive_quota'
+/** 监控执行日志表（云函数写、端上只读）：每轮每个进入队列的对象写一条（时间/对象/命中数/成功与否） */
+const LOG_TABLE = 'scan_logs'
 
 /**
  * 深挖的候选查询词后缀（**中性语境词，不含任何评价性表述**）：
@@ -433,6 +435,30 @@ const cacheId = (keyword) => keyword
 /** 关键词 → 订阅文档主键（与 follows 的 openid#personKey 同构） */
 const watchId = (openid, keyword) => `${openid}#${keyword}`
 
+/**
+ * 写一条监控执行日志（2026-10-14）。日志是**观察性数据**：写失败只告警、绝不拖垮扫描。
+ * 主键 `${kind}#${objectKey}#${ranAt}`：同一轮同一对象只执行一次，ranAt（ISO）跨轮不同 ⇒ 全局唯一。
+ */
+async function writeLog(kind, objectKey, objectName, ranAt, status, hit, total, note) {
+  try {
+    await db.collection(LOG_TABLE).add({
+      data: {
+        _id: `${kind}#${objectKey}#${ranAt}`,
+        kind,
+        object_key: objectKey,
+        object_name: String(objectName || '').trim() || objectKey,
+        ran_at: ranAt,
+        status,
+        hit: Math.max(0, Number(hit) || 0),
+        total: Math.max(0, Number(total) || 0),
+        note: String(note || '')
+      }
+    })
+  } catch (err) {
+    console.warn(`[keywordAlert] 写执行日志失败（${kind}#${objectKey}）：${err && err.message}`)
+  }
+}
+
 /* ───────────── 分档新增上限（P4，2026-10-13）：写入路径的服务端权威判定 ───────────── */
 
 /**
@@ -714,6 +740,7 @@ exports.main = async (event) => {
     /* 缓存足够新就复用：同一关键词一天只打一次上游 */
     if (prev && prev.fetched_at && Date.now() - Date.parse(prev.fetched_at) < REFRESH_GAP_MS) {
       results.set(keyword, { items: prevItems, prevUrls, fresh: false })
+      await writeLog('keyword', keyword, keyword, nowIso, 'skipped', 0, prevItems.length, '20 小时内已扫描，本轮复用缓存')
       continue
     }
 
@@ -793,9 +820,14 @@ exports.main = async (event) => {
         .doc(cacheId(keyword))
         .set({ data: { keyword, items: merged, fetched_at: nowIso, watchers: (byKeyword.get(keyword) || []).length } })
       updated++
+      /* 命中数 = 扫描新增（url 没见过）+ 深挖新增（deepItems 已过相关性闸门） */
+      const scanNew = items.filter((i) => i && i.url && !prevUrls.has(i.url)).length
+      const hit = scanNew + deepItems.length
+      await writeLog('keyword', keyword, keyword, nowIso, 'ok', hit, merged.length, hit ? `新增 ${hit} 条报道` : '无新报道')
     } catch (err) {
       /* 单个关键词失败不拖垮整轮：留原文供下次比对，本轮该词视为无更新 */
       results.set(keyword, { items: prevItems, prevUrls, fresh: false, error: String(err && err.message) })
+      await writeLog('keyword', keyword, keyword, nowIso, 'error', 0, prevItems.length, String(err && err.message))
     }
   }
 

@@ -128,6 +128,31 @@ export interface RiskScanRow {
   signals_total: number
 }
 
+/**
+ * scan_logs：监控执行日志（云函数 keywordAlert / riskWatch 写、端上只读）。
+ * 每个「进入本轮扫描队列」的对象每次执行写一条（成功 / 跳过 / 失败），
+ * 供监控页展示「执行状态 + 执行结果」的历史。
+ */
+export interface ScanLogRow {
+  id: string
+  /** keyword = 关键词预警；person = 名人风险监控 */
+  kind: 'keyword' | 'person'
+  /** 被扫描的对象：关键词原文（keyword）或 personKey（person） */
+  object_key: string
+  /** 显示名：关键词 = 词本身；名人 = 姓名 */
+  object_name: string
+  /** 本轮执行时刻（ISO） */
+  ran_at: string
+  /** ok = 扫到结果；skipped = 缓存够新、未打上游；error = 上游失败 */
+  status: 'ok' | 'skipped' | 'error'
+  /** 命中数：关键词 = 本轮新报道条数；名人 = 本轮新信号条数 */
+  hit: number
+  /** 结果总数：本轮检索返回条数 */
+  total: number
+  /** 简短说明：error 的失败原因 / skipped 的复用理由 / ok 的命中摘要 */
+  note?: string
+}
+
 /*
  * 刻意**不在这里**声明的两张表：`memberships`（会员权威）与 `ai_calls`（防滥用计数）。
  * 它们的权限是「客户端完全不可读写」，端上任何读写都会失败 —— 也就是说并不存在

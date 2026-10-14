@@ -3,15 +3,13 @@ import Taro, { useDidShow } from '@tarojs/taro'
 import { Text, View } from '@tarojs/components'
 import { listFollows } from '@/utils/follows'
 import { getFeedDetails } from '@/utils/cache'
-import { MATERIAL_FAIL_TEXT, WEEKLY_WINDOW_DAYS, collectWeeklyMaterial, readWeeklyCache } from '@/utils/weekly'
+import { readWeeklyCache } from '@/utils/weekly'
 import type { WeeklyReport } from '@/utils/weekly'
 import { loadAlerts, listWatches, markAllSeen, splitWatches } from '@/utils/keyword-alert'
-import { groupSignals, loadRiskSignals } from '@/utils/risk-watch'
-import { loadFollowWatches } from '@/utils/watch'
+import { loadRiskSignals } from '@/utils/risk-watch'
 import {
   alertNewCount,
   countNewEvents,
-  feedNewCount,
   markModuleSeen,
   readInboxSeen,
   riskNewCount
@@ -27,7 +25,7 @@ import {
   pickDailyFocus,
   responseOf
 } from '@/utils/opinion-rank'
-import type { CredTier, ImpactLevel, OpinionBlock, OpinionInput, ResponseNeed } from '@/utils/opinion-rank'
+import type { CredTier, ImpactLevel, OpinionEntry, OpinionInput, ResponseNeed } from '@/utils/opinion-rank'
 import { buildOpinionEvents } from '@/utils/opinion-events'
 import type { OpinionEvent } from '@/utils/opinion-events'
 import {
@@ -44,8 +42,8 @@ import {
 import type { EventStatus } from '@/utils/opinion-store'
 import type { OpinionEventRow, RiskSignalRow } from '@/types/db'
 import type { RiskCategory } from '@/utils/risk'
-import { domainLabel, parsePersonKey } from '@/config/domains'
-import { formatMoment8, fromNow } from '@/utils/time'
+import { parsePersonKey } from '@/config/domains'
+import { formatMoment8 } from '@/utils/time'
 import { useTabBarSync } from '@/utils/tabbar'
 import './index.scss'
 
@@ -116,10 +114,19 @@ import './index.scss'
  *   · 串行读改并行、同一集合只读一次：`loadAlerts(rows)` 复用已读到的订阅行；
  *     「预警分组 ∥ 风险信号」「落库事件 ∥ 我的状态」各自并行。
  *   ⚠ 口径不变：落库优先 / 降级 / 空态 / 错误态 / 合规说明一字未改，只是把重活挪出渲染关键路径。
+ *
+ * P9（2026-10-14）**布局重构**：关注动态 / 本周周报 / 监控三块由「概要数据卡」改为**页首入口按钮**
+ *   （`page-opinion__nav`：纯图标 + 文字，不加载、不渲染列表），只保留「今日要点」与「事件时间线」
+ *   两张真正的数据卡。随之：三块数据仍在后台加载（供统一队列 / 今日要点 / 事件降级用），但
+ *   **删除了只为卡片角标 / 统计服务的加载与字段**——`loadFollowWatches`（2N 次只读只算「新 N 条」）
+ *   与周报的 `collectWeeklyMaterial`（材料可得性提示）随卡片一并移除，首屏更轻。
+ *   · 今日要点条目新增归属展示（`label`：人名 / 关键词），点 feed 条目跳对应名人主页时能看出是谁。
  */
 type Status = 'loading' | 'ready' | 'error'
 
 interface FeedPreview {
+  /** 归属名人的稳定键（`名字#领域码`），供「今日要点」feed 条目精准跳转名人主页 */
+  personKey: string
   personName: string
   domain: string
   title: string
@@ -142,12 +149,7 @@ interface AlertPreview {
 
 interface FeedState {
   status: Status
-  followCount: number
-  entryCount: number
-  failedCount: number
-  /** 自上次查看以来有变化的关注对象数（口径走 utils/inbox#feedNewCount，即每个人的 hasNew） */
-  newCount: number
-  /** 全部归并后的动态（统一队列取全量；本块按会员态截断展示） */
+  /** 全部归并后的动态（统一队列取全量） */
   items: FeedPreview[]
   /** 关注的人名（「与我相关」排序用） */
   followNames: string[]
@@ -156,22 +158,16 @@ interface FeedState {
 interface WeeklyState {
   status: Status
   report: WeeklyReport | null
-  /** 无缓存时的可得性（来自零成本的 collectWeeklyMaterial）；report 非空时为 null */
-  materialKind: 'ok' | 'nologin' | 'nofollow' | 'nomaterial' | null
-  materialCount: number
 }
 
 interface AlertState {
   status: Status
-  keywordCount: number
-  personCount: number
   newTotal: number
   /** 风险信号里自上次查看以来的新增条数（口径走 utils/inbox#riskNewCount，基线是本机 inbox:seen.risk） */
   riskNew: number
-  riskCount: number
-  /** 关键词预警条目（全量；本块按会员态截断展示） */
+  /** 关键词预警条目（全量） */
   items: AlertPreview[]
-  /** 风险信号原文（参与统一队列分级；本块只统计条数） */
+  /** 风险信号原文（参与统一队列分级） */
   riskRows: RiskSignalRow[]
   /** 监控中的关键词原文（「与我相关」排序用） */
   keywords: string[]
@@ -179,38 +175,22 @@ interface AlertState {
   personNames: string[]
 }
 
-/** 周报未生成时的状态文案：先说有没有可汇总的材料，再给出下一步 */
-function weeklyStatusText(kind: WeeklyState['materialKind'], count: number): string {
-  if (kind === 'ok') return `关注的人近 ${WEEKLY_WINDOW_DAYS} 天有 ${count} 条动态可汇总，去完整页生成`
-  if (kind) return MATERIAL_FAIL_TEXT[kind]
-  return `本周还没生成周报，去完整页看看（汇总最近 ${WEEKLY_WINDOW_DAYS} 天关注动态）`
-}
-
 export default function Opinion() {
   useTabBarSync()
 
   const [feed, setFeed] = useState<FeedState>({
     status: 'loading',
-    followCount: 0,
-    entryCount: 0,
-    failedCount: 0,
-    newCount: 0,
     items: [],
     followNames: []
   })
   const [weekly, setWeekly] = useState<WeeklyState>({
     status: 'loading',
-    report: null,
-    materialKind: null,
-    materialCount: 0
+    report: null
   })
   const [alerts, setAlerts] = useState<AlertState>({
     status: 'loading',
-    keywordCount: 0,
-    personCount: 0,
     newTotal: 0,
     riskNew: 0,
-    riskCount: 0,
     items: [],
     riskRows: [],
     keywords: [],
@@ -232,29 +212,32 @@ export default function Opinion() {
   const [storedReady, setStoredReady] = useState(false)
   /** 我的事件状态（已读 / 跟进）；读失败 = 空状态（页面照常，只是显示为「都没读过」） */
   const [eventStatus, setEventStatus] = useState<EventStatus>(emptyStatus())
+  /**
+   * 事件时间线「只看与我相关」（功能 3）：只显示命中我监控词 / 关注·监控的人的**事件**。
+   * 关注动态卡天然都是「我关注的人」、无需过滤，故本开关只落在事件卡（那里混着与我无关的热门事件）。
+   */
+  const [onlyMine, setOnlyMine] = useState(false)
 
   /**
-   * 关注动态概要：**预览只读一次批量缓存**，把「新 N 条」角标挪到预览渲染之后再补 ——
-   * 预览（列表 / 今日要点 / 事件降级都吃 `feed.items`）因此不再等 `loadFollowWatches`。
+   * 关注动态数据：**只读一次批量缓存**（`getFeedDetails`），供统一队列 / 今日要点 / 事件降级用。
+   * 关注动态已改为页首入口按钮、不再展示概要列表与「新 N 条」角标，故这里不再补 `loadFollowWatches`。
    */
   const loadFeed = useCallback(async () => {
     setFeed((s) => ({ ...s, status: 'loading' }))
     try {
       const rows = await listFollows()
       /*
-       * 预览只依赖这**一次**批量读（`getFeedDetails` 把全部关注人的 feed_cache 用一次 in 查询取回）。
-       * 刻意**不在这里 await `loadFollowWatches`** —— 它为每位关注人各读 report_cache + feed_cache
-       * （2N 次只读、分批并发），是首屏最重的一段，却只产出「新 N 条」这个角标。先渲染预览，角标随后补。
+       * 只读这一**次**批量缓存（`getFeedDetails` 把全部关注人的 feed_cache 用一次 in 查询取回）。
+       * 关注动态卡已改为页首入口按钮、不再展示概要列表与「新 N 条」角标，故这里**不再补 `loadFollowWatches`**：
+       * 它是为每位关注人各读 report_cache + feed_cache（2N 次只读）只为算角标的最重一段，已随卡片一并移除。
        */
       const details = await getFeedDetails(rows.map((f) => f.person_key))
       const merged: FeedPreview[] = []
-      let failed = 0
       for (const f of rows) {
-        const detail = details.get(f.person_key)
-        if (!detail || !detail.ok) failed++
         const parsed = parsePersonKey(f.person_key)
-        for (const it of detail?.items ?? []) {
+        for (const it of details.get(f.person_key)?.items ?? []) {
           merged.push({
+            personKey: f.person_key,
             personName: f.name,
             domain: parsed?.domain ?? 'other',
             title: it.title,
@@ -269,39 +252,20 @@ export default function Opinion() {
       merged.sort((a, b) => (b.date ? Date.parse(b.date) || 0 : 0) - (a.date ? Date.parse(a.date) || 0 : 0))
       setFeed({
         status: 'ready',
-        followCount: rows.length,
-        entryCount: merged.length,
-        failedCount: failed,
-        /* 角标先给 0，预览不等它；下面 `loadFollowWatches` 回来后补齐（口径不变） */
-        newCount: 0,
         items: merged,
         followNames: rows.map((r) => r.name)
       })
-      /* 角标后台补齐（口径 utils/inbox#feedNewCount，与关注流 / 消息中心一致）；读失败静默 —— 无非这次不显示角标 */
-      void loadFollowWatches(rows)
-        .then((watches) => setFeed((s) => ({ ...s, newCount: feedNewCount(watches) })))
-        .catch(() => {})
     } catch {
       setFeed((s) => ({ ...s, status: 'error' }))
     }
   }, [])
 
-  /** 周报概要：先读本机缓存（零成本）；没有缓存再问一次材料可得性（同样零成本） */
+  /** 周报数据：读本机缓存（零成本），供统一队列里的周报条目使用 */
   const loadWeekly = useCallback(async () => {
     setWeekly((s) => ({ ...s, status: 'loading' }))
     try {
       const cached = readWeeklyCache()
-      if (cached) {
-        setWeekly({ status: 'ready', report: cached, materialKind: null, materialCount: cached.entryCount })
-        return
-      }
-      const mat = await collectWeeklyMaterial()
-      setWeekly({
-        status: 'ready',
-        report: null,
-        materialKind: mat.kind,
-        materialCount: mat.kind === 'ok' ? mat.material.entryCount : 0
-      })
+      setWeekly({ status: 'ready', report: cached })
     } catch {
       setWeekly((s) => ({ ...s, status: 'error' }))
     }
@@ -339,13 +303,10 @@ export default function Opinion() {
 
       setAlerts({
         status: 'ready',
-        keywordCount: keywords.length,
-        personCount: persons.length,
         /* 关键词预警口径走 utils/inbox#alertNewCount（等价于各词 newCount 之和，基线是每个词的 seen_at） */
         newTotal: alertNewCount(res.groups),
         /* 风险信号没有天然基线，走本机 inbox:seen.risk（见 utils/inbox 文件头） */
         riskNew: riskNewCount(riskRows, readInboxSeen().risk),
-        riskCount: groupSignals(riskRows).reduce((n, g) => n + g.signals.length, 0),
         items,
         riskRows,
         keywords: keywords.map((w) => w.keyword),
@@ -402,6 +363,7 @@ export default function Opinion() {
         source: e.source,
         date: e.date,
         person: e.personName,
+        personKey: e.personKey,
         /* 条目级分级字段透传给判断层：有则参与分级，无（旧缓存 / 未命中词典）则维持未评级 */
         category: e.category,
         level: e.level
@@ -460,6 +422,9 @@ export default function Opinion() {
   }, [storedReady, storedEvents, opinionInput])
   const events = eventView.events
 
+  /** 「只看与我相关」过滤后的事件（功能 3）：命中监控词 / 关注·监控的人任一即为「与我相关」 */
+  const visibleEvents = onlyMine ? events.filter((e) => e.hitsKeyword || e.hitsFollow) : events
+
   /** 今日要点：统一队列前 3 条（无来源 / 与我不相关的不凑数）—— 不受明细条数分层限制 */
   const focus = useMemo(() => pickDailyFocus(queue), [queue])
 
@@ -488,23 +453,30 @@ export default function Opinion() {
    *   分层其余部分仍生效（关注人数 / 监控数 / 风险监控人数上限；以及事件**时间线页**的明细门禁
    *   pages/event：免费 5 / 会员全部）。**本页不引入会员态变量**。
    */
-  const eventPreview = overviewSlice(events, EVENT_OVERVIEW_INITIAL)
-  const feedPreview = overviewSlice(feed.items, EVENT_OVERVIEW_INITIAL)
-  const alertSlice = overviewSlice(alerts.items, EVENT_OVERVIEW_INITIAL)
+  const eventPreview = overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)
 
-  const goFeed = () => void Taro.navigateTo({ url: '/pages/feed/index' })
-  const goWeekly = () => void Taro.navigateTo({ url: '/pages/weekly/index' })
-  const goAlerts = () => void Taro.navigateTo({ url: '/pages/alerts/index' })
+  const goFeed = () => void Taro.navigateTo({ url: '/package/feed/index' })
+  const goWeekly = () => void Taro.navigateTo({ url: '/package/weekly/index' })
+  const goAlerts = () => void Taro.navigateTo({ url: '/package/alerts/index' })
   /**
    * 事件卡**卡头右上角**「查看全部 ›」→ 事件列表页（2026-10-13）：本页只给固定预览，
    * 「看全部事件」挪到独立页分页加载（首屏第一页 + 触底追加），不再在本页越加载越长。
    * 入口位置与关注动态卡统一（同为卡头 `page-opinion__more`，不再放在卡底）。
    */
-  const goEvents = () => void Taro.navigateTo({ url: '/pages/events/index' })
-  /** 今日要点点进对应完整页 —— 同一套入口，不新增页面 */
-  const goBlock = (block: OpinionBlock) => {
-    if (block === 'feed') goFeed()
-    else if (block === 'weekly') goWeekly()
+  const goEvents = () => void Taro.navigateTo({ url: '/package/events/index' })
+  /** 名人主页（方案 A：今日要点 feed 条目精准跳转，与关注动态卡的整页跳转区分开） */
+  const goProfile = (personKey: string) =>
+    void Taro.navigateTo({ url: `/package/profile/index?personKey=${encodeURIComponent(personKey)}` })
+  /**
+   * 今日要点点进对应完整页 —— 同一套入口，不新增页面。
+   * feed 条目若有稳定键（`personKey`）则**精准跳对应名人主页**（不再跳关注动态整页，
+   * 与「关注动态」卡的去向区分开）；无键（旧缓存等）回落关注动态页；weekly / alert 照旧。
+   */
+  const goFocus = (e: OpinionEntry) => {
+    if (e.block === 'feed') {
+      if (e.personKey) goProfile(e.personKey)
+      else goFeed()
+    } else if (e.block === 'weekly') goWeekly()
     else goAlerts()
   }
   /**
@@ -516,7 +488,7 @@ export default function Opinion() {
    */
   const goEvent = (ev: OpinionEvent) =>
     void Taro.navigateTo({
-      url: `/pages/event/index?eventKey=${encodeURIComponent(ev.key)}&title=${encodeURIComponent(ev.title)}`
+      url: `/package/event/index?eventKey=${encodeURIComponent(ev.key)}&title=${encodeURIComponent(ev.title)}`
     })
 
   /**
@@ -622,7 +594,7 @@ export default function Opinion() {
       <View className='page-opinion__hero'>
         <Text className='page-opinion__hero-title'>舆情台</Text>
         <View className='page-opinion__hero-row'>
-          <Text className='page-opinion__hero-sub'>关注的人 · 本周周报 · 关键词预警，一处看全</Text>
+          <Text className='page-opinion__hero-sub'>关注的人 · 本周周报 · 监控，一处看全</Text>
           {/* 站内「全部已读」显式入口（推送没了之后的收口），只在确有未读时出现 */}
           {inboxTotal > 0 && (
             <Text className='page-opinion__read-all' onClick={() => void markAllRead()}>
@@ -632,7 +604,23 @@ export default function Opinion() {
         </View>
       </View>
 
-      {/* ===== 今日要点（判断入口，置于三块之前） ===== */}
+      {/* ===== 三个入口按钮（关注动态 / 本周周报 / 监控）：纯入口，不加载数据，置于页首 ===== */}
+      <View className='page-opinion__nav'>
+        <View className='page-opinion__nav-item' onClick={goFeed}>
+          <Text className='page-opinion__nav-icon'>📡</Text>
+          <Text className='page-opinion__nav-label'>关注动态</Text>
+        </View>
+        <View className='page-opinion__nav-item' onClick={goWeekly}>
+          <Text className='page-opinion__nav-icon'>📰</Text>
+          <Text className='page-opinion__nav-label'>本周周报</Text>
+        </View>
+        <View className='page-opinion__nav-item' onClick={goAlerts}>
+          <Text className='page-opinion__nav-icon'>🔔</Text>
+          <Text className='page-opinion__nav-label'>监控</Text>
+        </View>
+      </View>
+
+      {/* ===== 今日要点（判断入口，置于三个入口按钮之后） ===== */}
       <View className='card page-opinion__focus'>
         <View className='page-opinion__head'>
           <Text className='page-opinion__head-title'>
@@ -644,10 +632,10 @@ export default function Opinion() {
           <Text className='page-opinion__empty'>今天没有需要你特别留意的事</Text>
         ) : (
           focus.map((e) => (
-            <View key={e.id} className='page-opinion__row' onClick={() => goBlock(e.block)}>
+            <View key={e.id} className='page-opinion__row' onClick={() => goFocus(e)}>
               <Text className='page-opinion__row-title'>{e.title}</Text>
               <Text className='page-opinion__row-meta'>
-                {[e.source || '来源未标注', e.date ? formatMoment8(e.date) : '', e.reason]
+                {[e.label, e.source || '来源未标注', e.date ? formatMoment8(e.date) : '', e.reason]
                   .filter(Boolean)
                   .join(' · ')}
               </Text>
@@ -666,24 +654,41 @@ export default function Opinion() {
         <View className='page-opinion__head'>
           <View className='page-opinion__head-main'>
             <Text className='page-opinion__head-title'>
-              {events.length > 0 ? `🧩 事件时间线 · ${events.length} 件事` : '🧩 事件时间线'}
+              {onlyMine
+                ? visibleEvents.length > 0
+                  ? `🧩 与我相关 · ${visibleEvents.length} 件事`
+                  : '🧩 与我相关'
+                : events.length > 0
+                  ? `🧩 事件时间线 · ${events.length} 件事`
+                  : '🧩 事件时间线'}
             </Text>
             {/* 「新 N 条」：口径来自 utils/inbox#countNewEvents（复用 opinion_event_status.reads） */}
             {eventNew > 0 && <Text className='count-badge'>新 {eventNew} 条</Text>}
           </View>
-          {/* 入口与「关注动态」卡**完全同款**：卡头右上角文字按钮，同位置、同类名（page-opinion__more），
-              跳独立的事件列表页 pages/events。（2026-10-13：此前在卡底，现移到卡头与关注动态卡统一。） */}
-          <Text className='page-opinion__more' onClick={goEvents}>
-            查看全部 ›
-          </Text>
+          {/* 右侧动作组：筛选开关 + 「查看全部 ›」入口 */}
+          <View className='page-opinion__head-actions'>
+            <Text
+              className={`page-opinion__filter${onlyMine ? ' page-opinion__filter--on' : ''}`}
+              onClick={() => setOnlyMine((v) => !v)}
+            >
+              {onlyMine ? '✓ 只看与我相关' : '只看与我相关'}
+            </Text>
+            {/* 卡头右上角文字按钮（同类名 `page-opinion__more`），跳独立的事件列表页 pages/events。
+                （2026-10-13 此前在卡底、现移到卡头；2026-10-14 关注动态卡已改为页首入口按钮。） */}
+            <Text className='page-opinion__more' onClick={goEvents}>
+              查看全部 ›
+            </Text>
+          </View>
         </View>
 
-        {events.length === 0 ? (
+        {visibleEvents.length === 0 ? (
           <Text className='page-opinion__empty'>
             {/* 落库事件还没读完（`!storedReady`）时也算「进行中」—— 此时不该显示成「暂无可归并的事件」 */}
             {!storedReady || feed.status === 'loading' || weekly.status === 'loading' || alerts.status === 'loading'
               ? '正在归并事件…'
-              : '暂无可归并的事件，关注的人或监控词有新动态时会聚在这里'}
+              : onlyMine && events.length > 0
+                ? '没有与我相关的事件，关掉「只看与我相关」查看全部'
+                : '暂无可归并的事件，关注的人或监控词有新动态时会聚在这里'}
           </Text>
         ) : (
           <>
@@ -742,8 +747,8 @@ export default function Opinion() {
               )
             })}
             {/* 事件卡不再页内「加载更多」，也**不在卡底放入口**（2026-10-13）：只给固定预览（`eventPreview`），
-                「查看全部」改到**卡头右上角**（与关注动态卡同款，见上面的 page-opinion__more）；
-                头部标题已给出事件总数（不让人以为只有首屏这几条）。 */}
+                「查看全部」在**卡头右上角**（见上面的 page-opinion__more）；头部标题已给出事件总数
+                （不让人以为只有首屏这几条）。 */}
           </>
         )}
 
@@ -758,166 +763,6 @@ export default function Opinion() {
         </Text>
       </View>
 
-      {/* ===== 关注动态 ===== */}
-      <View className='card page-opinion__block'>
-        <View className='page-opinion__head'>
-          <View className='page-opinion__head-main'>
-            <Text className='page-opinion__head-title'>📡 关注动态</Text>
-            {/* 「新 N 条」= 自上次查看以来有变化的关注对象数（口径 utils/inbox#feedNewCount，即每个人的 hasNew） */}
-            {feed.newCount > 0 && <Text className='count-badge'>新 {feed.newCount} 条</Text>}
-          </View>
-          <Text className='page-opinion__more' onClick={goFeed}>
-            查看全部 ›
-          </Text>
-        </View>
-
-        {feed.status === 'loading' && <Text className='page-opinion__hint'>正在读取关注动态…</Text>}
-        {feed.status === 'error' && (
-          <Text className='page-opinion__hint page-opinion__hint--err' onClick={() => void loadFeed()}>
-            关注动态读取失败 · 点此重试
-          </Text>
-        )}
-        {feed.status === 'ready' &&
-          (feed.followCount === 0 || feed.entryCount === 0 ? (
-            <Text className='page-opinion__empty'>
-              {feed.followCount === 0
-                ? '还没有关注的动态，去「查」里关注几位名人'
-                : '关注的人暂无公开动态，进完整页抓取一次'}
-            </Text>
-          ) : (
-            <>
-              <View className='page-opinion__stats'>
-                <Text className='page-opinion__stat'>已关注 {feed.followCount} 人</Text>
-                <Text className='page-opinion__stat'>近期 {feed.entryCount} 条</Text>
-                {feed.failedCount > 0 && (
-                  <Text className='page-opinion__stat page-opinion__stat--warn'>{feed.failedCount} 人读取失败</Text>
-                )}
-              </View>
-              {feedPreview.rows.map((e, i) => (
-                <View key={`${e.personName}-${i}`} className='page-opinion__row' onClick={goFeed}>
-                  <Text className='page-opinion__row-title'>{e.title}</Text>
-                  <Text className='page-opinion__row-meta'>
-                    {[
-                      e.personName,
-                      domainLabel(e.domain),
-                      e.source || '来源未标注',
-                      e.date ? formatMoment8(e.date) : ''
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </Text>
-                  {gradeTags(e.source, e.category, e.level)}
-                </View>
-              ))}
-              {/* 关注动态卡不再页内「加载更多」（2026-10-13）：只给固定预览（`feedPreview`）。
-                  头部 stats 已给出关注人数 / 近期条数（不让人以为只有首屏这几条）；「看全部动态」
-                  由卡头既有的「查看全部 ›」入口承担（→ pages/feed 分页加载），此处不新增第二个入口。 */}
-            </>
-          ))}
-      </View>
-
-      {/* ===== 本周周报 ===== */}
-      <View className='card page-opinion__block'>
-        <View className='page-opinion__head'>
-          <Text className='page-opinion__head-title'>📰 本周周报</Text>
-          <Text className='page-opinion__more' onClick={goWeekly}>
-            查看全部 ›
-          </Text>
-        </View>
-
-        {weekly.status === 'loading' && <Text className='page-opinion__hint'>正在读取周报状态…</Text>}
-        {weekly.status === 'error' && (
-          <Text className='page-opinion__hint page-opinion__hint--err' onClick={() => void loadWeekly()}>
-            周报状态读取失败 · 点此重试
-          </Text>
-        )}
-        {weekly.status === 'ready' &&
-          (weekly.report ? (
-            <>
-              <Text className='page-opinion__weekly-range'>
-                {weekly.report.windowLabel} · 覆盖 {weekly.report.personCount} 位 / {weekly.report.entryCount} 条
-              </Text>
-              <Text className='page-opinion__weekly-summary'>
-                {weekly.report.overview || '本次未生成综述正文，进完整页看逐人动态与要点'}
-              </Text>
-              <Text className='page-opinion__row-meta'>生成于 {fromNow(weekly.report.generatedAt)}</Text>
-            </>
-          ) : (
-            <Text className='page-opinion__empty'>
-              {weeklyStatusText(weekly.materialKind, weekly.materialCount)}
-            </Text>
-          ))}
-      </View>
-
-      {/* ===== 关键词预警 ===== */}
-      <View className='card page-opinion__block'>
-        <View className='page-opinion__head'>
-          <View className='page-opinion__head-main'>
-            <Text className='page-opinion__head-title'>📣 关键词预警</Text>
-            {/* 「新 N 条」= 关键词新增 + 风险信号新增（口径 utils/inbox#alertNewCount / #riskNewCount） */}
-            {alerts.newTotal + alerts.riskNew > 0 && (
-              <Text className='count-badge'>新 {alerts.newTotal + alerts.riskNew} 条</Text>
-            )}
-          </View>
-          <Text className='page-opinion__more' onClick={goAlerts}>
-            查看全部 ›
-          </Text>
-        </View>
-
-        {alerts.status === 'loading' && <Text className='page-opinion__hint'>正在读取预警…</Text>}
-        {alerts.status === 'error' && (
-          <Text className='page-opinion__hint page-opinion__hint--err' onClick={() => void loadAlertBlock()}>
-            预警读取失败 · 点此重试
-          </Text>
-        )}
-        {alerts.status === 'ready' &&
-          (alerts.keywordCount === 0 && alerts.personCount === 0 ? (
-            <Text className='page-opinion__empty'>还没有监测中的关键词，进完整页添加一个</Text>
-          ) : (
-            <>
-              <View className='page-opinion__stats'>
-                {alerts.keywordCount > 0 && (
-                  <Text className='page-opinion__stat'>监测 {alerts.keywordCount} 个词</Text>
-                )}
-                {alerts.personCount > 0 && (
-                  <Text className='page-opinion__stat'>监控 {alerts.personCount} 位名人</Text>
-                )}
-                {/* 列表总数（概要卡头部显示总数，与事件卡「N 件事」/ 关注动态「近期 N 条」同义）：
-                    首屏只渲染固定若干条，这里如实给出总数，不让人以为只有首屏这几条 */}
-                {alerts.items.length > 0 && (
-                  <Text className='page-opinion__stat'>相关报道 {alerts.items.length} 条</Text>
-                )}
-                {alerts.newTotal > 0 && (
-                  <Text className='page-opinion__stat page-opinion__stat--warn'>新增 {alerts.newTotal} 条</Text>
-                )}
-                {alerts.riskCount > 0 && (
-                  <Text className='page-opinion__stat page-opinion__stat--warn'>风险信号 {alerts.riskCount} 条</Text>
-                )}
-              </View>
-              {alerts.items.length === 0 ? (
-                <Text className='page-opinion__empty'>已开始监测，暂无相关报道</Text>
-              ) : (
-                <>
-                  {alertSlice.rows.map((a, i) => (
-                    <View key={`${a.keyword}-${i}`} className='page-opinion__row' onClick={goAlerts}>
-                      <Text className='page-opinion__row-title'>{a.title}</Text>
-                      <Text className='page-opinion__row-meta'>
-                        {[a.keyword, a.source || '来源未标注', a.date ? formatMoment8(a.date) : '']
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </Text>
-                      {gradeTags(a.source, a.category, a.level)}
-                    </View>
-                  ))}
-                  {/* 关键词预警卡不再页内「加载更多」（2026-10-13 与事件卡 / 关注动态卡统一）：
-                      只给固定预览（`alertSlice` = 3 条），头部 stats 已给出相关报道 / 风险信号总数
-                      （不让人以为只有首屏这几条）；「看全部」由卡头既有的「查看全部 ›」入口承担
-                      （→ pages/alerts 分页加载），此处不新增第二个入口。 */}
-                </>
-              )}
-            </>
-          ))}
-      </View>
     </View>
   )
 }

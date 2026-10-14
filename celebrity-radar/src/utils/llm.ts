@@ -408,6 +408,17 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
         retryable: false
       }
     }
+    if (/-404011/.test(msg)) {
+      /*
+       * 云函数执行错误：aiProxy 内部抛了未捕获异常，端上拿不到结构化的 kind/error，
+       * 只能拿到 errCode=-404011 的技术串。给用户一句能照着做的指引，原始错误留在 diagLog。
+       */
+      return {
+        ok: false,
+        error: '云函数 aiProxy 执行出错：请到云开发控制台 → 云函数 → aiProxy → 日志 查看具体错误（原始错误已记入端上诊断日志）',
+        retryable: true
+      }
+    }
     return { ok: false, error: `平台大模型调用失败：${msg}`, retryable: true }
   }
 

@@ -315,7 +315,7 @@ describe('发现页筛选条件 config/filters', () => {
   })
 
   it('条件摘要文案符合「行业 · 侧重」格式', () => {
-    eq(f.summarizeFilters('all', 'all'), '全部行业 · 六段完整')
+    eq(f.summarizeFilters('all', 'all'), '全部行业 · 完整报告')
     eq(f.summarizeFilters('tech', 'dynamics'), '科技 · 侧重动态')
     eq(f.summarizeFilters('ent', 'quotes'), '文娱 · 侧重言论')
     eq(f.summarizeFilters('sports', 'timeline'), '体育 · 侧重履历')
@@ -349,6 +349,8 @@ describe('发现页筛选条件 config/filters', () => {
       ok(sec, `${code} 绑定的节「${id}」在模板里不存在 —— 改模板节 id / 删节必须同步 config/filters.ts`)
       /* ② 标签取自该节的 label（同源，不再手写重复字符串） */
       eq(f.FOCUS_META[code].label, sec.label, `${code} 的标签必须等于模板该节的 label`)
+      /* ②b 说明文案取自该节的 desc（同源，不再手写重复字符串） */
+      eq(f.FOCUS_META[code].desc, sec.desc, `${code} 的说明必须等于模板该节的 desc`)
     }
 
     /* ③ 顺序 = 绑定节在模板中的先后顺序（'all' 固定最前） */
@@ -1107,7 +1109,7 @@ describe('分享文案与落地路径 utils/share', () => {
 
   it('落地路径统一是报告页，并带上 personKey（tabBar 页不能作分享落地页）', () => {
     const p = reportSharePath('张三#tech')
-    ok(p.startsWith('/pages/report/index?'), `实际：${p}`)
+    ok(p.startsWith('/package/report/index?'), `实际：${p}`)
     ok(p.includes(`personKey=${encodeURIComponent('张三#tech')}`), '人物键必须编码后带上')
   })
 
@@ -1475,7 +1477,7 @@ describe('报告目录 utils/report-toc', () => {
     memberOnlyTocLabels
   } = env.load('utils/report-toc')
 
-  /* 顺序必须与 pages/report/index.tsx 的卡片渲染顺序一致：
+  /* 顺序必须与 package/report/index.tsx 的卡片渲染顺序一致：
      目录点了却到别处，比没有目录更糟。 */
   const FULL_ORDER = [
     'sec-overview',
@@ -1673,7 +1675,7 @@ describe('报告目录 utils/report-toc', () => {
  * 这类错只有线上才暴露，故这里读源码把口径钉住。改页面条件 / 容器样式必须同步这几条断言。
  */
 describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层层级）', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.tsx'), 'utf8')
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'package', 'report', 'index.tsx'), 'utf8')
   /** 取 needle 前后的一段源码，用于断言「某元素/常量处在什么条件下」 */
   const around = (needle, before = 60, after = 0) => {
     const at = src.indexOf(needle)
@@ -1701,6 +1703,11 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     )
     /* 深度解析那张本就如此，且会员页文案引用了这个字符串，不改它 */
     ok(src.includes('会员专享 · 深度解析'), '深度解析保持原样')
+    /* 2026-10-12 新增 / 移入的会员档卡片同样走前缀写法（本机反馈：商业合作 / 立场与舆情 /
+       名词解释三张漏了前缀，观感上不再是「会员专享」那一档） */
+    ok(src.includes('会员专享 · 商业合作与代言'), '商业合作与代言要用前缀写法')
+    ok(src.includes('会员专享 · 立场与舆情'), '立场与舆情要用前缀写法')
+    ok(src.includes('会员专享 · 名词解释'), '名词解释要用前缀写法')
     /*
      * 判「角标那个具体用法」而**不判类名** —— 报告页的**会员促销条**用的是同一个
      * `page-report__vip`（另一个组件，与本组标题无关）。`__card-head` 只服务角标，一并废弃。
@@ -1709,7 +1716,7 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     eq((src.match(/className='page-report__card-head'/g) || []).length, 0, '__card-head 只服务角标，一并废弃')
 
     const scss = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'),
+      path.join(__dirname, '..', '..', 'src', 'package', 'report', 'index.scss'),
       'utf8'
     )
     /* 判「选择器定义」而不是裸名字：注释里会提到这个名字，拿它判会自己撞自己 */
@@ -1787,7 +1794,7 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
      * （18 行 × 68rpx ≈ 1200rpx）—— 在一个「本来就嫌报告太长」的目录里自相矛盾。
      * 这里钉住「两列 + 没有主轴」：改回单列 / 时间线即红。
      */
-    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
+    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'package', 'report', 'index.scss'), 'utf8')
     const at = scss.indexOf('&__toc-item {')
     const block = scss.slice(at, at + 700)
     ok(block.includes('width: calc(50% - 12rpx)'), `目录胶囊应为两列，实际：${block.slice(0, 120)}`)
@@ -1845,7 +1852,7 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     ok(src.includes('page-report__timeline-meta'), '相对时间要渲染在日期行里（否则工具白算了）')
     /* 不可解析时必须不渲染这一句，不能留下「2021-05 · 」这种没有下文的尾巴 */
     ok(/ago !== '' && /.test(src), 'stampAgo 返回空串时不该渲染这一句')
-    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
+    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'package', 'report', 'index.scss'), 'utf8')
     ok(scss.includes('&__timeline-meta'), '日期行缺样式（两个 Text 会贴在一起）')
     /* 顺带钉住这条卡片自己的门槛没被顺手改掉（时间线仍只在非降级简版里出现） */
     ok(around("id='sec-timeline'", 60).includes('!report.degraded'), '时间线的可见条件不该被改动')
@@ -1867,7 +1874,7 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     ok(src.includes("jumpToSection('sec-analysis')"), '导读必须跳到点评卡，否则这一行没有意义')
     ok(src.includes("id='sec-analysis'"), '锚点指向的节必须真的在页面上（否则点了没反应）')
 
-    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
+    const scss = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'package', 'report', 'index.scss'), 'utf8')
     ok(scss.includes('&__gist-text'), '导读句缺样式：会照数值那样加粗，且长句子不封顶')
   })
 
@@ -1894,7 +1901,7 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
      * 两种类名必须落在**同一个选择器组**里：否则哪天调底色只改一处，
      * 五节又会长回两种样子 —— 这正是本次要修的那个毛病。
      */
-    const scss = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src', 'pages', 'report', 'index.scss'), 'utf8')
+    const scss = fs.readFileSync(path.resolve(__dirname, '..', '..', 'src', 'package', 'report', 'index.scss'), 'utf8')
     ok(/&__notes,\s*&__vip-card\s*\{/.test(scss), '两类名要在同一个选择器组里，改一处即两处同时生效')
 
     /*
@@ -2403,5 +2410,33 @@ describe('iOS 虚拟支付门禁 utils/pay（P2-20）', () => {
     const res = await buyMembership('')
     eq(res.ok, false)
     eq(res.blocked, undefined)
+  })
+})
+
+/* ------------------------------- 同名不同人：头像按领域取图 */
+
+/**
+ * 同名不同人（张三#文娱 vs 张三#科技）若只按名字查头像，会拿到同一批图、选出同一张。
+ * 承诺：端上 ensurePortrait 把「领域中文标签」带给云端，云端把它拼进博查查询词 —— 两端各钉一处。
+ */
+describe('同名不同人：头像按领域取图（portrait.ts ↔ aiProxy#handlePortrait）', () => {
+  const front = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'utils', 'portrait.ts'),
+    'utf8'
+  )
+  const cloud = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'cloudfunctions', 'aiProxy', 'index.js'),
+    'utf8'
+  )
+
+  it('端上 ensurePortrait 把领域中文标签带给云端', () => {
+    ok(/action:\s*'portrait'[\s\S]*?domain:\s*domainQuery/.test(front), 'portrait.ts 调 aiProxy 时应带上 domain')
+    ok(front.includes('domainLabel'), '端上应引用 domainLabel 把领域码转中文标签')
+    ok(front.includes("!== '其他'"), '「其他」领域不应拼进查询词')
+  })
+
+  it('云端 handlePortrait 把领域拼进博查查询词', () => {
+    ok(cloud.includes('const domain = trimStr(event.domain)'), 'aiProxy 应读取 event.domain')
+    ok(cloud.includes('`${name} ${domain}`'), '查询词应带「名字 + 领域」')
   })
 })

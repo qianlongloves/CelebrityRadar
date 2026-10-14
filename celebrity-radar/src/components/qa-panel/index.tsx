@@ -333,7 +333,7 @@ export default function QaPanel({
     /* 直连态没有报告可跳（头部也不渲染这个入口），这里返回即兜底 */
     if (!report) return
     void Taro.navigateTo({
-      url: `/pages/report/index?personKey=${encodeURIComponent(report.personKey)}`
+      url: `/package/report/index?personKey=${encodeURIComponent(report.personKey)}`
     })
   }, [report])
 
@@ -354,7 +354,7 @@ export default function QaPanel({
         .filter(([, v]) => !!v)
         .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
         .join('&')
-      void Taro.navigateTo({ url: `/pages/link-preview/index?${query}` })
+      void Taro.navigateTo({ url: `/package/link-preview/index?${query}` })
       return
     }
     /* who 排最前（对比问答的两份语料共用同一套编号，不说清是谁的来源就没法核对） */
@@ -498,7 +498,7 @@ export default function QaPanel({
         <View
           className='qa-panel__upsell'
           hoverClass='qa-panel__upsell--tap'
-          onClick={() => Taro.navigateTo({ url: '/pages/member/index' })}
+          onClick={() => Taro.navigateTo({ url: '/package/member/index' })}
         >
           <Text className='qa-panel__upsell-text'>
             {`开通会员 · 每日提问提到 ${MEMBER_DAILY_ASK_LIMIT} 次`}

@@ -99,7 +99,7 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
   }, [recent, history])
 
   const openPerson = (personKey: string) => {
-    Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}` })
+    Taro.navigateTo({ url: `/package/report/index?personKey=${encodeURIComponent(personKey)}` })
   }
 
   const onClearHistory = async () => {

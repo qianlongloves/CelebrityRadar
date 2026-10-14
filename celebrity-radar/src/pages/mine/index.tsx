@@ -177,7 +177,7 @@ export default function Mine() {
         confirmText: '去开通',
         cancelText: '再想想'
       })
-      if (res.confirm) Taro.navigateTo({ url: '/pages/member/index' })
+      if (res.confirm) Taro.navigateTo({ url: '/package/member/index' })
       return
     }
     setPreferredTier(q.key)
@@ -476,7 +476,7 @@ export default function Mine() {
       iconBg: 'blue',
       title: '关注的名人',
       note: userId ? `${counts.follows} 位` : '登录后查看',
-      onTap: () => Taro.navigateTo({ url: '/pages/following/index' })
+      onTap: () => Taro.navigateTo({ url: '/package/following/index' })
     },
     {
       icon: '⭐',
@@ -484,14 +484,14 @@ export default function Mine() {
       title: '我的收藏',
       note: userId ? `${counts.favorites} 条` : '名言 / 报告',
       /* 二级页（navigateTo）⇒ 导航栏带返回按钮，不再是 tab 页的 switchTab */
-      onTap: () => Taro.navigateTo({ url: '/pages/records/index' })
+      onTap: () => Taro.navigateTo({ url: '/package/records/index' })
     },
     {
       icon: '🕘',
       iconBg: 'blue',
       title: '浏览历史',
       note: userId ? `${counts.history} 条` : `最近 ${HISTORY_LIMIT} 条`,
-      onTap: () => Taro.navigateTo({ url: '/pages/history/index' })
+      onTap: () => Taro.navigateTo({ url: '/package/history/index' })
     },
     {
       /*
@@ -510,14 +510,14 @@ export default function Mine() {
       iconBg: 'orange',
       title: '隐私与免责',
       note: '隐私清单 · 免责文案',
-      onTap: () => Taro.navigateTo({ url: '/pages/agreement/index' })
+      onTap: () => Taro.navigateTo({ url: '/package/agreement/index' })
     },
     {
       /* PIPL 第 45 条「查阅、复制」：查阅已有各页，这里补齐「把副本带走」 */
       icon: '📤',
       iconBg: 'brand',
-      title: '导出我的数据',
-      note: userId ? '复制为 JSON 到剪贴板' : '登录后可用',
+      title: '导出个人数据',
+      note: userId ? '复制 JSON 副本到剪贴板' : '登录后可用',
       onTap: () => void exportMyData()
     },
     {
@@ -783,7 +783,7 @@ export default function Mine() {
           <View
             className='page-mine__member-entry'
             hoverClass='page-mine__member-entry--tap'
-            onClick={() => Taro.navigateTo({ url: '/pages/member/index' })}
+            onClick={() => Taro.navigateTo({ url: '/package/member/index' })}
           >
             <View className='page-mine__member-entry-main'>
               <Text className='page-mine__member-entry-title'>

@@ -107,8 +107,8 @@ describe('事件卡入口与关注动态卡统一（卡头右上角 · 同款类
 
   it('单条事件仍整卡跳单事件时间线页 pages/event（既有能力不丢）', () => {
     ok(page.includes('onClick={() => goEvent(ev)}'), '每条事件仍应整卡跳转')
-    ok(page.includes('/pages/event/index?eventKey='), '单事件时间线页入口仍在')
-    ok(page.includes("goEvents = () => void Taro.navigateTo({ url: '/pages/events/index' })"), '「查看全部」仍指向 pages/events')
+    ok(page.includes('/package/event/index?eventKey='), '单事件时间线页入口仍在')
+    ok(page.includes("goEvents = () => void Taro.navigateTo({ url: '/package/events/index' })"), '「查看全部」仍指向 pages/events')
   })
 })
 

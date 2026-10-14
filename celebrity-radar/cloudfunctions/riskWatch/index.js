@@ -109,6 +109,8 @@ const SIGNAL_TABLE = 'risk_signals'
 const MEMBERSHIP_TABLE = 'memberships'
 /** 深挖单日预算计数表（_id = yyyy-MM-dd，+8 时区，客户端完全不可读写）—— P4-A 成本闸门 */
 const DEEP_DIVE_TABLE = 'deep_dive_quota'
+/** 监控执行日志表（云函数写、端上只读）：每轮每个进入队列的对象写一条（时间/对象/命中数/成功与否） */
+const LOG_TABLE = 'scan_logs'
 
 /**
  * 深挖的候选查询词后缀（**中性语境词，不含任何评价性表述**）：
@@ -289,6 +291,31 @@ const signalId = (personKey, url) => `${personKey}#${hashOf(url)}`
 
 /** 监控文档主键：带 person# 前缀，避免与关键词订阅行（openid#关键词）撞主键 */
 const personWatchId = (openid, personKey) => `${openid}#person#${personKey}`
+
+/**
+ * 写一条监控执行日志（2026-10-14）。日志是**观察性数据**：写失败只告警、绝不拖垮扫描。
+ * 与 keywordAlert#writeLog 逐字同源（云函数各自独立打包，不能跨函数 require）。
+ * 主键 `${kind}#${objectKey}#${ranAt}`：同一轮同一对象只执行一次，ranAt（ISO）跨轮不同 ⇒ 全局唯一。
+ */
+async function writeLog(kind, objectKey, objectName, ranAt, status, hit, total, note) {
+  try {
+    await db.collection(LOG_TABLE).add({
+      data: {
+        _id: `${kind}#${objectKey}#${ranAt}`,
+        kind,
+        object_key: objectKey,
+        object_name: String(objectName || '').trim() || objectKey,
+        ran_at: ranAt,
+        status,
+        hit: Math.max(0, Number(hit) || 0),
+        total: Math.max(0, Number(total) || 0),
+        note: String(note || '')
+      }
+    })
+  } catch (err) {
+    console.warn(`[riskWatch] 写执行日志失败（${kind}#${objectKey}）：${err && err.message}`)
+  }
+}
 
 /* ───────────── 分档新增上限（2026-10-13）：写入路径的服务端权威判定 ───────────── */
 
@@ -709,7 +736,10 @@ exports.main = async (event) => {
     const prev = scans.get(personKey) || null
 
     /* 快照够新就跳过：定时任务与人工补跑不会把同一个人一天查两遍 */
-    if (prev && prev.scanned_at && Date.now() - Date.parse(prev.scanned_at) < RISK_GAP_MS) continue
+    if (prev && prev.scanned_at && Date.now() - Date.parse(prev.scanned_at) < RISK_GAP_MS) {
+      await writeLog('person', personKey, person.name, nowIso, 'skipped', 0, Number(prev.scanned) || 0, '20 小时内已扫描，本轮复用快照')
+      continue
+    }
 
     let items
     try {
@@ -718,6 +748,7 @@ exports.main = async (event) => {
     } catch (err) {
       /* 单个人失败不拖垮整轮：本轮这个人视为无更新，下一轮再试 */
       perPerson.set(personKey, { name: person.name, signals: [], error: String(err && err.message) })
+      await writeLog('person', personKey, person.name, nowIso, 'error', 0, 0, String(err && err.message))
       continue
     }
 
@@ -808,6 +839,9 @@ exports.main = async (event) => {
     }
 
     perPerson.set(personKey, { name: person.name, signals, error: null })
+
+    /* 写执行日志：ok = 本轮扫到了结果；hit = 本轮新信号数（含深挖补的信号） */
+    await writeLog('person', personKey, person.name, nowIso, 'ok', signals.length, items.length, signals.length ? `命中 ${signals.length} 条风险信号` : '无风险信号')
 
     try {
       await db

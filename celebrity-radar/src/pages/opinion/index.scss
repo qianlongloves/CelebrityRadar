@@ -41,6 +41,37 @@
     color: $brand;
   }
 
+  /* 三个入口按钮（关注动态 / 本周周报 / 监控）：页首导航区，纯入口、不加载数据。
+     横排三等分，白卡 + 浅阴影，与下方内容卡区分开（导航 vs 数据）。 */
+  &__nav {
+    display: flex;
+    gap: 16rpx;
+    padding: 16rpx 32rpx 0;
+  }
+
+  &__nav-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10rpx;
+    padding: 24rpx 0 20rpx;
+    background: rgba(255, 255, 255, 0.86);
+    border-radius: $radius-lg;
+    box-shadow: $shadow-card;
+  }
+
+  &__nav-icon {
+    font-size: 44rpx;
+    line-height: 1;
+  }
+
+  &__nav-label {
+    font-size: 24rpx;
+    font-weight: 500;
+    color: $text-2;
+  }
+
   /* 区块头：标题 + 右侧「查看全部 ›」 */
   &__head {
     display: flex;
@@ -66,6 +97,24 @@
   &__more {
     font-size: 24rpx;
     color: $brand;
+  }
+
+  /* 卡头右侧动作组（事件卡）：筛选开关 + 「查看全部 ›」并排，不挤左侧标题 */
+  &__head-actions {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+    flex-shrink: 0;
+  }
+
+  /* 「只看与我相关」筛选开关：默认灰调，开启用品牌色点一下（与 __action--on 同一语义） */
+  &__filter {
+    font-size: 22rpx;
+    color: $text-3;
+
+    &--on {
+      color: $brand;
+    }
   }
 
   /* 加载 / 失败降级：失败那一行可点重试，只影响本区块 */

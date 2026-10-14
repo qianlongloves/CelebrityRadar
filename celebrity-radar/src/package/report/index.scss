@@ -1,0 +1,1916 @@
+@import '../../styles/variables.scss';
+
+/* ===== 动画（2026-10-12）：只动 opacity / transform / 宽度，且「终态即刻可达」=====
+   三条 keyframes 的 to 帧都是元素的**自然态**（不透明、原始尺寸），配合 fill-mode: both ——
+   动画不被 webview 支持时元素就停在自然态（可见），绝不会因为动画没跑而留一片空白。
+   @keyframes 放顶层（不进 .page-report）：既能被卡内各处复用，也不受嵌套选择器影响。 */
+
+/* 卡片入场：淡入 + 轻微上移（列表卡按兄弟次序错峰，见下方 .card 规则）。 */
+@keyframes report-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(16rpx);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 柱状图的柱子：从底部长起（transform-origin 在 SCSS 里设成 bottom）。 */
+@keyframes report-bar-grow {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+
+/* 情绪构成条：从左向右展开（只缩放整条，不逐段改宽度，避免触发布局回流）。 */
+@keyframes report-bar-expand {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.page-report {
+  /*
+    兜底（2026-10-12）：报告页曾「整页可左右滑动、内容看起来不居中、左右都留空隙」——
+    典型的某个元素宽度超过屏宽导致的横向溢出。真正的原因已按以下逐一修掉：
+      · 头像照片按占位盒尺寸画（components/person-avatar 的结构性保证），不再顶着 <Image> 默认 320×240px；
+      · SectionTable 的短列 flex-basis 之和 + 间距 ≤ 卡片内宽（630rpx），长文本一律 word-break；
+      · basis 出处（__point-basis / __entry-basis / __table-basis）补齐 word-break，长 URL 不再撑宽。
+    这里再补一道横向兜底**防回归**，但它只是保险丝，不是修复本身，不能替代上面的真修。
+  */
+  width: 100%;
+  box-sizing: border-box;
+  overflow-x: hidden;
+
+  /* ===== 头部紫色横幅（2026-10-09 重排：身份带 / 状态行 / 操作行 三段）=====
+     结构见 package/report/index.tsx 里该块的注释。这里只记三条布局口径：
+       · 三段是**纵向流**，宽度各自吃满（不再共享一条 flex 行，故没有窄栏争宽度的老问题）；
+       · 热度环绝对定位贴右上角，只有身份带为它让位，状态行与操作行都是全幅；
+       · 间距统一由 __banner 的 gap 决定，子块不再各自写 margin（此前 __meta/__follow
+         各带 margin-top:4rpx 与 gap 叠加，视觉上对不齐，且与底部按钮行共用 class 时被
+         另一处的 margin:24rpx 污染 —— 见文件末尾 __foot-actions 的注释）。 */
+  &__banner {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 16rpx;
+    margin: 24rpx 32rpx;
+    padding: 32rpx;
+    border-radius: 48rpx;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 16rpx 48rpx rgba(95, 51, 225, 0.28);
+  }
+
+  /* 身份带 = 头像 + 名字。min-height 与热度环等高，把状态行顶到环下方，
+     长文案才不会从环底下穿过去。 */
+  &__ident {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+    min-height: 128rpx;
+    /* 给右上角的热度环让位（环宽 128 + 28 间距）：名字行还剩 ≈ 330rpx，约 7 个汉字 */
+    padding-right: 156rpx;
+  }
+
+  /* 人物头像：领域色渐变 + 姓名首字，与 person-card / 名人主页同一套占位规则 */
+  &__avatar {
+    flex-shrink: 0;
+    width: 96rpx;
+    height: 96rpx;
+    border-radius: 50%;
+    border: 4rpx solid rgba(255, 255, 255, 0.55);
+    box-sizing: border-box;
+    color: #fff;
+    font-size: 40rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+    &--internet { background: linear-gradient(135deg, #67e8f9, $domain-internet); }
+    &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+    &--finance { background: linear-gradient(135deg, #fcd34d, $domain-finance); }
+    &--auto { background: linear-gradient(135deg, #a5b4fc, $domain-auto); }
+    &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+    &--art { background: linear-gradient(135deg, #d8b4fe, $domain-art); }
+    &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+    &--health { background: linear-gradient(135deg, #fda4af, $domain-health); }
+    &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+    &--edu { background: linear-gradient(135deg, #5eead4, $domain-edu); }
+    &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
+  }
+
+  &__banner-chip {
+    padding: 6rpx 18rpx;
+    border-radius: 999rpx;
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    font-size: 22rpx;
+    flex-shrink: 0;
+  }
+
+  /* 热度环（conic-gradient 白描边）：绝对定位贴右上角，与 __ident 的 min-height 等高。
+     角度值由 tsx 以内联 background 给出（这里保留一份同规则的兜底）。 */
+  &__ring {
+    position: absolute;
+    top: 32rpx;
+    right: 32rpx;
+    width: 128rpx;
+    height: 128rpx;
+    border-radius: 50%;
+    background: conic-gradient(#fff 0 var(--heat-turn, 75%), rgba(255, 255, 255, 0.22) var(--heat-turn, 75%) 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__ring-inner {
+    width: 100rpx;
+    height: 100rpx;
+    border-radius: 50%;
+    background: $brand-soft;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__ring-value {
+    color: #fff;
+    font-size: 36rpx;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+
+  &__ring-label {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 20rpx;
+  }
+
+  /* ===== 关注侧重提示条 ===== */
+  &__focus {
+    display: flex;
+    align-items: center;
+    gap: 14rpx;
+    margin: 16rpx 32rpx 0;
+    padding: 16rpx 24rpx;
+    border-radius: $radius-md;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 24rpx;
+    line-height: 1.5;
+  }
+
+  &__focus-tag {
+    flex-shrink: 0;
+    padding: 4rpx 16rpx;
+    border-radius: 999rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 20rpx;
+  }
+
+  &__focus-text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__focus-link {
+    color: $brand-dark;
+    font-weight: 600;
+    text-decoration: underline;
+  }
+
+  &__title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+  }
+
+  /* 名字行：名字 + 领域。不换行 + 裁剪，行高恒定一行 */
+  &__name-row {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+
+  /* 名字是可让位的一方：名字行可用 ≈ 330rpx，过长时收成省略号，领域保持完整 */
+  &__name {
+    flex-shrink: 1;
+    min-width: 0;
+    font-size: 38rpx;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 状态行（全幅）：时间与素材出处 / 刷新入口合成一行弱文字。
+     原先这一格在两种视觉语言之间交替（胶囊 vs 下划线链接），切换时整块在跳；
+     现在统一成「弱文字 + 白下划线链接」，只让真正可点的「查看最新」亮起来。 */
+  &__meta {
+    font-size: 24rpx;
+    line-height: 1.5;
+  }
+
+  &__meta-text {
+    color: rgba(255, 255, 255, 0.78);
+  }
+
+  /* 「查看最新」：横幅上唯一的内联链接（O-14 说年龄是依据、它是行动），故保持最亮的白 + 下划线 */
+  &__refresh-link {
+    color: #fff;
+    font-weight: 600;
+    text-decoration: underline;
+  }
+
+  /* 关注 / 监控：两个按钮同行。横幅现在是全幅宽度（≈622rpx），两个胶囊 ≈ 400rpx，
+     不再需要换行兜底 —— 固定一行，横幅高度才可预期。 */
+  &__actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 16rpx;
+  }
+
+  /* 关注按钮：与横幅同色系（半透明白描边），已关注态转实底以便一眼区分。
+     min-height 64rpx：横幅上只有这两个可点区域，此前靠 padding 8 撑出的高度约 52rpx，
+     点上去容易落空。 */
+  &__follow {
+    display: flex;
+    align-items: center;
+    min-height: 64rpx;
+    padding: 0 30rpx;
+    border-radius: 999rpx;
+    border: 2rpx solid rgba(255, 255, 255, 0.55);
+    color: #fff;
+    font-size: 26rpx;
+    line-height: 1.5;
+
+    &--on {
+      background: rgba(255, 255, 255, 0.22);
+      border-color: transparent;
+      color: rgba(255, 255, 255, 0.9);
+    }
+  }
+
+  /* 监控按钮：用虚线边把「订阅云端检索」与「本机关注」区分开
+     （两者动作相邻但语义不同，见 tsx 处注释） */
+  &__monitor {
+    border-style: dashed;
+
+    /* 已监控态：与「已关注」同一套实底（border--on 已把 border-color 设为透明，
+       这里把虚线换回实线兜住 border-style 的覆盖） */
+    &.page-report__follow--on {
+      border-style: solid;
+    }
+  }
+
+  /*
+    会员促销条（O-21 立起、O-25 收敛为**单行**）：横幅正下方，比 .card 提前 8rpx 收边
+    （32rpx 与正文卡对齐）。白底 + 淡紫描边，与底部跳转条同一套「这是一个入口」的语言。
+    O-25 的两处收敛（原因见 package/report/index.tsx 里该块的注释与 utils/member.ts#reportMemberPromo）：
+      · 会员态不再渲染 ⇒ 删掉 `--on` 那套渐变底与两行标题样式（页面已无对应 class）；
+      · 免费态压成一行 ⇒ 高度从「padding 40 + 标题 39 + 说明两行 68 ≈ 187rpx」降到 ≈ 80rpx，
+        首屏少掉一百多 rpx。文案必须**永不换行**（换行就退回两行高度，等于白改），
+        超长由省略号兜住 —— 故文案长度预算写在 utils/member.ts 的函数注释里。
+  */
+  &__vip {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    margin: 16rpx 32rpx 0;
+    padding: 14rpx 20rpx;
+    border: 2rpx solid $brand-weak;
+    border-radius: $radius-md;
+    background: rgba(255, 255, 255, 0.86);
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  /* 左侧小标：把「这是什么」压进 4 个字，替原来那行独占一行的标题 */
+  &__vip-tag {
+    flex-shrink: 0;
+    padding: 2rpx 12rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand-dark;
+    font-size: 20rpx;
+    line-height: 1.6;
+  }
+
+  /* 一行文案：nowrap + 省略号，长度由 utils/member.ts#reportMemberPromo 控制 */
+  &__vip-note {
+    flex: 1;
+    min-width: 0;
+    font-size: 22rpx;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: $text-2;
+  }
+
+  /* 动作文案（免费态唯一动作：「开通会员 ›」/「了解会员 ›」= 跳转会员中心） */
+  &__vip-action {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    font-weight: 600;
+    color: $brand-soft;
+  }
+
+  /*
+    关闭键（O-26）：比动作文案更轻一档（灰、无字重），位置在条的右端 ——
+    它是「我不想看」，不该和「开通会员 ›」抢注意力。
+    点按要 stopPropagation（见 onPromoClose）：整条是可点区域，不拦住就成了「想关广告反而进广告」。
+    padding 是给手指的：字号 24rpx 的「✕」本体只有 ~24rpx 见方，靠内边距把热区撑到约 40rpx，
+    但仍压着 22rpx 的负外边距收回视觉留白。
+  */
+  &__vip-close {
+    flex-shrink: 0;
+    margin: -8rpx -10rpx -8rpx 0;
+    padding: 8rpx 10rpx;
+    color: $text-3;
+    font-size: 24rpx;
+    line-height: 1;
+  }
+
+  /* 刷新结果条：点「刷新最新」后告诉用户到底刷出了什么。
+     2026-10-10 加关闭键后改为「行」：左列正文（__diff-main）自适应，右端挂 NoticeClose，
+     正文不再直接当 flex 子项排（否则 ✕ 会掉到正文下面一行）。 */
+  &__diff {
+    margin: 16rpx 32rpx 0;
+    padding: 20rpx 24rpx;
+    border-radius: $radius-md;
+    background: $brand-weak;
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+  }
+
+  &__diff-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+  }
+
+  &__diff-head {
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand-dark;
+  }
+
+  &__diff-body {
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $brand;
+  }
+
+  /*
+   * 刷新失败条里的「再试一次」（P1-8，2026-10-09）：与 __focus-link 同款可点文字。
+   * 刷新失败多是一次性网络 / 上游抖动，就地给一个重试出口，别让用户去翻底部按钮。
+   */
+  &__diff-retry {
+    align-self: flex-start;
+    margin-top: 4rpx;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand-dark;
+    text-decoration: underline;
+  }
+
+  /*
+    AI 点评：原先独占一张紫色渐变强调卡，与其余白卡并列时像另一个体系的组件。
+    现改为复用全局 .card 背景，标题用 .card-title（其紫色竖条与旧样式一致），此处只留正文排版。
+  */
+  &__analysis-text {
+    font-size: 28rpx;
+    line-height: 1.8;
+    color: $text-1;
+  }
+
+  /*
+    点评（本轮修正）：正文是一整段（复用上面的 __analysis-text），句末挂 [n]，
+    出处集中列在段末这里用同号对上。原先每条判断各占一段、下面挂一行「依据：XX」，
+    读起来是论点清单（用户反馈「这不是 AI 点评」）—— 只换排版，对应关系照旧保留。
+
+    依据刻意做小做灰：它是判断的附注，不是第二个结论。
+  */
+  &__points {
+    margin-top: 16rpx;
+    padding-top: 14rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__points-title {
+    display: block;
+    margin-bottom: 6rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  /* 句末序号：跟着正文读，字号小一号、品牌色，暗示「这句的出处见段末」 */
+  &__point-ref {
+    font-size: 22rpx;
+    color: $brand;
+  }
+
+  &__point-basis {
+    display: block;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+    /* 出处可能夹长 URL / 无空格英文串（模型从素材原样复制），必须允许断词，否则撑破卡片与整页 */
+    word-break: break-word;
+  }
+
+  /*
+    会员档的专属底色（O-11，2026-10-10 扩到全部 5 节）。
+
+    原先只有「会员专享 · 深度解析」那一张有（`&__notes`），其余四节（商业速览 / 词云 /
+    语录主题 / 热度趋势）只在标题行挂了「会员专享」角标、卡片本身与免费卡长得一模一样 ——
+    同一档东西在版面上因此分成两类，读的人看不出「这五节是一回事」。
+    现在五节共用这一层底色，标题一律用「会员专享 · 」前缀（见下方标题写法的注释）。
+
+    底色刻意做得极淡（顶部 10% 品牌色渐到白）：它要回答的是「这张卡属于哪一档」，
+    而不是「这张卡很重要」—— 太重会与报告页既有的卡片语言打架（见上方 AI 点评的注释）。
+    `&__notes` 保留为深度解析那张的别名，免得改一个选择器牵动三处（__notes-head / __notes-badge）。
+  */
+  &__notes,
+  &__vip-card {
+    background: linear-gradient(180deg, rgba(135, 100, 255, 0.1), rgba(255, 255, 255, 0.9) 45%);
+  }
+
+  /*
+    会员档各节的标题写法（2026-10-10 二次调整）。
+
+    一改时给四节挂的是右侧「会员专享」角标，而深度解析那张是写在标题里的
+    「会员专享 · 深度解析」—— 同一档东西于是有了两种写法，读起来的观感是
+    「这几张和那张不是一回事」。现统一为**标题前缀**（与深度解析同一种），
+    右侧不再挂角标；`&__card-head` / `&__vip` 随之废弃删除（它们只服务那个角标）。
+
+    `&__notes-badge`（「已生效」）保留：那是深度解析**独有**的确认位（顶部促销条已对会员
+    隐藏，改由它承担「权益在」的确认），与「这是哪一档」是两件事，故不跟着一起去掉。
+  */
+
+  /* 专享卡标题行（O-25）：右侧「已生效」小标是会员权益的确认位 —— 顶部促销条已对会员隐藏，
+     确认改由这里承担（卡在 = 权益在）。与 .card-title 同一行、右对齐，不额外占高度。 */
+  &__notes-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  /*
+    折叠头（2026-10-10）：名词解释的标题行，可点击就地展开 / 收起。
+    与 &__notes-head 同一手法（标题 + 右侧小标），差别是这里的小标是动作提示而非状态徽章。
+    默认收起：这一节是「按需查」的内容（行话），不该占住报告主体的一屏。
+  */
+  &__fold-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  &__fold-arrow {
+    flex-shrink: 0;
+    margin-left: 16rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* AI 解读（批 2）：一句话结论 + 行业定位。总结句稍加重以当导读，定位行弱化成一格说明。 */
+  &__verdict-summary {
+    font-size: 28rpx;
+    line-height: 1.6;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__verdict-row {
+    display: flex;
+    margin-top: 12rpx;
+  }
+
+  &__verdict-label {
+    flex-shrink: 0;
+    margin-right: 12rpx;
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  &__verdict-text {
+    flex: 1;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* 口碑两极 / 言行一致度（批 2）：在结论与定位之下，各是一个独立小节，用细线隔开。
+     正反标签刻意不染情绪色（同用灰色标签）—— 这是「客观评价」，不是站队。 */
+  &__reputation,
+  &__consistency {
+    margin-top: 12rpx;
+    padding-top: 12rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__notes-badge {
+    flex-shrink: 0;
+    margin-left: 16rpx;
+    padding: 2rpx 14rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand-dark;
+    font-size: 20rpx;
+    line-height: 1.6;
+  }
+
+  &__note + &__note {
+    margin-top: 20rpx;
+  }
+
+  &__note-label {
+    display: inline-block;
+    font-size: 22rpx;
+    line-height: 1.5;
+    padding: 4rpx 16rpx;
+    border-radius: 999rpx;
+    color: $brand-dark;
+    background: $brand-weak;
+  }
+
+  /* 风险提示换暖色：与全局「注意类」提示同一套色（$accent-orange 系列），不新造语义色 */
+  &__note-label--risk {
+    color: $accent-orange;
+    background: $accent-orange-bg;
+  }
+
+  &__note-text {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 28rpx;
+    line-height: 1.8;
+    color: $text-1;
+  }
+
+  &__note-foot {
+    display: block;
+    margin-top: 20rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /*
+    信源分歧（本轮，会员专享）：争点一行，两条说法各挂一根左侧竖线 ——
+    竖线是「对立的两个口径」的视觉隐喻，用户不用读文字就能看出这是两边在打架。
+    颜色一律取中性灰（不红不绿）：报告指出素材互相矛盾，但不对争议本身定性。
+    间距比 __note 紧一档（12rpx）：它们是同一条分歧的两半，分开读就散了。
+  */
+  &__conflict + &__conflict {
+    margin-top: 24rpx;
+  }
+
+  &__conflict-topic {
+    display: block;
+    margin-bottom: 10rpx;
+    font-size: 26rpx;
+    font-weight: 600;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  &__conflict-side {
+    display: block;
+    padding-left: 16rpx;
+    border-left: 4rpx solid $line;
+    font-size: 26rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  &__conflict-side + &__conflict-side {
+    margin-top: 8rpx;
+  }
+
+  /* ===== 时间线（圆点 + 竖线） ===== */
+  /* 年份小标题（2026-10-10）：把跨年的履历切成一段段脉络。品牌色、比事件条目更轻一档 */
+  &__timeline-year {
+    margin: 8rpx 0 6rpx;
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__timeline-item {
+    display: flex;
+    gap: 20rpx;
+    position: relative;
+    padding-bottom: 28rpx;
+
+    &::before {
+      content: '';
+      position: absolute;
+      left: 9rpx;
+      top: 24rpx;
+      bottom: 0;
+      width: 2rpx;
+      background: $line;
+    }
+
+    &:last-child {
+      padding-bottom: 4rpx;
+
+      &::before {
+        display: none;
+      }
+    }
+  }
+
+  &__timeline-dot {
+    flex-shrink: 0;
+    width: 20rpx;
+    height: 20rpx;
+    border-radius: 50%;
+    background: $brand-weak;
+    border: 5rpx solid $brand-soft;
+    box-sizing: content-box;
+    margin-top: 4rpx;
+  }
+
+  &__timeline-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  /* 日期行：绝对刻度 + 相对时间并排。两者都是时间信息，故共用 __item-date 的灰与字号，
+     不另立一套；并排成两个 Text 而不是拼成一句，是为了将来想单独调其中一个观感时
+     不必去拆字符串（也让「相对时间是否存在」在结构上就是可判的） */
+  &__timeline-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 10rpx;
+  }
+
+  &__timeline-event {
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+  }
+
+  &__text {
+    font-size: 28rpx;
+    line-height: 1.8;
+    color: $text-1;
+  }
+
+  &__item {
+    padding: 20rpx 0;
+    border-bottom: 1rpx solid $line;
+
+    &:last-child {
+      border-bottom: none;
+      padding-bottom: 4rpx;
+    }
+
+    &-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    &-date {
+      font-size: 22rpx;
+      color: $text-3;
+    }
+
+    /* 标题一行、摘要三行，超出折叠：
+       报告页一屏要放六段内容，标题与摘要都全量展开会把卡片撑得极长、把下半页挤到很下面。
+       默认只给「一眼能扫」的量，完整内容去原文看（点标题即入口）。 */
+    &-title {
+      font-size: 28rpx;
+      font-weight: 500;
+      margin-top: 8rpx;
+      line-height: 1.5;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    /* 点击标题的按压反馈（hover-class 是小程序原生的点击态） */
+    &-title--tap {
+      opacity: 0.6;
+    }
+
+    &-summary {
+      margin-top: 8rpx;
+      font-size: 26rpx;
+      line-height: 1.6;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+      overflow: hidden;
+    }
+
+    &-src {
+      margin-top: 10rpx;
+      display: flex;
+      align-items: center;
+      gap: 16rpx;
+      flex-wrap: wrap;
+    }
+  }
+
+  &__sentiment {
+    font-size: 20rpx;
+    padding: 6rpx 18rpx;
+    border-radius: 999rpx;
+    display: inline-flex;
+    align-items: center;
+    gap: 8rpx;
+
+    &::before {
+      content: '';
+      width: 12rpx;
+      height: 12rpx;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    &.positive { background: rgba(16, 185, 129, 0.1); color: $success; }
+    &.neutral { background: $brand-weak; color: $brand-soft; }
+    &.negative { background: $accent-orange-bg; color: $accent-orange; }
+  }
+
+  /* ===== 立场与舆情（M4-4）：情绪走向条 + 话题态度，标签配色与上面的情绪标签一致 ===== */
+  &__stance-bar {
+    display: flex;
+    height: 20rpx;
+    margin-top: 6rpx;
+    border-radius: 999rpx;
+    overflow: hidden;
+    background: $bg;
+  }
+
+  &__stance-seg {
+    height: 100%;
+
+    &--positive { background: $success; }
+    &--neutral { background: $brand-soft; }
+    &--negative { background: $accent-orange; }
+  }
+
+  &__stance-legend {
+    display: flex;
+    gap: 24rpx;
+    margin-top: 16rpx;
+  }
+
+  &__stance-legend-item {
+    font-size: 22rpx;
+    color: $text-2;
+  }
+
+  &__stance-note {
+    display: block;
+    margin-top: 10rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 话题态度（M4-4 完整版）：情绪条下方的话题列表，
+     每条 = 话题名 + 倾向标签 + 一句话依据，标签配色与上面的情绪标签同源 */
+  &__stance-topics {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__stance-topic + &__stance-topic {
+    margin-top: 18rpx;
+  }
+
+  &__stance-topic-head {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  &__stance-topic-name {
+    flex: 1;
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__stance-tag {
+    flex: none;
+    padding: 4rpx 14rpx;
+    border-radius: 999rpx;
+    font-size: 20rpx;
+
+    &--positive { background: rgba(16, 185, 129, 0.1); color: $success; }
+    &--neutral { background: $brand-weak; color: $brand-soft; }
+    &--negative { background: $accent-orange-bg; color: $accent-orange; }
+    /* 两极分化没有对应的情绪色：用中性灰表达「哪边都不占」 */
+    &--mixed { background: $bg; color: $text-2; }
+  }
+
+  &__stance-topic-note {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* ===== 关键词云 + 高频观点（M4-5）：CSS 标签墙，字号按词频分三档，不引 canvas / 图表库 ===== */
+  &__cloud {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16rpx 20rpx;
+    margin-top: 8rpx;
+  }
+
+  &__cloud-tag {
+    padding: 8rpx 22rpx;
+    border-radius: 999rpx;
+    /* 描边让每个词看起来是「可点的胶囊」而不是一段文字：
+       点词进主题速览（见 pages/topic）是本卡的第二个动作，得先看得出能点。 */
+    border: 1rpx solid $line;
+    background: $bg;
+    color: $text-2;
+    line-height: 1.4;
+
+    /* 三档字号对应三档词频：先看到大的，细看才分辨频次 */
+    &--t1 {
+      font-size: 22rpx;
+    }
+
+    &--t2 {
+      font-size: 26rpx;
+      color: $text-1;
+    }
+
+    &--t3 {
+      font-size: 32rpx;
+      font-weight: 600;
+      color: $brand;
+      background: $brand-weak;
+    }
+
+    /* 模型判定的话题质量高于统计口径，描个边与统计词区分开 */
+    &--topic {
+      border: 1rpx solid $brand-soft;
+    }
+  }
+
+  &__cloud-note,
+  /* 第二批：事实卡的页脚口径小字。与词云卡的口径小字是同一件东西（都说明「这张卡的条目是怎么来的」），
+     故共用一套样式；类名分开只是为了让词云卡里读起来不别扭 */
+  &__entry-foot {
+    display: block;
+    margin-top: 16rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 空段说明（2026-10-08）：某张卡「本次生成确实没有内容」时写在卡内，代替整卡消失。
+     比 __entry-foot 大一档字号：它替代的是这张卡的正文，而不是页脚口径说明。 */
+  &__empty {
+    display: block;
+    padding: 8rpx 0 4rpx;
+    font-size: 24rpx;
+    line-height: 1.7;
+    color: $text-3;
+  }
+
+  /* ===== 风险雷达（第 0 期，端上聚合） =====
+     这张卡的排版语言刻意比事实卡更「素」：类别标签一律同一套中性底色，没有红黄绿分档，
+     也没有强调块。理由见 utils/risk.ts 顶部 —— 平台只陈列素材里的表述，不判定风险等级；
+     配色一旦分档，读者会先看到「橙色＝危险」再看文案，那是配色替我们下了结论。 */
+  /* 结论句（2026-10-12）：本卡「一句话说了什么」，比口径说明醒目；中性色 ——
+     它是事实读数，不是风险评级，不染色。 */
+  &__risk-headline {
+    display: block;
+    margin-bottom: 10rpx;
+    font-size: 30rpx;
+    font-weight: 600;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  &__risk-lead {
+    display: block;
+    font-size: 24rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  &__risk-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10rpx;
+    margin-top: 16rpx;
+  }
+
+  &__risk-item {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__risk-head {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  /* 类别标签：中性胶囊，四类共用一套（不分档、不染红，见本块顶部说明） */
+  &__risk-tag {
+    flex-shrink: 0;
+    padding: 2rpx 12rpx;
+    border: 1rpx solid $line;
+    border-radius: 999rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-2;
+    background: $bg;
+  }
+
+  &__risk-from {
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__risk-text {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 26rpx;
+    line-height: 1.7;
+    color: $text-1;
+  }
+
+  /* 出处：与 __entry-basis 同源（小、灰）—— 它是附注，不是第二个结论 */
+  &__risk-src {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+
+    /* 只有带 url 的条目能点，才给品牌色：颜色本身就是「这里能点」的提示 */
+    &--link {
+      color: $brand;
+    }
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  &__risk-note {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* ===== 商业价值速览（第 0 期，端上聚合） =====
+     结论句 + 各分项一行读数 + 一条口径。排版语言与风险雷达同一套「素」：没有星级、没有评分、
+     没有红黄绿 —— 热度高不等于好、消极多也不等于差，配色一旦分档，就等于我们替用户
+     下了结论（同 utils/commercial.ts 的边界）。 */
+  &__cv-headline {
+    display: block;
+    margin: 6rpx 0 10rpx;
+    font-size: 28rpx;
+    font-weight: 600;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  &__cv-lead {
+    display: block;
+    font-size: 24rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  &__cv-item {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__cv-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12rpx;
+  }
+
+  &__cv-label {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 结论：比标签重一档（它是这一行的答案），但不给颜色 */
+  &__cv-value {
+    flex: 1;
+    font-size: 28rpx;
+    font-weight: 600;
+    line-height: 1.6;
+    color: $text-1;
+    text-align: right;
+
+    /* 没成立的那一项：字重降回去，免得「未收录」被当成一个结论读 */
+    &--none {
+      font-weight: 400;
+      color: $text-3;
+    }
+  }
+
+  &__cv-note {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* 「明细见『某某』›」：与目录条目同一个动作（跳锚点），故用品牌色标出可点 */
+  &__cv-more {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $brand;
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  /* ===== 折叠目录（2026-10-10 两改：收起只占一行 + 展开态两列胶囊格） =====
+     报告页 18 节平铺，目录回答「后面还有什么、怎么直接过去」。
+     收起态只占一行：它是入口，不是内容，不能自己再占一屏 ——
+     早先收起时还留了句「按节直达，不必一路滑到底」，为这句话又多占一行，已去掉：
+     一个写着「目录 · N 节」还带箭头开关的标题，本身就说清了用途。
+
+     展开态：批 10 做成竖向时间线（主轴 + 节点），视觉上成立但一次要占近两屏
+     （18 × 68rpx ≈ 1200rpx）—— 在一个「本来就嫌报告太长」的目录里这是自相矛盾。
+     改回两列胶囊格：每行两节，18 节 → 9 行（约 640rpx），缩掉一半。
+     胶囊沿用本页 __cloud-tag 那套线框语言（不引入新视觉），
+     两列而不是三列：最长的标签「争议与回应」5 字，三列会把字挤到贴边。 */
+  &__toc-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+
+    /* 收起时标题自带的 16rpx 下边距会留个空档；展开时间距交给 __toc-list */
+    .card-title {
+      margin-bottom: 0;
+    }
+  }
+
+  &__toc-toggle {
+    flex-shrink: 0;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $brand;
+  }
+
+  /* 分组容器（2026-10-10 三改）：纵向堆叠每一组「组标签 + 组内胶囊格」。
+     横向排布的技巧（wrap + 每颗 50% 宽 + 负右外边距）原来挂在 __toc-list 上，
+     现在下移到 __toc-group-items —— 组才是胶囊的直接容器，负右外边距必须跟着它，
+     否则每组右侧会各窄 12rpx。 */
+  &__toc-list {
+    margin-top: 18rpx;
+  }
+
+  /* 组标签：它是「给几节归类」的行首小字，本身不是一节 —— 故不做胶囊、不可点，
+     字号比胶囊小一档（20rpx vs 24rpx）、颜色更淡，一眼能读出「这行是标题，下面是可点的节」 */
+  &__toc-group-label {
+    display: block;
+    margin-bottom: 10rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  /* 组间距：上一组最后一行胶囊的 12rpx 底边距 + 这 8rpx + 标签行 30rpx + 标签底距 10rpx
+     ≈ 60rpx，与组内的行距（胶囊高 60 + 12）相当 —— 分组的层次感交给标签本身去表达，
+     不靠「留一大片白」；真留大了，18 节的目录又会回到占两屏的老问题。 */
+  &__toc-group + &__toc-group {
+    margin-top: 8rpx;
+  }
+
+  /* 组内两列胶囊格：wrap + 每颗 50% 宽，靠负的右外边距抵消右边多出来的那道空隙
+     （每颗自带 12rpx 右外边距，最后一列也会带上，不收掉右侧就会比左边窄 12rpx） */
+  &__toc-group-items {
+    display: flex;
+    flex-wrap: wrap;
+    margin-right: -12rpx;
+  }
+
+  /* 每节一颗胶囊：宽 = 一半 - 间距，行高固定，长标签省略号收尾（标签都是短词，不会真省） */
+  &__toc-item {
+    box-sizing: border-box;
+    width: calc(50% - 12rpx);
+    margin: 0 12rpx 12rpx 0;
+    padding: 12rpx 16rpx;
+    font-size: 24rpx;
+    line-height: 1.4;
+    color: $text-2;
+    background: $bg;
+    border: 1rpx solid $line;
+    border-radius: 999rpx;
+    text-align: center;
+
+    /* 刚跳过的那一节：点完目录就收起，靠这个记号回答「我到了哪」 */
+    &--active {
+      color: $brand;
+      border-color: $brand;
+      font-weight: 600;
+    }
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  /* 标签本体：文字必须包一层才能省略号（直接写在小程序 View 上不生效） */
+  &__toc-item-text {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* 免费用户的目录尾巴：这一档看不到的会员档节数（2026-10-10，需求「目录配成模板」）。
+     它不是装饰 —— 页面里那几节卡片对免费用户根本不渲染，这里是「还差什么」的唯一说明，
+     整行可点，落到会员中心。会员态整行不出（他自己看得见，不需要提示）。 */
+  &__toc-more {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8rpx;
+    padding-top: 18rpx;
+    border-top: 1rpx solid $line;
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  &__toc-more-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  &__toc-more-go {
+    flex-shrink: 0;
+    margin-left: 16rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $brand;
+  }
+
+  /* ===== 第二批：结构化事实条目（人物档案 / 关系图谱 / 商业合作 / 争议与回应 / 名词解释） =====
+     五张卡的数据形态不同（字段-值 / 人名-关系 / 品牌-类别 / 争议-回应 / 词-释义），
+     但排版语言统一为三层：主行 → 说明 → 依据。
+     依据一律做小做灰，与 AI 点评的 __point-basis 同源：它是附注，不是第二个结论 ——
+     事实卡最怕「依据」和「事实」一样醒目，那样读起来像两条并列的信息。 */
+  &__entry {
+    /* 只在条目之间画分隔线（用相邻兄弟选择器）：首条不加，免得卡片标题下多出一道横线 */
+    & + & {
+      margin-top: 22rpx;
+      padding-top: 22rpx;
+      border-top: 1rpx solid $line;
+    }
+  }
+
+  /* 主行：值 / 姓名 / 时间 + 标签。baseline 对齐让不定长的那一段与定宽的字段名坐在同一基线上 */
+  &__entry-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12rpx;
+  }
+
+  /* 字段名定宽（与主页 __info-label 同一手法）：不定宽则「职业」「出生年份」右侧的值凑不成一列 */
+  &__entry-label {
+    flex-shrink: 0;
+    width: 140rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 名词解释里那个词本身是主体（不是「字段名」），故给它正文的字重与品牌色，只借用定宽 */
+  &__entry-label--term {
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $brand-dark;
+  }
+
+  &__entry-name {
+    flex-shrink: 0;
+    font-size: 28rpx;
+    font-weight: 600;
+    line-height: 1.6;
+    color: $text-1;
+  }
+
+  &__entry-value {
+    flex: 1;
+    min-width: 0;
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+  }
+
+  /* 关系标签：四档一律中性配色。关系答的是「是什么」，不是「好不好」——
+     给「对手」染红等于替读者下一个素材没下过的判断 */
+  &__entry-tag {
+    flex-shrink: 0;
+    margin-bottom: 4rpx;
+    padding: 2rpx 14rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand-dark;
+    font-size: 20rpx;
+    line-height: 1.6;
+  }
+
+  &__entry-text {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 26rpx;
+    line-height: 1.7;
+    color: $text-2;
+  }
+
+  &__entry-basis {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+    /* 与 __point-basis 同款：出处里的长 URL / 长英文串不折行会溢出（见 __table-basis） */
+    word-break: break-word;
+  }
+
+  /* ===== 语录主题：主题词 + 条数 + 代表原文（比语录卡低一级的字号，避免喧宾夺主） ===== */
+  &__qtheme {
+    margin-top: 20rpx;
+
+    /* 首条不再叠加上边距：卡片标题下已经是留白 */
+    &:first-of-type {
+      margin-top: 8rpx;
+    }
+  }
+
+  &__qtheme-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12rpx;
+  }
+
+  &__qtheme-topic {
+    font-size: 28rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__qtheme-count {
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  &__qtheme-quote {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-2;
+    /* 引文可能夹无空格英文长串（模型从素材原样复制），必须允许断词 */
+    word-break: break-all;
+  }
+
+  &__highlights {
+    margin-top: 24rpx;
+    padding-top: 24rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__highlights-title {
+    margin-bottom: 16rpx;
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__highlight + &__highlight {
+    margin-top: 20rpx;
+  }
+
+  &__highlight-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12rpx;
+  }
+
+  &__highlight-word {
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $brand-dark;
+  }
+
+  &__highlight-count {
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  &__highlight-ref {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  &__quote {
+    padding: 20rpx 0;
+    border-bottom: 1rpx solid $line;
+
+    /* 脚注（出处 + 「查证」+ 收藏星标）由 components/quote-detail 渲染，
+       与名人主页共用同一套 —— 两页对同一条语录的展示口径必须一致，故这里不再留样式。 */
+
+    &:last-child {
+      border-bottom: none;
+      padding-bottom: 4rpx;
+    }
+
+    /* 与动态摘要同一口径：三行封顶，超出折叠 */
+    &-text {
+      font-size: 30rpx;
+      line-height: 1.7;
+      font-weight: 500;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+      overflow: hidden;
+    }
+
+    &-foot {
+      margin-top: 12rpx;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+  }
+
+  /* ===== 热度趋势（M4-6）：View + transform 自绘折线，与词云一样不引图表库 =====
+     绘图区固定 630rpx×220rpx（750 - 卡片外边距 32×2 - 卡片内边距 28×2），
+     点的 left/top 是圆心、线段的 width 与 rotate 由端上算好（见 report/index.tsx 的 trendGeometry）。 */
+  &__trend {
+    margin-top: 8rpx;
+  }
+
+  &__trend-plot {
+    position: relative;
+    width: 630rpx;
+    height: 220rpx;
+  }
+
+  &__trend-grid {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 0;
+    border-top: 1rpx dashed $line;
+  }
+
+  &__trend-seg {
+    position: absolute;
+    height: 3rpx;
+    margin-top: -1.5rpx;
+    border-radius: 2rpx;
+    background: $brand-soft;
+    transform-origin: left center;
+  }
+
+  &__trend-dot {
+    position: absolute;
+    width: 12rpx;
+    height: 12rpx;
+    margin: -6rpx 0 0 -6rpx;
+    border-radius: 50%;
+    background: $brand;
+    box-shadow: 0 0 0 4rpx rgba(95, 51, 225, 0.12);
+
+    /* 峰值点换个颜色：一眼看出热度最高的是哪一格 */
+    &--peak {
+      background: $accent-orange;
+      box-shadow: 0 0 0 4rpx rgba(255, 125, 83, 0.16);
+    }
+  }
+
+  &__trend-value {
+    position: absolute;
+    transform: translateX(-50%);
+    font-size: 20rpx;
+    line-height: 1;
+    color: $text-2;
+  }
+
+  &__trend-axis {
+    display: flex;
+    margin-top: 10rpx;
+  }
+
+  &__trend-axis-label {
+    flex: 1;
+    font-size: 20rpx;
+    color: $text-3;
+    text-align: center;
+  }
+
+  &__trend-note {
+    display: block;
+    margin-top: 16rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__timeline-item {
+    display: flex;
+    gap: 20rpx;
+    padding: 12rpx 0;
+    align-items: baseline;
+
+    &-event {
+      flex: 1;
+      font-size: 26rpx;
+      line-height: 1.6;
+    }
+  }
+
+  /* 来源域名徽章：小程序内打不开外部网页，域名是用户判断该条可信度的主要线索 */
+  &__domain {
+    padding: 2rpx 12rpx;
+    border-radius: 999rpx;
+    background: $line;
+    color: $text-3;
+    font-size: 20rpx;
+    flex-shrink: 0;
+  }
+
+  /* ===== 人物速览（博查素材聚合出的事实行） ===== */
+  &__info {
+    display: flex;
+    align-items: flex-start;
+    gap: 20rpx;
+    padding: 18rpx 0;
+    border-bottom: 1rpx solid $line;
+
+    &:last-child {
+      border-bottom: none;
+      padding-bottom: 4rpx;
+    }
+  }
+
+  /* 左侧标签定宽：三行标签字数不一，不定宽右侧数值就凑不成一列 */
+  &__info-label {
+    flex-shrink: 0;
+    width: 108rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__info-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+  }
+
+  &__info-value {
+    font-size: 28rpx;
+    font-weight: 600;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  /* 最新报道的标题即素材入口（点一下复制原文链接），故用品牌色；两行封顶免得长标题吃掉卡片高度 */
+  &__info-link {
+    color: $brand;
+    font-weight: 500;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+
+  &__info-link--tap {
+    opacity: 0.6;
+  }
+
+  &__info-sub {
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
+  /* ===== 点评导读（速览卡末行：模型的判断，不是素材统计） =====
+     它和上面几行不是一类东西 —— 上面是「原样统计、可当事实读」的画像，这一行是模型的判断
+     且整行可点。故只补两点：句子不该像数值那样加粗（28rpx/600 对一句 40 字的话太重），
+     以及整行的按压反馈。标签仍用 __info-label，与上面几行对齐成一列。 */
+  &__gist-text {
+    font-weight: 500;
+    line-height: 1.6;
+    /* 判断最长 80 字（见 report.ts 的 ANALYSIS_POINT_CHARS），三行封顶免得撑开速览卡 */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
+
+  &__gist--tap {
+    opacity: 0.6;
+  }
+
+  /* 空态速览卡里，导读行前面是一段说明文字（不是 __info 行，没有那条分隔线）——
+     补一条，免得被读成上一段的续行（老报告多半走这一支，正是最需要导读的那一批） */
+  &__empty + &__gist {
+    margin-top: 6rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  /* 溯源摘要：一行小字放在免责声明上方，替代原来的素材清单卡 */
+  &__trace {
+    margin: 8rpx 32rpx 0;
+    font-size: 22rpx;
+    line-height: 1.6;
+  }
+
+  /* 收藏图标（名言）：空心=未收藏，实心+品牌色=已收藏。
+     图标本身比「收藏」二字小，加内边距把可点区域撑到 ≥44rpx，免得点不准。 */
+  &__fav-icon {
+    color: $text-3;
+    font-size: 36rpx;
+    line-height: 1;
+    padding: 4rpx 8rpx;
+
+    &--on {
+      color: $brand;
+    }
+  }
+
+  /* 底部两个整行跳转入口（「向 AI 提问」/「与另一位名人对比」）共用一套描边条：
+     描边（而非实心）表明它们是跳转入口，与下方就地生效的「收藏 / 刷新」拉开层级。
+     左右 32rpx 与 .card 的 margin 对齐。 */
+  &__compare,
+  &__ask {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 24rpx 32rpx 0;
+    padding: 22rpx 28rpx;
+    border: 2rpx solid $brand-weak;
+    border-radius: $radius-md;
+    background: rgba(255, 255, 255, 0.86);
+    color: $brand;
+    font-size: 26rpx;
+    font-weight: 600;
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  &__compare-arrow,
+  &__ask-arrow {
+    color: $brand-soft;
+  }
+
+  /* 相关名人（O-16）：整块用实心浅底卡片（而非上面那种描边跳转条）——
+     它是一组「可以继续点的人」，视觉上要跟单条跳转入口区分开。
+     左右 32rpx 与 .card 对齐。 */
+  &__related {
+    display: flex;
+    flex-direction: column;
+    margin: 24rpx 32rpx 0;
+    padding: 24rpx 28rpx 8rpx;
+    border-radius: $radius-md;
+    background: rgba(95, 51, 225, 0.06);
+  }
+
+  &__related-head {
+    color: $text-1;
+    font-size: 26rpx;
+    font-weight: 600;
+  }
+
+  &__related-note {
+    margin-top: 6rpx;
+    color: $text-3;
+    font-size: 22rpx;
+    line-height: 1.5;
+  }
+
+  &__related-item {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+    padding: 20rpx 0;
+    border-top: 2rpx solid rgba(95, 51, 225, 0.08);
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  /* 头像沿用报告横幅那套「领域色渐变 + 姓名首字」，只是尺寸小一号 */
+  &__related-avatar {
+    flex-shrink: 0;
+    width: 64rpx;
+    height: 64rpx;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 28rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    &--tech { background: linear-gradient(135deg, #33a3ff, $domain-tech); }
+    &--internet { background: linear-gradient(135deg, #67e8f9, $domain-internet); }
+    &--business { background: linear-gradient(135deg, #ff9d7c, $domain-business); }
+    &--finance { background: linear-gradient(135deg, #fcd34d, $domain-finance); }
+    &--auto { background: linear-gradient(135deg, #a5b4fc, $domain-auto); }
+    &--ent { background: linear-gradient(135deg, #f472b6, $domain-ent); }
+    &--art { background: linear-gradient(135deg, #d8b4fe, $domain-art); }
+    &--sports { background: linear-gradient(135deg, #34d399, $domain-sports); }
+    &--health { background: linear-gradient(135deg, #fda4af, $domain-health); }
+    &--academia { background: linear-gradient(135deg, $brand-soft, $domain-academia); }
+    &--edu { background: linear-gradient(135deg, #5eead4, $domain-edu); }
+    &--other { background: linear-gradient(135deg, #9b97ab, $domain-other); }
+  }
+
+  &__related-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+  }
+
+  &__related-name {
+    color: $text-1;
+    font-size: 26rpx;
+    font-weight: 600;
+  }
+
+  &__related-words {
+    color: $text-3;
+    font-size: 22rpx;
+    line-height: 1.4;
+  }
+
+  &__related-arrow {
+    flex-shrink: 0;
+    color: $brand-soft;
+    font-size: 26rpx;
+  }
+
+  /* 首屏问答入口（--hero）：实心品牌色 —— 它是首屏最重的那个动作，
+     淡描边样式压在横幅下面的浅背景里太轻，用户扫不到（见 pages/report 的注释）。
+     副文案顺带说明「不消耗生成次数」，这是免费用户最担心的一件事。 */
+  &__ask--hero {
+    margin-top: 24rpx;
+    border: none;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 12rpx 32rpx rgba(95, 51, 225, 0.24);
+
+    .page-report__ask-text,
+    .page-report__ask-arrow {
+      color: #fff;
+    }
+  }
+
+  &__ask-main {
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  &__ask-desc {
+    font-size: 22rpx;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.82);
+  }
+
+  /*
+    底部「收藏报告 / 刷新最新」一行（2026-10-09 改名）。
+    原先与头部横幅的关注按钮行共用 `page-report__actions`，而两条规则同时命中同一个
+    class：这里给横幅按钮行带来了 `margin: 24rpx`（左边缘比名字缩进 24rpx），
+    横幅那条又反过来给底部这行加了 `flex-wrap: wrap` + `margin-top: 4rpx`。
+    两行长得很像但没有任何共同点，故拆开：本行 = 卡片内的一行按钮，横幅行另起名字。
+  */
+  &__foot-actions {
+    display: flex;
+    gap: 20rpx;
+    margin: 24rpx;
+
+    .at-button {
+      flex: 1;
+    }
+  }
+
+  /* ===== 卡内小表格（人物档案 / 关系图谱 / 商业合作与代言）：flex 行拼的迷你表 =====
+     短列用固定 flex-basis 保成列（不定宽则右侧值凑不成一列），最后一列 flex:1 吃满剩余宽度。
+     所有单元格允许折行（word-break），保证长文本在卡内换行而不溢出卡片。 */
+  &__table {
+    margin-top: 4rpx;
+  }
+
+  &__table-head {
+    display: flex;
+    gap: 16rpx;
+    padding-bottom: 12rpx;
+    border-bottom: 1rpx solid $line;
+  }
+
+  &__table-row {
+    padding: 16rpx 0;
+    border-bottom: 1rpx solid $line;
+
+    &:last-child {
+      border-bottom: none;
+      padding-bottom: 4rpx;
+    }
+  }
+
+  &__table-cells {
+    display: flex;
+    align-items: flex-start;
+    gap: 16rpx;
+  }
+
+  &__table-cell {
+    flex: 0 0 150rpx;
+    min-width: 0;
+    font-size: 26rpx;
+    line-height: 1.6;
+    color: $text-1;
+    word-break: break-word;
+
+    /* 表头：小、灰、不抢内容 */
+    &--head {
+      font-size: 22rpx;
+      color: $text-3;
+    }
+
+    /* 最后一列吃满剩余宽度，也是唯一承载长文本的列 */
+    &--grow {
+      flex: 1;
+      min-width: 0;
+    }
+  }
+
+  /* 出处：铺满一整行压在单元格下方，与 __entry-basis 同一套「小、灰」附注语言 */
+  &__table-basis {
+    margin-top: 6rpx;
+    font-size: 20rpx;
+    line-height: 1.5;
+    color: $text-3;
+    word-break: break-word;
+  }
+
+  /* ===== 「近期动态」里两张纯 CSS 小图（报道时间分布 / 情绪构成）===== */
+  &__chart {
+    margin: 12rpx 0 20rpx;
+  }
+
+  &__chart-title {
+    display: block;
+    font-size: 22rpx;
+    color: $text-3;
+    margin-bottom: 12rpx;
+  }
+
+  /* 柱状图：每根柱的高度 = 当月条数占最大值百分比（内联给出），柱底对齐、柱顶标数量、
+     柱下标月份。柱子用 scaleY 从 0 长起（transform-origin: bottom），只动 transform。 */
+  &__bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 16rpx;
+  }
+
+  &__bar-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6rpx;
+  }
+
+  &__bar-count {
+    font-size: 20rpx;
+    color: $text-2;
+    line-height: 1;
+  }
+
+  &__bar-track {
+    width: 100%;
+    height: 120rpx;
+    display: flex;
+    align-items: flex-end;
+  }
+
+  &__bar {
+    width: 100%;
+    border-radius: 8rpx 8rpx 0 0;
+    background: linear-gradient(180deg, $brand-soft 0%, $brand 100%);
+    transform-origin: bottom;
+    animation: report-bar-grow 320ms ease-out both;
+  }
+
+  &__bar-month {
+    font-size: 20rpx;
+    color: $text-3;
+    line-height: 1;
+  }
+
+  /* 情绪构成条：水平堆叠比例条 + 图例，配色沿用「近期动态」逐条情绪标签（__sentiment 三色）。
+     整条从左向右展开（scaleX），不逐段改宽度 —— 避免触发布局回流。 */
+  &__sent-bar {
+    display: flex;
+    height: 22rpx;
+    margin-top: 12rpx;
+    border-radius: 999rpx;
+    overflow: hidden;
+    background: $bg;
+    transform-origin: left center;
+    animation: report-bar-expand 320ms ease-out both;
+  }
+
+  &__sent-seg {
+    height: 100%;
+
+    &--positive { background: $success; }
+    &--neutral { background: $brand-soft; }
+    &--negative { background: $accent-orange; }
+  }
+
+  &__sent-legend {
+    display: flex;
+    gap: 24rpx;
+    margin-top: 12rpx;
+  }
+
+  &__sent-legend-item {
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  /* ===== 卡片入场动画：淡入 + 轻微上移，按兄弟次序逐卡错峰（≈24ms，总跨度压在 300ms 内）。
+     只动 opacity / transform（不触发布局），且终态即自然态 —— 动画不被支持时卡片照常显示。 */
+  .card {
+    animation: report-card-in 280ms ease-out both;
+
+    @for $i from 1 through 12 {
+      &:nth-child(#{$i}) {
+        animation-delay: #{($i - 1) * 24}ms;
+      }
+    }
+  }
+}

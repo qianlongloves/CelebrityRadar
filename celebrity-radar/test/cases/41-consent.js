@@ -123,7 +123,7 @@ describe('首次知情同意：components/consent-gate 形态', () => {
   const scss = read('components/consent-gate/index.scss')
 
   it('有政策入口 + 同意 / 暂不同意两枚按钮', () => {
-    ok(tsx.includes('/pages/agreement/index'), '应能跳转完整政策页')
+    ok(tsx.includes('/package/agreement/index'), '应能跳转完整政策页')
     ok(tsx.includes('同意并继续'), '应有同意按钮')
     ok(tsx.includes('暂不同意'), '应有暂不同意按钮（肯定动作之外留出拒绝）')
     ok(tsx.includes('隐私与免责声明'), '应点名政策名称')
@@ -147,7 +147,7 @@ describe('首次知情同意：components/consent-gate 形态', () => {
 
 describe('首次知情同意：版本号单一真源（config/legal）', () => {
   it('协议页从 config/legal 取日期，不再写死', () => {
-    const tsx = read('pages/agreement/index.tsx')
+    const tsx = read('package/agreement/index.tsx')
     ok(tsx.includes("from '@/config/legal'"), '协议页应引用单一真源')
     ok(tsx.includes('PRIVACY_UPDATED_AT') && tsx.includes('PRIVACY_EFFECTIVE_AT'), '应使用共享常量')
     notOk(/const UPDATED_AT\s*=/.test(tsx), '不应再写死 UPDATED_AT 常量')

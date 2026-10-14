@@ -396,9 +396,9 @@ describe('站内触达收口：页面接入（静态约束）', () => {
   })
 
   it('预警页 / 关注列表：既有「新」计数接到同一口径函数上', () => {
-    ok(read('pages/alerts/index.tsx').includes('alertNewCount('), '预警页新增之和走 alertNewCount')
-    ok(read('pages/alerts/index.tsx').includes('markModuleSeen('), '进预警页应推进风险基线')
-    ok(read('pages/following/index.tsx').includes('feedNewCount('), '关注列表「有新内容」人数走 feedNewCount')
+    ok(read('package/alerts/index.tsx').includes('alertNewCount('), '预警页新增之和走 alertNewCount')
+    ok(read('package/alerts/index.tsx').includes('markModuleSeen('), '进预警页应推进风险基线')
+    ok(read('package/following/index.tsx').includes('feedNewCount('), '关注列表「有新内容」人数走 feedNewCount')
   })
 
   it('「清空我的数据」会一并清掉本机 inbox 基线', () => {

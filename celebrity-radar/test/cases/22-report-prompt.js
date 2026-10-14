@@ -100,16 +100,21 @@ describe('报告提示词构造：大模型请求携带博查素材（按模板�
     })
   })
 
-  it('关注侧重随 focus 变化，但仍携带素材', async () => {
+  it('关注侧重随 focus 变化（标签与报告模板同源），但仍携带素材', async () => {
     const { load } = fresh()
     const report = load('utils/report')
-    const calls = []
-    mockAiProxy(calls)
 
-    await report.buildReport('乙#tech', '乙', [newsItem(0)], 'dynamics', {})
+    /* 三个具体方向的「关注侧重」标签必须等于模板节 label（filters.ts#FOCUS_META 同源派生），
+       不再出现「言论观点 / 经历履历」这类与模板漂移的旧文案。 */
+    const expect = { dynamics: '近期动态', quotes: '经典名言', timeline: '时间线' }
+    for (const [focus, label] of Object.entries(expect)) {
+      const calls = []
+      mockAiProxy(calls)
+      await report.buildReport('乙#tech', '乙', [newsItem(0)], focus, {})
 
-    const user = String(calls[0].messages[1].content)
-    ok(user.includes('关注侧重：近期动态'), 'focus=dynamics 时侧重应写「近期动态」')
-    ok(/素材标题0|素材正文0/.test(user), '带 focus 的请求同样携带素材')
+      const user = String(calls[0].messages[1].content)
+      ok(user.includes(`关注侧重：${label}`), `focus=${focus} 时侧重应写「${label}」`)
+      ok(/素材标题0|素材正文0/.test(user), '带 focus 的请求同样携带素材')
+    }
   })
 })

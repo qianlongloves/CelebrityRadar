@@ -1,0 +1,409 @@
+@import '../../styles/variables.scss';
+
+.page-alerts {
+  padding-bottom: 32rpx;
+
+  &__intro {
+    display: block;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 定位说明里的「引导句」（去别的入口那一句）：比正文深一档。
+     两个板块的说明连着排三四行时，全用 $text-3 会被当成同一段废话略过 */
+  &__intro--guide {
+    margin-top: 4rpx;
+    color: $text-2;
+  }
+
+  /* 订阅输入：胶囊输入框 + 胶囊按钮 */
+  &__composer {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    margin-top: 20rpx;
+  }
+
+  &__input {
+    flex: 1;
+    min-width: 0;
+    height: 72rpx;
+    padding: 0 24rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    font-size: 26rpx;
+    color: $text-1;
+  }
+
+  &__submit {
+    flex: none;
+    display: flex;
+    align-items: center;
+    height: 72rpx;
+    padding: 0 28rpx;
+    border-radius: 999rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 26rpx;
+  }
+
+  /* 输入为空或提交中：按钮仍可点（点了给校验提示），只做视觉弱化 */
+  &__submit--off {
+    opacity: 0.45;
+  }
+
+  &__submit--tap {
+    opacity: 0.8;
+  }
+
+  &__login-tip {
+    display: block;
+    margin-top: 20rpx;
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  /* 达到监测词上限时替换输入框的那一行升级引导（P2）：克制、不弹窗、点了进会员页 */
+  &__limit {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-top: 20rpx;
+    padding: 20rpx 24rpx;
+    border-radius: 16rpx;
+    background: $brand-weak;
+  }
+
+  &__limit--tap {
+    opacity: 0.9;
+  }
+
+  &__limit-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $text-2;
+  }
+
+  &__limit-go {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  /* 已监测的词：点一下即取消（带二次确认） */
+  &__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16rpx;
+    margin-top: 24rpx;
+  }
+
+  &__chip {
+    display: flex;
+    align-items: center;
+    gap: 8rpx;
+    padding: 8rpx 20rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 24rpx;
+  }
+
+  &__chip--tap {
+    opacity: 0.7;
+  }
+
+  &__chip-x {
+    font-size: 28rpx;
+    line-height: 1;
+  }
+
+  &__notify {
+    margin-top: 24rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__notify-btn {
+    display: inline-block;
+    padding: 10rpx 28rpx;
+    border: 1rpx solid $brand;
+    border-radius: 999rpx;
+    color: $brand;
+    font-size: 24rpx;
+  }
+
+  &__notify-btn--tap {
+    opacity: 0.7;
+  }
+
+  &__notify-tip {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__summary {
+    display: block;
+    margin: 24rpx 32rpx 0;
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  &__group-head {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+  }
+
+  &__group-keyword {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__badge {
+    padding: 4rpx 14rpx;
+    border-radius: 999rpx;
+    font-size: 20rpx;
+    line-height: 1.6;
+  }
+
+  /* 升温用警示色、一般新增用品牌色：这里的「色」表达的是「值得看一眼」，
+     不是对内容的是非判断（预警只统计报道量的变化） */
+  &__badge--alert {
+    background: $knowledge-warn-bg;
+    color: $knowledge-warn-text;
+  }
+
+  &__badge--note {
+    background: $brand-weak;
+    color: $brand;
+  }
+
+  &__group-count {
+    margin-left: auto;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 「看话题」是这一组的次要出口：靠右、弱于条目本身，但要看得出能点 */
+  &__topic {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+    text-align: right;
+    font-size: 24rpx;
+    color: $brand;
+  }
+
+  &__topic--tap {
+    opacity: 0.6;
+  }
+
+  &__item {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__item--tap {
+    opacity: 0.7;
+  }
+
+  &__item-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 10rpx;
+  }
+
+  &__new {
+    flex: none;
+    padding: 0 10rpx;
+    border-radius: 6rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 18rpx;
+    line-height: 1.8;
+  }
+
+  /* 风险信号的类别标签（司法/税务/合作/维权/表态）：中性底 —— 表达的是「命中的是哪类词」，
+     不是「事有多严重」，故不用警示色（级别高/中/低一律不显示） */
+  &__risk-tag {
+    flex: none;
+    padding: 2rpx 12rpx;
+    border-radius: 6rpx;
+    background: $bg;
+    color: $text-2;
+    font-size: 20rpx;
+    line-height: 1.8;
+  }
+
+  /* 风险信号段尾的免责说明：比 disclaimer 轻，贴着信号列表，避免被读成对 TA 的定性 */
+  &__note {
+    display: block;
+    margin: 16rpx 32rpx 0;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__item-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 27rpx;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  &__item-meta {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__hint-title {
+    display: block;
+    font-size: 28rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__hint-desc {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 监控状态表格：一行一个监控对象（关键词 / 名人），列 = 对象 / 最近执行 / 命中结果 / 状态 */
+  &__table {
+    margin-top: 24rpx;
+    border: 1rpx solid $line;
+    border-radius: $radius-sm;
+    overflow: hidden;
+  }
+
+  &__tr {
+    display: flex;
+    align-items: center;
+    min-height: 64rpx;
+    padding: 0 16rpx;
+    border-top: 1rpx solid $line;
+
+    &:first-child {
+      border-top: 0;
+    }
+
+    &--head {
+      min-height: 56rpx;
+      background: $bg;
+    }
+  }
+
+  &__td {
+    flex: none;
+    width: 150rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-2;
+
+    &--obj {
+      flex: 1;
+      min-width: 0;
+      padding-right: 8rpx;
+      color: $text-1;
+      font-size: 26rpx;
+      font-weight: 600;
+    }
+
+    &--status {
+      text-align: right;
+    }
+  }
+
+  /* 表头文字弱化 */
+  &__tr--head &__td {
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  &__status {
+    &--ok {
+      color: $success;
+    }
+
+    &--skipped {
+      color: $warning;
+    }
+
+    &--error {
+      color: $danger;
+    }
+
+    &--pending {
+      color: $text-3;
+    }
+  }
+
+  /* 执行日志：每张卡片底部，展示每一次扫描的时间 / 对象 / 命中 / 结果 */
+  &__logs {
+    margin-top: 20rpx;
+    border-top: 1rpx dashed $line;
+    padding-top: 16rpx;
+  }
+
+  &__logs-title {
+    display: block;
+    margin-bottom: 8rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__log {
+    display: flex;
+    align-items: flex-start;
+    gap: 12rpx;
+    padding: 8rpx 0;
+  }
+
+  &__log-status {
+    flex: none;
+    padding: 0 10rpx;
+    border-radius: 6rpx;
+    font-size: 20rpx;
+    line-height: 1.8;
+
+    &--ok {
+      background: #e7f7f0;
+      color: $success;
+    }
+
+    &--skipped {
+      background: #fef3e2;
+      color: $warning;
+    }
+
+    &--error {
+      background: $danger-weak;
+      color: $danger;
+    }
+  }
+
+  &__log-body {
+    flex: 1;
+    min-width: 0;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+}

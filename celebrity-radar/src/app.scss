@@ -3,7 +3,16 @@ $color-brand: #5f33e1;
 $color-success: #10b981;
 $color-warning: #f59e0b;
 $color-error: #ef4444;
-@import 'taro-ui/dist/style/index.scss';
+/*
+ * taro-ui 按需引入（2026-10-14）：项目只用了 AtButton / AtSearchBar 两个组件，
+ * 原来 `@import 'taro-ui/dist/style/index.scss'` 会把 50 个组件样式全部打进主包 WXSS。
+ * 这里只引 button + search-bar，外加 search-bar 依赖的 icon（放大镜 / 清除图标）。
+ * 每个组件 scss 内部会自行 @import variables/default.scss 与 mixins/index.scss，
+ * 故上面的主题变量覆盖在按需引入下依然生效（!default 不覆盖已赋值）。
+ */
+@import 'taro-ui/dist/style/components/button.scss';
+@import 'taro-ui/dist/style/components/search-bar.scss';
+@import 'taro-ui/dist/style/components/icon.scss';
 
 @import './styles/variables.scss';
 
@@ -154,56 +163,6 @@ page {
   &--academia { background: rgba(95, 51, 225, 0.1); color: $domain-academia; }
   &--edu { background: rgba(20, 184, 166, 0.12); color: $domain-edu; }
   &--other { background: rgba(110, 106, 124, 0.1); color: $domain-other; }
-}
-
-/* ===== 状态徽章（胶囊描边样式，参照样例 Done / In Progress / To-do） ===== */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8rpx;
-  padding: 6rpx 18rpx;
-  border-radius: 999rpx;
-  font-size: 20rpx;
-  line-height: 1.5;
-
-  &--positive {
-    background: rgba(16, 185, 129, 0.1);
-    color: $success;
-
-    &::before {
-      content: '';
-      width: 12rpx;
-      height: 12rpx;
-      border-radius: 50%;
-      background: $success;
-    }
-  }
-
-  &--neutral {
-    background: $brand-weak;
-    color: $brand-soft;
-
-    &::before {
-      content: '';
-      width: 12rpx;
-      height: 12rpx;
-      border-radius: 50%;
-      background: $brand-soft;
-    }
-  }
-
-  &--negative {
-    background: $accent-orange-bg;
-    color: $accent-orange;
-
-    &::before {
-      content: '';
-      width: 12rpx;
-      height: 12rpx;
-      border-radius: 50%;
-      background: $accent-orange;
-    }
-  }
 }
 
 /* ===== 热度 ===== */

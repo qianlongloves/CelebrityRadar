@@ -8,44 +8,59 @@ export default defineAppConfig({
    * ⚠ 开启前提：微信公众平台「设置 → 基本设置 → 用户隐私保护指引」已配置并通过审核。
    *   指引未配置而本字段为 true 时，调用头像 / 昵称等隐私接口会被平台**直接拒绝** ——
    *   这不是端上能兜住的错，故上线前必须先在后台把指引配好再发这一版。
+   *
+   * ── 当前状态（开发调试）───────────────────────────────────────────
+   * 现用测试 appid（wx0000000000000000）在公众平台配不了隐私指引，此时保持 true
+   * 会直接拒绝 chooseAvatar / nickname，表现为「点头像弹不出选择器」。故开发期先置
+   * false 让头像昵称能力可用；**上线前必须在真实 appid 后台配好指引后改回 true**。
    */
-  __usePrivacyCheck__: true,
+  __usePrivacyCheck__: false,
+  /*
+   * 二级页已下沉到 package 分包（2026-10-14）：主包只留 4 个底部 tab 页 + 公共代码，
+   * 主包从 ~1.41MB 降到 ~1.1MB、给后续迭代腾余量。分包页面路径 = package/<页名>/index。
+   */
   pages: [
     'pages/index/index',
-    'pages/feed/index',
     'pages/mine/index',
-    'pages/profile/index',
-    'pages/report/index',
-    'pages/collection/index',
-    'pages/agreement/index',
-    'pages/records/index',
-    'pages/history/index',
-    'pages/following/index',
-    'pages/weekly/index',
-    /* 报告素材的原文预览（近期动态 / 最新报道的落点，见 pages/link-preview） */
-    'pages/link-preview/index',
-    /* 两名人横向对比（从报告页底部进入，只读缓存、零模型调用，见 pages/compare） */
-    'pages/compare/index',
-    /* 消息中心（首页铃铛进入，数据全部来自端上已有缓存 + 静态公告，见 utils/messages） */
-    'pages/messages/index',
     /* AI 提问频道页（底部菜单第二格：选名人后共用问答面板，见 pages/ask） */
     'pages/ask/index',
     /* 舆情聚合页（底部菜单第三格「盯」：关注动态 / 周报 / 关键词预警三块概要，见 pages/opinion） */
-    'pages/opinion/index',
-    /* 事件时间线（舆情页事件卡跳转的独立二级页；**不是 tab 页**，见 pages/event） */
-    'pages/event/index',
-    /* 事件列表（舆情页事件卡「查看全部事件」进入的独立二级页；分页加载，**不是 tab 页**，见 pages/events） */
-    'pages/events/index',
-    /* AI 问答（报告页底部进入，只读缓存报告、不消耗生成额度，见 pages/qa + utils/qa） */
-    'pages/qa/index',
-    /* 会员中心（「我的」页会员卡进入：权益对比 + 档位选择 + 吸底支付，见 pages/member） */
-    'pages/member/index',
-    /* 我的订单（会员中心进入，仅会员可见：支付记录 + 开通状态，见 pages/orders） */
-    'pages/orders/index',
-    /* 关键词舆情预警（消息中心入口 / 预警推送落点：订阅管理 + 预警列表，见 pages/alerts） */
-    'pages/alerts/index',
-    /* 主题知识库（报告页词云词条进入：把已缓存报告按话题重新编目，见 pages/topic + utils/topic-digest） */
-    'pages/topic/index'
+    'pages/opinion/index'
+  ],
+  subpackages: [
+    {
+      root: 'package',
+      pages: [
+        'feed/index',
+        'profile/index',
+        'report/index',
+        'agreement/index',
+        'records/index',
+        'history/index',
+        'following/index',
+        'weekly/index',
+        /* 报告素材的原文预览（近期动态 / 最新报道的落点，见 package/link-preview） */
+        'link-preview/index',
+        /* 两名人横向对比（从报告页底部进入，只读缓存、零模型调用，见 package/compare） */
+        'compare/index',
+        /* 消息中心（首页铃铛进入，数据全部来自端上已有缓存 + 静态公告，见 utils/messages） */
+        'messages/index',
+        /* 事件时间线（舆情页事件卡跳转的独立二级页；**不是 tab 页**，见 package/event） */
+        'event/index',
+        /* 事件列表（舆情页事件卡「查看全部事件」进入的独立二级页；分页加载，**不是 tab 页**，见 package/events） */
+        'events/index',
+        /* AI 问答（报告页底部进入，只读缓存报告、不消耗生成额度，见 package/qa + utils/qa） */
+        'qa/index',
+        /* 会员中心（「我的」页会员卡进入：权益对比 + 档位选择 + 吸底支付，见 package/member） */
+        'member/index',
+        /* 我的订单（会员中心进入，仅会员可见：支付记录 + 开通状态，见 package/orders） */
+        'orders/index',
+        /* 关键词舆情预警（消息中心入口 / 预警推送落点：订阅管理 + 预警列表，见 package/alerts） */
+        'alerts/index',
+        /* 主题知识库（报告页词云词条进入：把已缓存报告按话题重新编目，见 package/topic + utils/topic-digest） */
+        'topic/index'
+      ]
+    }
   ],
   // 按需注入：仅注入当前页面所需的自定义组件代码（基础库 ≥ 2.11.1）
   lazyCodeLoading: 'requiredComponents',

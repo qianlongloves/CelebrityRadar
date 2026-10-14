@@ -543,7 +543,7 @@ describe('档位隔离已接进读取路径（源码钉住，防「写了剥离�
   })
 
   it('页面不再从 report 自己算专享段落（剥离之后那是恒空的）', () => {
-    const page = read(path.join(SRC, 'pages/report/index.tsx'))
+    const page = read(path.join(SRC, 'package/report/index.tsx'))
 
     /* 刻意不写成 includes('presentSections(report)')：说明这件事的注释里就有这句话 */
     notOk(page.includes('reportMemberPromo(presentSections'), '促销条改吃数据层交回的 memberLocked')

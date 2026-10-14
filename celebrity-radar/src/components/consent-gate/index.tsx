@@ -40,7 +40,7 @@ export default function ConsentGate({ onAgree }: { onAgree: () => void }) {
 
   /** 打开完整政策文本（独立页，navigateTo 到二级页；该页上本闸门自动让出） */
   const openPolicy = () => {
-    Taro.navigateTo({ url: '/pages/agreement/index' })
+    Taro.navigateTo({ url: '/package/agreement/index' })
   }
 
   if (onPolicyPage) return null

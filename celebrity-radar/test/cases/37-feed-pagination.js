@@ -118,9 +118,9 @@ describe('关注动态分页：FEED_PAGE_SIZE 与 pageSlice 纯函数', () => {
 /* ───────────────────── 2. 页面交互（静态锁定「首屏一页 + 触底追加」） ───────────────────── */
 
 describe('关注动态页：首屏只渲染第一页 + 触底追加（静态锁定）', () => {
-  const page = read('pages/feed/index.tsx')
-  const scss = read('pages/feed/index.scss')
-  const cfg = read('pages/feed/index.config.ts')
+  const page = read('package/feed/index.tsx')
+  const scss = read('package/feed/index.scss')
+  const cfg = read('package/feed/index.config.ts')
 
   it('分页复用共享的 pageSlice + FEED_PAGE_SIZE，页面内不自造切片函数', () => {
     ok(page.includes("from '@/utils/opinion-access'"), '应从 opinion-access 复用分页纯函数')
@@ -193,7 +193,7 @@ describe('关注动态页：首屏只渲染第一页 + 触底追加（静态锁�
 /* ───────────────────── 3. 既有功能不退化（回归锁） ───────────────────── */
 
 describe('关注动态页：分页不改动既有功能（回归锁）', () => {
-  const page = read('pages/feed/index.tsx')
+  const page = read('package/feed/index.tsx')
 
   it('仍走批量读、仍有快照首帧与 finally 收 loading（P 既有约束不回退）', () => {
     ok(page.includes('getFeedDetails('), '仍走批量读')

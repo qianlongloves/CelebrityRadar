@@ -474,10 +474,9 @@ function halfPunct(ch) {
  *   channel='cloudai' → 云开发 AI（cloud.ai）。
  *
  * ⚠ 与 aiProxy 的 callVendorHttp / callCloudAi 是**各自独立的两份**（两个云函数各自打包，
- * 不跨目录 require），改一处别忘了另一处。差别只在：这边不需要 finish_reason（cron 失败只
- * 静默保留旧榜单、没有端上那套重试放大），cloudai 用更简单的 generateText，http 用非流式 POST。
- * 已知遗留（与改造前一致）：这里没做「空正文 + finish_reason='length'」的确定性分流，
- * 只统一抛「大模型返回为空」（见文件头的遗留说明）。
+ * 不跨目录 require），改一处别忘了另一处。差别只在：这边不需要把 finish_reason 回端上（cron
+ * 失败只静默保留旧榜单、没有端上那套重试放大），但空正文仍按 finish_reason 分流，好让日志
+ * 分得开「截断」与「偶发空壳」；cloudai 用 streamText 拿 finish_reason，http 用非流式 POST。
  */
 async function askLlm(llm, system, user) {
   const messages = [
@@ -519,27 +518,64 @@ async function askLlm(llm, system, user) {
     }
     const choice = (res.data && res.data.choices && res.data.choices[0]) || {}
     const content = choice.message && typeof choice.message.content === 'string' ? choice.message.content : ''
-    if (!content.trim()) throw new Error('大模型返回为空')
+    if (!content.trim()) {
+      const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : ''
+      const reasoningChars =
+        (choice.message && typeof choice.message.reasoning_content === 'string' && choice.message.reasoning_content.length) || 0
+      throw emptyBodyError(finishReason, reasoningChars)
+    }
     return content
   }
 
-  const res = await cloud
-    .ai()
-    .createModel(llm.modelGroup)
-    .generateText(
-      {
-        model: llm.model,
-        messages,
-        /* max_tokens 不在 SDK 文档定义里，会随请求体透传（理由见 llm.config.js 的 chatMaxTokens 段） */
-        max_tokens: llm.chatMaxTokens,
-        ...(llm.extraBody || {})
-      },
-      { timeout: LLM_TIMEOUT_MS }
-    )
-  if (res && res.error) throw new Error(`云开发 AI 报错：${String(JSON.stringify(res.error)).slice(0, 200)}`)
-  const content = res && typeof res.text === 'string' ? res.text : ''
-  if (!content.trim()) throw new Error('大模型返回为空')
+  /* cloudai：streamText 双流拿 finish_reason（generateText 返回值不含它） */
+  const aiModel = cloud.ai().createModel(llm.modelGroup)
+  const stream = await aiModel.streamText(
+    {
+      model: llm.model,
+      messages,
+      /* max_tokens 不在 SDK 文档定义里，会随请求体透传（理由见 llm.config.js 的 chatMaxTokens 段） */
+      max_tokens: llm.chatMaxTokens,
+      ...(llm.extraBody || {})
+    },
+    { timeout: LLM_TIMEOUT_MS }
+  )
+  let content = ''
+  let finishReason = ''
+  let reasoningChars = 0
+  await Promise.all([
+    (async () => {
+      for await (const chunk of stream.textStream) {
+        if (typeof chunk === 'string') content += chunk
+      }
+    })(),
+    (async () => {
+      for await (const ev of stream.dataStream) {
+        if (!ev) continue
+        const choice = ev.choices && ev.choices[0]
+        if (!choice) continue
+        if (typeof choice.finish_reason === 'string' && choice.finish_reason) finishReason = choice.finish_reason
+        const delta = choice.delta
+        if (delta && typeof delta.reasoning_content === 'string') reasoningChars += delta.reasoning_content.length
+      }
+    })()
+  ])
+  if (!content.trim()) throw emptyBodyError(finishReason, reasoningChars)
   return content
+}
+
+/** 空正文按 finish_reason 确定性分流（cron 场景的意义是**诊断**：日志里分得开「截断」与「偶发空壳」） */
+function emptyBodyError(finishReason, reasoningChars) {
+  if (finishReason === 'length') {
+    return reasoningChars
+      ? new Error(
+          `大模型返回为空（finish_reason=length，思考 ${reasoningChars} 字吃光 max_tokens、正文未产出）：检查 llm.config.js 是否误配思考模型，或调大 chatMaxTokens`
+        )
+      : new Error(`大模型返回为空（finish_reason=length，撞 max_tokens 被截断）：调大 chatMaxTokens 或缩短提示词`)
+  }
+  if (finishReason === 'content_filter') {
+    return new Error('大模型返回为空（finish_reason=content_filter，内容安全拦截）：核对素材是否含敏感表述')
+  }
+  return new Error(`大模型返回为空（finish_reason=${finishReason || '缺失'}，无法确定性分流）`)
 }
 
 /**

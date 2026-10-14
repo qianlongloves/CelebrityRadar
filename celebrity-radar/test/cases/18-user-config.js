@@ -600,7 +600,8 @@ describe('注销账号 · userInit/deleteAccount（P1-4）', () => {
     'risk_signals',
     'opinion_events',
     'person_assets',
-    'deep_dive_quota'
+    'deep_dive_quota',
+    'scan_logs'
   ]
 
   /** 造一份「本人 + 别人」都有的库：每张归属表两行，才验得出「只删自己的」 */

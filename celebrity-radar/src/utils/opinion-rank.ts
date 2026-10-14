@@ -81,6 +81,11 @@ export interface OpinionRawEntry {
   person?: string
   /** 这条归属于哪个「我监控的词」（alert） */
   keyword?: string
+  /**
+   * 归属名人的稳定键（`名字#领域码`）。只有 feed 来源能可靠给出（`listFollows` 的 `person_key`），
+   * 供「今日要点」里 feed 条目**精准跳转**到对应名人主页（`pages/profile`）用；其余来源没有该字段。
+   */
+  personKey?: string
   /** 风险信号自带类别；其余来源没有 */
   category?: RiskCategory
   /** 风险信号自带级别；其余来源没有 */
@@ -114,6 +119,8 @@ export interface OpinionEntry {
   date: string
   /** 展示用归属：人名或关键词（都缺时为空串） */
   label: string
+  /** 归属名人的稳定键（feed 来源才有；其余为空串）——今日要点精准跳转用 */
+  personKey?: string
   impact: ImpactLevel
   credibility: CredTier
   response: ResponseNeed
@@ -337,6 +344,7 @@ function toEntry(raw: unknown, block: OpinionBlock, keywords: string[], watchNam
   const date = asText(r.date)
   const person = asText(r.person)
   const keyword = asText(r.keyword)
+  const personKey = asText(r.personKey)
   const category = asRiskCategory(r.category)
   const level = normLevel(r.level)
 
@@ -354,6 +362,7 @@ function toEntry(raw: unknown, block: OpinionBlock, keywords: string[], watchNam
     source,
     date,
     label: person || keyword,
+    personKey,
     impact: impactOf(level),
     credibility: credibilityOf([source]),
     response: responseOf(category, level),

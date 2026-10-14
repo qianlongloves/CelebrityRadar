@@ -43,7 +43,7 @@ export function todayPerson(): PersonPick {
 /** 打开报告页（personKey 统一出口）。跳转前按名字归一到「已有报告的那份 key」（Task C，2026-10-12） */
 export async function openPerson(pick: PersonPick): Promise<void> {
   const personKey = await resolvePersonKey(pick.name, pick.domain)
-  Taro.navigateTo({ url: `/pages/report/index?personKey=${encodeURIComponent(personKey)}` })
+  Taro.navigateTo({ url: `/package/report/index?personKey=${encodeURIComponent(personKey)}` })
 }
 
 /** AI 选题的输出契约：只认「是谁」和「哪个领域」，多余字段一律忽略 */

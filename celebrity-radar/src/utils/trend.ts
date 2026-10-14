@@ -15,7 +15,7 @@ import type { Report } from './report'
  * 存量报告都看不到这张卡（除非逼用户再消耗一次生成额度）；端上聚合对新老报告一视同仁。
  *
  * 渲染不引图表库：主包硬限 2MB，词云是 CSS 标签墙、情绪条是 flex 比例条，折线同样用
- * View + transform 自绘（几何换算见 pages/report/index.tsx 的 trendGeometry）。
+ * View + transform 自绘（几何换算见 package/report/index.tsx 的 trendGeometry）。
  */
 
 /** 优先窗口（天）与分桶数：30 天 / 6 桶 = 5 天一格，看得出疏密又不至于全是空桶 */

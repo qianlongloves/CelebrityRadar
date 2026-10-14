@@ -510,7 +510,7 @@ describe('周报材料收集走批量读（collectWeeklyMaterial）', () => {
 /* ==================== 5. 页面级静态约束 ==================== */
 
 describe('关注动态页：批量读 + 重进不闪骨架屏（静态约束）', () => {
-  const src = () => read(path.join(SRC, 'pages', 'feed', 'index.tsx'))
+  const src = () => read(path.join(SRC, 'package', 'feed', 'index.tsx'))
 
   it('走批量入口，且不再出现逐人读的调用', () => {
     const s = src()

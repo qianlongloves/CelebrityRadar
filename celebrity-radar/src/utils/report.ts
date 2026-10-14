@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { NewsItem, heatValue } from './search'
-import { FocusCode } from '@/config/filters'
+import { FOCUS_META, FocusCode } from '@/config/filters'
 import { chatJSON, chatText, ChatJSONResult } from './llm'
 import { setCooldown } from './cooldown'
 import { diagLog } from './cloud-diagnostics'
@@ -274,7 +274,7 @@ const REPORT_FIELDS = {
   analysis: looseStr(),
   /* 点评拆条（本轮）：新提示词只请求它，analysis 由 sanitize 从各条拼出来。
      analysis 仍保留在契约里 —— 降级简版路径（SYSTEM_FALLBACK）产出的就是一整段文字，
-     两条路共用同一个渲染出口（见 pages/report/index.tsx）。 */
+     两条路共用同一个渲染出口（见 package/report/index.tsx）。 */
   analysisPoints: z.array(AnalysisPointSchema).catch([]),
   stance: z.array(StanceSchema).catch([]),
   timeline: z.array(TimelineSchema).catch([]),
@@ -476,7 +476,7 @@ export interface Report {
    * 会员专属段落（O-11）：对比视角 + 风险提示。可选 —— 免费报告没有这个字段。
    *
    * ⚠ 有字段 ≠ 能看：报告是全局共享缓存，会员生成的那一份免费用户也会读到，
-   * 故 UI 必须**同时**判会员态（见 pages/report/index.tsx 的渲染处）。
+   * 故 UI 必须**同时**判会员态（见 package/report/index.tsx 的渲染处）。
    * 与 conflicts 是两个独立可缺的字段（老会员报告只有这一段），UI 要各自判空。
    */
   memberNotes?: { compare: string; risk: string }
@@ -536,7 +536,7 @@ export interface Report {
   /** 言行一致度（批 2）：陈述差异、不裁决对错。可选、不带出处，老报告没有此字段 */
   consistency?: Consistency
   disclaimer: string
-  /** 生成时的关注侧重（发现页「关注」筛选，'all' = 六段完整） */
+  /** 生成时的关注侧重（发现页「关注」筛选，'all' = 完整报告） */
   focus?: FocusCode
   /** 降级标记：结构化生成失败后由纯文本降级产出（§5.4 用例 9），UI 呈现降级提示 */
   degraded?: true
@@ -1051,24 +1051,20 @@ export const OFF_BATCH_FIELDS: string[] = ['analysis']
 const ruleFill = (fields: string[]): string =>
   ruleLines([15])[0].replace(RULE_FIELDS_PLACEHOLDER, fields.join(' / '))
 
-/* ===== 发现页「关注」筛选 → 生成侧重（§2.3 六段中的可聚焦段） ===== */
+/* ===== 发现页「关注」筛选 → 生成侧重（§2.3 中的可聚焦段） ===== */
 
-const FOCUS_LABEL: Record<FocusCode, string> = {
-  all: '综合',
-  dynamics: '近期动态',
-  quotes: '言论观点',
-  timeline: '经历履历'
-}
+/* 关注侧重标签统一取 filters.ts 的 FOCUS_META.label（它与报告模板节 label 同源派生），
+   不再在此另写「言论观点 / 经历履历」等字符串与模板漂移。 */
 
 /** 按侧重调整各段篇幅 */
 const FOCUS_HINT_REALTIME: Record<FocusCode, string> = {
   all: '',
   dynamics:
-    '补充要求（优先满足）：本次用户侧重「近期动态」，dynamics 不少于 3 条且优先最新事件，summary 写足信息量；quotes 仍至少给 1 条 —— 可精简，但不得为空（空段落会让报告页整块卡片消失）。',
+    `补充要求（优先满足）：本次用户侧重「${FOCUS_META.dynamics.label}」，dynamics 不少于 3 条且优先最新事件，summary 写足信息量；quotes 仍至少给 1 条 —— 可精简，但不得为空（空段落会让报告页整块卡片消失）。`,
   quotes:
-    '补充要求（优先满足）：本次用户侧重「言论观点」，quotes 不少于 3 条并写清 context 出处场合与 background 背景；dynamics 仍至少给 3 条且 date 齐全 —— 折线图与情绪走势都以 dynamics 为数据源，少于 3 条这两张卡会整块消失，侧重只该改变篇幅，不该让模块不见了。',
+    `补充要求（优先满足）：本次用户侧重「${FOCUS_META.quotes.label}」，quotes 不少于 3 条并写清 context 出处场合与 background 背景；dynamics 仍至少给 3 条且 date 齐全 —— 折线图与情绪走势都以 dynamics 为数据源，少于 3 条这两张卡会整块消失，侧重只该改变篇幅，不该让模块不见了。`,
   timeline:
-    '补充要求（优先满足）：本次用户侧重「经历履历」，timeline 尽量补全可确认的关键节点，analysisPoints 需串联其成长与职业脉络；dynamics 仍至少给 3 条且 date 齐全（折线图与情绪走势都以它为数据源）。'
+    `补充要求（优先满足）：本次用户侧重「${FOCUS_META.timeline.label}」，timeline 尽量补全可确认的关键节点，analysisPoints 需串联其成长与职业脉络；dynamics 仍至少给 3 条且 date 齐全（折线图与情绪走势都以它为数据源）。`
 }
 
 /**
@@ -1675,7 +1671,7 @@ function buildUserMessage(
     (member ? MAX_USER_CHARS_MEMBER : MAX_USER_CHARS) - (bg ? bg.length + 1 : 0) - sectionOverhead
   const head = [
     `名人：${name}`,
-    `关注侧重：${focus === 'all' ? '综合（六段完整）' : FOCUS_LABEL[focus]}`,
+    `关注侧重：${focus === 'all' ? '综合（完整报告）' : FOCUS_META[focus].label}`,
     '素材（按用途分组）：'
   ]
 

@@ -235,9 +235,9 @@ describe('云函数 opinionCluster：一轮行为', () => {
     deepEq(res.skipped, [])
   })
 
-  it('读库聚类写事件：既有 feed / keywords / risk_signals 各来源都参与，且零上游检索', async () => {
+  it('读库聚类写事件：feed / risk_signals 参与，keywords（私有关键词订阅）不参与，且零上游检索', async () => {
     const fn = loadCluster()
-    /* 三处来源各造一条；同名事件应聚成同一个事件 */
+    /* feed / risk_signals 各造一条；keywords 造一条「与 feed 同名」的私有关注词缓存 */
     env.db.__seed('feed_cache', [
       feedRow('张三#ent', [{ title: '关于X公司起诉事件的声明', source: 'A报', publishedDate: '2026-10-01' }])
     ])
@@ -255,12 +255,13 @@ describe('云函数 opinionCluster：一轮行为', () => {
     const rows = env.db.__dump('opinion_events')
     eq(rows.length, 2)
 
-    const x = rows.find((r) => r.memberCount === 2)
-    ok(!!x, '同名事件应聚成一条（成员 2：feed + keywords 各一）')
-    eq(x.timeline.length, 2, '两条带来源的成员都进时间线')
+    const x = rows.find((r) => r.title.includes('X公司起诉'))
+    ok(!!x, 'X 公司声明事件应存在')
+    eq(x.memberCount, 1, 'keywords 的「塌房」条目不参与：成员只有 feed 1 条（私有关键词隔离）')
+    eq(x.timeline.length, 1, '时间线只有 feed 1 个节点')
     eq(x.timeline[0].source, 'A报', '时间线按时间正序')
     eq(x.event_key, x._id, 'event_key 即主键')
-    ok(x.sources.indexOf('A报') >= 0 && x.sources.indexOf('B报') >= 0)
+    ok(x.sources.indexOf('A报') >= 0 && x.sources.indexOf('B报') < 0, 'B报（私有关键词）不得出现在事件来源里')
   })
 
   it('新报道替换旧报道后，第二轮沿用旧 event_key（键不变、成员合并）', async () => {

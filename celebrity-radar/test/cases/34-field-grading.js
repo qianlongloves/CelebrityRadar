@@ -370,7 +370,7 @@ describe('keywordAlert：写入 keywords.items 时补条目级分级字段', () 
 
 /* ─────────────────────────── 云端：opinionCluster 透传条目级字段 ─────────────────────────── */
 
-describe('opinionCluster：落库事件的影响面吃到 feed / keywords 的条目级字段', () => {
+describe('opinionCluster：落库事件的影响面吃到 feed / risk_signals 的条目级字段', () => {
   it('feed 条目自带 level=high → 落库事件 impact=high；不带字段的条目仍 unknown', async () => {
     const { fn } = loadCloudFn('opinionCluster', [])
     env.db.__seed('feed_cache', [

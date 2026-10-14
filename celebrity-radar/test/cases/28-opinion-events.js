@@ -372,7 +372,7 @@ describe('舆情页：事件时间线视角已接入（静态约束）', () => {
 
   it('事件卡改为整卡跳转事件时间线页（不再内联展开），并保留三块与今日要点', () => {
     ok(page.includes('事件时间线'), '缺事件卡标题')
-    ok(page.includes('/pages/event/index'), '事件卡应跳转到事件时间线页')
+    ok(page.includes('/package/event/index'), '事件卡应跳转到事件时间线页')
     ok(page.includes('Taro.navigateTo'), '跳转用 navigateTo')
     ok(page.includes('eventKey=') && page.includes('encodeURIComponent'), '跳转要带上 encode 过的 eventKey')
     notOk(page.includes('展开时间线') || page.includes('toggleEvent('), '内联展开已移除，改为整卡跳转')

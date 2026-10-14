@@ -131,7 +131,7 @@ describe('概要卡：预览 / 入口 / 总数（页面静态约束）', () => {
     notOk(page.includes('加载更多事件'), '事件卡不得再有页内「加载更多」')
     notOk(page.includes('loadMoreEvents'), '不得保留事件卡的加载更多处理函数')
     notOk(page.includes('eventSlice'), '事件卡不再有「按需增长」的切片')
-    ok(page.includes('eventPreview'), '事件卡应走固定预览（overviewSlice(events, EVENT_OVERVIEW_INITIAL)）')
+    ok(page.includes('eventPreview'), '事件卡应走固定预览（overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)）')
     /* 入口从卡底（「查看全部事件 ›」）改为卡头右上角，与关注动态卡同款：同类名 page-opinion__more */
     ok(
       page.includes("<Text className='page-opinion__more' onClick={goEvents}>"),
@@ -139,7 +139,7 @@ describe('概要卡：预览 / 入口 / 总数（页面静态约束）', () => {
     )
     notOk(page.includes('查看全部事件 ›'), '卡底「查看全部事件 ›」入口应移除')
     ok(
-      page.includes("goEvents = () => void Taro.navigateTo({ url: '/pages/events/index' })"),
+      page.includes("goEvents = () => void Taro.navigateTo({ url: '/package/events/index' })"),
       '入口应跳到新的事件列表页 pages/events'
     )
   })
@@ -160,7 +160,7 @@ describe('事件 / 关注动态 / 关键词预警三卡去掉页内「加载更�
 
   it('三张卡：固定预览（各 3 条），不再有「加载更多」与相关 state / 处理函数', () => {
     /* 三张概要卡各走一次 overviewSlice，shown 均固定为 EVENT_OVERVIEW_INITIAL（不再按需增长） */
-    ok(page.includes('overviewSlice(events, EVENT_OVERVIEW_INITIAL)'), '事件卡固定预览 3 条')
+    ok(page.includes('overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)'), '事件卡固定预览 3 条')
     ok(page.includes('overviewSlice(feed.items, EVENT_OVERVIEW_INITIAL)'), '关注动态卡固定预览 3 条')
     ok(page.includes('overviewSlice(alerts.items, EVENT_OVERVIEW_INITIAL)'), '关键词预警卡固定预览 3 条')
     for (const dead of [
@@ -178,9 +178,9 @@ describe('事件 / 关注动态 / 关键词预警三卡去掉页内「加载更�
   })
 
   it('三卡入口都在卡头：事件 → pages/events；关注动态 → pages/feed；预警 → pages/alerts', () => {
-    ok(page.includes("Taro.navigateTo({ url: '/pages/events/index' })"), '事件卡入口应指向 pages/events')
-    ok(page.includes("Taro.navigateTo({ url: '/pages/feed/index' })"), '关注动态卡应复用既有的 pages/feed 入口')
-    ok(page.includes("Taro.navigateTo({ url: '/pages/alerts/index' })"), '预警卡入口应指向已存在的 pages/alerts')
+    ok(page.includes("Taro.navigateTo({ url: '/package/events/index' })"), '事件卡入口应指向 pages/events')
+    ok(page.includes("Taro.navigateTo({ url: '/package/feed/index' })"), '关注动态卡应复用既有的 pages/feed 入口')
+    ok(page.includes("Taro.navigateTo({ url: '/package/alerts/index' })"), '预警卡入口应指向已存在的 pages/alerts')
     /* 「查看全部 ›」文字入口在卡头出现 4 次（事件 / 关注动态 / 周报 / 预警）——
        三张概要卡入口形态统一（卡头右上角、同类名 page-opinion__more） */
     eq(
@@ -197,7 +197,7 @@ describe('事件 / 关注动态 / 关键词预警三卡去掉页内「加载更�
       '预警卡卡头入口应与事件卡 / 关注动态卡**同款**（同类名 + 同「查看全部 ›」文案）'
     )
     ok(
-      page.includes("goAlerts = () => void Taro.navigateTo({ url: '/pages/alerts/index' })"),
+      page.includes("goAlerts = () => void Taro.navigateTo({ url: '/package/alerts/index' })"),
       '预警卡入口应跳已存在的预警完整页 pages/alerts'
     )
     for (const dead of [

@@ -13,7 +13,7 @@
  *
  * ## 零上游成本（本函数**不联网**）
  *
- * 本函数**只读库**（feed_cache / keywords / risk_signals 这三处「已存在的舆情条目」）后聚类，
+ * 本函数**只读库**（feed_cache / risk_signals 这两处「已存在的舆情条目」）后聚类，
  * **不新增任何上游检索调用（不调博查、不调模型）**。故 require 里**没有 https**，也没有任何 key。
  * 这与 keywordAlert / riskWatch 有本质区别：它们是「花钱去查」，本函数是「把已经查到的归拢」。
  *
@@ -54,8 +54,8 @@ const db = cloud.database()
 /* ─────────────────────────── 上限预算 ─────────────────────────── */
 
 /**
- * 单轮最多读入多少条存量条目。理由：feed_cache 每人约 10 条、keywords 每词约 20 条、
- * risk_signals 每人至多几十条，全库叠加可能上千；聚类是 O(组数 × 成员数) 的字符串比较，
+ * 单轮最多读入多少条存量条目。理由：feed_cache 每人约 10 条、risk_signals 每人至多几十条，
+ * 全库叠加可能上千；聚类是 O(组数 × 成员数) 的字符串比较，
  * 不限量会让一轮的内存与耗时随数据线性膨胀（云函数 60s 上限）。取 400 是「够覆盖活跃数据、
  * 又稳稳跑得完」的折中：超出的按发布时间**由近及远**截断（最近的最该被聚成事件）。
  */
@@ -72,7 +72,17 @@ const MAX_TIMELINE = 30
 const PAGE_SIZE = 100
 const MAX_ROWS = 5000
 
-const SOURCE_TABLES = { feed: 'feed_cache', keyword: 'keywords', signal: 'risk_signals' }
+/*
+ * 只聚类「公众人物的公开舆情」两处存量：
+ *   · feed_cache —— 关注的人（公众人物）动态；
+ *   · risk_signals —— 监控的人（公众人物）风险信号。
+ * ⚠ 刻意**不含 keywords**：关键词监控是**用户私有关注**（keyword_watches 主键 = openid#关键词，
+ *   任意词都可能很私人）。若把 keywords 聚进全站共享的 opinion_events，A 用户私有关注的
+ *   关键词（如某个人名 / 公司 / 项目名）会变成所有用户都看到的事件 —— 数据隔离被打破。
+ *   关键词事件的聚合 / 时间线只走端上本端回落（src/utils/opinion-events.ts 用当前用户自己的
+ *   keywords 现算），不落全站库。
+ */
+const SOURCE_TABLES = { feed: 'feed_cache', signal: 'risk_signals' }
 const OUT_TABLE = 'opinion_events'
 
 /* ═════════════ 判据（**与端上 opinion-rank / opinion-events 同源，改动须两处同步**）═════════════ */
@@ -303,11 +313,11 @@ function pushEntry(out, e) {
 }
 
 /**
- * 读库收集存量条目。三处各司其职：
+ * 读库收集存量条目。两处各司其职：
  *   · feed_cache —— 关注动态（每条 = 一个人的动态一条）；
- *   · keywords   —— 关键词预警缓存（每条 = 一个词的检索结果一条）；
  *   · risk_signals —— 名人风险信号流水（带 category/level，是影响面/需回应的唯一依据）。
- * 三者都被上游过滤过（报告生成拒答 + contentCheck + 端上 sensitive），本函数只归拢、不新增。
+ * 两者都被上游过滤过（报告生成拒答 + contentCheck + 端上 sensitive），本函数只归拢、不新增。
+ * ⚠ 不含 keywords（私有关键词订阅），理由见 SOURCE_TABLES 上方注释。
  */
 async function collectSources() {
   const out = []
@@ -325,24 +335,6 @@ async function collectSources() {
         /* 条目级分级字段（P4-B，可能没有）：feed_cache 写入前已由云端写口
            （aiProxy/report-store.js#storeSaveFeed）用风险词典补齐，有则透传给 deriveEvent
            （影响面 / 需回应据此计算），没有则维持「未评级 / 未知」。 */
-        category: asRiskCategory(it && it.category),
-        level: normLevel(it && it.level)
-      })
-    }
-  }
-
-  for (const row of await listAll(SOURCE_TABLES.keyword)) {
-    const label = asText(row && row.keyword)
-    for (const it of Array.isArray(row && row.items) ? row.items : []) {
-      pushEntry(out, {
-        block: 'alert',
-        title: String((it && it.title) || ''),
-        summary: asText(it && it.summary),
-        source: asText(it && it.source),
-        date: asText(it && it.published_date),
-        label,
-        /* 条目级分级字段（P4-B，可能没有）：keywords.items 写入前已由 keywordAlert 用风险词典补齐
-           （与 riskWatch / risk.ts 同源），有则透传，没有则维持「未评级 / 未知」。 */
         category: asRiskCategory(it && it.category),
         level: normLevel(it && it.level)
       })

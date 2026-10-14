@@ -53,20 +53,20 @@ function eventRow(over = {}) {
 
 describe('事件时间线页：已注册且不是 tab 页（静态约束）', () => {
   const appConfig = read('app.config.ts')
-  const page = read('pages/event/index.tsx')
-  const config = read('pages/event/index.config.ts')
-  const scss = read('pages/event/index.scss')
+  const page = read('package/event/index.tsx')
+  const config = read('package/event/index.config.ts')
+  const scss = read('package/event/index.scss')
 
-  it('app.config 的 pages 注册了 pages/event/index', () => {
-    const pages = appConfig.slice(appConfig.indexOf('pages: ['), appConfig.indexOf(']', appConfig.indexOf('pages: [')))
-    ok(pages.includes("'pages/event/index'"), 'pages/event/index 必须注册，否则跳转打不开')
+  it('app.config 的 subpackages 注册了 package/event/index', () => {
+    const sub = appConfig.slice(appConfig.indexOf('subpackages: ['))
+    ok(sub.includes("'event/index'"), 'event/index 必须注册进 package 分包，否则跳转打不开')
   })
 
   it('不是 tab 页：tabBar.list 里没有它，页面用 .safe-bottom 而非 .safe-tab', () => {
     const tab = appConfig.slice(appConfig.indexOf('tabBar:'))
     const start = tab.indexOf('list: [')
     const tabBarList = tab.slice(start, tab.indexOf(']', start))
-    notOk(tabBarList.includes('pages/event/index'), '事件时间线页不是 tab，不应进 tabBar.list')
+    notOk(tabBarList.includes('package/event/index'), '事件时间线页不是 tab，不应进 tabBar.list')
 
     ok(page.includes('safe-bottom'), '非 tab 页底部预留用 .safe-bottom')
     notOk(page.includes('safe-tab'), '非 tab 页不得用 .safe-tab（那是给悬浮底栏留空间的）')
@@ -99,8 +99,8 @@ describe('事件时间线页：已注册且不是 tab 页（静态约束）', ()
 describe('舆情页：事件卡跳转事件时间线页（静态约束）', () => {
   const page = read('pages/opinion/index.tsx')
 
-  it('整卡跳转 /pages/event/index，带 encode 过的 eventKey；不再内联展开', () => {
-    ok(page.includes('/pages/event/index'), '事件卡应跳转到事件时间线页')
+  it('整卡跳转 /package/event/index，带 encode 过的 eventKey；不再内联展开', () => {
+    ok(page.includes('/package/event/index'), '事件卡应跳转到事件时间线页')
     ok(page.includes('Taro.navigateTo'), '跳转用 navigateTo')
     ok(page.includes('eventKey=${encodeURIComponent(ev.key)}'), 'eventKey 必须 encode 后带上')
     notOk(page.includes('展开时间线') || page.includes('toggleEvent('), '内联展开已移除')
@@ -194,10 +194,10 @@ describe('时间线分层：免费限 5 条、会员不受限（复用同一套�
   })
 
   it('页面复用 sliceDetail + moreDetailNote + 跳会员页，不新写门槛', () => {
-    const page = read('pages/event/index.tsx')
+    const page = read('package/event/index.tsx')
     ok(page.includes('sliceDetail('), '免费限 5 要走 sliceDetail')
     ok(page.includes('moreDetailNote('), '截断提示复用 moreDetailNote')
-    ok(page.includes('/pages/member/index'), '提示行应能跳会员页')
+    ok(page.includes('/package/member/index'), '提示行应能跳会员页')
     ok(page.includes('pageSlice('), '分页走 pageSlice')
     ok(page.includes('usePullDownRefresh(') && page.includes('useReachBottom('), '下拉刷新 + 触底加载更多')
   })
@@ -225,7 +225,7 @@ describe('事件时间线页：参数缺失 / 非法的空态分支', () => {
   })
 
   it('页面用 isValidEventKey 兜住路由参数，非法即空态且不读库', () => {
-    const page = read('pages/event/index.tsx')
+    const page = read('package/event/index.tsx')
     ok(page.includes('isValidEventKey('), '参数门禁走 isValidEventKey')
     ok(page.includes("status: 'invalid'") || page.includes("'invalid'"), '缺「参数非法」空态分支')
     ok(page.includes('page-event__empty'), '空态要有明确落点样式')
@@ -294,7 +294,7 @@ describe('事件时间线：每条带来源与来源性质（合规）', () => {
   })
 
   it('页面渲染来源与来源性质，并保留「聚合 ≠ 认定」的克制说明', () => {
-    const page = read('pages/event/index.tsx')
+    const page = read('package/event/index.tsx')
     ok(page.includes('SOURCE_NATURE_LABEL'), '时间线每条要标注来源性质')
     ok(page.includes('t.source') && page.includes('t.nature'), '时间线要分别渲染来源与来源性质')
     ok(/不代表平台已核实/.test(page), '要有「聚合不等于认定」的轻量说明')
@@ -305,7 +305,7 @@ describe('事件时间线：每条带来源与来源性质（合规）', () => {
 /* ───────────────────────── 8. 打开不再自动标已读（2026-10-13 口径变更） ───────────────────────── */
 
 describe('事件时间线页：打开不再自动标已读，显式标记仍可用', () => {
-  const page = read('pages/event/index.tsx')
+  const page = read('package/event/index.tsx')
 
   it('打开页面（load）不再自动标记已读：定位成功后不写 reads', () => {
     /* 删除「定位到就标记」的自动分支，避免误清未读 / 替用户下判断 */

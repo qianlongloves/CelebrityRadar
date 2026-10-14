@@ -168,9 +168,9 @@ describe('关注人数上限已移除（端上门禁 / 提示 / 真源一并清�
   const oa = read('utils/opinion-access.ts')
   const follows = read('utils/follows.ts')
   const benefits = read('config/benefits.ts')
-  const following = read('pages/following/index.tsx')
-  const followingScss = read('pages/following/index.scss')
-  const member = read('pages/member/index.tsx')
+  const following = read('package/following/index.tsx')
+  const followingScss = read('package/following/index.scss')
+  const member = read('package/member/index.tsx')
 
   it('取用层不再导出关注门禁；真源不再有 followCount', () => {
     notOk(/followGate|followLimit|canAddFollow\b/.test(oa), 'opinion-access 不得再有关注门禁')
@@ -208,8 +208,8 @@ describe('关注人数上限已移除（端上门禁 / 提示 / 真源一并清�
 /* ───────────────────── 3. 隐私 / 免责：合并为一份连续文档 ───────────────────── */
 
 describe('隐私 / 免责页合并为一份连续文档（大纲式版式）', () => {
-  const tsx = read('pages/agreement/index.tsx')
-  const scss = read('pages/agreement/index.scss')
+  const tsx = read('package/agreement/index.tsx')
+  const scss = read('package/agreement/index.scss')
 
   it('只有一份文档：不再有两个并列的 LegalDoc / 版块容器', () => {
     ok((tsx.match(/className='page-agreement__doc'/g) || []).length === 1, '整页应只有一份文档容器')

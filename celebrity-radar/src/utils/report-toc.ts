@@ -17,7 +17,7 @@ import type { Report } from './report'
  * 这与 utils/member.ts#presentSections 是同一条理由：「哪些段落算专享」那种口径一旦散进页面，
  * 就会失控。放在这里还有一个直接好处：**可以被测试钉住**（见 test/cases/01-pure.js）。
  *
- * ⚠ 仍然要记住：条件与 pages/report/index.tsx 里卡片的外层条件是**平行**的两处。
+ * ⚠ 仍然要记住：条件与 package/report/index.tsx 里卡片的外层条件是**平行**的两处。
  *   改任何一张卡的渲染条件，必须同步改这里，并跑 `报告目录 utils/report-toc` 那组用例。
  *   两边都有注释互相指路，别只改一处。
  *
@@ -175,13 +175,18 @@ export interface ReportTemplateSection {
   group: TocGroupKey
   /** 这一节在**给定报告**上会不会出现（与 pages/report 卡片的外层条件平行） */
   visible: (report: Report, opts: TocOptions) => boolean
+  /**
+   * 一句话说明（**可选**，只给「可聚焦节」写）：供 config/filters.ts 的「关注」筛选
+   * 说明文案取数 —— 让筛选说明与模板同源，而不是在 filters 里再抄一份（改节 / 改名会漂移）。
+   */
+  desc?: string
 }
 
 /** 「不是降级简版」—— 大多数节的共同门槛（降级简版整份只剩警示条） */
 const ready = (report: Report) => !report.degraded
 
 /**
- * 报告模板（顺序 = pages/report/index.tsx 里卡片的渲染顺序）。
+ * 报告模板（顺序 = package/report/index.tsx 里卡片的渲染顺序）。
  *
  * 分档口径（2026-10-12 调整；改档位要同时跑报告页、会员页与 01-pure 的用例）：
  *   · **免费档给「事实与主线判断」** —— 人物速览 / 简介 / AI 解读 / 人物档案 / 关系图谱 /
@@ -223,8 +228,8 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
      与「商业速览」同属商业面，故同组紧邻；字段在免费批次（identity）生成，此处只对会员出卡。 */
   { id: 'sec-endorsement', label: '商业合作', tier: 'member', group: 'identity', visible: (r) => !!r.endorsements },
   /* ── 事实：素材原样统计出来的那两段（不掺模型判断），是下面「判断」的取材处 */
-  { id: 'sec-dynamics', label: '近期动态', tier: 'free', group: 'facts', visible: ready },
-  { id: 'sec-quotes', label: '经典名言', tier: 'free', group: 'facts', visible: ready },
+  { id: 'sec-dynamics', label: '近期动态', tier: 'free', group: 'facts', visible: ready, desc: '近期新闻、公开活动与事件' },
+  { id: 'sec-quotes', label: '经典名言', tier: 'free', group: 'facts', visible: ready, desc: '公开表达、观点与金句' },
   /*
    * ── 判断与风险：AI 点评 / 争议 / 风险雷达 + 会员专享（它本身就是「对比视角 / 风险提示 /
    * 信源分歧」三条判断，位置紧接风险雷达，构成连续的 judgement 段）。
@@ -263,7 +268,7 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
    */
   { id: 'sec-stance', label: '立场与舆情', tier: 'member', group: 'judgement', visible: ready },
   /* ── 细节与延伸：时间轴、看不懂的词 */
-  { id: 'sec-timeline', label: '时间线', tier: 'free', group: 'detail', visible: ready },
+  { id: 'sec-timeline', label: '时间线', tier: 'free', group: 'detail', visible: ready, desc: '关键节点与成长脉络' },
   /* 名词解释（2026-10-12 移入会员档）：纯阅读辅助；数据仍在免费批次生成 */
   { id: 'sec-glossary', label: '名词解释', tier: 'member', group: 'detail', visible: (r) => !!r.glossary }
 ]

@@ -308,7 +308,7 @@ describe('舆情分层：明细切片（供时间线页）与今日要点、概�
     notOk(page.includes('loadMoreAlerts'), '预警卡不该再保留按需加载处理函数')
     notOk(page.includes('alertShownCount'), '预警卡不该再保留按需加载 state')
     notOk(page.includes('moreDetailNote('), '概要卡不再用「会员可见全部 N 条」明细提示')
-    notOk(page.includes('/pages/member/index'), '概要不分档 → 本页不再有跳会员页的升级提示行')
+    notOk(page.includes('/package/member/index'), '概要不分档 → 本页不再有跳会员页的升级提示行')
   })
 
   it('明细切片 sliceDetail 仍是「免费 5 条 / 会员全部」，而今日要点照常给 3 条（留存钩子不被切）', () => {

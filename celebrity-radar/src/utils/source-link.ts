@@ -47,5 +47,5 @@ export function openSourceLink(item: SourceLink): void {
     .filter(([, v]) => v !== '')
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
     .join('&')
-  void Taro.navigateTo({ url: `/pages/link-preview/index?${query}` })
+  void Taro.navigateTo({ url: `/package/link-preview/index?${query}` })
 }

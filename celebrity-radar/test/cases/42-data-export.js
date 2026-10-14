@@ -155,6 +155,9 @@ describe('42 个人信息副本导出（PIPL 第 45 条）', () => {
     eq(parsed.watches.length, 2)
     eq(exp.countBundleItems(parsed), 6)
     ok(res.message.includes('6 条'), `话术里应带上条目数，实际：${res.message}`)
+    /* 说明头随副本一起落盘：用户粘贴到备忘录也能看懂这是什么、依据什么、如何行使权利 */
+    ok(parsed.meta && typeof parsed.meta.title === 'string' && parsed.meta.title.includes('个人数据副本'), '副本应带中文说明头')
+    ok(parsed.meta.basis.includes('第 45 条'), '说明头应写明 PIPL 依据')
   })
 
   it('复制失败（平台拒绝）：如实返回失败与原因，不谎报成功', async () => {
@@ -171,6 +174,23 @@ describe('42 个人信息副本导出（PIPL 第 45 条）', () => {
     ok(res.message.includes('clipboard denied'), `应把原始原因带回给用户，实际：${res.message}`)
   })
 
+  it('复制失败（隐私未授权）：换成能照着做的指引，而不是甩平台原始英文', async () => {
+    const load = withUser()
+    seedMixed()
+    const exp = load('utils/data-export')
+
+    /* 微信隐私校验开启而后台指引未配时，reject 的是普通对象（带 errMsg），不是 Error */
+    env.setTaroOverride('setClipboardData', () => {
+      const e = { errMsg: 'setClipboardData:fail api scope is not declared in the privacy agreement' }
+      throw e
+    })
+    const res = await exp.exportMyDataToClipboard()
+
+    eq(res.ok, false)
+    ok(res.message.includes('用户隐私保护指引'), `应换成可操作的指引，实际：${res.message}`)
+    ok(res.message.includes('剪贴板'), `应点明是剪贴板，实际：${res.message}`)
+  })
+
   it('只读：导出过程不发任何写请求', async () => {
     const load = withUser()
     seedMixed()
@@ -185,7 +205,7 @@ describe('42 个人信息副本导出（PIPL 第 45 条）', () => {
   it('入口接在页面上：菜单项 + 处理函数（静态读源码）', () => {
     const tsx = read('pages/mine/index.tsx')
 
-    ok(tsx.includes("title: '导出我的数据'"), '「我的」页应有导出入口')
+    ok(tsx.includes("title: '导出个人数据'"), '「我的」页应有导出入口')
     ok(tsx.includes('onTap: () => void exportMyData()'), '菜单项应指向 exportMyData')
     ok(tsx.includes('const exportMyData = async () => {'), 'exportMyData 应是个处理函数（不是裸名字引用）')
     ok(tsx.includes('exportMyDataToClipboard'), '处理函数应调用 utils/data-export 的导出口')
@@ -194,11 +214,11 @@ describe('42 个人信息副本导出（PIPL 第 45 条）', () => {
 
   it('未登录时菜单项给出「登录后可用」而不是静默失败', () => {
     const tsx = read('pages/mine/index.tsx')
-    ok(tsx.includes("note: userId ? '复制为 JSON 到剪贴板' : '登录后可用'"))
+    ok(tsx.includes("note: userId ? '复制 JSON 副本到剪贴板' : '登录后可用'"))
   })
 
   it('政策「查阅与复制」条款必须写明复制权的行使入口（文案承诺 = 实际功能）', () => {
-    const policy = read('pages/agreement/index.tsx')
-    ok(policy.includes('导出我的数据'), '政策里承诺的权利，入口名必须与实际菜单一致')
+    const policy = read('package/agreement/index.tsx')
+    ok(policy.includes('导出个人数据'), '政策里承诺的权利，入口名必须与实际菜单一致')
   })
 })

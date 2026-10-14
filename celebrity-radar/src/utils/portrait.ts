@@ -1,7 +1,7 @@
 import Taro from '@tarojs/taro'
 import { table } from './db'
 import { callCloudFunction } from './cloud'
-import { parsePersonKey } from '@/config/domains'
+import { parsePersonKey, domainLabel } from '@/config/domains'
 import { diagLog } from './cloud-diagnostics'
 
 /**
@@ -189,7 +189,17 @@ export async function ensurePortrait(personKey: string, name: string): Promise<s
 
   const task = (async (): Promise<string> => {
     try {
-      const res = await callCloudFunction('aiProxy', { action: 'portrait', personKey, name })
+      /* 把领域中文标签一并给云端：同名不同人（张三#文娱 vs 张三#科技）若只按名字查图，
+         会拿到同一批图、选出同一张 —— 带上领域，两个同名者各查到各行业的照片。 */
+      const domain = parsePersonKey(personKey)?.domain || ''
+      const domainZh = domain ? domainLabel(domain) : ''
+      const domainQuery = domainZh && domainZh !== '其他' ? domainZh : ''
+      const res = await callCloudFunction('aiProxy', {
+        action: 'portrait',
+        personKey,
+        name,
+        domain: domainQuery
+      })
       const r = res as { ok?: boolean; fileId?: string } | null
       if (r && r.ok === true && typeof r.fileId === 'string' && r.fileId) {
         remember(personKey, r.fileId)

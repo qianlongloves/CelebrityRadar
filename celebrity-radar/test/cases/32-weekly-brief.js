@@ -249,7 +249,7 @@ describe('周报简报：导出 / 分享是会员权益（门禁取自真源）'
   })
 
   it('门禁不在页面里写死：页面走 canExportWeeklyBrief + readMemberState', () => {
-    const page = read('pages/weekly/index.tsx')
+    const page = read('package/weekly/index.tsx')
     ok(page.includes('canExportWeeklyBrief('), '导出入口应按门禁函数判定，不页面内写死 isMember')
     ok(page.includes('readMemberState('), '身份取自既有会员判定入口')
     ok(page.includes("from '@/utils/weekly-brief'"), '门禁与内容组装同源（weekly-brief）')
@@ -264,8 +264,8 @@ describe('周报简报：导出 / 分享是会员权益（门禁取自真源）'
 /* ───────────────────────── 5. 页面接入（静态约束） ───────────────────────── */
 
 describe('周报页：导出入口 / 非弹窗引导 / 弹层（静态约束）', () => {
-  const page = read('pages/weekly/index.tsx')
-  const scss = read('pages/weekly/index.scss')
+  const page = read('package/weekly/index.tsx')
+  const scss = read('package/weekly/index.scss')
 
   it('导出入口对所有用户可见，点击才分层', () => {
     ok(page.includes('导出分享图'), '缺导出入口')
@@ -276,7 +276,7 @@ describe('周报页：导出入口 / 非弹窗引导 / 弹层（静态约束）'
   it('免费引导是**非弹窗**：就地一行 + 跳会员页，不用 showModal', () => {
     ok(page.includes('page-weekly__export-guide'), '缺引导行样式钩子')
     ok(page.includes('weeklyExportNote('), '引导文案取自 utils/weekly-brief（不页面内写死）')
-    ok(page.includes("'/pages/member/index'"), '引导行点了要能进会员页')
+    ok(page.includes("'/package/member/index'"), '引导行点了要能进会员页')
     ok(scss.includes('&__export-guide'), '引导行样式缺失')
     /* 导出入口附近不得出现 showModal（分层必须是「非弹窗」的） */
     const at = page.indexOf('const onExport')

@@ -45,9 +45,9 @@ describe('底部菜单：四格文案与路由（静态约束）', () => {
     }
   })
 
-  it('收藏不再是 tab：tabBar.list 里没有 pages/collection/index', () => {
+  it('收藏不再是 tab：tabBar.list 里没有 package/collection/index', () => {
     notOk(
-      tabBarList.includes('pages/collection/index'),
+      tabBarList.includes('package/collection/index'),
       '收藏已并入「我的」，不能再挂在底部菜单上'
     )
   })
@@ -64,7 +64,7 @@ describe('底部菜单：四格文案与路由（静态约束）', () => {
     for (const label of ["label: '发现'", "label: '提问'", "label: '舆情'", "label: '我的'"]) {
       ok(tabbarTsx.includes(label), `TABS 缺文案 ${label}`)
     }
-    notOk(tabbarTsx.includes('/pages/collection/index'), 'TABS 里不能残留收藏')
+    notOk(tabbarTsx.includes('/package/collection/index'), 'TABS 里不能残留收藏')
     /* 新增槽位用 eye 眼睛图标（盯舆情）；SCSS 里必须有对应造型，否则是空白图标 */
     ok(tabbarTsx.includes("label: '舆情', icon: 'eye'"), '「舆情」应配 eye 图标')
   })
@@ -183,14 +183,14 @@ describe('舆情页：三块内容与页面骨架（静态约束）', () => {
     }
   })
 
-  it('三块内容齐备：关注动态 / 本周周报 / 关键词预警', () => {
+  it('三块内容齐备：关注动态 / 本周周报 / 监控', () => {
     ok(page.includes('📡 关注动态'), '缺「关注动态」块')
     ok(page.includes('📰 本周周报'), '缺「本周周报」块')
-    ok(page.includes('📣 关键词预警'), '缺「关键词预警」块')
+    ok(page.includes('🔔 监控'), '缺「监控」块')
   })
 
   it('每块都能进完整页：feed / weekly / alerts', () => {
-    for (const url of ['/pages/feed/index', '/pages/weekly/index', '/pages/alerts/index']) {
+    for (const url of ['/package/feed/index', '/package/weekly/index', '/package/alerts/index']) {
       ok(page.includes(url), `舆情页缺少进入 ${url} 的入口`)
     }
     ok(page.includes('查看全部'), '每块要有「查看全部」入口')

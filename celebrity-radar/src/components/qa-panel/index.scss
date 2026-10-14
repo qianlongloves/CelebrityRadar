@@ -41,7 +41,7 @@ $qa-icon-pdf-off: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy5
     align-items: baseline;
     gap: 10rpx;
     /* 单份：名字与「报告 ›」必须同一行 —— 长名字若换行会把「报告 ›」甩到第二行，那才是难看的地方。
-       故默认不换行，靠 __name 收缩省略（与报告页 __title 同一手法，见 pages/report/index.scss）。 */
+       故默认不换行，靠 __name 收缩省略（与报告页 __title 同一手法，见 package/report/index.scss）。 */
     flex-wrap: nowrap;
 
     /* 对比模式标题是「A × B」两个名字，允许换行而不是把卡片撑破 */

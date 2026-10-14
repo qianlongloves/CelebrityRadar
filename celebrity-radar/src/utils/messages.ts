@@ -295,7 +295,7 @@ export async function loadMessages(opts: { force?: boolean } = {}): Promise<Mess
         title: `${f.name} 有新动态`,
         desc: describeWatch(w),
         at,
-        url: `/pages/report/index?personKey=${encodeURIComponent(f.person_key)}`,
+        url: `/package/report/index?personKey=${encodeURIComponent(f.person_key)}`,
         unread: isUnread(id, at)
       })
     }
@@ -315,7 +315,7 @@ export async function loadMessages(opts: { force?: boolean } = {}): Promise<Mess
         title: '本周周报已生成',
         desc: `${weekly.personCount} 位名人 · ${weekly.entryCount} 条动态，点开查看`,
         at: weekly.generatedAt,
-        url: '/pages/weekly/index',
+        url: '/package/weekly/index',
         unread: isUnread(id, weekly.generatedAt)
       })
     } else {
@@ -326,7 +326,7 @@ export async function loadMessages(opts: { force?: boolean } = {}): Promise<Mess
         title: '本周周报还没生成',
         desc: `已关注 ${follows.length} 位名人，可汇总最近 7 天的动态`,
         at: pendingAt,
-        url: '/pages/weekly/index',
+        url: '/package/weekly/index',
         unread: isUnread(id, pendingAt)
       })
     }

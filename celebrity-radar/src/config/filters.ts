@@ -1,5 +1,5 @@
 import { DOMAIN_CODES, DOMAIN_META, DomainCode } from './domains'
-import { REPORT_TEMPLATE } from '../utils/report-toc'
+import { REPORT_TEMPLATE, TEMPLATE_SIZE } from '../utils/report-toc'
 
 /**
  * 发现页搜索筛选条件（§2.1 M1 搜索入口）。
@@ -7,7 +7,7 @@ import { REPORT_TEMPLATE } from '../utils/report-toc'
  * 2) 关注：报告生成的侧重段落（§2.3 六段中的可聚焦段）。
  */
 
-/** 关注方向码（'all' = 综合，六段完整输出） */
+/** 关注方向码（'all' = 综合，完整报告输出） */
 export type FocusCode = 'all' | 'dynamics' | 'quotes' | 'timeline'
 
 /**
@@ -33,6 +33,11 @@ function sectionLabel(id: string): string {
   return REPORT_TEMPLATE.find((s) => s.id === id)?.label ?? ''
 }
 
+/** 取模板里某节的 desc（同源派生，见 report-toc.ts#ReportTemplateSection.desc）。 */
+function sectionDesc(id: string): string {
+  return REPORT_TEMPLATE.find((s) => s.id === id)?.desc ?? ''
+}
+
 /** focus 码在模板里的先后位置（绑定的节缺失时返回 -1，同样由那条一致性用例拦截） */
 const templateIndex = (code: Exclude<FocusCode, 'all'>): number =>
   REPORT_TEMPLATE.findIndex((s) => s.id === FOCUS_SECTION_ID[code])
@@ -45,11 +50,12 @@ const FOCUS_DIRECTIONS = (Object.keys(FOCUS_SECTION_ID) as Array<Exclude<FocusCo
 export const FOCUS_CODES: FocusCode[] = ['all', ...FOCUS_DIRECTIONS]
 
 export const FOCUS_META: Record<FocusCode, { label: string; short: string; desc: string }> = {
-  all: { label: '综合', short: '综合', desc: '简介 · 动态 · 言论 · 履历 六段完整' },
-  /* label 取自模板对应节的 label（同源）；short / desc 是「关注筛选」自己的短标签与说明，仍在此维护 */
-  dynamics: { label: sectionLabel(FOCUS_SECTION_ID.dynamics), short: '动态', desc: '近期新闻、公开活动与事件' },
-  quotes: { label: sectionLabel(FOCUS_SECTION_ID.quotes), short: '言论', desc: '公开表达、观点与金句' },
-  timeline: { label: sectionLabel(FOCUS_SECTION_ID.timeline), short: '履历', desc: '关键节点与成长脉络' }
+  /* 'all' 不绑定单节，节数从模板名义值 TEMPLATE_SIZE 派生（不再硬编码「六段」旧文案） */
+  all: { label: '综合', short: '综合', desc: `完整报告 · 共 ${TEMPLATE_SIZE} 节` },
+  /* label / desc 均取自模板对应节（同源）；short 是「关注筛选」自己的短标签，仍在此维护 */
+  dynamics: { label: sectionLabel(FOCUS_SECTION_ID.dynamics), short: '动态', desc: sectionDesc(FOCUS_SECTION_ID.dynamics) },
+  quotes: { label: sectionLabel(FOCUS_SECTION_ID.quotes), short: '言论', desc: sectionDesc(FOCUS_SECTION_ID.quotes) },
+  timeline: { label: sectionLabel(FOCUS_SECTION_ID.timeline), short: '履历', desc: sectionDesc(FOCUS_SECTION_ID.timeline) }
 }
 
 export function isFocusCode(v: string): v is FocusCode {
@@ -68,7 +74,7 @@ export function domainFilterLabel(code: DomainFilterCode): string {
 /** 条件摘要文案，如「科技 · 侧重动态」 */
 export function summarizeFilters(domain: DomainFilterCode, focus: FocusCode): string {
   const d = domain === 'all' ? '全部行业' : DOMAIN_META[domain].label
-  return `${d} · ${focus === 'all' ? '六段完整' : `侧重${FOCUS_META[focus].short}`}`
+  return `${d} · ${focus === 'all' ? '完整报告' : `侧重${FOCUS_META[focus].short}`}`
 }
 
 /**

@@ -654,11 +654,11 @@ function fakeHttps(responses) {
   /*
    * 云开发 AI 通道（2026-10-11 起大模型不再走 https，改走 wx-server-sdk 的 cloud.ai）：
    * 与假 https **共用同一个响应队列**（顺序 = 真实调用顺序），请求体记进 calls[].body。
-   * hotBoardRefresh 的定时生成用 generateText（cron 不需要 finish_reason），故只实现它。
+   * hotBoardRefresh 的定时生成用 streamText（cron 也要按 finish_reason 分流空正文），故实现它。
    */
   const ai = () => ({
     createModel: () => ({
-      async generateText(payload) {
+      async streamText(payload) {
         calls.push({ path: 'cloud.ai', body: payload })
         const r = responses.length ? responses.shift() : { status: 200, data: {} }
         let body = r.data
@@ -683,7 +683,16 @@ function fakeHttps(responses) {
         }
         const choice = (body.choices && body.choices[0]) || {}
         const message = choice.message || {}
-        return { text: typeof message.content === 'string' ? message.content : '', usage: { total_tokens: 1 } }
+        const content = typeof message.content === 'string' ? message.content : ''
+        const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : 'stop'
+        return {
+          textStream: (async function* () {
+            if (content) yield content
+          })(),
+          dataStream: (async function* () {
+            yield { choices: [{ delta: { content }, finish_reason: finishReason }], usage: { total_tokens: 1 } }
+          })()
+        }
       }
     })
   })

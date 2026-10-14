@@ -507,7 +507,7 @@ describe('消息中心：逐条已读（本机，id + 事件时间）', () => {
 /* ============================ 3. 页面静态约束 ============================ */
 
 describe('消息中心页面：删除入口与角色分流（静态约束）', () => {
-  const page = read(path.join(SRC, 'pages', 'messages', 'index.tsx'))
+  const page = read(path.join(SRC, 'package', 'messages', 'index.tsx'))
 
   it('从 utils/messages 引入 deleteMessage，并落成卡片底部的删除入口', () => {
     ok(/import\s*\{[\s\S]*?deleteMessage[\s\S]*?\}\s*from\s*'@\/utils\/messages'/.test(page))
