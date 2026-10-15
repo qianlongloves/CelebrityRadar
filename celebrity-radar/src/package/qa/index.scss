@@ -7,4 +7,27 @@
   flex-direction: column;
   height: 100vh;
   box-sizing: border-box;
+
+  /* 缺报告态的外层：撑满剩余高度，让 EmptyState 与它的次出口落在同一屏 */
+  &__missing {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 「不等报告，先直接问」（2026-10-15）：主按钮仍是「去生成报告」（有报告更准），
+     这条只是把「没有报告」从死路改成另一条可选的路 —— 所以做成次级文字链接，
+     不与主按钮争视线，但要让人一眼看见它存在。
+     负上边距是刻意拉近与 EmptyState 的距离：不拉近，它会看起来像页脚，而不是同一屏里的第二个选择。 */
+  &__alt {
+    margin: -32rpx 32rpx 0;
+    padding: 24rpx;
+    text-align: center;
+    font-size: 26rpx;
+    color: $brand;
+  }
+
+  &__alt--tap {
+    opacity: 0.6;
+  }
 }

@@ -13,6 +13,7 @@ import { readMemberState } from '@/utils/member'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { track } from '@/utils/events'
+import { toUserMessage } from '@/utils/error'
 import PersonCard, { PersonInfo } from '@/components/person-card'
 import PersonAvatar from '@/components/person-avatar'
 import QaPanel from '@/components/qa-panel'
@@ -272,7 +273,7 @@ export default function Compare() {
     track('search', { name, from: 'compare' })
     const res = await disambiguate(name)
     if (!res.ok) {
-      setSearch({ phase: 'error', message: res.error })
+      setSearch({ phase: 'error', message: toUserMessage(res.error, '查询失败，请稍后重试') })
       return
     }
     if (res.data.refused) {
@@ -302,7 +303,7 @@ export default function Compare() {
     try {
       outcome = await getOrBuildReport(pending.personKey)
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : '生成失败，请稍后重试')
+      setNotice(toUserMessage(err, '生成失败，请稍后重试'))
       setPhase('noReport')
       return
     }

@@ -10,6 +10,7 @@ import {
   saveImageToAlbum
 } from '@/utils/share-card'
 import { track } from '@/utils/events'
+import { toUserMessage } from '@/utils/error'
 import './index.scss'
 
 /**
@@ -48,7 +49,7 @@ export default function SharePoster({
   render,
   height,
   title = '名言卡',
-  hint = '图片带「AI 生成，仅供参考」角标',
+  hint = '图片带「基于公开信息 AI 整理，仅供参考」角标与小程序码',
   copyText,
   personKey = '',
   onClose
@@ -62,8 +63,9 @@ export default function SharePoster({
 
   useEffect(() => {
     let alive = true
-    /* 两种内容来源二选一：给了自定义 render 就用它，否则回落到名言卡 */
-    const draw = render ?? (quote ? () => renderQuotePoster(quote) : null)
+    /* 两种内容来源二选一：给了自定义 render 就用它，否则回落到名言卡。
+       名言卡带上 personKey：页脚的小程序码据此指向这个人的报告页（见 utils/share-code.ts） */
+    const draw = render ?? (quote ? () => renderQuotePoster({ ...quote, personKey }) : null)
     if (!draw) {
       setError('缺少卡片内容')
       return
@@ -74,7 +76,7 @@ export default function SharePoster({
       })
       .catch((err: unknown) => {
         if (!alive) return
-        setError(err instanceof Error ? err.message : String(err))
+        setError(toUserMessage(err, '卡片生成失败，请重试'))
       })
     return () => {
       alive = false

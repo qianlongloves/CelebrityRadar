@@ -63,6 +63,19 @@ export const RESPONSE_LABEL: Record<ResponseNeed, string> = {
 }
 
 /**
+ * 条目时间的口径（2026-10-16 新增）。
+ *
+ *   · 'published' —— 上游给的**媒体发布时间**（时间线要答的「谁在何时说的」，这个「何时」就该是它）；
+ *   · 'seen'      —— **我们第一次扫到它的时刻**（`risk_signals` 的老行 / 上游没给发布时间时只能退回它）。
+ *
+ * 两处都真实且都该保留（判新旧必须用 `first_seen_at`：上游的「发布时间」可能是 3 天前甚至抓取时间），
+ * 但**混进同一条时间线时必须让人读得出来** —— 否则「我们 10-16 扫到一条 10-10 的旧报道」会被读成
+ * 「10-16 又有新进展」。故本字段只影响时间线的措辞（'seen' 写成「发现于」），
+ * **不参与任何排序 / 去重 / 判定**；缺失（老数据、绝大多数来源）一律按发布时间看待。
+ */
+export type TimeBasis = 'published' | 'seen'
+
+/**
  * 一条原始舆情（三块数据摊平后的公共形状）。
  *
  * 字段**全部可选**是刻意的：三块的存量数据各有缺失（feed 没有 url、预警条目可能没有日期、
@@ -90,6 +103,11 @@ export interface OpinionRawEntry {
   category?: RiskCategory
   /** 风险信号自带级别；其余来源没有 */
   level?: string
+  /**
+   * 这条的 `date` 属于哪种口径（见 TimeBasis）：只影响时间线的措辞（'seen' → 「发现于」），
+   * 不参与排序 / 去重 / 判定；缺失（老数据、绝大多数来源）按媒体发布时间看待。
+   */
+  timeBasis?: TimeBasis
 }
 
 /** 判定层的输入：三块条目 + 我盯的词 / 人（用于「与我相关」排序） */
@@ -131,6 +149,8 @@ export interface OpinionEntry {
   category?: RiskCategory
   /** 归一后的级别（非法值一律 undefined） */
   level?: ImpactLevel
+  /** 时间的口径（见 TimeBasis）；缺失表示按媒体发布时间看待 */
+  timeBasis?: TimeBasis
   /** 同一事件合并进来的**去重来源数**（用于可信度展示） */
   sourceCount: number
   /** 为什么值得注意（今日要点用；为空串表示没有可说清的「值得注意」理由） */
@@ -349,6 +369,9 @@ function toEntry(raw: unknown, block: OpinionBlock, keywords: string[], watchNam
   const personKey = asText(r.personKey)
   const category = asRiskCategory(r.category)
   const level = normLevel(r.level)
+  /* 时间口径：只认两个合法值，其余（含缺失）一律 undefined = 按媒体发布时间看待 */
+  const timeBasis: TimeBasis | undefined =
+    r.timeBasis === 'published' || r.timeBasis === 'seen' ? (r.timeBasis as TimeBasis) : undefined
 
   /* 「与我相关」判定：归属字段直接判定 + 标题/摘要正文里出现我盯的词 / 人名。
      关键词命中优先于关注命中（见排序权重）。 */
@@ -356,7 +379,7 @@ function toEntry(raw: unknown, block: OpinionBlock, keywords: string[], watchNam
   const hitsKeyword = !!keyword || keywords.some((k) => k && hay.includes(k.toLowerCase()))
   const hitsFollow = (!!person && watchNames.includes(person)) || watchNames.some((n) => n && hay.includes(n.toLowerCase()))
 
-  return {
+  const entry: OpinionEntry = {
     id: '',
     block,
     title,
@@ -376,6 +399,10 @@ function toEntry(raw: unknown, block: OpinionBlock, keywords: string[], watchNam
     sourceCount: source ? 1 : 0,
     reason: ''
   }
+  /* 只在确有口径时才加键（时间线要写「发现于」才需要它）；避免给所有条目凭空多一个
+     undefined 字段 —— 既让 deepEq 类断言变脆，也把「缺失」与「明确是发布时间」混为一谈 */
+  if (timeBasis) entry.timeBasis = timeBasis
+  return entry
 }
 
 function reasonOf(e: OpinionEntry): string {

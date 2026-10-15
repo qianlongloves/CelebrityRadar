@@ -225,6 +225,10 @@ export function toDisplayEvents(
     if (!row || !row.event_key || !row.title) continue
     const members = Array.isArray(row.members) ? row.members : []
     const hits = hitsOf(members, keywords, watchNames)
+    /* memberTotal 是 2026-10-16 才加的字段：老行没有它（undefined）⇒ 回落成员数（诚实的近似）。
+       `> 0 才认` 而不是「是有限数就认」：万一某行被写成 0（历史回填 / 手改），
+       事件卡会显示「0 条来源」—— 少报几条远好过报出一个不可能为 0 的 0。 */
+    const rowTotal = Number.isFinite(row.memberTotal) ? (row.memberTotal as number) : 0
     out.push({
       id: row.event_key,
       key: row.event_key,
@@ -233,6 +237,9 @@ export function toDisplayEvents(
       title: row.title,
       members,
       memberCount: Number.isFinite(row.memberCount) ? row.memberCount : members.length,
+      /* memberTotal 是 2026-10-16 才加的字段：老行没有它 → 回落成员数。
+         绝不回落成 0 —— 事件卡上**少报**来源数比多报更糟 */
+      memberTotal: rowTotal > 0 ? rowTotal : members.length,
       timeline: Array.isArray(row.timeline) ? row.timeline : [],
       sources: Array.isArray(row.sources) ? row.sources : [],
       labels: Array.isArray(row.labels) ? row.labels : [],

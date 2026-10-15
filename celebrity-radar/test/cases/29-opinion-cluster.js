@@ -313,6 +313,13 @@ describe('云函数 opinionCluster：一轮行为', () => {
     const src = read(CLUSTER)
     notOk(/require\(['"]https['"]\)/.test(src), '本函数只读库聚类，不得引 https（不联网）')
     notOk(/bochaai|BOCHA_API_KEY/.test(src), '不得引用博查 / 密钥')
+    /* 读存量事件必须按「最近更新」取：主键是哈希，按 _id 升序取前 N 条 = 从全表**伪随机**抽 N 条，
+       集合超过上限后会随机漏掉某些事件 → 同一事件被另建一行 → 端上已读 / 跟进变孤儿（且静默） */
+    ok(
+      /listRecent\(OUT_TABLE, 'updated_at', MAX_EVENTS_READ\)/.test(src),
+      '读存量事件要按 updated_at 降序取最近 N 条'
+    )
+    notOk(/listAll\(OUT_TABLE/.test(src), '不得用 listAll（按 _id 升序）取存量事件')
     ok(fs.existsSync(path.join(CLOUD, 'opinionCluster', 'package.json')), '新云函数必须带 package.json（云环境不预装 wx-server-sdk）')
     const pkg = JSON.parse(read(path.join(CLOUD, 'opinionCluster', 'package.json')))
     ok(!!pkg.dependencies['wx-server-sdk'], 'package.json 必须声明 wx-server-sdk 依赖')
@@ -408,10 +415,21 @@ describe('事件集合字段与端上结构一致（端上能直接读来渲染�
         feed: [{ title: '关于X公司起诉事件的声明', source: 'A报', date: '2026-10-01', person: '张三' }]
       })[0]
       deepEq(Object.keys(disp).sort(), Object.keys(tsEv).sort(), '渲染字段名不得出现两套')
+      eq(disp.memberTotal, tsEv.memberTotal, 'memberTotal 两端同义（真实来源条数，非截断后的保留数）')
       eq(disp.key, row.event_key, 'key ← event_key')
       eq(disp.date, row.last_at, 'date ← last_at')
       eq(disp.objectKey, row.object_key, 'objectKey ← object_key')
       eq(disp.id, row.event_key)
+      /* 主块必须真的落库（schema 把 block 标成 required）：曾经把 pickEventTitle 返回的**标题字符串**
+         当成员对象取 .block，恒为 undefined —— 线上 313 行事件一行都没有 block */
+      eq(row.block, 'feed', '事件主块落库（不是 undefined）')
+      eq(fn.pickTitleMember([{ block: 'alert', title: '短标题', source: 'A报' }, { block: 'feed', title: '更长的标题在这里', source: 'B报' }]).block, 'feed', 'pickTitleMember 返回成员对象本身')
+      /* 老行（没有 memberTotal 字段）与「被写成 0 的行」都必须回落成员数：
+         否则事件卡会显示「0 条来源」—— 那是比少报更糟的错 */
+      const legacy = toDisplayEvents([Object.assign({}, row, { memberTotal: undefined })], {})[0]
+      eq(legacy.memberTotal, legacy.members.length, '老行缺 memberTotal → 回落成员数')
+      const zeroed = toDisplayEvents([Object.assign({}, row, { memberTotal: 0 })], {})[0]
+      eq(zeroed.memberTotal, zeroed.members.length, 'memberTotal 为 0 的行也回落（绝不显示 0 条来源）')
     })
   })
 
@@ -421,6 +439,58 @@ describe('事件集合字段与端上结构一致（端上能直接读来渲染�
     ok(/name: 'opinion_event_status'/.test(schema), 'schema 缺 opinion_event_status')
     ok(/name: 'opinion_events'[\s\S]{0,200}acl: ACL\.publicReadOnly/.test(schema), 'opinion_events 必须「所有人可读、客户端不可写」')
     ok(/name: 'opinion_event_status'[\s\S]{0,200}acl: ACL\.creator/.test(schema), 'opinion_event_status 必须「仅创建者可读写」')
+    ok(/memberTotal/.test(schema), 'schema 要声明 memberTotal（去重后的真实来源条数）')
+    notOk(
+      /f\('memberTotal',\s*'number',\s*\{[^}]*def/.test(schema),
+      'memberTotal 不得给 def：dbInit 回填会把老行写成 0 ⇒ 事件卡显示「0 条来源」'
+    )
+  })
+
+  it('成员超上限：memberCount 报保留数、memberTotal 报真实来源数（爆点事件不被说成「30 条来源」）', async () => {
+    const fn = loadCluster()
+    /* 31 篇**同标题、不同来源** → 聚成一个事件，正好越过 MAX_MEMBERS=30 的截断线 */
+    const items = Array.from({ length: 31 }, (_, i) => ({
+      title: '关于X公司起诉事件的声明',
+      source: `报${i}`,
+      publishedDate: '2026-10-01'
+    }))
+    env.db.__seed('feed_cache', [feedRow('张三#ent', items)])
+    await fn.main({})
+    const rows = env.db.__dump('opinion_events')
+    eq(rows.length, 1, '同标题 → 一个事件')
+    const row = rows[0]
+    ok(
+      row.memberTotal === 31,
+      `memberTotal 是去重后的真实条数（实际 ${row.memberTotal}，memberCount=${row.memberCount}，members=${row.members.length}）`
+    )
+    ok(row.memberCount === 30, `memberCount 是被 MAX_MEMBERS 截断后的保留数（实际 ${row.memberCount}）`)
+    eq(row.members.length, 30, '落库成员数恒等于 memberCount')
+    const { toDisplayEvents } = env.load('utils/opinion-store')
+    eq(toDisplayEvents([row], {})[0].memberTotal, 31, '端上读到的仍是真实条数（不是 30）')
+
+    /* 第二轮：同一批 31 篇再聚一次（走 adopt 沿用旧键）——真实条数既不能缩水成 30，也不能重复计成 32 */
+    const r2 = await fn.main({})
+    eq(r2.created, 0, '第二轮该沿用旧键，不另建新事件')
+    const again = env.db.__dump('opinion_events')
+    eq(again.length, 1, '仍是同一个事件')
+    eq(again[0].memberTotal, 31, '沿用旧键合并后仍报真实条数（截断差额取 max，不重复相加）')
+  })
+
+  it('时间线页把免费档的「头尾拼接」画成一条可见的跳缝，来源数报真实总数', () => {
+    const page = read(path.join(ROOT, 'src', 'package', 'event', 'index.tsx'))
+    ok(page.includes('page-event__timeline-gap'), '要画省略行：否则「最早 3 条 + 最新 2 条」会被读成连续 5 条')
+    ok(/visible\.headCount/.test(page), '省略行的位置由 sliceDetail 的 headCount 决定')
+    ok(/visible\.hidden/.test(page), '省略行要报出被隐藏的条数')
+    ok(page.includes('${event.memberTotal} 条来源'), '事件页的来源数用 memberTotal')
+
+    const list = read(path.join(ROOT, 'src', 'package', 'events', 'index.tsx'))
+    ok(list.includes('${ev.memberTotal} 条来源'), '事件列表页的来源数用 memberTotal')
+
+    const top = read(path.join(ROOT, 'src', 'pages', 'opinion', 'index.tsx'))
+    ok(top.includes('${ev.memberTotal} 条来源'), '舆情页的来源数用 memberTotal')
+
+    const scss = read(path.join(ROOT, 'src', 'package', 'event', 'index.scss'))
+    ok(scss.includes('&__timeline-gap'), '跳缝样式要落在 scss 里')
   })
 })
 

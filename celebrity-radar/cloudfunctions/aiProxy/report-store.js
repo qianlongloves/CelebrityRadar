@@ -263,6 +263,17 @@ module.exports = function createReportStore(deps) {
             search_meta: null,
             /* 新行没有中间结果，但把键写出来（null = 无），行形状与 dbInit 的 def 一致 */
             parts: null,
+            /*
+             * 首建标记（2026-10-15）：这一条 insert 就是「全站第一次建这个人物」（`!existing`）。
+             * quotaGuard 复核 `waiveIf: 'first_build'` 的免计费申请时读它 —— 端上那个标记不可信，
+             * 服务端能自证的「首建」事实只在这里产生。
+             *
+             * **只在这一条 insert 里写**：抢占 / 覆盖（下面那段 update）一概不写，
+             * 所以「同一人物只可能被免一次」是数据结构自带的，不靠额外记账。
+             * report_cache 对客户端是 publicReadOnly（见 dbInit/schema.js），端上伪造不了这两个字段。
+             */
+            first_build_owner: openid,
+            first_build_at: now,
             ...(typeof schemaVersion === 'number' ? { schemaVersion } : {})
           }
         })

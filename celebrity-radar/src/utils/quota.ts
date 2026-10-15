@@ -201,9 +201,10 @@ export async function peekGenerateQuota(userId: string): Promise<GenerateQuotaSu
  *
  * 优先由云函数原子自增；不可用时回退本地读-改-写（与 refresh_quota 同构，不做重试）。
  *
- * waive（P1，2026-10-09）：会员「补齐」共享缓存（缓存那版缺会员段落、他这次生成是替
- * 全站升级）本该免计费。端上只**申请**，复核在云函数 quotaGuard（会员是否生效 +
- * 目标那一行是否真的缺会员段）；复核不过就照常计数。
+ * waive（免计费申请，两种理由见 QuotaWaiveOptions）：他这一次生成产出的东西是替**全站**
+ * 建的（写进共享缓存、之后所有人免费读），那笔账不该只由他掏每日次数。端上只**申请**，
+ * 复核在云函数 quotaGuard（会员是否生效 / 目标那一行是否真的缺会员段 / 是否真是他首建的那一行）；
+ * 复核不过就照常计数。
  * ⚠ 回退路径（函数未部署）**不认**这个申请 —— 端上无法自证身份，宁可多算一次，
  *   也不留下「改包即免次数」的口子（回退态本来就是过渡态，部署函数后即消除）。
  */
@@ -214,7 +215,8 @@ export async function consumeGenerateQuota(
   const cloud = await incrQuotaViaCloud('generate', waive)
   if (cloud !== null) {
     if (cloud.waived) {
-      diagLog('info', 'db', `会员补齐共享缓存，本次生成不计入配额：${waive?.target ?? ''}`)
+      const reason = waive?.waiveIf === 'first_build' ? '首建共享缓存' : '会员补齐共享缓存'
+      diagLog('info', 'db', `${reason}，本次生成不计入配额：${waive?.target ?? ''}`)
     }
     return
   }

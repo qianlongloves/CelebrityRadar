@@ -9,6 +9,7 @@ import { table } from './db'
 import { DEFAULT_USER_SETTINGS, SETTINGS_VERSION } from '@/config/user-defaults'
 import { useAuth } from '@/stores/auth'
 import { diagLog } from './cloud-diagnostics'
+import { toUserMessage } from './error'
 import { hydrateUserSettings } from './settings'
 
 /** users 集合行。_openid 由云端写入时自动注入，业务上即登录用户标识 userId */
@@ -88,9 +89,11 @@ export function ensureLogin(): Promise<void> {
  */
 async function doLogin(): Promise<void> {
   if (!isCloudConfigured) {
-    useAuth.getState().setError(
-      cloudInitErrorMessage() ?? '云服务未配置：请在仓库根 .env 填写 TCB_ENV_ID 后重新构建'
-    )
+    /* 配置类原文（缺 TCB_ENV_ID / 基础库不支持云开发）对用户无意义，只进 diagLog 给部署者看 */
+    if (cloudInitErrorMessage()) diagLog('error', 'auth', `云服务未就绪：${cloudInitErrorMessage()}`)
+    useAuth
+      .getState()
+      .setError('云服务尚未就绪，暂时无法登录。请联系开发者完成云端配置后再试。')
     return
   }
 
@@ -99,6 +102,13 @@ async function doLogin(): Promise<void> {
     const row = await ensureUserRow()
 
     if (!row?._openid) {
+      /*
+       * 这句**必须**点出「users 集合权限」：能取到 _openid 的前提就是 users 为「仅创建者可读写」，
+       * 而权限配错时的表现（拿到行但没有 _openid / 一行都读不到）与网络抖动无法区分，
+       * 只留一句「登录未能完成」会让部署者无从下手（test/cases/02-data.js 钉住这条）。
+       * 云调用原文另进 diagLog，便于确认究竟是哪一步没拿到。
+       */
+      diagLog('error', 'auth', '登录失败：userInit/回退读取均未返回 _openid（请检查 users 集合权限为「仅创建者可读写」）')
       throw new Error('无法取得用户标识：请确认 users 集合权限为「仅创建者可读写」')
     }
 
@@ -118,7 +128,8 @@ async function doLogin(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('error', 'auth', `登录异常：${msg}`)
-    useAuth.getState().setError(`登录失败：${msg}`)
+    /* 用户侧只说人话：原始异常（多为云调用原文）已进 diagLog */
+    useAuth.getState().setError(toUserMessage(err, '登录失败，请稍后重试'))
   }
 }
 
@@ -168,7 +179,11 @@ async function ensureUserRow(): Promise<UserRow | null> {
     created_at: now,
     last_seen_at: now
   })
-  if (error) throw new Error(`users 初始化失败：${error.message}`)
+  if (error) {
+    /* 集合不存在 / 无写入权限等库表级原文只进日志，抛出去的是不含库表名的人话 */
+    diagLog('error', 'auth', `users 初始化失败：${error.message ?? error}`)
+    throw new Error('登录信息初始化失败，请稍后重试')
+  }
   return readSelf()
 }
 
@@ -233,7 +248,8 @@ export async function updateProfile(p: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('error', 'auth', `资料更新失败：${msg}`)
-    return { ok: false, message: msg }
+    /* msg 是库抛的 Error（可能是云调用原文）：进日志，不进 UI */
+    return { ok: false, message: toUserMessage(err, '保存失败，请重试') }
   }
 }
 

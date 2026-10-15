@@ -10,6 +10,7 @@ import NoticeClose from '@/components/notice-close'
 import QuoteDetail from '@/components/quote-detail'
 import PersonAvatar from '@/components/person-avatar'
 import ReportLoading, { ReportRefreshing } from '@/components/report-loading'
+import SharePoster from '@/components/share-poster'
 import {
   getOrBuildReport,
   getCachedReports,
@@ -49,7 +50,15 @@ import {
   reportMemberPromo
 } from '@/utils/member'
 import { personShareTitle, reportSharePath } from '@/utils/share'
+import {
+  buildReportCard,
+  canExportReportCard,
+  reportExportNote,
+  ReportCardModel
+} from '@/utils/report-card'
+import { renderReportPoster, reportCardHeight } from '@/utils/share-card'
 import { openSourceLink } from '@/utils/source-link'
+import { toUserMessage } from '@/utils/error'
 import { useAuth } from '@/stores/auth'
 import { fromNow, formatDay, isStaleReport, reportAgeDays, stampAgo } from '@/utils/time'
 import './index.scss'
@@ -326,7 +335,13 @@ function SectionTable({
 
 export default function ReportPage() {
   const router = useRouter()
-  const personKey = decodeURIComponent(router.params.personKey || '')
+  /**
+   * 扫**分享图上的小程序码**进来时，参数走的是 `scene`（小程序码只带得动 32 字符的场景值，
+   * 塞不下 personKey 加别的参数），值是 URL 编码后的 personKey（见 utils/share-code.ts）。
+   * 两种入口取到的都是同一个人，故与 personKey 合并成一个来源，其余逻辑一行不用改。
+   */
+  const sceneKey = decodeURIComponent(router.params.scene || '')
+  const personKey = decodeURIComponent(router.params.personKey || '') || sceneKey
   /** 发现页「关注」筛选（生成侧重，§2.3 六段可聚焦） */
   const focusParam = router.params.focus || 'all'
   const focus: FocusCode = isFocusCode(focusParam) ? focusParam : 'all'
@@ -411,6 +426,11 @@ export default function ReportPage() {
    * 白等一场还把「素材少」误解成「服务坏了」—— 与 bgGaps 那条是同一个坑。
    */
   const [shortfallRetryable, setShortfallRetryable] = useState(false)
+  /**
+   * 本次生成是「为全站首建这个人物」（2026-10-15，判据见 utils/cache.ts#isFirstBuild）。
+   * 只驱动下面那条说明（为什么要说这句，见渲染处的注释）—— 不是任何判定的输入。
+   */
+  const [firstBuild, setFirstBuild] = useState(false)
 
   /**
    * 本页可关闭的提示条条目名。
@@ -418,7 +438,15 @@ export default function ReportPage() {
    * 用联合类型而不是裸字符串：key 打错一个字母，✕ 就把「已关」记到了别人头上，
    * 而眼前这条永远关不掉 —— 这种错编译期必须拦下来。
    */
-  type NoticeKey = 'error' | 'diff' | 'keptMember' | 'shortfall' | 'degraded' | 'bgGaps' | 'missingGroups'
+  type NoticeKey =
+    | 'error'
+    | 'diff'
+    | 'keptMember'
+    | 'shortfall'
+    | 'firstBuild'
+    | 'degraded'
+    | 'bgGaps'
+    | 'missingGroups'
   /*
    * 提示条的「已关闭」记忆（2026-10-10，需求：「所有文字提示的框都要有关闭按钮」）。
    *
@@ -429,7 +457,7 @@ export default function ReportPage() {
    * 点其中任意一条的 ✕，四条一起消失。可它们讲的是完全不同的四件事 —— 这次为什么没刷成 /
    * 刷出了什么变化 / 为什么留着旧版 / 这次扣不扣次数 —— 用户常常只想关掉已经看懂的那一条。
    * 现在按条目分记：**一个 key 一条提示，点哪个关哪个**。
-   *   · closedNotices 刷新结果条 + 降级警示条（error / diff / keptMember / shortfall / degraded）：
+   *   · closedNotices 刷新结果条 + 降级警示条（error / diff / keptMember / shortfall / firstBuild / degraded）：
    *     每次 load 整体复位 —— 新一轮的结果必须能被看到，不能被上一轮的「已关」吞掉；
    *   · focusClosed 侧重条仍单独一个布尔，且**不随 load 复位**：它来自路由参数、不是这一次刷新的
    *     结果，每次回到页面又弹一遍（用户得反复关同一条）比「点一个关一个」更烦人。
@@ -465,6 +493,16 @@ export default function ReportPage() {
    * 读库失败按非会员处理，与上方同一口径。代价是免费用户的促销条也晚半秒出现 —— 比说错一句话划算。
    */
   const [memberReady, setMemberReady] = useState(false)
+  /**
+   * 报告长图面板（获客 P0，2026-10-15）：**打开时才组装模型并出图**。
+   *
+   * 存的是已组装好的内容模型（`utils/report-card.ts#buildReportCard` 的产物）而不是
+   * `report` 本身：组装那一步会做敏感名单拦截与截断，null 就不再往下走（见 onExportCard），
+   * 面板拿到的永远是一份「可以出图」的内容。
+   */
+  const [posterCard, setPosterCard] = useState<ReportCardModel | null>(null)
+  /** 免费用户点过「导出报告长图」：页面上多一行升级引导（不弹窗，不打断阅读） */
+  const [exportGuide, setExportGuide] = useState(false)
   /**
    * 本机生成的真实进度（2026-10-11）：由 `getOrBuildReport` 的 onProgress 透传，喂给等待动画。
    *
@@ -505,6 +543,7 @@ export default function ReportPage() {
       setKeptMember(false)
       setShortfall(null)
       setShortfallRetryable(false)
+      setFirstBuild(false)
       setMemberLocked([])
       /* 新一轮的刷新结果条要能被看到：把上一轮「已关」的记忆整体清掉（见 closedNotices 注释） */
       setClosedNotices({})
@@ -525,7 +564,7 @@ export default function ReportPage() {
       }).catch(
         (err): ReportOutcome => ({
           kind: 'error',
-          message: err instanceof Error ? err.message : String(err)
+          message: toUserMessage(err, '生成失败，请稍后重试')
         })
       )
       /* 先解锁再处理结果：下面 switch 里的 setState 是同步的，不会有等待窗口 */
@@ -543,6 +582,7 @@ export default function ReportPage() {
           setKeptMember(outcome.keptMember === true)
           setShortfall(outcome.shortfall ?? null)
           setShortfallRetryable(outcome.shortfallRetryable === true)
+          setFirstBuild(outcome.firstBuild === true)
           setMemberLocked(outcome.memberLocked ?? [])
           /* 降级警示条若是这版才出的，已由上面 load 开头的整体复位放行（见 closedNotices 注释） */
           setRefreshError(failureNote)
@@ -933,8 +973,9 @@ export default function ReportPage() {
    * 加载中与失败态也给一个可读标题，避免分享出去是一句「生成失败」。
    */
   const sharePath = reportSharePath(personKey, focus)
-  /* 文案与名人主页 / 发现页 / 提问页同源（见 utils/share.ts）：只用报告里那一句可核对的简介，
-     不再写「深度报告」这种自夸式后缀 —— 分享出去的标题应该说明「这个人是谁」，而不是我们的栏目名。 */
+  /* 文案与名人主页 / 发现页 / 提问页同源（见 utils/share.ts）：先给结论钩子（N 处公开争议 / N 条近期动态），
+     没有钩子才回落那句可核对的简介；不写「深度报告」这种自夸式后缀 —— 分享出去的标题应该说明
+     「点开能得到什么 / 这个人是谁」，而不是我们的栏目名。 */
   const shareTitle = personShareTitle(report?.name ?? name, domain, report)
 
   useShareAppMessage(() => ({ title: shareTitle, path: sharePath }))
@@ -1197,6 +1238,33 @@ export default function ReportPage() {
   const onPromoTap = () => void Taro.navigateTo({ url: '/package/member/index' })
 
   /**
+   * 导出报告长图（获客 P0，2026-10-15）。
+   *
+   * 为什么值得单开一个出口：右上角的原生转发**只带得走一个链接**（群里没人点），而
+   * 「把结论截成一张图发给老板 / 同事」才是这类调研工具真实的使用动作 —— 图流出去，
+   * 落款、免责与小程序码才跟着出去；此前全项目只有名言卡与周报卡出得了图。
+   *
+   * 三道门的顺序不能换：
+   *   1. 先组装 —— `buildReportCard` 会拦掉人物命中本地敏感名单的报告（返回 null），
+   *      这类报告连入口都不该往下走；
+   *   2. 再看身份 —— 免费用户给**一行**升级引导（与周报导出同一分层口径），不弹窗打断阅读；
+   *   3. 最后才开面板出图（出图失败由面板自己兜底提示）。
+   */
+  const onExportCard = () => {
+    if (state.phase !== 'ready') return
+    const card = buildReportCard(state.report)
+    if (!card) {
+      void Taro.showToast({ title: '这份报告暂不支持导出图片', icon: 'none' })
+      return
+    }
+    if (!canExportReportCard(member)) {
+      setExportGuide(true)
+      return
+    }
+    setPosterCard(card)
+  }
+
+  /**
    * 关闭促销条（O-26）：本机记住，此后不再出现。
    *
    * 必须 stopPropagation —— 关闭键在整条的可点区域里，不拦住就会顺手跳进会员中心，
@@ -1453,6 +1521,29 @@ export default function ReportPage() {
             <Text className='page-report__diff-body'>{refreshError}</Text>
           </View>
           <NoticeClose onClose={() => closeNotice('error')} />
+        </View>
+      )}
+
+      {/*
+        首建说明（2026-10-15）。报告是**全局共享缓存**：一份建好之后全站复用、任何人再查都不消耗
+        生成次数（见 utils/cache.ts#isFirstBuild）。于是「第一个生成的人」刚付掉 1 次额度时，
+        最容易把账读成「我出钱、别人白看」—— 而实际上：热门人物多半是别人先建、他才是受益者；
+        就算真是首建，他买到的也是可反复查看的报告本体，且这笔检索与整理长期留在库里供全站（含他自己）
+        复用。这一条只在他刚付完、最可能产生那个念头的一刻把账说清，不做任何劝留。
+
+        只在**首建且落库成功**时出现：命中缓存、覆盖刷新、产物不达标都不带 firstBuild（见缓存层），
+        所以它不会在「我只是看看别人的报告」时冒出来。可关闭，且与其余提示条各关各的。
+      */}
+      {firstBuild && !closedNotices.firstBuild && (
+        <View className='page-report__diff'>
+          <View className='page-report__diff-main'>
+            <Text className='page-report__diff-head'>这份报告由你首次生成</Text>
+            <Text className='page-report__diff-body'>
+              报告按人物全站共用一份：之后任何人查看都不再消耗生成次数（包括你自己），
+              你这次的检索与整理会留在库里，供之后一直查看。
+            </Text>
+          </View>
+          <NoticeClose onClose={() => closeNotice('firstBuild')} />
         </View>
       )}
 
@@ -2597,8 +2688,9 @@ export default function ReportPage() {
           )}
 
           {/* 底部动作一行两个：收藏报告是「读完之后留一份」，刷新最新是「要新版本」。
-              分享由右上角原生分享承担；单条名言出图的入口只在收藏页（「名言卡」），
-              报告页里不重复摆第二个出口。 */}
+              分享由右上角原生分享承担；单条名言出图的入口只在收藏页（「名言卡」）。
+              报告长图另起一行（见下方 __export）：它不是第三个同等按钮，而是会员权益入口 ——
+              混在这一行里，用户会以为它和「刷新最新」一样随手可用。 */}
           <View className='page-report__foot-actions'>
             <AtButton type='secondary' circle onClick={() => void toggleReportFav()}>
               {reportFaved ? '已收藏' : '收藏报告'}
@@ -2621,11 +2713,44 @@ export default function ReportPage() {
             </AtButton>
           </View>
 
+          {/*
+            导出报告长图（获客 P0，2026-10-15）：结论 + 依据 + 争议与回应 + 动态出处压成一张图，
+            页脚带免责与小程序码（见 utils/share-card.ts#renderReportPoster）。
+            免费用户点它只会多出一行升级引导，不弹窗 —— 他还在读报告，不该被拦住。
+          */}
+          <View className='page-report__export' onClick={onExportCard}>
+            <Text className='page-report__export-title'>导出报告长图</Text>
+            <Text className='page-report__export-sub'>带结论、依据与出处，可保存 / 转发</Text>
+          </View>
+          {exportGuide && (
+            <View className='page-report__export-guide' onClick={onPromoTap}>
+              <Text>{reportExportNote()}</Text>
+            </View>
+          )}
+
           {/* AI 生成内容免责声明：合规要求必须出现在页面上，不能只藏在可复制的文本里 */}
           <Text className='disclaimer'>{report.disclaimer}</Text>
         </View>
       )}
 
+      {/*
+        报告长图弹层：**只在需要时挂载**。组件挂载即出图，常挂会平白请求一次小程序码
+        （联网 + 云函数调用），而绝大多数访问并不会导出图。
+      */}
+      {posterCard && (
+        <SharePoster
+          title='报告长图'
+          hint='图上带结论、依据与出处，页脚带免责与小程序码'
+          height={reportCardHeight(posterCard)}
+          render={() => renderReportPoster(posterCard)}
+          /* 复制摘要与图同源（同一份模型），不另起一套文案 */
+          copyText={`${posterCard.name}（${domainLabel(posterCard.domain)}）${posterCard.stats}
+${posterCard.headline}
+${posterCard.note}`}
+          personKey={posterCard.personKey}
+          onClose={() => setPosterCard(null)}
+        />
+      )}
     </View>
   )
 }

@@ -1902,6 +1902,48 @@
     color: $text-3;
   }
 
+  /*
+    导出报告长图（获客 P0，2026-10-15）。
+
+    为什么独立成行、而不是并进上面的 __foot-actions：上面两颗按钮是「操作这份报告」
+    （收藏、刷新，免费即可），而它是**会员权益入口** —— 混在同一行会让用户以为它一样
+    随手可用，点下去没反应就成了失望。独立一行 + 浅紫底 + 两行文案（能做什么 / 有什么），
+    与下方免责声明之间留出距离，视觉上自成一块。
+  */
+  &__export {
+    display: block;
+    margin: 0 24rpx 16rpx;
+    padding: 26rpx 32rpx;
+    border-radius: 32rpx;
+    background: $brand-weak;
+  }
+
+  &__export-title {
+    display: block;
+    font-size: 28rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  &__export-sub {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 免费用户点过「导出报告长图」后才出现的一行升级引导（与周报页同一克制风格，非弹窗） */
+  &__export-guide {
+    display: block;
+    margin: 0 24rpx 16rpx;
+    padding: 20rpx 24rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 25rpx;
+    text-align: center;
+  }
+
   /* ===== 卡片入场动画：淡入 + 轻微上移，按兄弟次序逐卡错峰（≈24ms，总跨度压在 300ms 内）。
      只动 opacity / transform（不触发布局），且终态即自然态 —— 动画不被支持时卡片照常显示。 */
   .card {

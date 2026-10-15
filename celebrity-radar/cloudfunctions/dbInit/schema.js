@@ -156,6 +156,19 @@ const collections = [
       f('generated_at', 'string', { required: true }),
       f('state', 'string', { required: true, enumHint: ['building', 'ready'] }),
       f('builder', 'string?', { required: true }),
+      /*
+       * 首建标记（2026-10-15）：**只在写口建新行那一条 insert 里**写（`!existing` 即
+       * 「全站第一次建这个人物」），抢占 / 覆盖一概不写 —— 所以「同一人物只可能被免一次计费」
+       * 是数据结构自带的，不靠额外记账。
+       * 消费方只有 quotaGuard：复核 `waiveIf:'first_build'` 的免计费申请时，比对
+       * `first_build_owner` 与调用者、用 `first_build_at` 划出「刚发生的那一次」的时间窗，
+       * 发放豁免后就地回写 `first_build_waived_at` 防止重复领。
+       * 客户端只读（伪造不了）；也不参与任何读取判定 —— 缺字段（老行 / 端上回退直写的行）
+       * 一律按「不免」处理。
+       */
+      f('first_build_owner', 'string?', { def: null }),
+      f('first_build_at', 'string?', { def: null }),
+      f('first_build_waived_at', 'string?', { def: null }),
       f('search_meta', 'object?', { def: null }),
       /* 分批生成的中间结果（P0-B，2026-10-11；写口 `op:'saveParts'`）。
          元素 = `{ key: 'identity'|'facts'|'judgement'|'detail', data: {…该批字段} }`。
@@ -209,12 +222,20 @@ const collections = [
   },
   {
     name: 'generate_quota',
-    purpose: '报告每日生成配额（免费 3 / 会员 30，_id = openid#yyyy-MM-dd）',
+    purpose:
+      '报告每日生成配额（免费 3 / 会员 30，_id = openid#yyyy-MM-dd）+ 首建豁免名额（waive_count）',
     acl: ACL.selfRead,
     fields: [
       f('_id', 'string', { system: true, required: true }),
       f('_openid', 'string', { system: true, required: true }),
-      f('count', 'number', { required: true })
+      f('count', 'number', { required: true }),
+      /*
+       * 当日「首建免计费」用掉的名额（2026-10-15，上限 1 次/日，理由见 quotaGuard 的「首建」一节）。
+       * 与 count 同处一行是刻意的：那一行本来就是「某人某天」的天然容器，豁免名额也就该按天算；
+       * 单开一张集合反而要在控制台手建 + 收紧权限，漏一步就静默失效。
+       * 只由 quotaGuard 原子自增 / 回滚；端上（selfRead）读得到也没用 —— 名额由服务端发放。
+       */
+      f('waive_count', 'number?', { def: 0 })
     ],
     indexes: []
   },
@@ -417,7 +438,13 @@ const collections = [
       f('source', 'string', { required: true }),
       f('url', 'string', { required: true }),
       /* 我们自己的时钟打的「第一次见到这条」：不用媒体发布时间判断新旧（同 keywordAlert 取舍 4） */
-      f('first_seen_at', 'string', { required: true })
+      f('first_seen_at', 'string', { required: true }),
+      /* 媒体发布时间（上游 datePublished / dateLastCrawled，2026-10-16 补）。与 first_seen_at 分列两个字段：
+         ①判新旧仍用 first_seen_at（上游的「发布时间」可能是 3 天前甚至是抓取时间，拿它判新旧会漏报）；
+         ②但时间线上「谁在何时说的」必须是媒体发布时间 —— 拿首见时刻充数会把「我们何时发现」
+         读成「事件何时发生」。故 opinionCluster#collectSources 优先取本字段、缺失才退回 first_seen_at。
+         老行没有本字段（def null），自动退回旧口径，无需迁移。 */
+      f('published_date', 'string?', { def: null })
     ],
     indexes: [
       ix('idx_person_key_first_seen_at', [['person_key', 'asc'], ['first_seen_at', 'desc']], {
@@ -489,6 +516,13 @@ const collections = [
       f('title', 'string', { required: true }),
       f('members', 'array', { required: true }),
       f('memberCount', 'number', { def: 0 }),
+      /* 去重后的**真实**来源条数（≥ memberCount）：事件卡的「N 条来源」报的是这个。
+         memberCount 会被 MAX_MEMBERS=30 截断，拿它当来源数会把爆点事件说成「30 条来源」。
+         ⚠ **刻意不给 def**（2026-10-16）：标了 `def` 的缺失字段会被 dbInit 的 fields(apply) 回填成该值，
+         而老行回填成 0 会让事件卡显示「0 条来源」—— 端上只在**缺字段**（undefined）时才回落成员数，
+         拿到 0 会当成真值。不给 def ⇒ 老行保持缺字段 ⇒ 端上回落成员数（比 0 诚实的近似）；
+         库里的老行也会在下一次 opinionCluster 每日聚类重写时自然补上真值。 */
+      f('memberTotal', 'number'),
       f('timeline', 'array', { def: [] }),
       f('sources', 'array', { def: [] }),
       f('labels', 'array', { def: [] }),
@@ -500,7 +534,13 @@ const collections = [
       f('updated_at', 'string', { required: true })
     ],
     indexes: [
-      ix('idx_last_at', [['last_at', 'desc']], { optional: true, supports: '端上按最近活动时间取事件' })
+      ix('idx_last_at', [['last_at', 'desc']], { optional: true, supports: '端上按最近活动时间取事件' }),
+      /* 云函数每轮按 updated_at 降序取「最近更新的 N 条」来沿用旧键（见 opinionCluster#listRecent）；
+         没有它，每轮比较都要对全表排序 */
+      ix('idx_updated_at', [['updated_at', 'desc'], ['_id', 'asc']], {
+        optional: true,
+        supports: '云函数每轮按「最近更新」取事件比对旧键'
+      })
     ]
   },
   {

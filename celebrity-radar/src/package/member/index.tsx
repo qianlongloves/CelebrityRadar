@@ -25,6 +25,7 @@ import { FREE_TOC_COUNT, TEMPLATE_SIZE } from '@/utils/report-toc'
 /* 舆情功能的免费 / 会员分层上限（关注人数 / 关键词监测 / 舆情明细）真源：config/benefits.ts */
 import { OPINION_LIMITS } from '@/config/benefits'
 import { QA_MAX_QUESTION } from '@/utils/qa'
+import { toUserMessage } from '@/utils/error'
 import {
   FALLBACK_MEMBERSHIP_PLANS,
   buyMembership,
@@ -361,7 +362,7 @@ export default function MemberPage() {
         activated: false,
         outTradeNo: null,
         cancelled: false,
-        error: err instanceof Error ? err.message : String(err)
+        error: toUserMessage(err, '支付未完成，请稍后重试')
       }
     } finally {
       Taro.hideLoading()

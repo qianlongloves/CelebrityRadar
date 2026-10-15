@@ -50,7 +50,11 @@ function ensureInit(): void {
 /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
 export function getDatabase(): any {
   ensureInit()
-  if (cloudInitError) throw new Error(`云服务不可用：${cloudInitError}`)
+  if (cloudInitError) {
+    /* 初始化失败的原文（env id 缺失 / wx.cloud 未就绪）只进日志，抛出去的是一句人话 */
+    diagLog('error', 'db', `云服务不可用：${cloudInitError}`)
+    throw new Error('云服务暂时不可用，请稍后重试')
+  }
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   return (wx as any).cloud.database()
 }
@@ -69,7 +73,11 @@ export function cloudInitErrorMessage(): string | null {
  */
 export async function uploadToCloud(cloudPath: string, filePath: string): Promise<string> {
   ensureInit()
-  if (cloudInitError) throw new Error(`云服务不可用：${cloudInitError}`)
+  if (cloudInitError) {
+    /* 初始化失败的原文（env id 缺失 / wx.cloud 未就绪）只进日志，抛出去的是一句人话 */
+    diagLog('error', 'db', `云服务不可用：${cloudInitError}`)
+    throw new Error('云服务暂时不可用，请稍后重试')
+  }
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   const res = await (wx as any).cloud.uploadFile({ cloudPath, filePath })
   const fileID: unknown = res?.fileID
@@ -90,6 +98,31 @@ export async function deleteCloudFile(fileID: string): Promise<void> {
 }
 
 /**
+ * 云存储 fileID → 临时 https 链接。
+ *
+ * 什么时候需要它：canvas 的 `drawImage` 只吃网络图或本地路径，`cloud://…` 喂不进去
+ * （分享图上的小程序码就卡在这一步）。
+ *
+ * 为什么不缓存返回值：临时链接**有有效期**（默认 2 小时），缓存下来过期就是一张裂图；
+ * 而 fileID 本身长期有效，故调用方只缓存 fileID、每次现换链接（见 utils/share-code.ts）。
+ * 失败一律返回空串而不是抛错：这类图是锦上添花，调用方按「没有码」降级即可。
+ */
+export async function getTempFileUrl(fileID: string): Promise<string> {
+  try {
+    ensureInit()
+    if (cloudInitError) return ''
+    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    const res = await (wx as any).cloud.getTempFileURL({ fileList: [fileID] })
+    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    const url = (res as any)?.fileList?.[0]?.tempFileURL
+    return typeof url === 'string' ? url : ''
+  } catch (err) {
+    diagLog('warn', 'storage', `云文件临时链接获取失败：${err instanceof Error ? err.message : String(err)}`)
+    return ''
+  }
+}
+
+/**
  * 调用云函数，返回其 result 字段。
  *
  * 用途：平台代付通道 —— key 留在云函数环境变量里，客户端只发业务参数，
@@ -98,7 +131,11 @@ export async function deleteCloudFile(fileID: string): Promise<void> {
  */
 export async function callCloudFunction(name: string, data: unknown): Promise<unknown> {
   ensureInit()
-  if (cloudInitError) throw new Error(`云服务不可用：${cloudInitError}`)
+  if (cloudInitError) {
+    /* 初始化失败的原文（env id 缺失 / wx.cloud 未就绪）只进日志，抛出去的是一句人话 */
+    diagLog('error', 'db', `云服务不可用：${cloudInitError}`)
+    throw new Error('云服务暂时不可用，请稍后重试')
+  }
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   const res = await (wx as any).cloud.callFunction({ name, data })
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */

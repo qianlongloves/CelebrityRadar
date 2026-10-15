@@ -133,25 +133,30 @@ describe('舆情分层：门禁判定（只拦新增，不删存量）', () => {
     notOk(/开通会员/.test(personWatchLimitNote(true)), '会员档不再提升级')
   })
 
-  it('sliceDetail：免费切到 5 条并带回隐藏数；会员全部且返回原引用', () => {
+  it('sliceDetail：免费切到头尾各半（不再只留最早）；会员全部且返回原引用', () => {
     const { sliceDetail } = OA()
     const ten = Array.from({ length: 10 }, (_, i) => i)
 
+    /* 免费 5 条 = 头 3（起因）+ 尾 2（最新），**不是最早的 5 条**：
+       只留头部会让免费用户在事件时间线上永远看不到最新进展（见 sliceDetail 注释） */
     const free = sliceDetail(ten, false)
     eq(free.rows.length, 5, '免费档明细切到 5 条')
     eq(free.hidden, 5, '隐藏 5 条（供页面提示「会员可见全部 N 条」）')
-    deepEq(free.rows, [0, 1, 2, 3, 4])
+    eq(free.headCount, 3, '前 3 条来自头部 —— 页面在这里画一行「中间省略」')
+    deepEq(free.rows, [0, 1, 2, 8, 9], '头 3 + 尾 2：起因与最新都在，中间 5 条留白')
 
     const mem = sliceDetail(ten, true)
     eq(mem.rows.length, 10, '会员看到全部')
     eq(mem.hidden, 0)
+    eq(mem.headCount, 10, '未截断 → 无跳缝（headCount 等于行数）')
     ok(mem.rows === ten, '不截断时返回原引用（不产生拷贝）')
 
     const short = sliceDetail([1, 2, 3], false)
     eq(short.rows.length, 3, '不足上限时原样返回')
     eq(short.hidden, 0)
+    eq(short.headCount, 3, '原样返回时也无跳缝')
 
-    deepEq(sliceDetail(null, false), { rows: [], hidden: 0 }, '空值不抛错')
+    deepEq(sliceDetail(null, false), { rows: [], hidden: 0, headCount: 0 }, '空值不抛错')
   })
 })
 

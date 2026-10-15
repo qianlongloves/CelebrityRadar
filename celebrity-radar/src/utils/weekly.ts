@@ -11,6 +11,7 @@ import { quotaExhaustedMessage } from './member'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { diagLog } from './cloud-diagnostics'
+import { toUserMessage } from './error'
 import { currentWeekKey, dayKey8, last7DayRange } from './time'
 import { parsePersonKey } from '@/config/domains'
 
@@ -556,7 +557,8 @@ export async function generateWeekly(material: WeeklyMaterial): Promise<WeeklyOu
     /* 与 report.ts 同一套冷却口径：只有限流 / 网络 / 5xx 才值得让用户等 */
     const rateLimited = /频繁|429/.test(res.error)
     if (res.retryable || rateLimited) setCooldown('llm')
-    return { kind: 'error', message: res.error }
+    /* 原始失败文案（可能带模型名 / JSON 行话）只进日志，用户侧走统一文案层 */
+    return { kind: 'error', message: toUserMessage(res.error, '生成失败，请稍后重试') }
   }
 
   let report: WeeklyReport

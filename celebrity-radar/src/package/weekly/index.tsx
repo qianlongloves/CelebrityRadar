@@ -28,6 +28,7 @@ import { useAuth } from '@/stores/auth'
 import { domainLabel, domainStyleCode } from '@/config/domains'
 import { dayKey8, fromNow } from '@/utils/time'
 import { track } from '@/utils/events'
+import { toUserMessage } from '@/utils/error'
 import './index.scss'
 
 /**
@@ -120,7 +121,8 @@ export default function Weekly() {
     try {
       res = await collectWeeklyMaterial()
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : String(err))
+      /* 原始异常（可能是云调用原文）不进 UI，统一走 utils/error.ts 的文案层 */
+      setMessage(toUserMessage(err, '素材拉取失败，请稍后重试'))
       setPhase('error')
       return
     }
@@ -171,7 +173,7 @@ export default function Weekly() {
     try {
       outcome = await generateWeekly(mat)
     } catch (err) {
-      outcome = { kind: 'error', message: err instanceof Error ? err.message : String(err) }
+      outcome = { kind: 'error', message: toUserMessage(err, '生成失败，请稍后重试') }
     }
     Taro.hideLoading()
     void refreshQuota()

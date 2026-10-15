@@ -14,13 +14,20 @@ import { Report } from './report'
  * 1) **落地页统一是 `package/report/index`**。深度报告是唯一「点开就看得懂」的内容，
  *    且 tabBar 页不能作为分享落地页（微信限制），所以发现页 / 提问页这类 tab 页
  *    也必须落到报告页而不是自己。
- * 2) **标题只用可核对的一句简介**（报告 `intro` 的首句）—— 与推荐卡的 brief 同源，
- *    页面上本来就这么展示，分享出去不引入新说法，也不把模型的结论性判断当事实转述。
+ * 2) **标题优先给「结论钩子」，再退到可核对的一句简介**（2026-10-15 获客口径调整）。
+ *    此前只拼 `intro` 首句（「连续创业者」）：话是真的，但**没说清点开能得到什么** ——
+ *    转发到群里没人愿意点。现在先给数量：`7 处公开争议` / `12 条近期动态`。
+ *    为什么只敢用「数量」当钩子：条数在报告页点开就能逐条核对（争议与回应 / 近期动态），
+ *    是**可核对的事实**；而「这个人不靠谱」这类是判断，模型都不许替用户下，更不能写进分享标题。
+ *    数量都为 0（简版 / 素材极少的报告）时回落简介首句，与推荐卡的 brief 同源。
  * 3) **长度按微信展示裁到 ~24 字**，否则会被截成半句（「…小米在汽车与手」）。
  */
 
 /** 标题展示上限（含姓名与领域），超出截断加省略号 */
 const TITLE_MAX = 24
+
+/** 钩子里数量的展示上限（`120 处公开争议`会把标题挤爆，且大数字本身就是噪音） */
+const HOOK_MAX = 99
 
 /** 简介首句（≤ 22 字）：取到第一个句读为止，过长再截断 */
 function briefOf(report?: Report | null): string {
@@ -29,6 +36,22 @@ function briefOf(report?: Report | null): string {
   const cut = intro.split(/[。！？!?；;\n]/)[0]?.trim() ?? ''
   const text = cut || intro
   return text.length > 22 ? `${text.slice(0, 22)}…` : text
+}
+
+/**
+ * 结论钩子（≤ 9 字）：`N 处公开争议` / `N 条近期动态`，两者都没有时返回空串。
+ *
+ * 争议优先于动态：前者才是「点开看一眼」的理由，后者只是「内容在更新」。
+ * 数量封顶 HOOK_MAX：报告没上限地列上百条争议时，「120 处公开争议」既挤爆标题，
+ * 读起来也不像事实陈述而像指控 —— 99 足够表达「很多」，且不给出可被质疑的精确大数。
+ */
+function hookOf(report?: Report | null): string {
+  if (!report) return ''
+  const bad = (report.controversies ?? []).length
+  if (bad > 0) return `${Math.min(bad, HOOK_MAX)} 处公开争议`
+  const dyn = (report.dynamics ?? []).length
+  if (dyn > 0) return `${Math.min(dyn, HOOK_MAX)} 条近期动态`
+  return ''
 }
 
 /**
@@ -41,7 +64,7 @@ export function reportSharePath(personKey: string, focus?: string): string {
 }
 
 /**
- * 分享标题：`姓名 · 领域`，有报告时再拼一句可核对的简介。
+ * 分享标题：`姓名 · 领域`，有报告时再拼「结论钩子」或一句可核对的简介。
  *
  * @param name 名人姓名（报告未就绪时用路由里解析出来的名字）
  * @param domain 领域（已知码给中文标签，AI 自创的短词原样展示；决定「· 科技」这半句）
@@ -54,7 +77,8 @@ export function personShareTitle(name: string, domain: string, report?: Report |
    */
   const label = sanitizeDomain(domain) === '' ? '名人' : domainLabel(domain)
   const head = `${name} · ${label}`
-  const brief = briefOf(report)
-  const title = brief ? `${head}｜${brief}` : head
+  /* 钩子优先、简介兜底：两者都是**能在报告里逐条核对**的东西，只是一个说「有多少」，一个说「是谁」 */
+  const tail = hookOf(report) || briefOf(report)
+  const title = tail ? `${head}｜${tail}` : head
   return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX)}…` : title
 }

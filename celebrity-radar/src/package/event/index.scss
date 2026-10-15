@@ -157,6 +157,20 @@
     color: $text-1;
   }
 
+  /* 免费档时间线的中间跳缝（「⋯ 中间省略 N 条 ⋯」）：
+     顶到圆点右侧、居中说话，让人一眼看出上下两段**不是连续**的 */
+  &__timeline-gap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10rpx 0;
+  }
+
+  &__timeline-gap-text {
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
   /* 免费档时间线被截断 / 底部「没有更多」的一行提示（不遮罩、不弹窗） */
   &__more-detail {
     display: block;

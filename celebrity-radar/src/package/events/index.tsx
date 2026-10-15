@@ -150,6 +150,9 @@ export default function Events() {
             title: it.title,
             source: it.source,
             date: it.published_date ?? it.first_seen_at ?? '',
+            /* 口径随条目带下去：有发布时间就是 'published'，退回我们首见时间才标 'seen'
+               （时间线据此写「发现于」，见 TimeBasis） */
+            timeBasis: it.published_date ? 'published' : 'seen',
             keyword: g.keyword,
             category: it.category,
             level: it.level
@@ -164,7 +167,10 @@ export default function Events() {
           block: 'alert',
           title: s.title,
           source: s.source,
-          date: s.first_seen_at,
+          /* 与云端同口径（opinionCluster#collectSources）：优先媒体发布时间 ——
+             risk_signals 自 2026-10-16 起落 published_date（老行为空 → 退回 first_seen_at） */
+          date: s.published_date ?? s.first_seen_at,
+          timeBasis: s.published_date ? 'published' : 'seen',
           person: s.name,
           category: s.category,
           level: s.level
@@ -332,7 +338,7 @@ export default function Events() {
                 </View>
                 <Text className='page-events__meta'>
                   {[
-                    `${ev.memberCount} 条来源`,
+                    `${ev.memberTotal} 条来源`,
                     ev.labels.length ? ev.labels.join('、') : '',
                     ev.date ? `最近 ${formatMoment8(ev.date)}` : '',
                     `${ev.timeline.length} 个节点`

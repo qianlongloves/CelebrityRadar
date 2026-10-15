@@ -26,6 +26,7 @@ import { track } from '@/utils/events'
 import { exploreRandomPerson, pickRandomPerson, todayPerson } from '@/utils/explore'
 import { listRecentHistory, HistoryRow } from '@/utils/history'
 import { listFollows, toggleFollow } from '@/utils/follows'
+import { toUserMessage } from '@/utils/error'
 import { resolvePersonKey } from '@/utils/person-index'
 import { loadMessages } from '@/utils/messages'
 import { personShareTitle, reportSharePath } from '@/utils/share'
@@ -157,7 +158,8 @@ export default function Index() {
     setState({ phase: 'idle' })
     const { confirm } = await Taro.showModal({
       title: '查询失败',
-      content: message,
+      /* 上游错误串（云调用原文等）不进弹框，统一过一层文案层 */
+      content: toUserMessage(message, '查询失败，请检查网络后重试'),
       confirmText: '重试',
       cancelText: '取消'
     })

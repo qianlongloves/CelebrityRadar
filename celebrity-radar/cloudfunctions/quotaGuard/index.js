@@ -25,9 +25,11 @@
  *   'refresh'  → refresh_quota（关注流刷新配额，免费 10 / 会员 20）
  *   'ask'      → ask_quota（AI 提问配额，免费 5 / 会员 30）
  *
- * 免计费（可选，仅 generate 的 consume，2026-10-09 新增）：
- *   入参 `waiveIf: 'member_upgrade'` + `target: personKey` —— 会员「补齐」共享缓存
- *   那一版时不计入配额。复核口径见下方「会员补齐」一节，注意端上那个标记不可信。
+ * 免计费（可选，仅 generate 的 consume）：端上传 `waiveIf` + `target: personKey`，
+ * 服务端各自复核（端上那个标记不可信，复核不过一律照常计数）：
+ *   · `'member_upgrade'`（2026-10-09）：会员「补齐」共享缓存那一版 —— 见下方「会员补齐」；
+ *   · `'first_build'`（2026-10-15）：他为全站**首次建立**这个人物（此前缓存里连行都没有），
+ *     且当日首建豁免名额还没用 —— 见下方「首建」。
  *
  * ⚠ `ask`（2026-10-07 新增）与前两者有一处**语义差异**，改端上前先读：
  *   报告生成是「发起时自增、失败不退还」（端上只在成功落库后调用，见 quota.ts），
@@ -260,6 +262,137 @@ async function memberUpgradeWaived(openid, target) {
   return !hasMemberBlocks(cacheRow.report)
 }
 
+/* ------------------------------ 「首建」免计费复核（2026-10-15） */
+
+/**
+ * 背景（与「会员补齐」同一条原则，只是补上最后一块）：报告是全局共享缓存，一份建好之后
+ * 全站长期复用、任何人再查都不消耗次数 —— 于是「第一个生成的人」付掉 1 次额度，
+ * 后来者（含他自己）免费读。
+ *
+ * 这笔账**本来就该认**：项目已经认过「替全站把缓存升级成会员版不该由个人掏次数」（见上）。
+ * 首建比升级更彻底 —— 升级至少让会员本人拿到了会员段落，**首建对他自己的额外收益是零**。
+ *
+ * ⚠ 端上那个标记不可信（可改包），所以复核必须在这里做，四个条件**同时**成立才免：
+ *   1. 那一行存在，且 `first_build_owner` 就是调用者 —— 由写口在建行那一条 insert 里写死
+ *      （`!existing` 即「全站第一次建这个人物」），端上伪造不了（report_cache 客户端只读）；
+ *   2. 那一行还没被免过（`first_build_waived_at` 空）—— 否则「首建完立刻刷新一次」能再来一发；
+ *   3. `first_build_at` 落在时间窗内 —— 豁免只对应**刚发生的那一次生成**，不是一张长期欠条；
+ *   4. 今天的首建豁免名额还没用完（**上限 1 次/日**）。
+ *
+ * 为什么上限是 1 次/日：免费额度 3 次/日，若首建全免，「专挑新人物建」就能把闸门整个绕开
+ * （平台支出最多涨到 4 次/人/天）。锁在 1 次既把增量压到可控范围，又保住了那句诚意 ——
+ * 「你为全站建了新内容，这一次平台请你」。它也是**唯一的滥用边界**：即便有人能伪造出
+ * 前面三条，每天也只多拿 1 次。
+ *
+ * 任何一步不成立或读库异常 → 不免，按普通生成计数（宁可多算一次，不留白拿口子）。
+ */
+const FIRST_BUILD = 'first_build'
+
+/** 每日首建豁免上限（理由见上）；与免费档 generate 的 3 次/日搭配 ⇒ 最坏 4 次/人/天 */
+const FIRST_BUILD_WAIVE_PER_DAY = 1
+
+/**
+ * 时间窗：从写口建行（`first_build_at`）到这次申请之间允许的间隔。
+ *
+ * 取值必须**盖住一次最坏构建**：`utils/cache.ts#BUILDING_TIMEOUT_MS` = 4 批 × 3 次尝试
+ * × 2 轮完整生成 × 45s + 检索 15s + 余量 30s = **1125s（约 18.7 分钟）** —— 它是「这次生成
+ * 最长可能跑多久」的权威上界，而申请必然发生在构建结束之后。
+ *
+ * 原先填 15 分钟，比这个上界还短：构建只要慢到 18 分钟，用户在构建结束的毫秒之后提交的申请
+ * 就会因超窗被拒 —— 冤枉的恰好是最慢的那些首建（用户已付出最长的等待，还拿不到那句诚意）。
+ * 故取 20 分钟，刚好盖住上界；**不要再改小**，除非同时确认构建上界也降了。
+ *
+ * 再长就等于把「首建」变成一张可以慢慢兑现的欠条；不过放长本身不危险：② 的人物级标记与
+ * ④ 的 1 次/日上限都还在，多认的也只是「当天那一次」。所以这里宁可稍微宽松。
+ */
+const FIRST_BUILD_WINDOW_MS = 20 * 60 * 1000
+
+/**
+ * 占用今天的「首建豁免」名额（原子）。返回 true = 名额到手。
+ *
+ * 计数落在**同一张 generate_quota 行的另一个字段** `waive_count` 上，不新开集合：
+ * 那一行本来就是「某人某天」的天然容器（_id = openid#date），而按项目惯例新开集合还要
+ * 在控制台手建 + 收紧权限，漏一步就静默失效（见文件头 `ask` 的教训）。
+ *
+ * 先自增再读回：并发的两个请求各占一坑（读到 1 与 2），后者判超限即回滚并放行失败 ——
+ * 宁可多算一次生成，也不放过两次豁免。
+ */
+async function claimFirstBuildSlot(id, openid) {
+  const coll = db.collection('generate_quota')
+  let updated = 0
+  try {
+    updated = updatedOf(await coll.doc(id).update({ data: { waive_count: _.inc(1) } }))
+  } catch (err) {
+    /* 见 incrExistingRow 的 V-1 说明：行不存在时可能返回 0、也可能抛错，两者一律按「没落实」处理 */
+    updated = 0
+  }
+
+  if (updated === 0) {
+    /*
+     * 今天还没有任何**计入**的生成（那一行还不存在）：插首行。
+     * count 记 0 —— 本次是免计费的那一次，生成配额本就不该增加。
+     * 并发下 add 会因 _id 已存在而抛错：那一坑已被别人占走，保守判不免。
+     */
+    try {
+      await coll.add({ data: { _id: id, _openid: openid, count: 0, waive_count: 1 } })
+      return true
+    } catch (err) {
+      return false
+    }
+  }
+
+  let used = 0
+  try {
+    const res = await coll.doc(id).get()
+    used = res && res.data && typeof res.data.waive_count === 'number' ? res.data.waive_count : 0
+  } catch (err) {
+    /* 读不回来：既确认不了、也没法回滚，保守判不免（多算一次生成，好过多放一次豁免） */
+    return false
+  }
+  if (used <= FIRST_BUILD_WAIVE_PER_DAY) return true
+
+  /* 超限：把刚占的这一坑还回去（回滚失败也不影响判定 —— 下次仍会读到超限值） */
+  try {
+    await coll.doc(id).update({ data: { waive_count: _.inc(-1) } })
+  } catch (err) {
+    /* 见上 */
+  }
+  return false
+}
+
+async function firstBuildWaived(openid, target) {
+  if (!validTargetKey(target)) return false
+
+  /* 行不存在时 doc().get() 直接抛错（与 readCount 同一现象）：由调用方兜成「不免」 */
+  const res = await db.collection('report_cache').doc(target).get()
+  const row = (res && res.data) || null
+  if (!row) return false
+
+  /* ① 这一行是**本次由调用者新建**的（写口在建行那条 insert 里写死，端上伪造不了） */
+  if (row.first_build_owner !== openid) return false
+  /* ② 同一人物只免一次 —— 否则「首建完马上刷新一次」能重复领 */
+  if (row.first_build_waived_at) return false
+  /* ③ 时间窗：豁免只对应刚发生的那一次生成，不是一张长期欠条 */
+  const builtAt = Date.parse(row.first_build_at)
+  if (!Number.isFinite(builtAt) || Date.now() - builtAt > FIRST_BUILD_WINDOW_MS) return false
+  /* ④ 每日上限：先占名额再发放（并发下只放一个） */
+  if (!(await claimFirstBuildSlot(`${openid}#${todayKey()}`, openid))) return false
+
+  /*
+   * 标记「这个人物的首建豁免已用掉」：它是条件 ② 的判据。
+   * best-effort —— 写不进去也**不会多发**：③ 的时间窗与 ④ 的日上限仍然拦着。
+   */
+  try {
+    await db
+      .collection('report_cache')
+      .doc(target)
+      .update({ data: { first_build_waived_at: new Date().toISOString() } })
+  } catch (err) {
+    console.warn(`[quotaGuard] 首建豁免标记写入失败（不影响本次判定）：${(err && err.message) || err}`)
+  }
+  return true
+}
+
 exports.main = async (event) => {
   const kind = event && event.kind
   const table = TABLE_BY_KIND[kind]
@@ -290,13 +423,16 @@ exports.main = async (event) => {
       return { ok: false, error: `未知 action：${action}（支持 consume / peek）` }
     }
 
-    /* 「会员补齐」免计费（P1）：只有生成配额这一条口子，复核不过就照常计数 */
-    if (kind === 'generate' && event.waiveIf === MEMBER_UPGRADE) {
+    /* 免计费（会员补齐 / 首建）：只有生成配额这一条口子，复核不过就照常计数 */
+    if (kind === 'generate' && (event.waiveIf === MEMBER_UPGRADE || event.waiveIf === FIRST_BUILD)) {
       let waived = false
       try {
-        waived = await memberUpgradeWaived(openid, event.target)
+        waived =
+          event.waiveIf === MEMBER_UPGRADE
+            ? await memberUpgradeWaived(openid, event.target)
+            : await firstBuildWaived(openid, event.target)
       } catch (err) {
-        console.warn(`[quotaGuard] 会员补齐复核失败，按普通生成计数：${(err && err.message) || err}`)
+        console.warn(`[quotaGuard] ${event.waiveIf} 复核失败，按普通生成计数：${(err && err.message) || err}`)
       }
       if (waived) {
         /* 免计费：不自增，回报当前计数（端上按 waived 处理，不再补记） */

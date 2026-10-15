@@ -1,5 +1,6 @@
 import Taro from '@tarojs/taro'
 import { callCloudFunction } from './cloud'
+import { toUserMessage } from './error'
 import { diagLog } from './cloud-diagnostics'
 import { MEMBER_DAILY_GENERATE_LIMIT, readMemberState } from './member'
 import { PLANS } from '../config/benefits'
@@ -306,9 +307,7 @@ export async function buyMembership(planId: string): Promise<BuyResult> {
       activated: false,
       outTradeNo: null,
       cancelled: false,
-      error: /FunctionName|-501000|not found/i.test(msg)
-        ? '支付服务未部署（云函数 payCreate），请先在云开发控制台部署'
-        : `下单失败：${msg}`
+      error: toUserMessage(err, '下单失败，请稍后重试')
     }
   }
 
@@ -337,19 +336,21 @@ export async function buyMembership(planId: string): Promise<BuyResult> {
       activated: false,
       outTradeNo: res?.outTradeNo ?? null,
       cancelled: false,
-      error: res?.error ?? '下单失败（云函数未返回支付参数）'
+      error: toUserMessage(res?.error, '下单失败，请稍后重试')
     }
   }
 
   const p = res.payment
   if (!p.timeStamp || !p.nonceStr || !p.package || !p.paySign) {
+    /* 支付参数不整 = 商户号 / 回调配错，属运维问题：原因进日志，用户侧只说人话 */
+    diagLog('warn', 'db', '云支付返回的支付参数不完整（请检查商户号与支付回调配置）')
     return {
       ok: false,
       paid: false,
       activated: false,
       outTradeNo: res.outTradeNo ?? null,
       cancelled: false,
-      error: '云支付返回的支付参数不完整（请检查商户号与支付回调配置）'
+      error: '支付暂时不可用，请稍后重试或联系我们。'
     }
   }
 
@@ -383,13 +384,14 @@ export async function buyMembership(planId: string): Promise<BuyResult> {
       }
     }
     diagLog('error', 'db', `微信支付失败：${msg}`)
+    /* 原始微信错误串（`requestPayment:fail …`）已进 diagLog，用户侧只给一句能照做的说明 */
     return {
       ok: false,
       paid: false,
       activated: false,
       outTradeNo: res.outTradeNo ?? null,
       cancelled: false,
-      error: `支付失败：${msg}`
+      error: toUserMessage(err, '支付未完成，请稍后重试')
     }
   }
 

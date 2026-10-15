@@ -3,6 +3,7 @@ import { publicConfig } from '@/config/public'
 import { useAuth } from '@/stores/auth'
 import { setAlertOptIn, setRiskOptIn, setSubscribeOptIn } from './auth'
 import { diagLog } from './cloud-diagnostics'
+import { toUserMessage } from './error'
 
 /**
  * 关注更新提醒（微信订阅消息）。
@@ -49,7 +50,8 @@ export async function requestNotify(): Promise<{ ok: boolean; message: string }>
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('warn', 'auth', `订阅授权失败：${msg}`)
-    return { ok: false, message: `授权失败：${msg}` }
+    /* 用户侧只说人话：「授权失败：requestSubscribeMessage:fail …」这种原文没有任何出路可言 */
+    return { ok: false, message: toUserMessage(err, '未开启提醒，请稍后重试') }
   }
 
   if (status !== 'accept') {
@@ -101,7 +103,8 @@ export async function requestAlertNotify(): Promise<{ ok: boolean; message: stri
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('warn', 'auth', `预警订阅授权失败：${msg}`)
-    return { ok: false, message: `授权失败：${msg}` }
+    /* 用户侧只说人话：「授权失败：requestSubscribeMessage:fail …」这种原文没有任何出路可言 */
+    return { ok: false, message: toUserMessage(err, '未开启提醒，请稍后重试') }
   }
 
   if (status !== 'accept') {
@@ -151,7 +154,8 @@ export async function requestRiskNotify(): Promise<{ ok: boolean; message: strin
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('warn', 'auth', `风险提醒授权失败：${msg}`)
-    return { ok: false, message: `授权失败：${msg}` }
+    /* 用户侧只说人话：「授权失败：requestSubscribeMessage:fail …」这种原文没有任何出路可言 */
+    return { ok: false, message: toUserMessage(err, '未开启提醒，请稍后重试') }
   }
 
   if (status !== 'accept') {

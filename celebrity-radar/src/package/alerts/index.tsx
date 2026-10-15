@@ -31,7 +31,7 @@ import { loadScanLogs, latestLogByKey, SCAN_STATUS_LABEL } from '@/utils/scan-lo
 import { alertNotifyConfigured, requestAlertNotify, requestRiskNotify, riskNotifyConfigured } from '@/utils/notify'
 import { openSourceLink } from '@/utils/source-link'
 import { formatMoment8, fromNow } from '@/utils/time'
-import type { RiskScanRow, ScanLogRow } from '@/types/db'
+import type { RiskScanRow, RiskSignalRow, ScanLogRow } from '@/types/db'
 import EmptyState from '@/components/empty-state'
 import './index.scss'
 
@@ -226,6 +226,13 @@ export default function Alerts() {
   /** 条目的时间展示：优先媒体发布时间，缺失时退回我们首次看到它的时间（P2-36：一律 UTC+8） */
   const itemDate = (item: AlertGroup['items'][number]) =>
     formatMoment8(item.published_date ?? item.first_seen_at ?? '')
+
+  /**
+   * 风险信号的时间展示：与上面 itemDate 及云端时间线**同一口径** —— 优先媒体发布时间，
+   * 缺失才退回我们首次看到它的时间。两个口径之差不是小事：「今天扫到一条上月的旧报道」
+   * 若一律显示成「今天」，会被读成刚刚发生（判新旧仍走 first_seen_at，不受这里影响）。
+   */
+  const signalDate = (s: RiskSignalRow) => seenLabel(s.published_date ?? s.first_seen_at)
 
   /* 本次新增之和：走 utils/inbox#alertNewCount（与舆情页「新 N 条」同一口径，等价于各词 newCount 相加） */
   const newTotal = alertNewCount(groups)
@@ -597,7 +604,7 @@ export default function Alerts() {
                         url: s.url,
                         title: s.title,
                         source: s.source,
-                        date: seenLabel(s.first_seen_at),
+                        date: signalDate(s),
                         summary: s.quote || s.title
                       })
                     }
@@ -609,7 +616,7 @@ export default function Alerts() {
                       <Text className='page-alerts__item-title'>{s.title}</Text>
                     </View>
                     <Text className='page-alerts__item-meta'>
-                      {[s.source, seenLabel(s.first_seen_at)].filter(Boolean).join(' · ')}
+                      {[s.source, signalDate(s)].filter(Boolean).join(' · ')}
                     </Text>
                   </View>
                 ))}

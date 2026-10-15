@@ -11,7 +11,8 @@ import type {
   OpinionBlock,
   OpinionEntry,
   OpinionInput,
-  ResponseNeed
+  ResponseNeed,
+  TimeBasis
 } from './opinion-rank'
 import type { RiskCategory } from './risk'
 
@@ -75,6 +76,18 @@ export const SOURCE_NATURE_LABEL: Record<SourceNature, string> = {
   unknown: '来源未标注'
 }
 
+/**
+ * 时间口径的展示措辞（见 TimeBasis）。
+ *
+ * **刻意只有 'seen' 有词、'published' 留空**：媒体发布时间是常态、不需要额外解释；
+ * 只有「这个时间其实是**我们**第一次扫到它的时刻」才必须提醒读者，否则「我们 10-16 扫到
+ * 一条 10-10 的旧报道」会被读成「10-16 又有新进展」。两个口径都标一遍反而像还有第三种东西。
+ */
+export const TIME_BASIS_LABEL: Record<TimeBasis, string> = {
+  published: '',
+  seen: '发现于'
+}
+
 /** 时间线上的一条：时间 + 来源 + 来源性质 + 一句话发生了什么（+ 谁） */
 export interface TimelineItem {
   /** 时间串（原始字段，展示时再格式化） */
@@ -88,6 +101,12 @@ export interface TimelineItem {
   block: OpinionBlock
   /** 这条归属于哪个「我盯的人 / 词」（都缺时为空串） */
   label: string
+  /**
+   * 时间口径（见 TimeBasis）：'seen' = 这是我们**第一次扫到**它的时刻、不是媒体发布时间，
+   * 展示层据此写成「发现于」。缺失（老数据 / 绝大多数来源）按媒体发布时间看待。
+   * 只对**需要提醒读者**的那一种加标记，不给每条都挂一个无意义字段。
+   */
+  timeBasis?: TimeBasis
 }
 
 /** 事件的一个成员条目（保留各自来源、时间、来源性质与判断） */
@@ -103,6 +122,8 @@ export interface OpinionEventMember {
   response: ResponseNeed
   category?: RiskCategory
   level?: ImpactLevel
+  /** 时间口径（见 TimeBasis）；缺失表示按媒体发布时间看待 */
+  timeBasis?: TimeBasis
 }
 
 /** 聚合后的一个事件 */
@@ -123,8 +144,16 @@ export interface OpinionEvent {
   title: string
   /** 成员条目列表（含无来源者） */
   members: OpinionEventMember[]
-  /** 成员数量（几条来源在说同一件事） */
+  /** 保留在事件里的成员数（**恒等于 `members.length`**；云端可能已按 MAX_MEMBERS 截断过） */
   memberCount: number
+  /**
+   * 去重后的**真实**来源条数（≥ `memberCount`）。
+   *
+   * 事件卡上的「N 条来源」必须报这个：云端为控制单文档体积会把成员截到 30 条，
+   * 若拿 `memberCount` 当来源数，一场有 80 篇报道的爆点事件会显示成「30 条来源」—— 那是假数字。
+   * 端上本端聚类不截断成员，故这里恒等于 `memberCount`（两端字段同名同义，见 opinion-store）。
+   */
+  memberTotal: number
   /** 时间线：带来源且时间可解析的成员，按时间正序（红线 2） */
   timeline: TimelineItem[]
   /** 整组去重来源 */
@@ -326,7 +355,7 @@ function pickEventTitle(members: OpinionEntry[]): string {
 /* ─────────────────────────── 组装 ─────────────────────────── */
 
 function toMember(e: OpinionEntry): OpinionEventMember {
-  return {
+  const member: OpinionEventMember = {
     block: e.block,
     title: e.title,
     summary: e.summary,
@@ -339,6 +368,9 @@ function toMember(e: OpinionEntry): OpinionEventMember {
     category: e.category,
     level: e.level
   }
+  /* 只在确有口径时才加键（见 TimeBasis 注释） */
+  if (e.timeBasis) member.timeBasis = e.timeBasis
+  return member
 }
 
 /**
@@ -382,14 +414,20 @@ export function buildOpinionEvents(input: OpinionInput = {}): OpinionEvent[] {
     /* 时间正序；同刻按入参顺序（稳定） */
     dated.sort((a, b) => a.ms - b.ms || a.i - b.i)
 
-    const timeline: TimelineItem[] = dated.map(({ m }) => ({
-      date: m.date,
-      source: m.source,
-      nature: sourceNatureOf(m.source),
-      text: m.title,
-      block: m.block,
-      label: m.label
-    }))
+    const timeline: TimelineItem[] = dated.map(({ m }) => {
+      const node: TimelineItem = {
+        date: m.date,
+        source: m.source,
+        nature: sourceNatureOf(m.source),
+        text: m.title,
+        block: m.block,
+        label: m.label
+      }
+      /* 时间口径随条目透出（'seen' → 展示层写「发现于」）：端上回落的输入里，
+         风险信号用的是 first_seen_at（我们扫到的时刻），其余是媒体发布时间 */
+      if (m.timeBasis) node.timeBasis = m.timeBasis
+      return node
+    })
 
     const labels = [...new Set(members.map((m) => m.label).filter(Boolean))]
     const latest = dated.length ? dated[dated.length - 1].m.date : ''
@@ -404,6 +442,8 @@ export function buildOpinionEvents(input: OpinionInput = {}): OpinionEvent[] {
       title: pickEventTitle(members),
       members: members.map(toMember),
       memberCount: members.length,
+      /* 端上本端聚类不截断成员，故真实来源数恒等于成员数（云端那个可能更大，见 OpinionEvent.memberTotal） */
+      memberTotal: members.length,
       timeline,
       sources: g.sources,
       labels,

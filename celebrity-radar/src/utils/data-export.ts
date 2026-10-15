@@ -4,6 +4,7 @@ import { listFollows } from './follows'
 import { listFavorites } from './favorites'
 import { listHistory } from './history'
 import { listWatches } from './keyword-alert'
+import { toUserMessage } from './error'
 import { getPreferredProvider, getPreferredTier } from './settings'
 
 /**
@@ -154,7 +155,8 @@ export async function exportMyDataToClipboard(): Promise<{ ok: boolean; message:
   try {
     bundle = await buildMyDataBundle()
   } catch (err) {
-    return { ok: false, message: `读取个人数据失败：${errText(err)}` }
+    /* 原始异常只进日志：`读取个人数据失败：{errMsg: …}` 这种原文对用户没有意义 */
+    return { ok: false, message: toUserMessage(err, '读取个人数据失败，请稍后重试') }
   }
   if (!bundle) return { ok: false, message: '登录后才能导出，请稍后重试' }
 
@@ -173,6 +175,12 @@ export async function exportMyDataToClipboard(): Promise<{ ok: boolean; message:
           '复制到剪贴板失败：剪贴板属平台隐私接口，请先在微信公众平台后台「设置 → 服务内容声明 → 用户隐私保护指引」配置并勾选「剪贴板」后重试。'
       }
     }
+    /*
+     * 非隐私类的复制失败**照实带回原因**（`mock: clipboard denied` 这类）：
+     * 这是「我要把自己的数据带走」的诉求，报错了却只说「请稍后重试」等于让用户一次次白发一次请求，
+     * 原始原因至少能让开发者一眼认出是真机权限还是平台拒绝（test/cases/42-data-export.js 钉住这条）。
+     * 唯一例外是隐私未授权（上面那个分支）：那种英文指引用户照着做也没用，换成可操作的路径。
+     */
     return { ok: false, message: `复制到剪贴板失败：${errText(err)}` }
   }
 }

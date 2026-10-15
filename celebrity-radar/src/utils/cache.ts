@@ -48,6 +48,7 @@ import {
 } from './report-store'
 import { REFRESH_QUOTA_DISABLED } from './debug'
 import { diagLog } from './cloud-diagnostics'
+import { toUserMessage } from './error'
 /* 名字回退（Task A，2026-10-12）：同一个人可能被不同入口写成两行 personKey，读取侧按名字归一 */
 import { resolvePersonKey, rememberPerson } from './person-index'
 import type { ReportCacheRow, FeedCacheRow, RefreshQuotaRow } from '@/types/db'
@@ -182,6 +183,19 @@ export type ReportOutcome =
       refreshFailed?: boolean
       /** 失败原因（配合 refreshFailed，页面直接展示） */
       refreshError?: string
+      /**
+       * 本次生成是**全站第一次**为这个人物建立报告（2026-10-15，公平性可见化）。
+       *
+       * 为什么要交回页面：报告是全局共享缓存，一份建好之后全站长期复用、任何人再查都
+       * 不消耗次数 —— 于是「第一个生成的人」在自己付掉 1 次额度时，并不知道买到的是
+       * 「一份全站共用的资产」。用户视角下这笔账很容易读成「我出钱、别人白看」，
+       * 而实际上他买到的是可反复查看的报告本体（且热门人物多半是别人先建、他才是受益者）。
+       * 页面据此说明「这一次是你为全站建立的」（见 package/report/index.tsx 的首建提示条）。
+       *
+       * ⚠ 仅作说明与埋点用，**不参与任何计费**：首建该不该免计费是另一个待定的产品口径
+       *   （同款先例是「会员补齐」免计费，见 utils/quota-guard.ts）。
+       */
+      firstBuild?: boolean
     }
   | { kind: 'coldstart' } // 无联网素材 + 缓存为空（或强刷）：引导态
   | { kind: 'nonews' } // 抓取为空：暂未检索到
@@ -204,6 +218,30 @@ async function getRow(personKey: string): Promise<ReportCacheRow | null> {
  */
 function isUsable(row: ReportCacheRow | null): row is ReportCacheRow & { report: Report } {
   return !!row && row.state === 'ready' && !!row.report
+}
+
+/**
+ * 本次生成是否算「为该人物**全站首建**」（2026-10-15）。
+ *
+ * 为什么单独抽出来：报告是全局共享缓存（一行 / personKey），一份建好之后全站复用 ——
+ * 于是「第一个生成的人」付掉 1 次额度，而后面所有人（包括他自己）再查都不消耗次数。
+ * 这本身是共享缓存的正常代价（把同一个人物的生成从 N 次压到 1 次），但**要让它可见**：
+ * 页面据此说明「这一次是你为全站建立的」（见 ReportOutcome.firstBuild），埋点据此区分
+ * 首建 / 覆盖 —— 后者正是回答「到底有多少次生成是在建新行」的唯一数据，
+ * 而那又是「首建免计费」这类公平性方案的成本口径。
+ *
+ * 判据只看**行在不在**：
+ *   · 行不存在 ⇒ 首建；
+ *   · 行存在（ready / building 都算）⇒ 不是。后者的典型是抢占超时构建 ——
+ *     那一行上常还躺着上一版报告，这个人**早被建过**，本次只是重做。
+ * 与云端写口**天然同构**：aiProxy/report-store.js#storeAcquire 里 `!existing` 说的就是同一件事，
+ * 将来把首建免计费落进 quotaGuard 时两边判据逐字对齐，不必再翻译一套（同 member_upgrade 的先例）。
+ *
+ * 读库失败时 getRow 返回 null，会把「本来有行」误判成首建 —— 代价只是多说一句
+ * 「这是你首次生成」，可以接受（它不进计费）。
+ */
+export function isFirstBuild(row: ReportCacheRow | null | undefined): boolean {
+  return !row
 }
 
 /**
@@ -610,7 +648,11 @@ export async function getOrBuildReport(
    */
   let personKey = personKeyParam
   let parsed = parsePersonKey(personKey)
-  if (!parsed) return { kind: 'error', message: `非法 personKey：${personKey}` }
+  /* 坏 key 属内部数据问题：`非法 personKey：xxx` 对用户毫无意义，原文进日志、提示给一句能照做的 */
+  if (!parsed) {
+    diagLog('warn', 'db', `非法 personKey：${personKey}`)
+    return { kind: 'error', message: '报告链接无效或已失效，请返回重新搜索' }
+  }
   let name = parsed.name
   let domain = parsed.domain
 
@@ -783,12 +825,22 @@ export async function getOrBuildReport(
    */
   const memberUpgrade = memberDeep && !hasMemberBlocks(row?.report)
 
+  /**
+   * 本次是否「为全站首建这个人物的报告」（2026-10-15，判据见 isFirstBuild）。
+   *
+   * 取值必须在**抢锁之前**（抢锁会把这一行建成 building，行就不再是「不存在」了），
+   * 而且用的就是上面那一次读取的结果 —— 不为一句说明多付一次库读。
+   */
+  const firstBuild = isFirstBuild(row)
+
   // 2. 抢锁（三态：acquired / lost / degraded）
   let lock: 'acquired' | 'lost' | 'degraded'
   try {
     lock = await acquire(personKey, userId)
   } catch (err) {
-    const message = `缓存服务异常：${err instanceof Error ? err.message : String(err)}`
+    /* 抢锁失败：原文只进日志，页面提示走文案层 */
+    diagLog('warn', 'db', `缓存抢锁失败：${err instanceof Error ? err.message : String(err)}`)
+    const message = toUserMessage(err, '缓存服务异常，请稍后重试')
     return (await cachedFallback(message, memberDeep)) ?? { kind: 'error', message }
   }
 
@@ -939,7 +991,12 @@ export async function getOrBuildReport(
     })
     if (!res.ok) {
       await release(personKey, userId)
-      return (await cachedFallback(res.error, memberDeep)) ?? { kind: 'error', message: res.error }
+      return (
+        (await cachedFallback(res.error, memberDeep)) ?? {
+          kind: 'error',
+          message: toUserMessage(res.error, '生成失败，请稍后重试')
+        }
+      )
     }
     if (isRefusedResult(res.data)) {
       await release(personKey, userId)
@@ -1128,7 +1185,12 @@ export async function getOrBuildReport(
         if (kept) return kept
       }
 
-      track('report_generate', { personKey, mode: 'realtime' })
+      /*
+       * `firstBuild` 是这批埋点里唯一能回答「有多少次生成真的在**新建**一行」的字段
+       * （其余都是「生成了一次」）。比例偏低说明绝大多数生成是覆盖既有缓存，那么
+       * 「首建免计费」的成本很小；比例偏高才需要重新掂量（口径见 isFirstBuild）。
+       */
+      track('report_generate', { personKey, mode: 'realtime', firstBuild })
       /*
        * 配额只在「用户真的拿到一份合格报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
        *   上方的 refused / error / coldstart / nonews / shortfall 分支均已提前 return，不计数；
@@ -1140,7 +1202,17 @@ export async function getOrBuildReport(
        *   memberUpgrade 的那一次已在落库前申请（见上方 ②），此处不再重复申请。
        */
       if (!memberUpgrade) {
-        void consumeGenerateQuota(userId)
+        /*
+         * 首建免计费申请（2026-10-15）：这一行缓存此前**全站都不存在**，是他第一次为全站建立
+         * （判据见 isFirstBuild）。产出的那一份之后所有人（包括他自己）免费读，故申请免掉这一次。
+         * 端上只是申请：真伪、时间窗与每日上限（1 次/日）都由 quotaGuard 复核，
+         * 复核不过就照常计数 —— 回退路径（云函数未部署）同样不认这个申请。
+         * 与 memberUpgrade 互斥：那个要求行上已有报告（缺会员段），这个要求连行都没有。
+         */
+        void consumeGenerateQuota(
+          userId,
+          firstBuild ? { waiveIf: 'first_build', target: personKey } : undefined
+        )
       }
       /* 本次产物按**本次身份**过滤（批 1）：非会员生成的报告本就不含会员段 → 快路径直出、零额外读 */
       const shown = await exposeReport(report, memberDeep)
@@ -1149,13 +1221,17 @@ export async function getOrBuildReport(
         report: shown.report,
         fromCache: false,
         prev: prevReport,
-        memberLocked: shown.locked
+        memberLocked: shown.locked,
+        /* 首建才带（见 ReportOutcome.firstBuild）：页面据此说明「这次是你为全站建立的」 */
+        ...(firstBuild ? { firstBuild: true } : {})
       }
     }
     return finalizeAndReturn(report, news.length)
   } catch (err) {
     await release(personKey, userId).catch(() => undefined)
-    const message = err instanceof Error ? err.message : String(err)
+    diagLog('warn', 'db', `报告生成异常：${err instanceof Error ? err.message : String(err)}`)
+    /* 原始异常只进日志：这个 message 会被 cachedFallback 原样带到页面提示上 */
+    const message = toUserMessage(err, '生成失败，请稍后重试')
     return (await cachedFallback(message, memberDeep)) ?? { kind: 'error', message }
   }
 }

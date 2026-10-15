@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import Taro, { usePullDownRefresh, useReachBottom, useRouter } from '@tarojs/taro'
 import { Text, View } from '@tarojs/components'
 import { listFollows } from '@/utils/follows'
@@ -10,8 +10,8 @@ import { readMemberState } from '@/utils/member'
 import { TIMELINE_PAGE_SIZE, moreDetailNote, pageSlice, sliceDetail } from '@/utils/opinion-access'
 import { CRED_LABEL, IMPACT_LABEL, RESPONSE_LABEL } from '@/utils/opinion-rank'
 import type { OpinionInput } from '@/utils/opinion-rank'
-import { SOURCE_NATURE_LABEL, buildOpinionEvents, isValidEventKey } from '@/utils/opinion-events'
-import type { OpinionEvent } from '@/utils/opinion-events'
+import { SOURCE_NATURE_LABEL, TIME_BASIS_LABEL, buildOpinionEvents, isValidEventKey } from '@/utils/opinion-events'
+import type { OpinionEvent, TimelineItem } from '@/utils/opinion-events'
 import {
   emptyStatus,
   eventNewness,
@@ -53,6 +53,8 @@ import './index.scss'
  *
  * 免费用户看时间线仍**限 5 条**、会员看全部 —— 复用 `utils/opinion-access.ts#sliceDetail`，
  * 被截断时用同一行 `moreDetailNote`（点了跳会员页）。**本页不展示今日要点**，故不涉及要点免限。
+ * 被截断的 5 条是**头尾各留一半**（最早 3 条 + 最新 2 条），中间由 `__timeline-gap` 画一行省略提示 ——
+ * 只留头部会让免费用户永远看不到最新进展（理由见 `sliceDetail` 注释）。
  *
  * ## 合规红线（改本页前先读 utils/opinion-events.ts 文件头）
  *
@@ -76,6 +78,20 @@ import './index.scss'
  */
 
 type Status = 'loading' | 'ready' | 'invalid' | 'notfound'
+
+/**
+ * 时间线条目的时间文案。
+ *
+ * `timeBasis === 'seen'` 时明确写成「发现于 X」—— 这个时间是我们**第一次扫到**该报道的时刻，
+ * 不是媒体发布时刻（`risk_signals` 的老行没有发布时间，只能退回首见时间；见 TimeBasis）。
+ * 不区分的话，「10-16 扫到一条 10-10 的旧报道」会被读成「10-16 又有新进展」，时间线的先后就是假的。
+ * 其余（绝大多数）就是媒体发布时间，不额外加词。
+ */
+function timelineTimeText(t: TimelineItem): string {
+  const d = t.date ? formatMoment8(t.date) : ''
+  if (!d) return ''
+  return t.timeBasis === 'seen' ? `${TIME_BASIS_LABEL.seen} ${d}` : d
+}
 
 export default function EventTimeline() {
   const router = useRouter()
@@ -155,6 +171,9 @@ export default function EventTimeline() {
             title: it.title,
             source: it.source,
             date: it.published_date ?? it.first_seen_at ?? '',
+            /* 口径随条目带下去：有发布时间就是 'published'，退回我们首见时间才标 'seen'
+               （时间线据此写「发现于」，见 TimeBasis） */
+            timeBasis: it.published_date ? 'published' : 'seen',
             keyword: g.keyword
           })
         }
@@ -167,7 +186,10 @@ export default function EventTimeline() {
           block: 'alert',
           title: s.title,
           source: s.source,
-          date: s.first_seen_at,
+          /* 与云端同口径（opinionCluster#collectSources）：优先媒体发布时间 ——
+             risk_signals 自 2026-10-16 起落 published_date（老行为空 → 退回 first_seen_at） */
+          date: s.published_date ?? s.first_seen_at,
+          timeBasis: s.published_date ? 'published' : 'seen',
           person: s.name,
           category: s.category,
           level: s.level
@@ -354,7 +376,7 @@ export default function EventTimeline() {
   return (
     <View className='page-event glow-page safe-bottom'>
       <View className='page-event__hero'>
-        <Text className='page-event__hero-sub'>同一件事的多条来源，按时间排在一起（谁在何时、从哪说的）</Text>
+        <Text className='page-event__hero-sub'>同一件事的多条来源，按时间排在一起（谁在何时、从哪说的；标「发现于」的是我们首次监测到该报道的时刻）</Text>
       </View>
 
       <View className='card page-event__head'>
@@ -364,7 +386,7 @@ export default function EventTimeline() {
         </View>
         <Text className='page-event__meta'>
           {[
-            `${event.memberCount} 条来源`,
+            `${event.memberTotal} 条来源`,
             event.labels.length ? event.labels.join('、') : '',
             event.date ? `最近 ${formatMoment8(event.date)}` : '',
             `${event.timeline.length} 个节点`
@@ -400,22 +422,33 @@ export default function EventTimeline() {
         ) : (
           <>
             {paged.rows.map((t, i) => (
-              <View key={`${event.key}-${i}`} className='page-event__timeline-item'>
-                <View className='page-event__timeline-dot' />
-                <View className='page-event__timeline-body'>
-                  <Text className='page-event__timeline-meta'>
-                    {[
-                      t.date ? formatMoment8(t.date) : '',
-                      t.source || '来源未标注',
-                      SOURCE_NATURE_LABEL[t.nature],
-                      t.label
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </Text>
-                  <Text className='page-event__timeline-text'>{t.text}</Text>
+              <Fragment key={`${event.key}-${i}`}>
+                {/* 免费档时间线是「头尾各留一半」拼出来的（见 utils/opinion-access.ts#sliceDetail），
+                    这里是中间那条跳缝，**必须画出来**：否则「最早 3 条 + 最新 2 条」会被当成连续 5 条，
+                    读者会把第 4 条的时间当成紧接第 3 条 —— 时间线的先后就假了。
+                    `i` 是尾部第一行的下标（分页取的是前缀，故这里的下标仍对得上）。 */}
+                {i === visible.headCount && visible.hidden > 0 && (
+                  <View className='page-event__timeline-gap'>
+                    <Text className='page-event__timeline-gap-text'>⋯ 中间省略 {visible.hidden} 条 ⋯</Text>
+                  </View>
+                )}
+                <View className='page-event__timeline-item'>
+                  <View className='page-event__timeline-dot' />
+                  <View className='page-event__timeline-body'>
+                    <Text className='page-event__timeline-meta'>
+                      {[
+                        timelineTimeText(t),
+                        t.source || '来源未标注',
+                        SOURCE_NATURE_LABEL[t.nature],
+                        t.label
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                    <Text className='page-event__timeline-text'>{t.text}</Text>
+                  </View>
                 </View>
-              </View>
+              </Fragment>
             ))}
 
             {/* 免费档时间线被截断：沿用与舆情页同一行升级引导（不新造弹窗） */}

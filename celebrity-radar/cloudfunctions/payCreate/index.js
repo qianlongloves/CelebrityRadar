@@ -230,6 +230,8 @@ exports.main = async (event) => {
     if (!res || res.returnCode !== 'SUCCESS' || !res.payment) {
       await markFailed(outTradeNo)
       const detail = (res && (res.returnMsg || res.errCodeDes || res.resultCode)) || '云支付未返回支付参数'
+      /* 上游原文同时留一份到云函数日志（端上还会经 utils/error.ts 转成用户文案，见下） */
+      console.error('payCreate 微信支付下单失败：', detail)
       return { ok: false, kind: 'upstream', error: `微信支付下单失败：${detail}` }
     }
 
@@ -246,6 +248,8 @@ exports.main = async (event) => {
     }
   } catch (err) {
     await markFailed(outTradeNo)
+    /* 原始异常同时留一份到云函数日志（端上还会经 utils/error.ts 转成用户文案，见下） */
+    console.error('payCreate 下单异常：', err)
     return {
       ok: false,
       kind: 'upstream',

@@ -1980,7 +1980,17 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     )
 
     const keys = [...src.matchAll(/closeNotice\('(\w+)'\)/g)].map((m) => m[1])
-    deepEq(keys.sort(), ['bgGaps', 'degraded', 'diff', 'error', 'keptMember', 'missingGroups', 'shortfall'])
+    /* firstBuild（2026-10-15，首建说明条）同样是**独立一格**：它与其余各条讲的事互不相干 */
+    deepEq(keys.sort(), [
+      'bgGaps',
+      'degraded',
+      'diff',
+      'error',
+      'firstBuild',
+      'keptMember',
+      'missingGroups',
+      'shortfall'
+    ])
     for (const k of keys) ok(src.includes(`!closedNotices.${k} &&`), `key ${k} 必须真的接在渲染条件上，否则 ✕ 点了没反应`)
 
     notOk(/refreshNoticeClosed|warnClosed/.test(src), '旧的「多条共用一个开关」必须彻底拆掉')

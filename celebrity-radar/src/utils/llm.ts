@@ -5,6 +5,7 @@ import { getPreferredTier, getPreferredProvider } from './settings'
 import { diagLog } from './cloud-diagnostics'
 import { debugRaw } from './debug'
 import { callCloudFunction, cloudTimeoutHint, isCloudConfigured } from './cloud'
+import { toUserMessage } from './error'
 import { readMemberState } from './member'
 
 /**
@@ -391,35 +392,37 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
     /*
      * 云函数执行超时（-504003）是被平台在函数外掐断的，函数没机会回 kind / error，
      * 故这里必须单独认一次：它既不是上游故障也不是网络抖动，重试必定再撞同一道墙
-     * （还白等一个超时周期、并把 10 分钟冷却也点着），所以 retryable=false + 可照做的指引。
-     * 识别口径统一收在 utils/cloud.ts#cloudTimeoutHint。
+     * （还白等一个超时周期、并把 10 分钟冷却也点着）。
+     * 识别口径统一收在 utils/cloud.ts#cloudTimeoutHint —— 但那条是**给部署者看的**详细指引
+     * （含控制台路径），现在只进诊断日志；用户侧一律走 utils/error.ts 的短文案。
      */
     const timeoutHint = cloudTimeoutHint(msg)
-    if (timeoutHint) return { ok: false, error: timeoutHint, retryable: false }
+    if (timeoutHint) diagLog('warn', 'llm', timeoutHint)
     /*
      * 只剩一条通道，「函数没部署」不再是「该走另一条路」的降级信号，
-     * 而是必须让开发者看见并照着修的部署问题 —— 给一句可操作的指引，而不是把原因吞掉。
-     * 另注：入参过大被链路拒绝、网络故障，都走下面的透传分支（retryable=true）。
+     * 而是必须让开发者看见并照着修的部署问题：指引进日志，用户只会看到 error.ts 的
+     * 「服务尚未就绪，请联系开发者…」。
      */
-    if (/not found|FunctionName|-501000/i.test(msg)) {
-      return {
-        ok: false,
-        error: '云函数 aiProxy 未部署：请在 cloudfunctions/aiProxy 上右键「上传并部署」',
-        retryable: false
-      }
+    const notDeployed = /not found|FunctionName|-501000/i.test(msg)
+    if (notDeployed) {
+      diagLog('warn', 'llm', '云函数 aiProxy 未部署：请在 cloudfunctions/aiProxy 上右键「上传并部署」')
     }
     if (/-404011/.test(msg)) {
       /*
        * 云函数执行错误：aiProxy 内部抛了未捕获异常，端上拿不到结构化的 kind/error，
-       * 只能拿到 errCode=-404011 的技术串。给用户一句能照着做的指引，原始错误留在 diagLog。
+       * 只能拿到 errCode=-404011 的技术串 —— 它没有任何用户可执行的信息，故不进 UI，只留日志。
        */
-      return {
-        ok: false,
-        error: '云函数 aiProxy 执行出错：请到云开发控制台 → 云函数 → aiProxy → 日志 查看具体错误（原始错误已记入端上诊断日志）',
-        retryable: true
-      }
+      diagLog('warn', 'llm', '云函数 aiProxy 执行出错：请到 云开发控制台 → 云函数 → aiProxy → 日志 查看具体错误')
     }
-    return { ok: false, error: `平台大模型调用失败：${msg}`, retryable: true }
+    /*
+     * retryable 的语义保持不变：超时与未部署重试必再撞同一道墙（还白等一个超时周期、点着 10 分钟冷却），
+     * 其余（上游故障、入参过大、网络抖动）重试是有意义的。文案一律不把原始异常透传出去。
+     */
+    return {
+      ok: false,
+      error: toUserMessage(err, '生成失败，请稍后重试'),
+      retryable: !(timeoutHint || notDeployed)
+    }
   }
 
   const elapsedMs = Date.now() - startedAt
@@ -433,10 +436,15 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
      */
     if (!res || res.kind === 'unconfigured' || res.error?.includes('未知 action')) {
       const why = res?.error ?? '云函数无返回值'
-      diagLog('warn', 'llm', `平台大模型通道未就绪：${why}`)
+      /* 部署指引（要装 aiProxy、wx-server-sdk 版本、看 llm.config.js）只给部署者看：进日志 */
+      diagLog(
+        'warn',
+        'llm',
+        `平台大模型通道未就绪：${why}（需部署 aiProxy，且 wx-server-sdk ≥ 4.0.1 以支持云开发 AI，见 llm.config.js）`
+      )
       return {
         ok: false,
-        error: `平台大模型通道未就绪：${why}（需部署 aiProxy，且 wx-server-sdk ≥ 4.0.1 以支持云开发 AI，见 llm.config.js）`,
+        error: '服务尚未就绪，暂时无法生成。请联系开发者部署云端函数后再试。',
         retryable: false
       }
     }
@@ -455,7 +463,7 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
 
   const content = typeof res.content === 'string' ? res.content : ''
   if (!content.trim()) {
-    return { ok: false, error: '大模型返回为空', retryable: true, kind: 'empty' }
+    return { ok: false, error: '生成服务没有返回内容，请重试', retryable: true, kind: 'empty' }
   }
 
   diagLog(
@@ -820,7 +828,7 @@ export async function chatText(
   purpose: QuotaPurpose = 'generate'
 ): Promise<{ ok: true; text: string } | { ok: false; error: string; retryable?: boolean; kind?: string }> {
   if (!hasLlmChannel()) {
-    return { ok: false, error: '大模型通道不可用：云环境未配置（.env 的 TCB_ENV_ID 为空）' }
+    return { ok: false, error: '服务尚未就绪，暂时无法使用。请联系开发者完成云端配置后再试。' }
   }
   const attempt = await chatOnce(
     [
@@ -833,7 +841,7 @@ export async function chatText(
   const text = attempt.content.trim()
   /* 上游 200 但正文为空：与 chatOnce 的空返回同判 —— 可重试（进而进冷却），
      否则问答侧会把同一趟上游故障当成「不是错误」，无限重打。文案见 P2-14。 */
-  if (!text) return { ok: false, error: 'LLM 返回为空', kind: 'empty', retryable: true }
+  if (!text) return { ok: false, error: '生成服务没有返回内容，请重试', kind: 'empty', retryable: true }
   return { ok: true, text }
 }
 
@@ -856,12 +864,12 @@ export async function chatJSON<T>(
   opts: { retries?: number; purpose?: QuotaPurpose } = {}
 ): Promise<ChatJSONResult<T>> {
   if (!hasLlmChannel()) {
-    return { ok: false, error: '大模型通道不可用：云环境未配置（.env 的 TCB_ENV_ID 为空）' }
+    return { ok: false, error: '服务尚未就绪，暂时无法使用。请联系开发者完成云端配置后再试。' }
   }
 
   const purpose: QuotaPurpose = opts.purpose ?? 'generate'
   const attempts = 1 + (opts.retries ?? 1)
-  let lastError = 'LLM 输出无法解析为合法 JSON'
+  let lastError = '这次生成的内容不符合要求，请重试'
   let lastRetryable = true // 解析/校验失败默认可重试（换一次采样可能就过了）
   /*
    * 最近一次**调用**失败的 kind，随结果交给上层：kind='quota' 时 report.ts 必须跳过
@@ -915,9 +923,11 @@ export async function chatJSON<T>(
       if (parsed.success) {
         return { ok: true, data: parsed.data }
       }
-      lastError = `LLM 输出未过校验：${parsed.error.issues[0]?.message ?? '字段不合法'}`
+      /* zod 的 issue 文案（`Required`、字段路径…）是给开发者看的：进日志，不进 lastError */
+      const issue = parsed.error.issues[0]?.message ?? '字段不合法'
+      lastError = '这次生成的内容不符合要求，请重试'
       lastKind = undefined
-      diagLog('warn', 'llm', `chatJSON 第 ${i + 1} 次输出不合法：${lastError}`)
+      diagLog('warn', 'llm', `chatJSON 第 ${i + 1} 次输出未过校验：${issue}`)
       if (truncated) return truncatedFail(lastError)
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err)

@@ -38,6 +38,7 @@ import { clearQaUsage, qaUsageToday, refreshQaUsage } from '@/utils/qa'
 import type { QaUsage } from '@/utils/qa'
 import { useTabBarSync } from '@/utils/tabbar'
 import { dayKey8 } from '@/utils/time'
+import { toastText } from '@/utils/error'
 import './index.scss'
 
 /** 昵称长度上限（与 utils/auth.ts 的 NICKNAME_MAX 对齐） */
@@ -386,7 +387,8 @@ export default function Mine() {
       Taro.showToast({ title: okText, icon: 'success' })
       return true
     }
-    Taro.showToast({ title: res.message ?? '保存失败', icon: 'none' })
+    /* res.message 可能裹着云调用原文：再过一层文案层，认不出来就用「保存失败，请重试」 */
+    Taro.showToast({ title: toastText(res.message, '保存失败，请重试'), icon: 'none' })
     return false
   }
 

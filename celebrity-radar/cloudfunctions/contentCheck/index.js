@@ -39,10 +39,12 @@ function normSuggest(raw) {
 /** errCode / errMsg → 失败结果。kind 供端上判断是否值得重试 */
 function failure(errCode, errMsg) {
   const msg = String(errMsg || '未知错误')
+  /* 上游原文（errCode / 英文 errMsg）只进云函数日志，回端上的是一句人话 */
+  console.error('contentCheck 调用失败：', errCode, msg)
   if (errCode === -1 || errCode === 45009 || /freq|frequency|busy/i.test(msg)) {
-    return { ok: false, kind: 'rate', error: `内容安全接口限流：${msg}` }
+    return { ok: false, kind: 'rate', error: '内容校验服务繁忙，请稍后重试。' }
   }
-  return { ok: false, kind: 'upstream', error: `内容安全检测失败（${errCode || '?'}）：${msg}` }
+  return { ok: false, kind: 'upstream', error: '内容校验暂时不可用，请稍后重试。' }
 }
 
 /** 判定「这是违规」而非「这是故障」：v1 用 87014 报违规，v2 走 result.suggest，两条路都要认 */

@@ -1,6 +1,7 @@
 import { useAuth } from '@/stores/auth'
 import { callCloudFunction } from './cloud'
 import { diagLog } from './cloud-diagnostics'
+import { toUserMessage } from './error'
 import { explainDbFailure, table } from './db'
 import { normalizeKeyword, splitWatches, WatchRow } from './keyword-alert'
 import { readMemberState } from './member'
@@ -121,7 +122,7 @@ async function monitorPersonViaCloud(
     if (res.reason === 'over_limit') {
       return { ok: false, message: res.message || personWatchLimitNote(res.tier === 'member') }
     }
-    return { ok: false, message: res.message || '监控失败，请重试' }
+    return { ok: false, message: toUserMessage(res.message, '监控失败，请重试') }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('warn', 'db', `riskWatch(add) 调用失败，回退端上监控：${msg}`)
@@ -196,7 +197,8 @@ export async function monitorPerson(
        此前一律「监控失败，请重试」，用户只能反复点同一个按钮。 */
     const failure = explainDbFailure('keyword_watches', error, '监控')
     if (failure) return { ok: false, message: failure.message, fatal: failure.fatal }
-    return { ok: false, message: '监控失败，请重试' }
+    /* 环境类已由 explainDbFailure 兜住，剩下多是网络/超时：给一句人话，不透传原文 */
+    return { ok: false, message: toUserMessage(error, '监控失败，请重试') }
   }
 
   /*

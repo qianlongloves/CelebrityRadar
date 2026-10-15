@@ -2,6 +2,7 @@ import Taro from '@tarojs/taro'
 import { useAuth } from '@/stores/auth'
 import { callCloudFunction } from './cloud'
 import { diagLog } from './cloud-diagnostics'
+import { toUserMessage } from './error'
 import { explainDbFailure, table } from './db'
 import { readMemberState } from './member'
 import { watchGate, watchLimit, watchLimitNote } from './opinion-access'
@@ -213,7 +214,8 @@ async function addWatchViaCloud(
     if (res.reason === 'over_limit') {
       return { ok: false, message: res.message || watchLimitNote(res.tier === 'member') }
     }
-    return { ok: false, message: res.message || '订阅失败，请重试' }
+    /* 云端回执也可能裹着内部原文：过一层文案层，认不出来才用兜底 */
+    return { ok: false, message: toUserMessage(res.message, '订阅失败，请重试') }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('warn', 'db', `keywordAlert(add) 调用失败，回退端上订阅：${msg}`)
@@ -275,7 +277,8 @@ export async function addWatch(raw: string): Promise<{ ok: boolean; message: str
     diagLog('warn', 'db', `keyword_watches 写入失败：${error.message ?? error}`)
     const failure = explainDbFailure('keyword_watches', error, '订阅')
     if (failure) return { ok: false, message: failure.message, fatal: failure.fatal }
-    return { ok: false, message: '订阅失败，请重试' }
+    /* 环境类已由 explainDbFailure 兜住，剩下多是网络/超时：给一句人话，不透传原文 */
+    return { ok: false, message: toUserMessage(error, '订阅失败，请重试') }
   }
 
   /*

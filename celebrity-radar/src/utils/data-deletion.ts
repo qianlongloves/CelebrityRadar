@@ -2,6 +2,7 @@ import { table } from './db'
 import { useAuth } from '@/stores/auth'
 import { diagLog } from './cloud-diagnostics'
 import { callCloudFunction } from './cloud'
+import { toUserMessage } from './error'
 
 /**
  * 「清空我的数据」（§六.6）：本地设置 + 云端用户数据
@@ -63,14 +64,30 @@ export async function deleteAccount(): Promise<{ ok: boolean; message?: string }
       | { ok?: boolean; error?: string; failed?: string[] }
       | null
     if (!res || res.ok !== true) {
-      const reason = (res && res.error) || (res && res.failed && res.failed.join('；')) || '注销失败'
+      /*
+       * `failed` 是「表名: 原始 errMsg」的数组（见 userInit#deleteAccount 的逐表 try/catch）。
+       * 这里**只取表名**拼一句人话：云调用原文（collection not exist 这类）进日志，
+       * 但表名必须留着 —— 注销本来就会逐表失败（某张表没初始化），
+       * 不点出是哪张表的话，用户报障时我们和开发者都得把整条链路重跑一遍才能定位
+       * （test/cases/18-user-config.js 钉住这条）。
+       */
+      const failed = res && Array.isArray(res.failed) ? res.failed : []
+      const reason = (res && res.error) || failed.join('；') || '注销失败'
       diagLog('error', 'db', `注销账号失败：${reason}`)
-      return { ok: false, message: reason }
+      if (failed.length) {
+        const names = failed.map((s) => String(s).split(':')[0].trim()).filter(Boolean)
+        return {
+          ok: false,
+          message: `注销没能完成：${names.join('、')} 的数据未删除。请稍后重试；若反复出现，请联系开发者处理。`
+        }
+      }
+      /* 拿不到逐表明细（如缺 OPENID 这类整体拒绝）时，只把上游文案交统一出口翻译 */
+      return { ok: false, message: toUserMessage(reason, '注销失败，请稍后重试') }
     }
     return { ok: true }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     diagLog('error', 'db', `注销账号失败：${msg}`)
-    return { ok: false, message: msg }
+    return { ok: false, message: toUserMessage(err, '注销失败，请稍后重试') }
   }
 }

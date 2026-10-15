@@ -202,8 +202,12 @@ describe('关注动态页：分页不改动既有功能（回归锁）', () => {
     ok(page.includes('} finally {'), 'loading 仍在 finally 收掉')
   })
 
-  it('按人物筛选 Picker / 今日标记 / 空态 / 错误态 / 免责声明都还在', () => {
-    ok(page.includes('<Picker'), '按人物筛选的下拉仍在')
+  it('按人物筛选（面板）/ 今日标记 / 空态 / 错误态 / 免责声明都还在', () => {
+    /* 2026-10-15 重设计：人物筛选由顶卡里的 `<Picker>` 下拉改为**底部筛选面板**里的
+       「人物」多选组（与时间档、领域同面板）。断言随之改为钉住面板的两个承重结构：
+       面板容器本身 + 触发它的「筛选」按钮；`<Picker>` 不再存在，故此处不再断言它。 */
+    ok(page.includes("className='page-feed__sheet'"), '按人物筛选的底部面板仍在')
+    ok(page.includes('page-feed__filter'), '筛选入口按钮仍在')
     ok(page.includes('onFilterChange'), '筛选回调仍在')
     ok(page.includes("isToday(e.publishedDate)"), '「今日」新内容标记仍在')
     ok(page.includes('EmptyState'), '空态仍在')

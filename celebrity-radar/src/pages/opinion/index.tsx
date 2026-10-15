@@ -25,7 +25,7 @@ import {
   pickDailyFocus,
   responseOf
 } from '@/utils/opinion-rank'
-import type { CredTier, ImpactLevel, OpinionEntry, OpinionInput, ResponseNeed } from '@/utils/opinion-rank'
+import type { CredTier, ImpactLevel, OpinionEntry, OpinionInput, ResponseNeed, TimeBasis } from '@/utils/opinion-rank'
 import { buildDailyBrief } from '@/utils/opinion-brief'
 import { buildOpinionEvents } from '@/utils/opinion-events'
 import type { OpinionEvent } from '@/utils/opinion-events'
@@ -143,6 +143,8 @@ interface AlertPreview {
   title: string
   source: string
   date: string
+  /** 时间口径（见 TimeBasis）：'seen' = 上面那个时间其实是**我们首次扫到它**的时刻 */
+  timeBasis?: TimeBasis
   /** 条目级分级字段（云端 keywordAlert 写入 keywords.items 时补齐；未命中 / 旧缓存则无） */
   category?: RiskCategory
   level?: string
@@ -290,6 +292,8 @@ export default function Opinion() {
             title: it.title,
             source: it.source,
             date: it.published_date ?? it.first_seen_at ?? '',
+            /* 口径随条目带下去（时间线据此写「发现于」，见 TimeBasis） */
+            timeBasis: it.published_date ? 'published' : 'seen',
             /* 条目级字段（云端写入缓存时命中词典才有；旧缓存没有 = 保持未评级） */
             category: it.category,
             level: it.level
@@ -371,6 +375,7 @@ export default function Opinion() {
           title: a.title,
           source: a.source,
           date: a.date,
+          timeBasis: a.timeBasis,
           keyword: a.keyword,
           /* 同上：关键词预警条目也带条目级分级字段（云端写入时补齐） */
           category: a.category,
@@ -380,7 +385,11 @@ export default function Opinion() {
           block: 'alert' as const,
           title: s.title,
           source: s.source,
-          date: s.first_seen_at,
+          /* 与云端同口径（opinionCluster#collectSources）：优先媒体发布时间 ——
+             risk_signals 自 2026-10-16 起落 published_date（老行为空 → 退回 first_seen_at） */
+          date: s.published_date ?? s.first_seen_at,
+          /* 三元里的字面量会被推断成 string，必须窄化回 TimeBasis（同块上面那条走的是已知类型，故不用） */
+          timeBasis: (s.published_date ? 'published' : 'seen') as TimeBasis,
           person: s.name,
           category: s.category,
           level: s.level
@@ -780,7 +789,7 @@ export default function Opinion() {
                     </View>
                     <Text className='page-opinion__row-meta'>
                       {[
-                        `${ev.memberCount} 条来源`,
+                        `${ev.memberTotal} 条来源`,
                         ev.labels.length ? ev.labels.join('、') : '',
                         ev.date ? `最近 ${formatMoment8(ev.date)}` : '',
                         `${ev.timeline.length} 个节点`

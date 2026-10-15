@@ -108,6 +108,12 @@ export interface RiskSignalRow {
   quote: string
   source: string
   url: string
+  /**
+   * 媒体发布时间（上游 datePublished / dateLastCrawled；2026-10-16 起落库，老行为 null）。
+   * **不参与「是不是新的」判定**（那是 first_seen_at 的职责）——
+   * 只用于展示「这条报道是什么时候发的」，缺失时退回 first_seen_at。
+   */
+  published_date: string | null
   /** 我们自己的时钟打的「第一次见到这条」 */
   first_seen_at: string
 }
@@ -179,7 +185,10 @@ export interface OpinionEventRow {
   title: string
   /** 成员条目（含来源、时间、来源性质）—— 与端上 OpinionEventMember 逐字同构 */
   members: OpinionEventMember[]
+  /** 保留在事件里的成员数（恒等于 members.length；云端按 MAX_MEMBERS 截断过） */
   memberCount: number
+  /** 去重后的**真实**来源条数（≥ memberCount）。老行为空 → 端上回落 memberCount */
+  memberTotal?: number
   /** 时间线：时间正序、每条带来源（红线：无来源的条目不入） */
   timeline: TimelineItem[]
   sources: string[]

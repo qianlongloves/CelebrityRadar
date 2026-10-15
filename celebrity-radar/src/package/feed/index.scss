@@ -3,43 +3,31 @@
 .page-feed {
   min-height: 100vh;
 
-  /* ===== 部分读取失败提示（可点重试） =====
-     2026-10-10 加关闭键后改为行布局：正文占满，✕ 贴右端（整条仍可点重试，✕ 会 stopPropagation）。 */
-  &__notice {
+  /* ===== 第一层：工具行。搜索 与 筛选 并排 —— 在用户心里它们是同一个动作 ===== */
+  &__toolbar {
     display: flex;
     align-items: center;
-    gap: 12rpx;
-    margin: 24rpx 32rpx 0;
-    padding: 18rpx 24rpx;
-    border-radius: 20rpx;
-    background: rgba(255, 125, 83, 0.1);
+    gap: 16rpx;
   }
 
-  &__notice-text {
+  &__search {
     flex: 1;
     min-width: 0;
-    font-size: 24rpx;
-    line-height: 1.5;
-    color: $domain-business;
-  }
-
-  /* ===== 顶部聚合卡（2026-10-14 重排）：搜索框 → 统计 → 筛选行 → 抓取按钮 → 脚注 =====
-     .card 已提供底色/圆角/外边距，这里只管卡内布局。 */
-  &__stats {
-    display: flex;
-    gap: 20rpx;
-  }
-
-  /* ===== 搜索框（2026-10-14）：标题 / 摘要 / 人名模糊匹配 ===== */
-  &__search {
     display: flex;
     align-items: center;
-    gap: 12rpx;
+    gap: 10rpx;
     height: 76rpx;
-    padding: 0 26rpx;
+    padding: 0 24rpx;
     border-radius: 999rpx;
     background: $bg;
     border: 2rpx solid $line;
+  }
+
+  &__search-icon {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    line-height: 1;
+    opacity: 0.65;
   }
 
   &__search-input {
@@ -59,107 +47,139 @@
     display: flex;
     align-items: center;
     justify-content: center;
-
-    &--tap { opacity: 0.7; }
-  }
-
-  &__search-clear-text {
-    font-size: 26rpx;
+    font-size: 22rpx;
     line-height: 1;
     color: #fff;
   }
 
-  &__stat {
-    flex: 1;
-    border-radius: 28rpx;
-    padding: 22rpx 26rpx;
-    display: flex;
-    flex-direction: column;
-    gap: 6rpx;
-
-    &--brand { background: $brand-weak; }
-    &--blue { background: $accent-blue-bg; }
-
-    &-label {
-      font-size: 22rpx;
-      color: $text-2;
-    }
-
-    &-value {
-      font-size: 36rpx;
-      font-weight: 600;
-      color: $text-1;
-    }
-  }
-
-  /* ===== 筛选行（2026-10-14）：人物 + 领域两个下拉并排 ===== */
-  &__filters {
-    margin-top: 24rpx;
+  /* 筛选按钮：无条件时是安静的描边胶囊；有条件生效才变成品牌色 + 角标，
+     让「我设过筛选」这件事在不看列表的情况下也成立 */
+  &__filter {
+    flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 20rpx;
-  }
-
-  /* ===== 抓取按钮行（2026-10-14 独立成行） ===== */
-  &__actions {
-    margin-top: 20rpx;
-    display: flex;
-    align-items: center;
-  }
-
-  /* Picker 外壳：占满剩余宽度，与抓取按钮同高 */
-  &__picker {
-    flex: 1;
-    min-width: 0;
-  }
-
-  /* 下拉触发器：浅底描边胶囊，右侧一枚 caret 表示「可展开」 */
-  &__select {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12rpx;
+    gap: 8rpx;
     height: 76rpx;
-    padding: 0 26rpx;
+    padding: 0 28rpx;
     border-radius: 999rpx;
     background: $bg;
     border: 2rpx solid $line;
+
+    &--on {
+      background: rgba(95, 51, 225, 0.08);
+      border-color: $brand;
+    }
+
+    &--tap {
+      opacity: 0.8;
+    }
   }
 
-  &__select-text {
-    flex: 1;
-    min-width: 0;
+  &__filter-text {
     font-size: 26rpx;
     font-weight: 500;
-    color: $text-1;
+    color: $text-2;
+
+    /* 有条件生效时文字跟着变品牌色（与角标一致） */
+    .page-feed__filter--on & {
+      color: $brand;
+    }
+  }
+
+  &__filter-badge {
+    min-width: 32rpx;
+    height: 32rpx;
+    padding: 0 8rpx;
+    border-radius: 999rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 20rpx;
+    line-height: 32rpx;
+    text-align: center;
+  }
+
+  /* ===== 第二层：生效条件回显。点一下即摘掉，不必回面板 ===== */
+  &__chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12rpx;
+    margin-top: 18rpx;
+  }
+
+  &__chip {
+    display: flex;
+    align-items: center;
+    gap: 8rpx;
+    max-width: 320rpx;
+    height: 52rpx;
+    padding: 0 18rpx;
+    border-radius: 999rpx;
+    background: rgba(95, 51, 225, 0.08);
+    border: 2rpx solid rgba(95, 51, 225, 0.18);
+  }
+
+  &__chip-text {
+    font-size: 22rpx;
+    color: $brand;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  &__select-caret {
+  &__chip-x {
     flex-shrink: 0;
-    font-size: 22rpx;
+    font-size: 20rpx;
     line-height: 1;
+    color: $brand;
+    opacity: 0.6;
+  }
+
+  &__chips-clear {
+    margin-left: 4rpx;
+    font-size: 22rpx;
+    color: $text-3;
+    text-decoration: underline;
+  }
+
+  /* ===== 摘要行：规模 / 符合数 / 抓取动作 ===== */
+  &__summary {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    margin-top: 20rpx;
+  }
+
+  &__summary-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    color: $text-2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__summary-match {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    font-weight: 600;
     color: $brand;
   }
 
-  /* 主按钮：与「搜索名人」同色同圆角风格（实心品牌紫 + 胶囊），
-     它是本页唯一会花掉配额的主动作，值得占满视觉重量。 */
+  /* 抓取动作：全页唯一花配额的动作，但它是低频的 —— 从旧版独占一行的大按钮
+     降级为摘要行右侧的小胶囊，让首屏的主视觉留给内容本身。下拉刷新仍是同一条路径。 */
   &__fetch {
-    flex: 1;
-    height: 76rpx;
+    flex-shrink: 0;
+    height: 56rpx;
     display: flex;
     align-items: center;
-    justify-content: center;
-    padding: 0 34rpx;
+    padding: 0 26rpx;
     border-radius: 999rpx;
     background: $brand;
     color: #fff;
-    font-size: 26rpx;
+    font-size: 24rpx;
     font-weight: 600;
-    box-shadow: 0 8rpx 24rpx rgba(95, 51, 225, 0.28);
-    transition: opacity 0.15s;
 
     &--busy {
       background: $brand-soft;
@@ -175,12 +195,35 @@
   /* 卡内脚注：抓取新鲜度 + 每日次数口径 */
   &__panel-note {
     display: block;
-    margin-top: 18rpx;
-    font-size: 22rpx;
+    margin-top: 12rpx;
+    font-size: 20rpx;
     color: $text-3;
   }
 
-  /* ===== 列表卡（左侧圆底头像 + 日期胶囊） ===== */
+  /* ===== 部分读取失败：整条可点重试，右侧 ✕ 只负责关掉 ===== */
+  &__notice {
+    display: flex;
+    align-items: center;
+    gap: 12rpx;
+    margin: 24rpx 32rpx 0;
+    padding: 18rpx 24rpx;
+    border-radius: 20rpx;
+    background: rgba(255, 125, 83, 0.1);
+
+    &--tap {
+      opacity: 0.9;
+    }
+  }
+
+  &__notice-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $domain-business;
+  }
+
+  /* ===== 第三层：列表卡（左侧圆底头像 + 右侧日期胶囊） ===== */
   &__item {
     &-head {
       display: flex;
@@ -251,6 +294,8 @@
       gap: 10rpx;
     }
 
+    /* 「今日」徽标在有了分组头之后仍然保留：往下翻几屏组头已滚出视野，
+       这枚徽标是屏幕上唯一还在回答「这条是不是新的」的东西 */
     &-today {
       font-size: 20rpx;
       color: #fff;
@@ -298,6 +343,17 @@
     font-size: 22rpx;
   }
 
+  /* 列表里的两句如实说明（缺日期的条数 / 合并掉的同源报道）—— 挂在触底行上方，
+     居中弱化，读到即止，不打断浏览 */
+  &__hint {
+    display: block;
+    margin: 22rpx 0 0;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+    text-align: center;
+  }
+
   /* 触底加载更多的状态行（「还有 N 条」/「没有更多」）—— 居中、弱化，不抢主内容 */
   &__foot {
     display: block;
@@ -305,5 +361,146 @@
     text-align: center;
     font-size: 24rpx;
     color: $text-3;
+  }
+
+  /* ===== 筛选面板（底部弹层）=====
+     与 chips 行是**同一份状态的两种视图**：面板负责「挑」，chips 负责「看见与摘掉」。
+     面板里的改动即时生效（没有「确认」这一步），右下角按钮只说结果条数。 */
+  /* position/z-index 不在这里给：本层挂了 `glow-overlay`，由 app.scss 的
+     `.glow-page > .glow-overlay`（特异性 0,2,0）给死 fixed + z-index ——
+     在这里写会被那条规则压掉，写了反而看不出真正的层级来源。 */
+  &__mask-layer {
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+  }
+
+  &__mask {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  &__sheet {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 78vh;
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    border-radius: 32rpx 32rpx 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  &__sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 28rpx 32rpx 16rpx;
+  }
+
+  &__sheet-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__sheet-close {
+    font-size: 26rpx;
+    color: $brand;
+  }
+
+  /* 选项区可滚动：关注几十位名人时人物 chips 会很长，面板高度必须封顶 */
+  &__sheet-body {
+    flex: 1;
+    min-height: 0;
+    max-height: 880rpx;
+    padding: 0 32rpx;
+  }
+
+  &__group {
+    margin-bottom: 28rpx;
+  }
+
+  &__group-title {
+    display: block;
+    margin-bottom: 16rpx;
+    font-size: 24rpx;
+    color: $text-2;
+  }
+
+  &__opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16rpx;
+  }
+
+  &__opt {
+    max-width: 100%;
+    padding: 14rpx 26rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    border: 2rpx solid $line;
+    font-size: 24rpx;
+    color: $text-1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    &--on {
+      background: rgba(95, 51, 225, 0.1);
+      border-color: $brand;
+      color: $brand;
+      font-weight: 600;
+    }
+  }
+
+  &__sheet-foot {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+    padding: 20rpx 32rpx 28rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__sheet-reset {
+    flex-shrink: 0;
+    height: 84rpx;
+    padding: 0 40rpx;
+    display: flex;
+    align-items: center;
+    border-radius: 999rpx;
+    background: $bg;
+    border: 2rpx solid $line;
+    font-size: 27rpx;
+    color: $text-2;
+
+    &--tap {
+      opacity: 0.8;
+    }
+  }
+
+  &__sheet-apply {
+    flex: 1;
+    height: 84rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 27rpx;
+    font-weight: 600;
+    box-shadow: 0 8rpx 24rpx rgba(95, 51, 225, 0.28);
+
+    &--tap {
+      opacity: 0.85;
+    }
   }
 }

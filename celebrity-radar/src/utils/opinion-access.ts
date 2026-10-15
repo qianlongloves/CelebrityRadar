@@ -98,12 +98,36 @@ export function canAddPersonWatch(current: number, isMember: boolean): boolean {
  *
  * ⚠ 这是**展示层**截断，只影响页面上画几条，不动数据、不删缓存；被隐藏的条数由 `hidden`
  * 带回，供页面渲染一行「会员可见全部 N 条 ›」的提示（不遮罩、不弹窗）。
+ *
+ * ## 截断必须**头尾各留一半**（2026-10-16 修，改这里前先读）
+ *
+ * 原来只 `slice(0, limit)` 取**头部**。用在事件时间线上就是：时间线按时间**正序**（早 → 晚），
+ * 免费用户点进一个事件，看到的恰好是**最早那几条**（这事怎么开的头），
+ * **最新进展一条都看不到** —— 而「现在到底怎么样了」才是点进时间线的第一诉求。
+ * 反过来只留最新也不行：起因是理解整件事的前提（且它是主题词的锚点）。
+ * 故与云端 `MAX_MEMBERS` 取**同一取舍**：头部 `ceil(limit / 2)` 条（起因）+ 尾部其余（最新），
+ * 中间的跳缝由 `headCount` 交给页面画一行省略提示 —— 不能默默拼在一起假装是连续的。
  */
-export function sliceDetail<T>(items: T[] | null | undefined, isMember: boolean): { rows: T[]; hidden: number } {
+export interface DetailSlice<T> {
+  /** 要渲染的行：前 `headCount` 条来自头部，其余来自尾部（`hidden > 0` 时两段之间有跳缝） */
+  rows: T[]
+  /** 被隐藏的条数（**中间**那一段） */
+  hidden: number
+  /** `rows` 的前几行来自头部；`hidden === 0` 时它等于 `rows.length`（连续、无跳缝） */
+  headCount: number
+}
+
+export function sliceDetail<T>(items: T[] | null | undefined, isMember: boolean): DetailSlice<T> {
   const list = Array.isArray(items) ? items : []
   const limit = detailLimit(isMember)
-  if (limit === null || list.length <= limit) return { rows: list, hidden: 0 }
-  return { rows: list.slice(0, limit), hidden: list.length - limit }
+  if (limit === null || list.length <= limit) return { rows: list, hidden: 0, headCount: list.length }
+  const head = Math.ceil(limit / 2)
+  const tail = limit - head
+  return {
+    rows: list.slice(0, head).concat(list.slice(list.length - tail)),
+    hidden: list.length - limit,
+    headCount: head
+  }
 }
 
 /** 关键词监控上限提示（免费档带升级引导；会员档只报事实） */

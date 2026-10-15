@@ -3,6 +3,7 @@ import { table } from './db'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { diagLog } from './cloud-diagnostics'
+import { toastText } from './error'
 import type { Report } from './report'
 
 /**
@@ -130,7 +131,8 @@ async function writeFavorite(
     })
     if (error) {
       diagLog('warn', 'db', `favorites(${draft.type}) 写入失败：${error.message ?? error}`)
-      Taro.showToast({ title: '收藏失败，请重试', icon: 'none' })
+      /* 环境类失败（表没建 / 权限不对）由 utils/error.ts 译成「请联系开发者…」，网络类才劝重试 */
+      Taro.showToast({ title: toastText(error, '收藏失败，请重试'), icon: 'none' })
       return false
     }
   }

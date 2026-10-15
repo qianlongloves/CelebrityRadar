@@ -1,6 +1,9 @@
 import Taro from '@tarojs/taro'
 import { domainLabel, domainStyleCode, DomainCode } from '@/config/domains'
 import { diagLog } from './cloud-diagnostics'
+import { pageCodeTarget, reportCodeTarget, shareCodeUrl } from './share-code'
+import type { ShareCodeTarget } from './share-code'
+import type { ReportCardModel } from './report-card'
 import { BRIEF_POINT_MAX } from './weekly-brief'
 import type { WeeklyBrief } from './weekly-brief'
 
@@ -20,8 +23,12 @@ import type { WeeklyBrief } from './weekly-brief'
  * 2. **固定尺寸，不做自适应高度**。真机 Canvas 2D 尺寸一经设定再改就是又一轮重绘，而卡片内容本就短；
  *    名言卡高度按 3:4 竖版取 520，长文本按行截断补省略号 —— 固定尺寸免掉「先量高再重画」的两次绘制。
  *
- * 3. **不下载任何网络图片**。头像全项目本就用「领域色渐变 + 姓名首字」占位，
- *    卡片把这个约定继承下来，于是整张图零网络依赖：不占 request 合法域名、不等待下载、不会裂图。
+ * 3. **正文零网络依赖，只有页脚的小程序码要联网**（2026-10-15 获客改造）。头像全项目本就用
+ *    「领域色渐变 + 姓名首字」占位，卡片把这个约定继承下来：正文不占合法域名、不等待下载、
+ *    不会裂图。唯一的例外是页脚那个**小程序码**（图一旦被保存进相册 / 发进朋友圈，就脱离了
+ *    微信转发链路，图上没有码等于这趟传播到此为止）—— 码走云函数生成 + 云存储临时链接，
+ *    仍**不落端上任何密钥**，且**取不到就降级**成「微信搜索「名人雷达」」的文字引导，
+ *    绝不因为一张码让用户存不出一张图（见 utils/share-code.ts）。
  */
 
 /** 逻辑宽度（px）。canvas 只认 px，与 rpx 无关；375 = 一倍图设计稿宽度 */
@@ -36,12 +43,36 @@ export const QUOTE_POSTER_HEIGHT = 520
  */
 const MAX_SCALE = 2
 
+/**
+ * 画布**物理高度**上限（px）。
+ *
+ * 名言卡 / 周报卡都是固定高度，2 倍图从没出过问题；报告长图不一样（一张 ≈ 1000~1300 逻辑 px），
+ * 在 dpr 2 下就是 2600 物理 px 起步，长报告会一路顶到 canvas 缓冲区上限（真机表现为导出白图或
+ * canvasToTempFilePath 失败）。故倍率按目标高度反算：越高越降，最低 1 倍 —— 宁可略微不锐，
+ * 不能导不出来。
+ */
+const MAX_PHYSICAL_H = 4000
+
 /** 卡片内边距与页脚高度：所有绘制函数共用同一套栅格 */
 const PAD = 28
-const FOOT_H = 66
+/**
+ * 页脚高度。
+ *
+ * 2026-10-15 由 66 抬到 96：页脚多了小程序码（64 + 上下留白），左侧也从「应用名 + 免责」
+ * 两行变三行（多一行入口引导）。所有引用 FOOT_H 的排版（名言卡出处、周报说明）都按常量
+ * 自适应，抬高度不会压到正文。
+ */
+const FOOT_H = 96
 
-/** 合规硬要求：任何一张分享出去的图上都必须带这行字（截图转发也带得走） */
-const DISCLAIMER = 'AI 生成，仅供参考'
+/** 页脚小程序码的边长（逻辑 px）。64 × 2 倍图 = 128 物理 px，缩在相册缩略图里也扫得动 */
+const CODE_SIZE = 64
+
+/**
+ * 合规硬要求：任何一张分享出去的图上都必须带这行字（截图转发也带得走）。
+ * 2026-10-15 从「AI 生成，仅供参考」改成点明来源属性 —— 图会脱离小程序到处流转，
+ * 「公开信息」这四个字得跟着走。
+ */
+const DISCLAIMER = '基于公开信息 AI 整理，仅供参考'
 const APP_NAME = '名人雷达'
 
 /** 设计令牌（与 styles/variables.scss 同值，刻意不引 SCSS —— canvas 需要的是十六进制字面量） */
@@ -94,12 +125,30 @@ interface Ctx2D {
   measureText(text: string): { width: number }
   createLinearGradient(x0: number, y0: number, x1: number, y1: number): Gradient
   createRadialGradient(x0: number, y0: number, r0: number, x1: number, y1: number, r1: number): Gradient
+  /** 页脚小程序码用：其余内容都是矢量绘制，不吃图片 */
+  drawImage(image: CanvasImage, x: number, y: number, w: number, h: number): void
+}
+
+/**
+ * Canvas 2D 的图片对象（`canvas.createImage()` 产出）。
+ *
+ * 只能用 canvas 节点自带的 createImage：小程序的 `<Image>` 与 `Taro.createImage()` 都拿不到
+ * 能喂给 `drawImage` 的对象。`src` 必须是网络 URL 或本地路径，`cloud://` 要先换临时链接。
+ */
+interface CanvasImage {
+  src: string
+  width: number
+  height: number
+  onload: (() => void) | null
+  onerror: (() => void) | null
 }
 
 interface CanvasNode {
   width: number
   height: number
   getContext(type: '2d'): Ctx2D
+  /** 基础库 ≥ 2.7.0 才有；缺它就画不了码（降级为文字引导） */
+  createImage?: () => CanvasImage
 }
 
 /* ===== 排版原语 ===== */
@@ -244,8 +293,13 @@ function paintAvatar(ctx: Ctx2D, x: number, y: number, size: number, name: strin
   ctx.textBaseline = 'top'
 }
 
-/** 页脚：一条分隔线 + 应用名 + 免责角标。免责是合规硬要求，不在图上就等于没有 */
-function paintFooter(ctx: Ctx2D, w: number, h: number): void {
+/**
+ * 页脚：一条分隔线 + 应用名 + 免责角标 + **小程序码**。免责是合规硬要求，不在图上就等于没有。
+ *
+ * 左侧固定三行（应用名 / 免责 / 入口引导），右侧是码。码拿不到时第三行回落成
+ * 「微信搜索「名人雷达」」—— 图照样存得出、照样转得走，只是入口从「扫」变成「搜」。
+ */
+function paintFooter(ctx: Ctx2D, w: number, h: number, code?: CanvasImage): void {
   const top = h - FOOT_H
   ctx.strokeStyle = 'rgba(255,255,255,0.25)'
   ctx.lineWidth = 1
@@ -254,15 +308,60 @@ function paintFooter(ctx: Ctx2D, w: number, h: number): void {
   ctx.lineTo(w - PAD, top)
   ctx.stroke()
 
-  ctx.fillStyle = 'rgba(255,255,255,0.95)'
-  ctx.font = 'bold 15px sans-serif'
   ctx.textAlign = 'left'
   ctx.textBaseline = 'top'
-  ctx.fillText(APP_NAME, PAD, top + 18)
+  ctx.fillStyle = 'rgba(255,255,255,0.95)'
+  ctx.font = 'bold 15px sans-serif'
+  ctx.fillText(APP_NAME, PAD, top + 20)
 
   ctx.fillStyle = 'rgba(255,255,255,0.72)'
   ctx.font = '12px sans-serif'
-  ctx.fillText(DISCLAIMER, PAD, top + 40)
+  ctx.fillText(DISCLAIMER, PAD, top + 44)
+
+  ctx.fillStyle = 'rgba(255,255,255,0.62)'
+  ctx.font = '11px sans-serif'
+  ctx.fillText(code ? '扫码看完整报告' : '微信搜索「名人雷达」', PAD, top + 68)
+
+  if (!code) return
+
+  /* 码底下垫一块白：紫底上直接贴码，边缘对比不足会扫不动 */
+  const boxX = w - PAD - CODE_SIZE - 5
+  const boxY = top + 16 - 5
+  ctx.fillStyle = '#FFFFFF'
+  roundRect(ctx, boxX, boxY, CODE_SIZE + 10, CODE_SIZE + 10, 8)
+  ctx.fill()
+  ctx.drawImage(code, boxX + 5, boxY + 5, CODE_SIZE, CODE_SIZE)
+}
+
+/**
+ * 取并解码页脚小程序码图；**任何一步失败都返回 undefined**（调用方画文字引导）。
+ *
+ * 超时兜底是必需的：canvas 的 image 若既不触发 onload 也不触发 onerror（网络半死、
+ * 域名未配置时真机上见过），出图会一直挂在「正在生成卡片…」上 —— 宁可没有码。
+ */
+async function loadCodeImage(canvas: CanvasNode, target: ShareCodeTarget): Promise<CanvasImage | undefined> {
+  try {
+    const url = await shareCodeUrl(target)
+    if (!url || typeof canvas.createImage !== 'function') return undefined
+
+    const img = canvas.createImage()
+    const loaded = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 3000)
+      const done = (ok: boolean) => {
+        clearTimeout(timer)
+        resolve(ok)
+      }
+      img.onload = () => done(true)
+      img.onerror = () => done(false)
+      /* src 必须在挂好回调之后再赋值，否则同步缓存命中时回调会被漏掉 */
+      img.src = url
+    })
+
+    return loaded ? img : undefined
+  } catch (err) {
+    diagLog('warn', 'storage', `分享图小程序码解码失败：${err instanceof Error ? err.message : String(err)}`)
+    return undefined
+  }
 }
 
 /* ===== 名言卡 ===== */
@@ -274,10 +373,12 @@ export interface QuoteCardInput {
   text: string
   /** 出处场合（如「2024 年度演讲」），空则回落「公开场合」，与报告页口径一致 */
   context?: string
+  /** 人物键：有它页脚的码就指向这个人的报告页，扫码即落在具体一个人身上（缺则指向首页） */
+  personKey?: string
 }
 
 /** 名言卡：紫底 + 巨型引号 + 一句名言 */
-export function paintQuoteCard(ctx: Ctx2D, w: number, h: number, d: QuoteCardInput): void {
+export function paintQuoteCard(ctx: Ctx2D, w: number, h: number, d: QuoteCardInput, code?: CanvasImage): void {
   paintBrandBg(ctx, w, h)
 
   /* 巨型引号用字符画，不引图片素材：省一张网络图与一次下载等待，也不会裂图 */
@@ -325,7 +426,7 @@ export function paintQuoteCard(ctx: Ctx2D, w: number, h: number, d: QuoteCardInp
     maxLines: 1
   })
 
-  paintFooter(ctx, w, h)
+  paintFooter(ctx, w, h, code)
 }
 
 /* ===== 周报简报卡（P4-B） ===== */
@@ -354,7 +455,7 @@ export function weeklyBriefHeight(pointCount: number): number {
  * 底部固定写出「公开报道 · 非平台定性 · 聚合≠认定」；页脚带产品名与「AI 生成，仅供参考」。
  * 这里**只负责画**，内容取舍（截断 / 过滤 / 去重）全部已在 buildWeeklyBrief 里完成。
  */
-export function paintWeeklyBrief(ctx: Ctx2D, w: number, h: number, d: WeeklyBrief): void {
+export function paintWeeklyBrief(ctx: Ctx2D, w: number, h: number, d: WeeklyBrief, code?: CanvasImage): void {
   paintBrandBg(ctx, w, h)
 
   /* 标题与统计窗口 */
@@ -422,7 +523,197 @@ export function paintWeeklyBrief(ctx: Ctx2D, w: number, h: number, d: WeeklyBrie
     maxLines: 3
   })
 
-  paintFooter(ctx, w, h)
+  paintFooter(ctx, w, h, code)
+}
+
+/* ===== 报告长图（获客 P0，2026-10-15） ===== */
+
+/**
+ * 报告长图的版式常量（逻辑 px）。
+ *
+ * 与前两张卡一样**固定栅格、不量高**：每块高度取最坏情况（判断 2 行、争议 3 行、动态 2 行），
+ * 高度由内容条数算出（见 reportCardHeight），一次性给出画布尺寸。
+ *
+ * 与前两张卡不同的是**底色**：名言卡与周报卡是紫底白字（短，一屏读完）；报告图正文有
+ * 六到十几段文字，紫底白字读三段眼睛就累了，故改成白底深字，只保留顶部与底部的品牌色块 ——
+ * 一眼认得出是同一款产品，正文又是能读的。
+ */
+const RC_HEAD_H = 132
+const RC_HEADLINE_H = 84
+const RC_SECTION_TITLE_H = 30
+const RC_POINT_H = 56
+const RC_DISPUTE_H = 76
+const RC_DYNAMIC_H = 46
+const RC_NOTE_H = 58
+
+const RC_INK = '#1F1B2E'
+const RC_INK2 = '#4A4458'
+
+/** 报告长图高度：随判断 / 争议 / 动态条数变化（空块不占位） */
+export function reportCardHeight(card: ReportCardModel): number {
+  let h = RC_HEAD_H
+  if (card.headline) h += RC_HEADLINE_H
+  if (card.points.length > 0) h += RC_SECTION_TITLE_H + card.points.length * RC_POINT_H
+  if (card.disputes.length > 0) h += RC_SECTION_TITLE_H + card.disputes.length * RC_DISPUTE_H
+  if (card.dynamics.length > 0) h += RC_SECTION_TITLE_H + card.dynamics.length * RC_DYNAMIC_H
+  return h + RC_NOTE_H + FOOT_H
+}
+
+/** 小节标题：品牌色细字 + 下方一条浅色分隔线 */
+function paintSectionTitle(ctx: Ctx2D, w: number, y: number, text: string): void {
+  ctx.fillStyle = COLOR.brand
+  ctx.font = 'bold 13px sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  ctx.fillText(text, PAD, y + 8)
+  ctx.strokeStyle = 'rgba(95,51,225,0.16)'
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(PAD, y + RC_SECTION_TITLE_H - 4)
+  ctx.lineTo(w - PAD, y + RC_SECTION_TITLE_H - 4)
+  ctx.stroke()
+}
+
+/**
+ * 画一张报告长图：顶部品牌头（姓名 / 领域 / 计数 / 生成日）+ 一句话结论 + 判断与依据 +
+ * 公开争议与回应 + 近期动态（带来源）+ 合规说明 + 商品页脚（含小程序码）。
+ *
+ * 这里**只负责画**：内容取舍（截断 / 过滤 / 敏感名单拦截 / 条数上限）全部已在
+ * utils/report-card.ts#buildReportCard 里完成，故图上每一句都能回原报告核对。
+ */
+export function paintReportCard(ctx: Ctx2D, w: number, h: number, d: ReportCardModel, code?: CanvasImage): void {
+  /* 白底 + 顶部品牌块 + 底部品牌页脚 */
+  ctx.fillStyle = '#FFFFFF'
+  ctx.fillRect(0, 0, w, h)
+
+  const head = ctx.createLinearGradient(0, 0, w, RC_HEAD_H)
+  head.addColorStop(0, COLOR.brand)
+  head.addColorStop(1, COLOR.brandSoft)
+  ctx.fillStyle = head
+  ctx.fillRect(0, 0, w, RC_HEAD_H)
+
+  /* 人物行：首字头像 + 名字 + 领域胶囊（与名言卡同一套占位约定） */
+  paintAvatar(ctx, PAD, 28, 46, d.name, d.domain)
+  ctx.fillStyle = '#FFFFFF'
+  ctx.font = 'bold 22px sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'top'
+  ctx.fillText(d.name, PAD + 58, 34)
+  const nameW = ctx.measureText(d.name).width
+
+  const label = domainLabel(d.domain)
+  ctx.font = '12px sans-serif'
+  const chipW = ctx.measureText(label).width + 20
+  const chipX = Math.min(PAD + 58 + nameW + 10, w - PAD - chipW)
+  ctx.fillStyle = 'rgba(255,255,255,0.22)'
+  roundRect(ctx, chipX, 38, chipW, 24, 12)
+  ctx.fill()
+  ctx.fillStyle = 'rgba(255,255,255,0.95)'
+  ctx.fillText(label, chipX + 10, 44)
+
+  /* 计数行 + 生成日：都是可核对的事实，放在最上面当「这份报告有什么」 */
+  ctx.fillStyle = 'rgba(255,255,255,0.86)'
+  ctx.font = '13px sans-serif'
+  ctx.fillText(d.stats, PAD, 88)
+  if (d.meta) {
+    ctx.fillStyle = 'rgba(255,255,255,0.68)'
+    ctx.font = '12px sans-serif'
+    ctx.fillText(d.meta, PAD, 108)
+  }
+
+  let y = RC_HEAD_H
+
+  /* 一句话结论 */
+  if (d.headline) {
+    drawText(ctx, d.headline, {
+      x: PAD,
+      y: y + 20,
+      size: 16,
+      weight: 'bold',
+      color: RC_INK,
+      lineHeight: 24,
+      maxWidth: w - PAD * 2,
+      maxLines: 3
+    })
+    y += RC_HEADLINE_H
+  }
+
+  /* 判断与依据：模型观点，每条都带自己的出处 */
+  if (d.points.length > 0) {
+    paintSectionTitle(ctx, w, y, '关注要点')
+    let py = y + RC_SECTION_TITLE_H
+    d.points.forEach((p) => {
+      drawText(ctx, `· ${p}`, {
+        x: PAD,
+        y: py + 4,
+        size: 14,
+        color: RC_INK2,
+        lineHeight: 21,
+        maxWidth: w - PAD * 2,
+        maxLines: 2
+      })
+      py += RC_POINT_H
+    })
+    y += RC_SECTION_TITLE_H + d.points.length * RC_POINT_H
+  }
+
+  /* 公开争议与回应：说法与回应并置，绝不只摆说法 */
+  if (d.disputes.length > 0) {
+    paintSectionTitle(ctx, w, y, '公开争议与回应')
+    let dy = y + RC_SECTION_TITLE_H
+    d.disputes.forEach((s) => {
+      drawText(ctx, `· ${s}`, {
+        x: PAD,
+        y: dy + 4,
+        size: 14,
+        color: RC_INK2,
+        lineHeight: 21,
+        maxWidth: w - PAD * 2,
+        maxLines: 3
+      })
+      dy += RC_DISPUTE_H
+    })
+    y += RC_SECTION_TITLE_H + d.disputes.length * RC_DISPUTE_H
+  }
+
+  /* 近期动态：每条带日期与来源（无来源的已在组装阶段丢掉） */
+  if (d.dynamics.length > 0) {
+    paintSectionTitle(ctx, w, y, '近期动态')
+    let ny = y + RC_SECTION_TITLE_H
+    d.dynamics.forEach((s) => {
+      drawText(ctx, `· ${s}`, {
+        x: PAD,
+        y: ny + 4,
+        size: 13,
+        color: RC_INK2,
+        lineHeight: 19,
+        maxWidth: w - PAD * 2,
+        maxLines: 2
+      })
+      ny += RC_DYNAMIC_H
+    })
+    y += RC_SECTION_TITLE_H + d.dynamics.length * RC_DYNAMIC_H
+  }
+
+  /* 合规说明：固定在页脚之上，与页脚的免责角标分工不同（这句讲「非定性」） */
+  drawText(ctx, d.note, {
+    x: PAD,
+    y: h - FOOT_H - RC_NOTE_H + 10,
+    size: 11,
+    color: '#8A8496',
+    lineHeight: 16,
+    maxWidth: w - PAD * 2,
+    maxLines: 3
+  })
+
+  /* 页脚坐在品牌色块上：白底长图的底部收口，也保证免责与码的对比度 */
+  const footTop = h - FOOT_H
+  const foot = ctx.createLinearGradient(0, footTop, w, h)
+  foot.addColorStop(0, COLOR.brand)
+  foot.addColorStop(1, COLOR.brandSoft)
+  ctx.fillStyle = foot
+  ctx.fillRect(0, footTop, w, FOOT_H)
+  paintFooter(ctx, w, h, code)
 }
 
 /* ===== 画布与导出 ===== */
@@ -470,11 +761,14 @@ function exportTempFile(canvas: CanvasNode): Promise<string> {
  * 在离屏画布上绘制并导出 PNG，返回本地临时路径。
  *
  * 像素密度按 dpr 放大后再把坐标系缩回逻辑 px：绘制代码里写的 375 / 28 都是设计稿尺寸，
- * 与屏幕无关；真机上拿到的是 2 倍图，不会发虚。
+ * 与屏幕无关；真机上拿到的是 2 倍图，不会发虚。长图（报告图）另按 MAX_PHYSICAL_H 压倍率。
+ *
+ * `codeTarget` 给了就在页脚画小程序码：**取码失败只是没有码**，不改变出图结果的成功与否。
  */
 export async function renderPoster(
   height: number,
-  paint: (ctx: Ctx2D, width: number, height: number) => void
+  paint: (ctx: Ctx2D, width: number, height: number, code?: CanvasImage) => void,
+  codeTarget?: ShareCodeTarget
 ): Promise<string> {
   const canvas = await queryCanvasNode()
   let scale = MAX_SCALE
@@ -483,6 +777,11 @@ export async function renderPoster(
   } catch {
     /* 取不到就按 2 倍，失败也是清晰度问题，不该阻断出图 */
   }
+  /* 长图降倍率：canvas 后备缓冲区有上限，宁可略微不锐也不能导出失败（见 MAX_PHYSICAL_H） */
+  scale = Math.max(1, Math.min(scale, MAX_PHYSICAL_H / Math.max(1, height)))
+
+  /* 码在改画布尺寸**之前**加载：改 width/height 会重置上下文状态，图先备好更稳 */
+  const code = codeTarget ? await loadCodeImage(canvas, codeTarget) : undefined
 
   /* 尺寸写在 canvas.width/height 上（后备缓冲区），元素的 CSS 尺寸由组件按同一份常量给定 */
   canvas.width = Math.round(POSTER_WIDTH * scale)
@@ -491,14 +790,18 @@ export async function renderPoster(
   const ctx = canvas.getContext('2d')
   /* 改过 width/height 之后上下文状态会被重置，缩放必须重新设置 */
   ctx.scale(scale, scale)
-  paint(ctx, POSTER_WIDTH, height)
+  paint(ctx, POSTER_WIDTH, height, code)
 
   return exportTempFile(canvas)
 }
 
-/** 生成名言卡，返回本地临时图片路径 */
+/** 生成名言卡，返回本地临时图片路径（有 personKey 时页脚的码指向这个人的报告） */
 export function renderQuotePoster(data: QuoteCardInput): Promise<string> {
-  return renderPoster(QUOTE_POSTER_HEIGHT, (ctx, w, h) => paintQuoteCard(ctx, w, h, data))
+  return renderPoster(
+    QUOTE_POSTER_HEIGHT,
+    (ctx, w, h, code) => paintQuoteCard(ctx, w, h, data, code),
+    reportCodeTarget(data.personKey ?? '')
+  )
 }
 
 /**
@@ -508,8 +811,25 @@ export function renderQuotePoster(data: QuoteCardInput): Promise<string> {
  * canvasToTempFilePath 导出），故不同机型的清晰度处理完全一致；高度随要点条数算出。
  */
 export function renderWeeklyBriefPoster(brief: WeeklyBrief): Promise<string> {
-  return renderPoster(weeklyBriefHeight(brief.points.length), (ctx, w, h) =>
-    paintWeeklyBrief(ctx, w, h, brief)
+  return renderPoster(
+    weeklyBriefHeight(brief.points.length),
+    (ctx, w, h, code) => paintWeeklyBrief(ctx, w, h, brief, code),
+    /* 简报是「一群人的本周」，没有具体某个人可落：码落在周报页本身 */
+    pageCodeTarget('package/weekly/index')
+  )
+}
+
+/**
+ * 生成**报告长图**，返回本地临时图片路径。
+ *
+ * 内容模型由调用方先经 `utils/report-card.ts#buildReportCard` 组装（那里做敏感名单拦截与
+ * 截断，返回 null 就说明这张卡不该出图）；这里只负责画与落码。
+ */
+export function renderReportPoster(card: ReportCardModel): Promise<string> {
+  return renderPoster(
+    reportCardHeight(card),
+    (ctx, w, h, code) => paintReportCard(ctx, w, h, card, code),
+    reportCodeTarget(card.personKey)
   )
 }
 

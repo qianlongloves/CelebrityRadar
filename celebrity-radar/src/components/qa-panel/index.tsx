@@ -5,13 +5,13 @@ import { AtButton } from 'taro-ui'
 import { MEMBER_DAILY_ASK_LIMIT } from '@/utils/member'
 import NoticeClose from '@/components/notice-close'
 import {
+  QA_HISTORY_MAX,
   QA_MAX_QUESTION,
   askDirect,
   askReports,
   checkQaGate,
   clearQaAttempt,
   hasQaCorpusMany,
-  isWebSearchOn,
   noteQaAttempt,
   passageTag,
   qaUsageToday,
@@ -21,7 +21,7 @@ import {
   suggestDirectQuestions,
   suggestQuestions
 } from '@/utils/qa'
-import type { QaPassage, QaUsage } from '@/utils/qa'
+import type { QaPassage, QaStage, QaTurn, QaUsage } from '@/utils/qa'
 import type { Report } from '@/utils/report'
 import { fromNow, isStaleReport } from '@/utils/time'
 import './index.scss'
@@ -33,8 +33,9 @@ import './index.scss'
  * ① **闸门口径**：每日上限按会员 / 免费版分档（唯一事实源在 utils/member.ts），
  *    几处各写一份早晚会出现「这个入口能问 30 次、那个只能问 5 次」；
  * ② **失败与回答必须能分开看**：报错若长得像 AI 说的话，用户会把「提问太快了」当成回答；
- * ③ 「不落库、不记忆」的口径：每次提问都是重新拼一次 prompt，界面不能暗示 AI 记得上文
- *    （原先在会话上方有一行声明把它说到明处，2026-10-09 按需求去掉；口径本身没变）。
+ * ③ 「不落库」的口径：每次提问都重新拼一次 prompt，**只有本会话最近两轮会作为上文带上**
+ *    （2026-10-15 加，见 utils/qa.ts#QaAskOpts.history）—— 换人、离开页面即忘；
+ *    界面不得暗示 AI 记得历史（原先那句声明 2026-10-09 已按需求去掉，口径照旧）。
  * 对比模式（传 `withReport`，O-18）复用同一套面板，正是为了不让这三条各多出一份实现。
  *
  * 高度交给父容器（本组件只负责撑满）：报告页整屏用，底部菜单页与上方的名人选择共处一屏，
@@ -166,11 +167,20 @@ export default function QaPanel({
   }, [report, withReport])
   const multi = reports.length > 1
   /**
-   * 这次提问会不会同时走一路联网检索（2026-10-08，见 utils/qa.ts 的联网补充）。
-   * 取自 qa.ts 的同一个判定，故「提示里说了联网」与「实际做了联网」不会各说一套：
-   * 通道未就绪时那句提示自己消失，而不是让用户以为在联网、实则只读了报告。
+   * 本会话已完成的问答（最近两轮，追问用）。
+   *
+   * 为什么是 ref 而不是 state：它只作为**下一次提问的入参**，界面没有任何地方依赖它 ——
+   * 放 state 只会让每轮回答都多触发一次整面板重渲染。
+   * 也刻意不落 storage：离开页面即忘（见组件头注释口径③），不让用户以为 AI 记得历史。
    */
-  const web = useMemo(() => isWebSearchOn(), [])
+  const turns = useRef<QaTurn[]>([])
+  /**
+   * 本次提问执行到哪一步（2026-10-15）：一次提问在端上要串四段（闸门 → 机审 → 检索 → 模型），
+   * 十几秒的等待里「不知道在等什么」比慢本身更难受。阶段由 utils/qa.ts 回推（onStage），
+   * 文案与实际动作同源 —— 判定为不检索的那一问（utils/qa.ts#needsWebSearch），
+   * 绝不会显示「正在联网检索」，不会让用户以为在联网、实则只读了报告。
+   */
+  const [stage, setStage] = useState<QaStage>('read')
   /** 会话身份：任一位换人就清空会话；直连态没有 personKey，用姓名 */
   const sessionKey = useMemo(
     () => (direct ? name : reports.map((r) => r.personKey).join('+')),
@@ -219,6 +229,8 @@ export default function QaPanel({
     setInput('')
     setNotice('')
     seq.current = 0
+    /* 上文同样要清：追问里的「他」在新对象身上会指错人（比清空会话更糟的问题） */
+    turns.current = []
   }, [sessionKey])
 
   /** 滚动锚点：每次新增气泡 id 都不同，所以能持续触发滚动到底 */
@@ -250,14 +262,26 @@ export default function QaPanel({
         setAsking(true)
         setNotice('')
         setInput('')
+        /* 进度复位：上一轮停在 'answer'，不重置会让这一轮一开始就说「正在整理答案」 */
+        setStage('read')
         seq.current += 1
         const mine = seq.current
         setBubbles((prev) => [...prev, { id: mine, role: 'user', text: question }])
         noteQaAttempt()
 
-        const res = direct ? await askDirect(name, question) : await askReports(reports, question)
+        /*
+         * 追问三件套（2026-10-15）：
+         * ① 带上本会话最近两轮（上限由 utils/qa.ts#QA_HISTORY_MAX 定，这里不另立一套数字）；
+         * ② 把执行阶段回推到界面（等待文案与实际动作同源）；
+         * ③ **成功才记账** —— 失败的回答不算「上文」，否则模型会顺着一段没发生的对话往下编。
+         */
+        const ask = { history: turns.current, onStage: setStage }
+        const res = direct ? await askDirect(name, question, ask) : await askReports(reports, question, ask)
 
         setAsking(false)
+        if (res.ok) {
+          turns.current = [...turns.current, { q: question, a: res.text }].slice(-QA_HISTORY_MAX)
+        }
         /*
          * 这次没问成，就把占用的在途名额还回去（P2-15）。归还方向是安全的：
          * 漏还只会让用户被少放行一次，多还（addInflight 夹到 0 以上）不会。
@@ -299,6 +323,24 @@ export default function QaPanel({
    * 「今日」在这里也是冗余 —— 每日额度这件事由升级条（「每日提问提到 N 次」）负责说清。
    */
   const usageLabel = `${member ? '会员' : '免费版'} · 剩 ${usage.remaining} 次`
+  /**
+   * 等待文案（2026-10-15）：按 utils/qa.ts 回推的**执行阶段**给，而不是猜。
+   *
+   * 一次提问在端上要串四段（闸门 → 机审 → 检索 → 模型），此前只有一句笼统的
+   * 「正在翻阅报告并联网检索…」：十几秒里用户既不知道到哪一步，还会被那句话误导 ——
+   * 判定为不检索的那一问，它照样说「联网检索」。阶段与真实动作同源（onStage），
+   * 模型那一跳通常最久，所以单独说「正在整理答案」，让人至少知道在等什么。
+   */
+  const stageText =
+    stage === 'search'
+      ? '正在联网检索最新报道…'
+      : stage === 'answer'
+        ? '正在整理答案…'
+        : direct
+          ? '正在准备资料…'
+          : multi
+            ? '正在翻阅两份报告…'
+            : '正在翻阅这份报告…'
 
   /**
    * 建议问题分批：候选按报告内容生成，这里只决定取哪一批。
@@ -475,11 +517,7 @@ export default function QaPanel({
         {asking && (
           <View className='qa-panel__row'>
             <View className='qa-panel__msg qa-panel__msg--thinking'>
-              <Text className='qa-panel__msg-text'>
-                {direct
-                  ? '正在联网检索并作答…'
-                  : `${multi ? '正在翻阅两份报告' : '正在翻阅这份报告'}${web ? '并联网检索' : ''}…`}
-              </Text>
+              <Text className='qa-panel__msg-text'>{stageText}</Text>
             </View>
           </View>
         )}

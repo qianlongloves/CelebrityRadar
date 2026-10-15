@@ -187,7 +187,15 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
   it('「只升不降」在**落库之前**判并提前 return，且不消耗配额（没拿到新东西就不该扣次数）', () => {
     const saveAt = src.indexOf('const saved = await saveReady')
     const earlyAt = src.indexOf('if (!hasMemberBlocks(report) && shouldKeepMemberVersion(')
-    const plainQuotaAt = src.indexOf('void consumeGenerateQuota(userId)')
+    /*
+     * 普通计数取**最后一处** consumeGenerateQuota：会员补齐那一处在落库之前（它申请的是
+     * waiveIf='member_upgrade'），落库之后的这一处才是「普通计数」。
+     *
+     * 原先写 `indexOf('void consumeGenerateQuota(userId)')` —— 首建免计费（2026-10-15）给这一处
+     * 补了第二个参数（`{ waiveIf: 'first_build', target }`），那串字面量就不存在了：
+     * indexOf 返回 -1，`-1 > saveAt` 恒不成立，断言于是**静默失效**（这条正是靠它才被发现的）。
+     */
+    const plainQuotaAt = src.lastIndexOf('void consumeGenerateQuota(')
     const keptBranchAt = src.indexOf("if (saved === 'kept')")
 
     ok(earlyAt > 0 && saveAt > 0, '必须同时存在「落库前判定」与落库调用')
@@ -200,7 +208,8 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
   it('不达标的产物不进共享缓存、也不扣次数（P0，2026-10-11 公平计费 + 防污染）', () => {
     const shortfallAt = src.indexOf('const verdict = shortfallVerdict(report, memberDeep)')
     const saveAt = src.indexOf('const saved = await saveReady')
-    const consumeAt = src.indexOf('void consumeGenerateQuota(userId)')
+    /* 同上一处：取最后一处（普通计数），别被落库前那处会员补齐的调用骗到 */
+    const consumeAt = src.lastIndexOf('void consumeGenerateQuota(')
 
     /*
      * 判定必须**前移到落库之前**：原顺序是「先 saveReady 再判 shortfall」，于是不达标的产物
@@ -307,7 +316,19 @@ describe('会员补齐免计费：云端复核（源码钉住）', () => {
   })
 
   it('只开 generate 一条口子（refresh / ask 不受影响）', () => {
-    ok(guard.includes("kind === 'generate' && event.waiveIf === MEMBER_UPGRADE"))
+    /*
+     * 免计费的每一种理由（会员补齐 / 首建）都必须挂在 `kind === 'generate'` 这道闸门上：
+     * 只判 waiveIf 的话，refresh / ask 也能白拿一次（它们的额度记在另外两条账上）。
+     *
+     * 这里原先是钉整行字面量 `kind === 'generate' && event.waiveIf === MEMBER_UPGRADE` ——
+     * 它必然在「加第二种理由」时当场失效（2026-10-15 加首建就是如此）。改为「取免计费那一行，
+     * 要求它以 kind === 'generate' && 开头」：约束一字未松，写法却可演进。
+     */
+    const gate = guard.split('\n').find((l) => l.includes('kind ===') && l.includes('waiveIf')) || ''
+
+    ok(gate, '找不到免计费的入口（改名了要同步这条断言）')
+    ok(/kind === 'generate' &&/.test(gate), '免计费必须先判 kind === generate，且不许用 || 绕开它')
+    ok(gate.includes('MEMBER_UPGRADE') && gate.includes('FIRST_BUILD'), '两种理由共用同一道闸门')
   })
 
   it('与端上会员判定同源：只认 expires_at，不校验 plan', () => {

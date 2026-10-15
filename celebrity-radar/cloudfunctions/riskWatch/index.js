@@ -465,6 +465,15 @@ function toSignal(personKey, name, item, hit, firstSeenAt) {
     quote: item.summary || item.title,
     source: item.source,
     url: item.url,
+    /*
+     * 媒体发布时间（上游 datePublished / dateLastCrawled；可能没有，落空串）。
+     * ⚠ 它只供**时间线排序**用（opinionCluster#collectSources 优先取它当事件时间），
+     *   **不参与「是不是新的」判定** —— 判新旧一律用 first_seen_at。理由同 keywordAlert：
+     *   上游给的「发布时间」可能是「3 天前」甚至是抓取时间，拿它判新旧会漏报。
+     *   不落库的话，时间线只能退回 first_seen_at（＝我们扫到它的时刻），
+     *   于是「我们何时发现」会被读成「事件何时发生」——口径就错了。
+     */
+    published_date: item.published_date || '',
     first_seen_at: firstSeenAt
   }
 }

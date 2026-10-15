@@ -26,7 +26,7 @@
  * 端上聚类在 `src/utils/opinion-events.ts` + `src/utils/opinion-rank.ts`（TS）。云函数是 JS、
  * 不能 require 端上 TS，故这里**复制**了同一批判据（normalizeTitle / sameEvent / credibilityOf /
  * isOfficialSource / sourceNatureOf / themeTokenOf / objectKeyOf / eventKeyOf / impactOf / responseOf /
- * pickEventTitle …）。**两端一致性由 test/cases/29-opinion-cluster.js 的用例钉住**（读本文件的导出、
+ * pickEventTitle / pickTitleMember …）。**两端一致性由 test/cases/29-opinion-cluster.js 的用例钉住**（读本文件的导出、
  * 逐输入比对行为，漂移即红）—— 与「风险词典两端一致」用例（test/cases/01-pure.js）同法。
  * 改判据必须两端一起改。
  *
@@ -66,11 +66,25 @@ const db = cloud.database()
 const MAX_SOURCES = 400
 /** 单轮最多写成 / 更新多少事件：与端上一屏能看的量级一致，超出部分下一轮继续 */
 const MAX_EVENTS = 200
-/** 读入多少条已存在事件用于「沿用旧键」比对：上限 + 兜底，避免与存量规模无关的全表扫 */
+/**
+ * 读入多少条已存在事件用于「沿用旧键」比对：上限 + 兜底，避免与存量规模无关的全表扫。
+ *
+ * ⚠ 取的是**最近更新的**这些条（`listRecent`），**不是**「按 `_id` 升序的前 500 条」（2026-10-16 修）。
+ * 主键 `_id` 是哈希，按 `_id` 取前 N 条 = 从全表**伪随机**抽 N 条，集合一旦超过 N 行就会
+ * 随机漏掉某些事件 —— 该事件本轮找不到旧行 → 被判成新事件另建一行（键不同）→
+ * 端上「已读 / 跟进」变孤儿。本函数一轮产出上限 `MAX_EVENTS=200`，500 条足以覆盖最近两轮多。
+ */
 const MAX_EVENTS_READ = 500
-/** 单个事件保留的成员上限（超出按时间保留最近的）：一条事件不该无限长 */
+/**
+ * 单个事件保留的成员上限（超出时**头尾各留一半**）。
+ *
+ * ⚠ 不能只留最近的（2026-10-16 修）：时间线要讲「这件事怎么开始的」，最早的成员正是起因，
+ * 也是 themeTokenOf 的主题词锚点 —— 最早那条被截掉 ⇒ 锚点换人 ⇒ event_key 漂移 ⇒
+ * 端上「已读 / 跟进」变孤儿。同时 last_at 与事件排序依赖**最新**成员，所以也不能只留最早的。
+ * 两端各留一半，`first_at` 与 `last_at` 都不失真。
+ */
 const MAX_MEMBERS = 30
-/** 单个事件保留的时间线节点上限（同上，保留最近的） */
+/** 单个事件保留的时间线节点上限（同上，超出时头尾各留一半） */
 const MAX_TIMELINE = 30
 /** 翻页取全表的页大小与硬上限（同 keywordAlert / riskWatch） */
 const PAGE_SIZE = 100
@@ -277,13 +291,26 @@ function titleBetter(a, b) {
   return dateRank(a.date) > dateRank(b.date)
 }
 
-/** 事件标题选取（与 opinion-events#pickEventTitle 一致） */
-function pickEventTitle(members) {
+/**
+ * 「事件标题所取的那个成员」**对象**（与 opinion-events#pickEventTitle 同一判据）。
+ *
+ * 为什么要有这样一个返回对象的版本（2026-10-16 修）：`deriveEvent` 里要拿**主块**
+ * （事件卡的归属块 `feed` / `weekly` / `alert`），而 `pickEventTitle` 返回的是**字符串标题** ——
+ * 早先写成 `titleMember = pickEventTitle(...)` 再取 `titleMember.block`，等于在字符串上取属性，
+ * 恒为 `undefined` ⇒ **落库事件从来没有 block 字段**（schema 却把它标成 required）。
+ * 标题由本函数的结果现取，两条路径共用同一判据，不会各选一个成员。
+ */
+function pickTitleMember(members) {
   const withSource = members.filter((m) => !!asText(m.source))
   const pool = withSource.length > 0 ? withSource : members
   let best = pool[0]
   for (const m of pool) if (titleBetter(m, best)) best = m
-  return best.title
+  return best
+}
+
+/** 事件标题选取（与 opinion-events#pickEventTitle 一致） */
+function pickEventTitle(members) {
+  return pickTitleMember(members).title
 }
 
 /* ─────────────────────────── 分页取全表 ─────────────────────────── */
@@ -304,6 +331,40 @@ async function listAll(collection, where, maxRows = MAX_ROWS) {
     if (out.length >= maxRows) {
       console.warn(`[opinionCluster] ${collection} 取数达到上限 ${maxRows}，本轮只处理这一部分`)
       return out
+    }
+  }
+}
+
+/**
+ * 按 `field` **降序**取最近 `maxRows` 条（与 `listAll` 的「按 `_id` 升序翻全表」是两回事）。
+ *
+ * 为什么「沿用旧键」不能用 `listAll`（2026-10-16 修）：`opinion_events` 的主键 `_id`
+ * 就是 `event_key`（哈希），按 `_id` 升序读出来的是一个**伪随机子集**。集合一旦超过 `maxRows` 行，
+ * 某些事件就会**随机地**读不到 ⇒ 该事件本轮找不到旧行 ⇒ 被当成新事件另建一行（键不同）
+ * ⇒ 端上「已读 / 跟进」变孤儿，而且**静默发生**（回执里只是 `created` 多了一点，没有任何报错）。
+ * 按 `updated_at` 降序则稳定先取到「上一轮刚写过的事件」，与本轮的候选集必然重叠。
+ *
+ * 两个细节：
+ *   · 用 `_id` 升序做**次级排序**：一轮里几百个事件的 `updated_at` 是同一个时间戳
+ *     （`nowIso` 在循环外算一次），没有它，平局行的顺序不确定，`skip` 翻页会重复 / 漏行；
+ *   · 老行没有 `updated_at` 时排在最末（降序垫底），不会挤掉活跃事件。
+ */
+async function listRecent(collection, field, maxRows) {
+  const out = []
+  for (;;) {
+    const res = await db
+      .collection(collection)
+      .orderBy(field, 'desc')
+      .orderBy('_id', 'asc')
+      .skip(out.length)
+      .limit(PAGE_SIZE)
+      .get()
+    const batch = (res && res.data) || []
+    if (!batch.length) return out
+    out.push(...batch)
+    if (out.length >= maxRows) {
+      console.warn(`[opinionCluster] ${collection} 按 ${field} 降序取数达到上限 ${maxRows}，本轮只对这部分沿用旧键`)
+      return out.slice(0, maxRows)
     }
   }
 }
@@ -357,6 +418,11 @@ async function collectSources() {
         summary: asText(it && it.content),
         source: asText(it && it.source),
         date: asText(it && (it.publishedDate || it.published_date)),
+        /* URL（feed_cache 的 items 是 NewsItem[]，带 url）：成员去重**优先按它** —— 同一篇报道
+           若既在 feed_cache 又在 risk_signals，两者时间口径不同，只比「标题+来源+时间」会漏判成两条 */
+        url: asText(it && it.url),
+        /* 时间口径：feed 的时间就是媒体发布时间（不是我们抓取的时刻） */
+        timeBasis: 'published',
         label,
         /* 条目级分级字段（P4-B，可能没有）：feed_cache 写入前已由云端写口
            （aiProxy/report-store.js#storeSaveFeed）用风险词典补齐，有则透传给 deriveEvent
@@ -368,12 +434,19 @@ async function collectSources() {
   }
 
   for (const row of await listAll(SOURCE_TABLES.signal)) {
+    /* 时间线的时间优先取**媒体发布时间**（2026-10-16 修），缺失才退回 first_seen_at。
+       退回时 timeBasis='seen'，展示层据此把措辞标成「发现于」—— 否则用户会把
+       「我们扫到它的时刻」读成「事件发生的时刻」（riskWatch 是定时任务，同轮扫到的条目
+       first_seen_at 完全相同，混排后会呈现成「每天一个时间点」的扫描日志状）。 */
+    const publishedAt = asText(row && row.published_date)
     pushEntry(out, {
       block: 'alert',
       title: String((row && row.title) || ''),
       summary: asText(row && row.quote),
       source: asText(row && row.source),
-      date: asText(row && row.first_seen_at),
+      date: publishedAt || asText(row && row.first_seen_at),
+      url: asText(row && row.url),
+      timeBasis: publishedAt ? 'published' : 'seen',
       label: asText(row && row.name),
       category: asRiskCategory(row && row.category),
       level: normLevel(row && row.level)
@@ -396,26 +469,81 @@ function groupBySameEvent(entries) {
   return groups
 }
 
-/** 成员去重键：同标题 + 同来源 + 同时间算同一条重复上报 */
-const memberKey = (m) => `${asText(m.title)}\u0000${asText(m.source)}\u0000${asText(m.date)}`
-
-/** 去重 + 按时间升序（不可解析垫底）+ 超过上限保留最近的 MAX_MEMBERS 条 */
+/**
+ * 去重（2026-10-16 修）+ 按时间升序（不可解析垫底）+ 超过上限时**头尾各留一半**（理由见 MAX_MEMBERS 注释）。
+ *
+ * 去重为什么需要**两把键**：有 url 的成员要能和「同一篇但没 url」的成员互相认出来。
+ *   · 有 url   ⇒ 按 url 比（同一篇报道的 URL 唯一，且跨表同 URL 的时间口径必然不同，
+ *                只比「标题+来源+时间」会漏判成两条）；
+ *   · 没有 url ⇒ 先看是否已被某个**带 url 的成员**按「标题+来源」收走，否则再按
+ *                「标题 + 来源 + 时间」与其它无 url 成员互比（保持原有语义，不放松）。
+ *
+ * 第二条是必须的：`url` 是这次才写进成员的，**旧库里的成员一个都没有 url**，
+ * 而本轮采集的成员全都有 ⇒ 只按 url 比的话，每一篇仍在源表里的报道都会变成
+ * 「带 url 的新版 + 不带 url 的旧版」两条，键不同、都留下，
+ * **每个既有事件的时间线都会平白多出重复节点**（adopt 每轮 concat，不会自愈）。
+ * 靠「带 url 的成员顺手登记 (标题,来源)」把旧版吃掉，这个重复在下一轮就跑完自愈。
+ * 顺序上成立：入参是 `base.members.concat(adopted.members)` —— 新的在前、旧的在后。
+ *
+ * 保留集仍整体升序：头部区间（最早）整体早于尾部区间（最新），拼接不会打乱顺序。
+ */
 function normalizeMembers(list) {
-  const seen = new Set()
+  const seenUrl = new Set()
+  /** 带 url 的成员登记过的「标题 + 来源」：用来吃掉同一篇的旧（无 url）版本 */
+  const seenPair = new Set()
+  /** 无 url 成员之间的键：保持原有三元组语义，不放松到只比标题 + 来源 */
+  const seenLegacy = new Set()
   const uniq = []
   for (const m of list) {
-    const k = memberKey(m)
-    if (seen.has(k)) continue
-    seen.add(k)
+    const url = asText(m.url)
+    const pair = `${asText(m.title)}\u0000${asText(m.source)}`
+    if (url) {
+      if (seenUrl.has(url)) continue
+      seenUrl.add(url)
+      seenPair.add(pair)
+      uniq.push(m)
+      continue
+    }
+    if (seenPair.has(pair)) continue
+    const legacy = `${pair}\u0000${asText(m.date)}`
+    if (seenLegacy.has(legacy)) continue
+    seenLegacy.add(legacy)
     uniq.push(m)
   }
   uniq.sort((a, b) => dateRank(a.date) - dateRank(b.date) || (normalizeTitle(a.title) < normalizeTitle(b.title) ? -1 : 1))
-  return uniq.length > MAX_MEMBERS ? uniq.slice(uniq.length - MAX_MEMBERS) : uniq
+  /*
+   * 返回 `{ members, total }`：`members` 是要落库的保留集，`total` 是**去重后的真实条数**（截断前）。
+   *
+   * 为什么必须把 total 带出来：事件卡上那个「N 条来源」要报的就是它。若拿 `members.length`
+   * 当来源数，一个被截到 30 条的爆点事件会显示成「30 条来源」—— 那是个**假数字**
+   * （真实可能 80 条），而本层的职责恰恰是**如实**归拢。两个值同源返回（不拆成两个函数）
+   * 是为了让「总数」与「保留集」必然一致：各算一次早晚会算出两个答案。
+   */
+  const total = uniq.length
+  if (total <= MAX_MEMBERS) return { members: uniq, total }
+  const head = Math.ceil(MAX_MEMBERS / 2)
+  const tail = MAX_MEMBERS - head
+  return { members: uniq.slice(0, head).concat(uniq.slice(uniq.length - tail)), total }
 }
 
-/** 由成员集合推导出事件的全部字段（纯函数；event_key 由 objectKey + themeToken 现算） */
-function deriveEvent(members) {
-  const members2 = normalizeMembers(members).map((m) => {
+/**
+ * 由成员集合推导出事件的全部字段（纯函数；event_key 由 objectKey + themeToken 现算）。
+ *
+ * `hiddenTotal` = 「已知存在、但已不在本次入参里」的成员条数（默认 0）。
+ *
+ * 为什么必须有这个参数（2026-10-16 修）：`main` 里 deriveEvent 被调用**两次** ——
+ * 先 `base = deriveEvent(group)`，再 `derived = deriveEvent(base.members ∪ 旧行成员)`。
+ * 而 normalizeMembers 会**截断到 MAX_MEMBERS**，第二次的入参已经是截断后的集合，
+ * 于是 `norm.total` 又变回 30 —— 一个 31 条的爆点事件会被报成「30 条来源」，
+ * 正是本次要修的那个假数字。故调用方把「入参之外还知道多少条」显式传进来相加。
+ *
+ * ⚠ 加出来的这个数是**下界**：旧行里被截断掉的成员已不可见，只能靠旧行的 `memberTotal`
+ * 反推差额，无法逐条重算（宁可报少，不可报多）。
+ */
+function deriveEvent(members, hiddenTotal) {
+  const hidden = Number.isFinite(hiddenTotal) && hiddenTotal > 0 ? hiddenTotal : 0
+  const norm = normalizeMembers(members)
+  const members2 = norm.members.map((m) => {
     const member = {
       block: m.block,
       title: m.title,
@@ -427,6 +555,10 @@ function deriveEvent(members) {
       impact: impactOf(m.level),
       response: responseOf(m.category, m.level)
     }
+    /* URL 与时间口径随成员落库：URL 让**下一轮**的 adopt 合并也能按 URL 去重；
+       timeBasis 供端上把「我们发现它的时刻」标成「发现于」（与媒体发布时间区分开） */
+    if (m.url) member.url = asText(m.url)
+    if (m.timeBasis) member.timeBasis = m.timeBasis
     if (m.category) member.category = m.category
     if (m.level) member.level = m.level
     return member
@@ -447,19 +579,34 @@ function deriveEvent(members) {
     if (ms !== null) dated.push({ m, ms, i })
   })
   dated.sort((a, b) => a.ms - b.ms || a.i - b.i)
-  let timeline = dated.map(({ m }) => ({
-    date: m.date,
-    source: m.source,
-    nature: m.nature,
-    text: m.title,
-    block: m.block,
-    label: m.label
-  }))
-  if (timeline.length > MAX_TIMELINE) timeline = timeline.slice(timeline.length - MAX_TIMELINE)
+  let timeline = dated.map(({ m }) => {
+    const node = {
+      date: m.date,
+      source: m.source,
+      nature: m.nature,
+      text: m.title,
+      block: m.block,
+      label: m.label
+    }
+    /* 时间口径随节点透出（见 collectSources）：'seen' = 这个时间是我们首次扫到的时刻 */
+    if (m.timeBasis) node.timeBasis = m.timeBasis
+    return node
+  })
+  /*
+   * 与 normalizeMembers 同一取舍：超限时**头尾各留一半**（头部保「起因」、尾部保「最新」）。
+   * 正常情况下走不到这里 —— timeline 是 members2 的子集、两者上限同为 30；
+   * 留着是为了「以后有人调小 MAX_TIMELINE」时不会一脚踩回「只留最近」的老坑。
+   */
+  if (timeline.length > MAX_TIMELINE) {
+    const head = Math.ceil(MAX_TIMELINE / 2)
+    const tail = MAX_TIMELINE - head
+    timeline = timeline.slice(0, head).concat(timeline.slice(timeline.length - tail))
+  }
 
   const sources = [...new Set(members2.map((m) => m.source).filter(Boolean))]
   const labels = [...new Set(members2.map((m) => m.label).filter(Boolean))]
-  const titleMember = pickEventTitle(members2)
+  /* 取**成员对象**（不是标题字符串）：下面要同时用它取 block 与 title（见 pickTitleMember 注释） */
+  const titleMember = pickTitleMember(members2)
   const objectKey = objectKeyOf(members2)
   const themeToken = themeTokenOf(members2)
   const first = dated.length ? dated[0].m.date : ''
@@ -470,9 +617,13 @@ function deriveEvent(members) {
     object_key: objectKey,
     /* 主块取「标题所取成员」的块（端上事件卡的归属；存库事件不用于跳转，够用） */
     block: titleMember.block,
-    title: pickEventTitle(members2),
+    title: titleMember.title,
     members: members2,
+    /* 保留在事件里的成员数（≤ MAX_MEMBERS，恒等于 members.length） */
     memberCount: members2.length,
+    /* 去重后的**真实**来源条数（≥ memberCount）：事件卡上的「N 条来源」报的是这个。
+       本轮去重数 + 入参之外已知条数（见 deriveEvent 的 hiddenTotal 注释） */
+    memberTotal: norm.total + hidden,
     timeline,
     sources,
     labels,
@@ -525,8 +676,12 @@ exports.main = async (event) => {
 
   const groups = groupBySameEvent(bounded)
 
-  /* 读已存在事件：用于「同一事件沿用旧键」（见文件头「事件身份」第 2 条保底） */
-  const existingRows = await listAll(OUT_TABLE, undefined, MAX_EVENTS_READ)
+  /*
+   * 读已存在事件：用于「同一事件沿用旧键」（见文件头「事件身份」第 2 条保底）。
+   * ⚠ 必须取**最近更新的**那些，不能按 `_id` 取前 N 条（理由见 listRecent 注释）：
+   * 主键是哈希，`_id` 子集与活跃事件不重叠时，同一个事件会被另建一行、端上已读 / 跟进变孤儿。
+   */
+  const existingRows = await listRecent(OUT_TABLE, 'updated_at', MAX_EVENTS_READ)
   const byId = new Map(existingRows.map((r) => [String(r._id), r]))
 
   const nowIso = new Date().toISOString()
@@ -548,9 +703,24 @@ exports.main = async (event) => {
 
     let id
     let members = base.members
+    /*
+     * 入参之外**已知但不可见**的成员条数（见 deriveEvent 的 hiddenTotal 注释）：
+     *   ① 本轮自己的截断差额：base 是拿 31 条原始成员算出来的，base.members 只剩 30 条。
+     *      少了它，31 条的爆点事件会被第二次 deriveEvent 报成 30 条（本次修的就是这个）；
+     *   ② 旧行的截断差额：旧行若也是被截断过的爆点事件，其 memberTotal 会大于 members.length。
+     * 两者取 **max 而不是相加**：adopt 的语义就是「同一事件的上一轮」，本轮的差额与旧行的差额
+     * 极可能是**同一批**被截掉的成员，相加会重复计数、把来源数报多（违背「如实归拢」）。
+     * 取 max 则是**下界**：宁可少报，绝不多报。
+     */
+    let hiddenTotal = base.memberTotal - base.members.length
     if (adopted) {
       id = String(adopted._id)
-      members = base.members.concat(Array.isArray(adopted.members) ? adopted.members : [])
+      const adoptedMembers = Array.isArray(adopted.members) ? adopted.members : []
+      members = base.members.concat(adoptedMembers)
+      const adoptedTotal = Number(adopted.memberTotal)
+      if (Number.isFinite(adoptedTotal)) {
+        hiddenTotal = Math.max(hiddenTotal, adoptedTotal - adoptedMembers.length)
+      }
     } else {
       /* ② 没有可沿用的：用现算键；若键已被一条**判为不同事件**的行占用（哈希碰撞），加后缀避让 */
       id = base.event_key
@@ -561,7 +731,7 @@ exports.main = async (event) => {
       }
     }
 
-    const derived = deriveEvent(members)
+    const derived = deriveEvent(members, hiddenTotal)
     if (!derived) continue
     /* event_key 固定为落库主键（沿用旧键 / 避让后的键）；其余字段由合并后的成员重算 */
     derived.event_key = id
@@ -604,6 +774,7 @@ exports.eventKeyOf = eventKeyOf
 exports.impactOf = impactOf
 exports.responseOf = responseOf
 exports.deriveEvent = deriveEvent
+exports.pickTitleMember = pickTitleMember
 exports.eventMatches = eventMatches
 exports.DUP_MIN_CHARS = DUP_MIN_CHARS
 exports.DUP_PREFIX_CHARS = DUP_PREFIX_CHARS

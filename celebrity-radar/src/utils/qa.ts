@@ -2,6 +2,7 @@ import Taro from '@tarojs/taro'
 import { table } from './db'
 import { diagLog } from './cloud-diagnostics'
 import { chatText } from './llm'
+import { toUserMessage } from './error'
 import { checkUserText } from './sec-check'
 import { incrQuotaViaCloud } from './quota-guard'
 import { track } from './events'
@@ -332,6 +333,84 @@ function toWebPassage(item: NewsItem, no: number): QaPassage {
 }
 
 /**
+ * 「这一问值不值得为一次联网检索付费」的触发词（2026-10-15）。
+ *
+ * 背景：报告问答此前**每问必检索**（一次付费调用 + 一次网络往返，失败还要退避重试）。
+ * 但报告语料本身已经带着 12 条带日期动态、公开发言、时间线与报道画像 ——
+ * 「演过什么作品」「媒体是什么倾向」「时间线是怎样的」这类问题，答案就在手里，
+ * 检索只是白等 1~3 秒（最坏 7 秒以上）并多花一笔钱。
+ *
+ * 所以只在「答案与当前时间强相关」时才联网：报告写于两周前，而这类问题问的正是
+ * 报告之后发生了什么（见 QA_SYSTEM_WEB_EXTRA 那段说明，它本就是为这种情况写的）。
+ *
+ * ⚠ 直连模式（askDirect）**不看这个判定**：那边没有报告语料，检索是唯一的《资料》来源。
+ */
+const FRESH_ASK_WORDS = [
+  '最近',
+  '最新',
+  '近期',
+  '现在',
+  '目前',
+  '如今',
+  '今天',
+  '昨天',
+  '这两天',
+  '这几天',
+  '近况',
+  '进展',
+  '后续',
+  '之后',
+  '接下来',
+  '动态',
+  '新闻',
+  '消息',
+  '预告',
+  '官宣',
+  '上映',
+  '开播',
+  '发售',
+  '直播',
+  '股价',
+  '票房',
+  '收视',
+  '代言',
+  '新片',
+  '新剧',
+  '新歌',
+  '专辑',
+  '综艺',
+  '获奖',
+  '热度',
+  '热搜'
+]
+/*
+ * 刻意**不收**「怎么样 / 怎样」：「TA 的经历是怎样的」问的是事实而不是时效，
+ * 收进来会让一大类「是怎样的」问法白跑一次检索。真正的时效问法（「最近怎么样」）
+ * 已经由「最近」兜住，不必靠这两个词。
+ */
+
+/** 去掉指代词与空白后剩下的问题（空串 = 整句只有指代词，没给出任何实词） */
+function bareQuestion(question: string): string {
+  return question
+    .replace(/TA/gi, '')
+    .replace(/[他她它]/g, '')
+    .replace(/\s+/g, '')
+}
+
+/**
+ * 报告模式下这一问要不要联网检索（纯函数，便于用例钉住口径）。
+ *
+ * 命中时效词才搜；**整句只有指代词**（「TA 他她它」）也搜 —— 那种问题没给出任何实词，
+ * 语料的相关度筛选同样无从下手，与 askQueryOf 退化成通用检索式是同一判定。
+ */
+export function needsWebSearch(question: string): boolean {
+  const q = question.trim()
+  if (!q) return false
+  if (FRESH_ASK_WORDS.some((w) => q.includes(w))) return true
+  return bareQuestion(q) === ''
+}
+
+/**
  * 检索式：`名人 + 去掉指代词的问题`。
  *
  * 为什么不直接拿问题去搜：「TA 最近有什么动态」里的 TA 对检索毫无信息量，而名人名不能省
@@ -597,7 +676,79 @@ const QA_SYSTEM_DIRECT = [
   '引用《资料》时在相应句子末尾标注条目编号，写成 [2] 或 [1][3]；只标真正用到的条目，不要标未使用的编号。'
 ].join('\n')
 
-function buildUserPrompt(reports: Report[], picked: QaPassage[], question: string): string {
+/** 一轮已完成的问答（追问用）。**只活在会话内存里**，不落库、不跨次保留。 */
+export interface QaTurn {
+  q: string
+  a: string
+}
+
+/** 一次提问的可选参数 */
+export interface QaAskOpts {
+  /**
+   * 本会话此前的问答（最近 2 轮，见 QA_HISTORY_MAX）。
+   *
+   * 为什么要有它（2026-10-15）：原先「不记忆」的口径让每个问题都必须自带完整上下文，
+   * 用户想问「那后来呢」「他是怎么回应的」就只能把对象、事件重打一遍 ——
+   * 实际效果是「能问的问题很少」。带上最近两轮之后，追问才成为追问。
+   *
+   * 边界不变：**事实仍只认《资料》**，上文只用于理解指代；不落库、退出即忘
+   * （界面不得暗示 AI 记得历史，见下方 QA_SYSTEM_HISTORY_EXTRA）。
+   */
+  history?: QaTurn[]
+  /** 阶段回调：面板据此把「正在等」换成「正在检索 / 正在整理」（长等待的可解释性） */
+  onStage?: (stage: QaStage) => void
+}
+
+/**
+ * 提问的执行阶段（面板用来显示进度）。
+ * `read` = 机审与组资料（同步，几乎瞬时）；`search` = 联网检索；`answer` = 调模型。
+ */
+export type QaStage = 'read' | 'search' | 'answer'
+
+/**
+ * 上文保留几轮：两轮足够理解「他」「那件事」「后来呢」，再多只是白烧 token。
+ * 导出给面板用（它按同一上限裁剪自己记的 turns），避免两处各写一个数字。
+ */
+export const QA_HISTORY_MAX = 2
+/** 上文里每条回答截断到这长度：上文是给模型认指代的，不需要全文 */
+const QA_HISTORY_ANSWER_MAX = 120
+/** 上文里每个问题截断到这长度 */
+const QA_HISTORY_QUESTION_MAX = 80
+
+/**
+ * 《上文对话》段的边界声明（2026-10-15）。
+ *
+ * 与 QA_SYSTEM_WEB_EXTRA / KNOWLEDGE_EXTRA 同风格：独立一段、不占编号。
+ * 三句话各管一件事，缺一句都出事：
+ * ① 说明用途 —— 不写，模型会把上文的说法当成新事实来源；
+ * ② 冲突以《资料》为准 —— 上文里的回答可能标着「（模型知识，未必准确）」，复述它等于把过期记忆洗成事实；
+ * ③ 划清「不是记忆」—— 上文只是本会话最近两轮，不是长期记忆，避免模型张口就说「你上次问过」。
+ */
+const QA_SYSTEM_HISTORY_EXTRA = [
+  '',
+  '【关于《上文对话》】',
+  '它只用于理解本次问题里的指代与省略（「他」「这个」「那后来呢」指谁、指哪件事）。',
+  '事实仍然只能来自《资料》；上文与《资料》冲突时以《资料》为准；上文里标了「（模型知识，未必准确）」的内容不得当成事实复述。',
+  '它是本次会话的最近两轮，不是你与该用户的长期记忆，不要声称「你之前问过我」。'
+].join('\n')
+
+/**
+ * 把最近 N 轮问答拼成 prompt 段（不足则返回空串，调用方据此决定要不要加那段 system 声明）。
+ * 与资料同样过 unmaskStructure：上文里的回答也含模型从网上抄来的内容，同样是可被冒充的结构标记来源。
+ */
+function historyBlock(history?: QaTurn[]): string {
+  const turns = (history ?? []).slice(-QA_HISTORY_MAX)
+  if (turns.length === 0) return ''
+  const lines = turns.map(
+    (t, i) =>
+      `第 ${i + 1} 轮：用户问「${unmaskStructure(clip(t.q, QA_HISTORY_QUESTION_MAX))}」；你当时的回答「${unmaskStructure(
+        clip(t.a, QA_HISTORY_ANSWER_MAX)
+      )}」`
+  )
+  return ['《上文对话》（本次会话此前的问答，仅供理解追问，不是资料）', ...lines].join('\n')
+}
+
+function buildUserPrompt(reports: Report[], picked: QaPassage[], question: string, opts: QaAskOpts = {}): string {
   const multi = reports.length > 1
   const stamp = reports
     .map((r) => {
@@ -619,10 +770,19 @@ function buildUserPrompt(reports: Report[], picked: QaPassage[], question: strin
     '《资料》'
   ]
   const body = picked.map(renderPassage)
+  /* 上文排在此处：模型先读完《资料》再看上文，顺序反过来会让上文变成事实来源（见 QA_SYSTEM_HISTORY_EXTRA） */
+  const past = historyBlock(opts.history)
   /* 问题也要过净化（P2-16）：手打的内容同样能带出我们的结构标记 */
-  return [...head, ...body, '', '《用户问题》', unmaskStructure(question.trim()), '', '请依据上述约束作答：'].join(
-    '\n'
-  )
+  return [
+    ...head,
+    ...body,
+    '',
+    ...(past ? [past, ''] : []),
+    '《用户问题》',
+    unmaskStructure(question.trim()),
+    '',
+    '请依据上述约束作答：'
+  ].join('\n')
 }
 
 /**
@@ -630,7 +790,7 @@ function buildUserPrompt(reports: Report[], picked: QaPassage[], question: strin
  * 只报「提问时刻联网检索到的资料条数」。无检索结果时写一行占位，让模型知道《资料》是空的
  * —— 空《资料》段与「忘了贴资料」在模型眼里没区别，写一行「本次没有检索到结果」才不含糊。
  */
-function buildDirectPrompt(subject: string, web: QaPassage[], question: string): string {
+function buildDirectPrompt(subject: string, web: QaPassage[], question: string, opts: QaAskOpts = {}): string {
   const head = [
     `名人/话题：${subject}`,
     `资料条数：${web.length}（提问时刻联网检索）`,
@@ -638,9 +798,17 @@ function buildDirectPrompt(subject: string, web: QaPassage[], question: string):
     '《资料》'
   ]
   const body = web.length > 0 ? web.map(renderPassage) : ['（本次没有检索到结果）']
-  return [...head, ...body, '', '《用户问题》', unmaskStructure(question.trim()), '', '请依据上述约束作答：'].join(
-    '\n'
-  )
+  const past = historyBlock(opts.history)
+  return [
+    ...head,
+    ...body,
+    '',
+    ...(past ? [past, ''] : []),
+    '《用户问题》',
+    unmaskStructure(question.trim()),
+    '',
+    '请依据上述约束作答：'
+  ].join('\n')
 }
 
 /*
@@ -925,15 +1093,24 @@ export function suggestCompareQuestions(a: Report, b: Report): string[] {
  * 直连模式的建议问题（2026-10-12）：没有报告可依，只能给一组**通用**问题。
  *
  * 与有报告时的建议问题（全部由报告里确实存在的段落生成）不同，这里不预设任何结论、
- * 也不假设这位名人有什么素材 —— 四条覆盖「动态 / 作品 / 争议 / 领域」这四个用户最常问的方向，
- * 由模型在直连作答时自行说明资料是否够用。
+ * 也不假设这位名人有什么素材 —— 由模型在直连作答时自行说明资料是否够用。
+ *
+ * 2026-10-15 从 4 条扩到 8 条：4 条刚好铺满一批，用户看完就没有下一批可换，
+ * 「能问的问题不多」有一半来自这里。前 4 条**顺序不变**（既有的最常问方向，先出现），
+ * 后 4 条补上「出身 / 近况触发点 / 商业合作 / 公开立场」——同样不预设结论，
+ * 也不假设素材存在（问不到时模型按 QA_SYSTEM_DIRECT 说明资料不足）。
+ * 8 条正好两批（面板一次 4 条 + 「换一批」），不会把会话区挤满。
  */
 export function suggestDirectQuestions(_name: string): string[] {
   return [
     'TA 最近有什么公开动态？',
     'TA 的代表作品有哪些？',
     'TA 有过什么争议或风波？',
-    'TA 主要活跃在哪个领域？'
+    'TA 主要活跃在哪个领域？',
+    'TA 是怎么出道 / 成名的？',
+    'TA 最近一次被大量报道是因为什么？',
+    'TA 有哪些公开的商业合作或代言？',
+    'TA 在公开场合表达过哪些立场？'
   ]
 }
 
@@ -998,10 +1175,13 @@ export function splitCitations(text: string, maxNo: number): QaAnswerSegment[] {
  * 单份时**逐条行为与改造前一致**（同一套 system、同样的 selectPassages 参数），
  * 多人时才追加第 8 条约束与公平性下限。`askReport` 保留为单份入口，避免改动既有调用方。
  */
-export async function askReports(reports: Report[], question: string): Promise<QaResult> {
+export async function askReports(reports: Report[], question: string, opts: QaAskOpts = {}): Promise<QaResult> {
   const q = question.trim()
   if (!q) return { ok: false, error: '请输入问题' }
   if (q.length > QA_MAX_QUESTION) return { ok: false, error: `问题过长，请控制在 ${QA_MAX_QUESTION} 字以内` }
+
+  /* 阶段①：组资料（机审 + 摊开报告语料都是同步/极快的，先让界面说清在等什么） */
+  opts.onStage?.('read')
 
   /*
    * 冷却闸门放在最前（P2-14，与 report.ts / weekly.ts 同一口径）：上游限流 / 网络故障期间，
@@ -1038,25 +1218,36 @@ export async function askReports(reports: Report[], question: string): Promise<Q
    * 合流发生在 selectPassages **之前**：联网条目与报告片段一起按相关度竞争预算，
    * 超预算时被丢掉的可能是检索结果，也可能是报告里不太相关的几条 —— 这正是想要的
    * （预算只留给与问题最相关的资料），而不是无条件把检索结果全塞进去。
+   *
+   * 2026-10-15：**按需触发**（needsWebSearch）。此前每问必检索，「TA 演过哪些作品」这种
+   * 报告里就有答案的问题也要拖进一次付费往返；现在只有时效类问题（以及整句只有指代词、
+   * 压根没给实词的退化问法）才走这条路。直连模式不受影响 —— 那边检索是唯一的《资料》来源。
+   * 判定仍放在机审之后：顺序始终是「先过门、再外发」。
    */
-  const web = await webPassagesOf(reports, q, passages.length)
+  const useWeb = needsWebSearch(q)
+  if (useWeb) opts.onStage?.('search')
+  const web = useWeb ? await webPassagesOf(reports, q, passages.length) : []
   const picked = selectPassages([...passages, ...web], q, { minPerWho: many ? QA_MIN_PER_WHO : 0 })
   /* 边界声明排在最前（P2-16）：先立规矩，再给材料 */
   const system = [
     QA_SYSTEM_GUARD,
     many ? `${QA_SYSTEM}\n${QA_SYSTEM_MULTI_EXTRA}` : QA_SYSTEM,
     web.length > 0 ? QA_SYSTEM_WEB_EXTRA : '',
-    QA_SYSTEM_KNOWLEDGE_EXTRA
+    QA_SYSTEM_KNOWLEDGE_EXTRA,
+    historyBlock(opts.history) ? QA_SYSTEM_HISTORY_EXTRA : ''
   ]
     .filter(Boolean)
     .join('\n')
+  /* 阶段③：资料已备好，接下来是模型那一跳（通常最久，界面要说清） */
+  opts.onStage?.('answer')
   /* purpose='ask'：云端闸门按提问池算上限（与端上 checkQaGate 同池），不能落到生成池 */
-  const asked = await chatText(system, buildUserPrompt(reports, picked, q), 'ask')
+  const asked = await chatText(system, buildUserPrompt(reports, picked, q, opts), 'ask')
   if (!asked.ok) {
     /* 与 report.ts / weekly.ts 同一套冷却口径：只有限流 / 网络 / 上游 5xx 才值得让用户等 */
     const rateLimited = /频繁|429/.test(asked.error)
     if (asked.retryable || rateLimited) setCooldown('llm')
-    return { ok: false, error: asked.error }
+    /* 原始失败文案（可能带模型名 / JSON 行话）只进日志，用户侧走统一文案层 */
+    return { ok: false, error: toUserMessage(asked.error, '回答失败，请稍后重试') }
   }
 
   await noteQaUsed()
@@ -1067,14 +1258,17 @@ export async function askReports(reports: Report[], question: string): Promise<Q
     passages: picked.length,
     chars: q.length,
     multi: many || undefined,
-    web: picked.filter((p) => p.kind === 'web').length || undefined
+    web: picked.filter((p) => p.kind === 'web').length || undefined,
+    /* 追问轮数（2026-10-15）：为 0/未填=独立提问。它是「多轮追问到底有没有人用」的唯一证据，
+       也是判断「要不要把上文从 2 轮放宽到 3 轮」的依据 */
+    turns: (opts.history ?? []).length || undefined
   })
   return { ok: true, text: asked.text, sources: picked }
 }
 
 /** 单份报告提问（报告页 / 提问页用）：等价于 askReports([report], question) */
-export async function askReport(report: Report, question: string): Promise<QaResult> {
-  return askReports([report], question)
+export async function askReport(report: Report, question: string, opts: QaAskOpts = {}): Promise<QaResult> {
+  return askReports([report], question, opts)
 }
 
 /**
@@ -1087,10 +1281,13 @@ export async function askReport(report: Report, question: string): Promise<QaRes
  * ② 不要求检索必须有结果：检索为空也照样作答（纯模型知识），这正是它相对 askReports
  *    「无素材就报错」的意义所在 —— 没有报告的人也能问。
  */
-export async function askDirect(subject: string, question: string): Promise<QaResult> {
+export async function askDirect(subject: string, question: string, opts: QaAskOpts = {}): Promise<QaResult> {
   const q = question.trim()
   if (!q) return { ok: false, error: '请输入问题' }
   if (q.length > QA_MAX_QUESTION) return { ok: false, error: `问题过长，请控制在 ${QA_MAX_QUESTION} 字以内` }
+
+  /* 阶段①：直连没有报告可翻，这一步就是「整理检索式」——界面文案见面板 */
+  opts.onStage?.('read')
 
   /* 冷却闸门放在最前，与 askReports 同一口径（见那里的注释）：值得等的失败才进冷却 */
   const coolLeft = cooldownMinutesLeft('llm')
@@ -1103,17 +1300,24 @@ export async function askDirect(subject: string, question: string): Promise<QaRe
   if (suggest !== 'pass') return { ok: false, error: '含不合规内容，请修改后再提问' }
 
   /* 检索式 = 名人/话题 + 问题：直连没有报告语料，姓名前缀 + 问题本身就是全部的检索信息。
-     baseNo 传 0：直连没有报告片段占号，联网条目从 [1] 开始连续编号（口径同报告模式的 baseNo 语义）。 */
+     baseNo 传 0：直连没有报告片段占号，联网条目从 [1] 开始连续编号（口径同报告模式的 baseNo 语义）。
+     与报告模式不同，这里**不按需跳过**：没有报告语料时，检索是唯一的《资料》来源。 */
+  opts.onStage?.('search')
   const web = await webPassagesOfQuery(`${subject} ${q}`.trim(), 0)
 
-  const system = [QA_SYSTEM_GUARD, QA_SYSTEM_DIRECT].join('\n')
+  const system = [QA_SYSTEM_GUARD, QA_SYSTEM_DIRECT, historyBlock(opts.history) ? QA_SYSTEM_HISTORY_EXTRA : '']
+    .filter(Boolean)
+    .join('\n')
+  /* 阶段③：同 askReports，模型那一跳最久 */
+  opts.onStage?.('answer')
   /* purpose='ask'：与 askReports 同落提问池，不能落到生成池 */
-  const asked = await chatText(system, buildDirectPrompt(subject, web, q), 'ask')
+  const asked = await chatText(system, buildDirectPrompt(subject, web, q, opts), 'ask')
   if (!asked.ok) {
     /* 与 askReports 同一套冷却口径：只有限流 / 网络 / 上游 5xx 才值得让用户等 */
     const rateLimited = /频繁|429/.test(asked.error)
     if (asked.retryable || rateLimited) setCooldown('llm')
-    return { ok: false, error: asked.error }
+    /* 原始失败文案（可能带模型名 / JSON 行话）只进日志，用户侧走统一文案层 */
+    return { ok: false, error: toUserMessage(asked.error, '回答失败，请稍后重试') }
   }
 
   await noteQaUsed()
@@ -1124,7 +1328,9 @@ export async function askDirect(subject: string, question: string): Promise<QaRe
     subject,
     direct: true,
     chars: q.length,
-    web: web.length || undefined
+    web: web.length || undefined,
+    /* turns 与报告路径同名同义：同一事件名下的字段必须一致，否则按它汇总会把直连漏掉 */
+    turns: (opts.history ?? []).length || undefined
   })
   return { ok: true, text: asked.text, sources: web }
 }

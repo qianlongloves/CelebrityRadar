@@ -4,6 +4,7 @@ import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { parsePersonKey } from '@/config/domains'
 import { diagLog } from './cloud-diagnostics'
+import { toastText } from './error'
 
 /** 关注列表（§3.8 follows，主键 = openid#personKey） */
 export interface FollowRow {
@@ -68,7 +69,7 @@ export async function toggleFollow(personKey: string, source?: string): Promise<
     const { error } = await table('follows').delete().eq('id', id)
     if (error) {
       diagLog('warn', 'db', `follows 取消失败：${error.message ?? error}`)
-      Taro.showToast({ title: '操作失败，请重试', icon: 'none' })
+      Taro.showToast({ title: toastText(error, '操作失败，请重试'), icon: 'none' })
       return null
     }
     track('unfollow', source ? { personKey, from: source } : { personKey })
@@ -101,7 +102,7 @@ export async function toggleFollow(personKey: string, source?: string): Promise<
   })
   if (error) {
     diagLog('warn', 'db', `follows 写入失败：${error.message ?? error}`)
-    Taro.showToast({ title: '操作失败，请重试', icon: 'none' })
+    Taro.showToast({ title: toastText(error, '操作失败，请重试'), icon: 'none' })
     return null
   }
   track('follow', source ? { personKey, from: source } : { personKey })
@@ -115,7 +116,7 @@ export async function unfollow(personKey: string): Promise<boolean> {
   const { error } = await table('follows').delete().eq('id', `${userId}#${personKey}`)
   if (error) {
     diagLog('warn', 'db', `follows 取关失败：${error.message ?? error}`)
-    Taro.showToast({ title: '操作失败，请重试', icon: 'none' })
+    Taro.showToast({ title: toastText(error, '操作失败，请重试'), icon: 'none' })
     return false
   }
   track('unfollow', { personKey })

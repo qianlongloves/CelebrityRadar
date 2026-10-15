@@ -31,6 +31,12 @@
       "installDependency": true
     },
     {
+      "name": "wxacode",
+      "timeout": 20,
+      "runtime": "Nodejs16.13",
+      "installDependency": true
+    },
+    {
       "name": "notifyFollowUpdates",
       "timeout": 60,
       "runtime": "Nodejs16.13",

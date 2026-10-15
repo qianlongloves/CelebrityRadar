@@ -1,0 +1,9 @@
+{
+  "name": "wxacode",
+  "version": "1.0.0",
+  "description": "分享图上的小程序码：云调用 wxacode.getUnlimited / wxacode.get 生成并落云存储，返回 fileID（无需 appsecret）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}
