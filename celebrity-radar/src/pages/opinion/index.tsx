@@ -213,11 +213,6 @@ export default function Opinion() {
   const [storedReady, setStoredReady] = useState(false)
   /** 我的事件状态（已读 / 跟进）；读失败 = 空状态（页面照常，只是显示为「都没读过」） */
   const [eventStatus, setEventStatus] = useState<EventStatus>(emptyStatus())
-  /**
-   * 事件时间线「只看与我相关」（功能 3）：只显示命中我监控词 / 关注·监控的人的**事件**。
-   * 关注动态卡天然都是「我关注的人」、无需过滤，故本开关只落在事件卡（那里混着与我无关的热门事件）。
-   */
-  const [onlyMine, setOnlyMine] = useState(false)
 
   /**
    * 关注动态数据：**只读一次批量缓存**（`getFeedDetails`），供统一队列 / 今日要点 / 事件降级用。
@@ -423,9 +418,6 @@ export default function Opinion() {
   }, [storedReady, storedEvents, opinionInput])
   const events = eventView.events
 
-  /** 「只看与我相关」过滤后的事件（功能 3）：命中监控词 / 关注·监控的人任一即为「与我相关」 */
-  const visibleEvents = onlyMine ? events.filter((e) => e.hitsKeyword || e.hitsFollow) : events
-
   /** 今日要点：统一队列前 3 条（无来源 / 与我不相关的不凑数）—— 不受明细条数分层限制 */
   const focus = useMemo(() => pickDailyFocus(queue), [queue])
 
@@ -463,7 +455,7 @@ export default function Opinion() {
    *   分层其余部分仍生效（关注人数 / 监控数 / 风险监控人数上限；以及事件**时间线页**的明细门禁
    *   pages/event：免费 5 / 会员全部）。**本页不引入会员态变量**。
    */
-  const eventPreview = overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)
+  const eventPreview = overviewSlice(events, EVENT_OVERVIEW_INITIAL)
 
   const goFeed = () => void Taro.navigateTo({ url: '/package/feed/index' })
   const goWeekly = () => void Taro.navigateTo({ url: '/package/weekly/index' })
@@ -747,42 +739,25 @@ export default function Opinion() {
       <View className='card page-opinion__events'>
         <View className='page-opinion__head'>
           <View className='page-opinion__head-main'>
-            <Text className='page-opinion__head-title'>
-              {onlyMine
-                ? visibleEvents.length > 0
-                  ? `🧩 与我相关 · ${visibleEvents.length} 件事`
-                  : '🧩 与我相关'
-                : events.length > 0
-                  ? `🧩 事件时间线 · ${events.length} 件事`
-                  : '🧩 事件时间线'}
-            </Text>
+            <Text className='page-opinion__head-title'>🧩 事件时间线</Text>
             {/* 「新 N 条」：口径来自 utils/inbox#countNewEvents（复用 opinion_event_status.reads） */}
             {eventNew > 0 && <Text className='count-badge'>新 {eventNew} 条</Text>}
           </View>
-          {/* 右侧动作组：筛选开关 + 「查看全部 ›」入口 */}
+          {/* 右侧动作组：「查看全部 ›」入口 */}
           <View className='page-opinion__head-actions'>
-            <Text
-              className={`page-opinion__filter${onlyMine ? ' page-opinion__filter--on' : ''}`}
-              onClick={() => setOnlyMine((v) => !v)}
-            >
-              {onlyMine ? '✓ 只看与我相关' : '只看与我相关'}
-            </Text>
-            {/* 卡头右上角文字按钮（同类名 `page-opinion__more`），跳独立的事件列表页 pages/events。
-                （2026-10-13 此前在卡底、现移到卡头；2026-10-14 关注动态卡已改为页首入口按钮。） */}
+            {/* 卡头右上角文字按钮（同类名 `page-opinion__more`），跳独立的事件列表页 pages/events。 */}
             <Text className='page-opinion__more' onClick={goEvents}>
               查看全部 ›
             </Text>
           </View>
         </View>
 
-        {visibleEvents.length === 0 ? (
+        {events.length === 0 ? (
           <Text className='page-opinion__empty'>
             {/* 落库事件还没读完（`!storedReady`）时也算「进行中」—— 此时不该显示成「暂无可归并的事件」 */}
             {!storedReady || feed.status === 'loading' || weekly.status === 'loading' || alerts.status === 'loading'
               ? '正在归并事件…'
-              : onlyMine && events.length > 0
-                ? '没有与我相关的事件，关掉「只看与我相关」查看全部'
-                : '暂无可归并的事件，关注的人或监控词有新动态时会聚在这里'}
+              : '暂无可归并的事件，关注的人或监控词有新动态时会聚在这里'}
           </Text>
         ) : (
           <>

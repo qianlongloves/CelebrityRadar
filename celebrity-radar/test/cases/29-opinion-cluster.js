@@ -235,6 +235,29 @@ describe('云函数 opinionCluster：一轮行为', () => {
     deepEq(res.skipped, [])
   })
 
+  it('reset 模式：先清空 opinion_events 再重新聚类（删旧冗余、基于当前源表重采）', async () => {
+    const fn = loadCluster()
+    /* 预先在 opinion_events 里攒下「旧 / 测试冗余」事件 */
+    env.db.__seed('opinion_events', [
+      { _id: 'old-key-1', title: '旧事件A', members: [], memberCount: 0, impact: 'unknown', credibility: 'unknown', response: 'unknown', event_key: 'old-key-1' },
+      { _id: 'old-key-2', title: '旧事件B', members: [], memberCount: 0, impact: 'unknown', credibility: 'unknown', response: 'unknown', event_key: 'old-key-2' }
+    ])
+    /* 当前源表：feed / risk_signals 各一条（与「读库聚类写事件」同款，确保重采有产出） */
+    env.db.__seed('feed_cache', [
+      feedRow('张三#ent', [{ title: '关于X公司起诉事件的声明', source: 'A报', publishedDate: '2026-10-01' }])
+    ])
+    env.db.__seed('risk_signals', [
+      { _id: '李四#ent#abc', person_key: '李四#ent', name: '李四', title: '李四被冒名一事已有结果', source: '某某市公安局', quote: '', first_seen_at: '2026-10-02', category: 'judicial', level: 'high' }
+    ])
+
+    const res = await fn.main({ reset: true })
+    eq(res.ok, true)
+    ok(Array.isArray(res.skipped) && res.skipped.some((s) => typeof s === 'string' && s.includes('reset')), '回执应记录 reset 清空动作')
+    const rows = env.db.__dump('opinion_events')
+    notOk(rows.some((r) => r._id === 'old-key-1' || r._id === 'old-key-2'), '旧事件应被清空（冗余数据已删）')
+    eq(rows.length, 2, '基于当前源表重新聚类成 2 个事件（重新采集）')
+  })
+
   it('读库聚类写事件：feed / risk_signals 参与，keywords（私有关键词订阅）不参与，且零上游检索', async () => {
     const fn = loadCluster()
     /* feed / risk_signals 各造一条；keywords 造一条「与 feed 同名」的私有关注词缓存 */

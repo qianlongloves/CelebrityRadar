@@ -22,7 +22,7 @@
  * 钉住：
  *   1. `overviewSlice` 纯函数：累计行数 / 剩余数 / hasMore 的边界（空、不足、跨批、越界、脏输入）；
  *   2. 概要卡首屏条数**与会员态无关**（overviewSlice 不含会员入参；页面不把 isMember 喂给它）；
- *   3. 静态断言：**只剩事件卡**走 `overviewSlice`（`overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)`），
+ *   3. 静态断言：**只剩事件卡**走 `overviewSlice`（`overviewSlice(events, EVENT_OVERVIEW_INITIAL)`），
  *      都不再用按会员档放全的 `sliceDetail` / `moreDetailNote`；本页不出现 `isMember`；
  *   4. 卡头 `page-opinion__more`「查看全部 ›」**只剩事件卡 1 个**；关注动态 / 周报 / 预警改为
  *      `page-opinion__nav-item` 入口按钮（`goFeed` / `goWeekly` / `goAlerts`）；
@@ -128,8 +128,10 @@ describe('概要卡：预览 / 入口 / 总数（页面静态约束）', () => {
   const page = read('pages/opinion/index.tsx')
   const scss = read('pages/opinion/index.scss')
 
-  it('事件卡头部显示事件总数（不让人以为只有首屏 3 条）', () => {
-    ok(page.includes('事件时间线 · ${events.length} 件事'), '事件卡标题应显示事件总数')
+  it('事件卡标题固定为「事件时间线」（去掉「只看与我相关」开关与标题数字）', () => {
+    ok(page.includes('🧩 事件时间线'), '事件卡标题应显示「事件时间线」')
+    notOk(page.includes('${events.length} 件事'), '标题不再带「· N 件事」数字')
+    notOk(page.includes('只看与我相关'), '去掉「只看与我相关」筛选开关')
   })
 
   it('事件卡不再页内「加载更多」：只给固定预览，入口移到卡头右上角（与关注动态卡同款）', () => {
@@ -137,7 +139,7 @@ describe('概要卡：预览 / 入口 / 总数（页面静态约束）', () => {
     notOk(page.includes('加载更多事件'), '事件卡不得再有页内「加载更多」')
     notOk(page.includes('loadMoreEvents'), '不得保留事件卡的加载更多处理函数')
     notOk(page.includes('eventSlice'), '事件卡不再有「按需增长」的切片')
-    ok(page.includes('eventPreview'), '事件卡应走固定预览（overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)）')
+    ok(page.includes('eventPreview'), '事件卡应走固定预览（overviewSlice(events, EVENT_OVERVIEW_INITIAL)）')
     /* 入口从卡底（「查看全部事件 ›」）改为卡头右上角，与关注动态卡同款：同类名 page-opinion__more */
     ok(
       page.includes("<Text className='page-opinion__more' onClick={goEvents}>"),
@@ -166,7 +168,7 @@ describe('事件卡保留固定预览；关注动态 / 周报 / 预警改为页�
 
   it('事件卡固定预览（3 条）；关注动态 / 预警改为入口按钮（不再内联预览）', () => {
     /* P9 入口化：只剩事件卡走 overviewSlice 固定首屏，关注动态 / 预警不再内联渲染列表 */
-    ok(page.includes('overviewSlice(visibleEvents, EVENT_OVERVIEW_INITIAL)'), '事件卡固定预览 3 条')
+    ok(page.includes('overviewSlice(events, EVENT_OVERVIEW_INITIAL)'), '事件卡固定预览 3 条')
     notOk(page.includes('overviewSlice(feed.items'), '关注动态不再内联预览（改入口按钮）')
     notOk(page.includes('overviewSlice(alerts.items'), '预警不再内联预览（改入口按钮）')
     for (const dead of [
@@ -222,8 +224,9 @@ describe('事件卡保留固定预览；关注动态 / 周报 / 预警改为页�
     }
   })
 
-  it('事件卡头部仍显示事件总数（唯一保留的数据卡，不因固定预览丢掉已有信息）', () => {
-    ok(page.includes('🧩 事件时间线 · ${events.length} 件事'), '事件卡显示事件总数')
+  it('事件卡标题固定为「🧩 事件时间线」（不再带数字），事件列表照常渲染', () => {
+    ok(page.includes('🧩 事件时间线'), '事件卡标题应为固定文案')
+    notOk(page.includes('${events.length} 件事'), '标题不再带「· N 件事」数字')
   })
 
   it('回归锁：本页不再有按会员档放全的概要路径（无 sliceDetail / moreDetailNote / isMember）', () => {

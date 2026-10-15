@@ -7,6 +7,10 @@
  *     排在 notifyFollowUpdates 09:00 / keywordAlert 09:20 / riskWatch 09:40 之后，
  *     四个任务各错开，避免挤在同一个 60s 窗口里）。
  *   · **被管理侧调用**（控制台 / 运维）：与定时同路（都没有调用方 openid）。
+ *   · **reset 模式**（手动运维，2026-10-15 需求 1）：控制台调用时传入 `{"reset": true}`，
+ *     会**先清空 opinion_events 再走正常聚类**——删除事件时间线里攒下的旧 / 测试冗余数据，
+ *     基于当前 feed_cache / risk_signals 重新归并。定时器不传该参数，故只由人工在控制台触发，
+ *     不影响每天 10:00 的常规调度。
  *   · ⚠ **拒绝端上调用**（同 keywordAlert / riskWatch 的 P0-21 闸门）：判据是
  *     「端上 callFunction 时 getWXContext().OPENID 必有值，而定时器 / 控制台没有」。
  *     端上读事件是**直接读集合**（opinion_events 只读），从不调本函数。
@@ -304,6 +308,28 @@ async function listAll(collection, where, maxRows = MAX_ROWS) {
   }
 }
 
+/* ─────────────────────────── reset：清空集合 ─────────────────────────── */
+
+/**
+ * 清空一张集合（手动 reset 用）：分页读出全部 _id，逐条 doc().remove()。
+ * 不用 where().remove()：微信云开发 remove 单次有 1000 条上限且必须带 where 条件，
+ * 逐条删除可精确控制、逐条容错；opinion_events 量级小（单轮上限 200），可接受。
+ * 返回实际删除条数。
+ */
+async function clearTable(collection, maxRows = MAX_ROWS) {
+  const rows = await listAll(collection, undefined, maxRows)
+  let removed = 0
+  for (const r of rows) {
+    try {
+      await db.collection(collection).doc(String(r._id)).remove()
+      removed++
+    } catch (err) {
+      console.warn(`[opinionCluster] 清空 ${collection} 时删除 ${r._id} 失败：${String((err && err.message) || err)}`)
+    }
+  }
+  return removed
+}
+
 /* ─────────────────────────── 读存量条目 ─────────────────────────── */
 
 /** 从三处已存在的舆情缓存/流水里收集条目（不联网），并截断摘要 */
@@ -476,6 +502,15 @@ exports.main = async (event) => {
   }
 
   const skipped = []
+  /* reset（手动运维，控制台传 {"reset":true}）：先清空 opinion_events 再重新聚类，
+     用于「事件时间线攒了旧 / 测试冗余数据，想重新归并」的场景。定时器不传该参数，
+     不影响每天 10:00 的常规调度（见文件头「触发 / 入口」reset 模式段）。 */
+  const reset = !!(event && event.reset)
+  if (reset) {
+    const removed = await clearTable(OUT_TABLE)
+    skipped.push(`reset：已清空 ${OUT_TABLE} ${removed} 条，准备重新采集`)
+  }
+
   const sources = await collectSources()
   if (!sources.length) {
     return { ok: true, upstream: 0, sources: 0, groups: 0, events: 0, created: 0, updated: 0, skipped }

@@ -406,4 +406,13 @@
     line-height: 1.6;
     color: $text-2;
   }
+
+  /* 页面最底部的免责声明（2026-10-15 需求 3）：全局 .disclaimer 左右仅 48rpx，
+     比卡片内容（卡片 margin 32rpx + 内边距 28rpx ≈ 60rpx）更贴近屏边，显得「过近」。
+     这里在 alerts 页面局部加大到 64rpx 与屏边保持距离；它本就在 .page-alerts 末尾，
+     天然位于页面最底部，加一点上间距与上方信号段拉开。 */
+  .disclaimer {
+    margin-top: 16rpx;
+    padding: 24rpx 64rpx 48rpx;
+  }
 }
