@@ -149,7 +149,7 @@ export default function FavoritesView({ reloadKey }: FavoritesViewProps) {
    * 收藏列表是「别处一动它就过期」的数据：在报告页取消收藏、报告重新生成后，
    * 列表里的快照都变了，而这里此前没有任何更新入口 —— 只能退出页面再进。
    * 刷新只重拉列表，不触发任何生成、不消耗额度。
-   * 两个宿主页（pages/collection、pages/records）都开了 enablePullDownRefresh。
+   * 宿主页 package/records 开了 enablePullDownRefresh（见它的 index.config.ts）。
    */
   usePullDownRefresh(async () => {
     await load()

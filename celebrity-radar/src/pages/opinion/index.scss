@@ -176,28 +176,6 @@
     flex-shrink: 0;
   }
 
-  /* 「只看与我相关」筛选开关：默认灰调，开启用品牌色点一下（与 __action--on 同一语义） */
-  &__filter {
-    font-size: 22rpx;
-    color: $text-3;
-
-    &--on {
-      color: $brand;
-    }
-  }
-
-  /* 加载 / 失败降级：失败那一行可点重试，只影响本区块 */
-  &__hint {
-    display: block;
-    padding: 12rpx 0;
-    font-size: 24rpx;
-    color: $text-3;
-
-    &--err {
-      color: $domain-business;
-    }
-  }
-
   /* 空态：一句话说清「为什么没有」以及去哪补 */
   &__empty {
     display: block;
@@ -205,28 +183,6 @@
     font-size: 24rpx;
     line-height: 1.6;
     color: $text-3;
-  }
-
-  /* 区块内统计胶囊行 */
-  &__stats {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12rpx;
-    margin: 4rpx 0 4rpx;
-  }
-
-  &__stat {
-    padding: 6rpx 16rpx;
-    border-radius: 999rpx;
-    background: $brand-weak;
-    font-size: 22rpx;
-    color: $text-2;
-
-    /* 需要引起注意的计数（读取失败 / 新增 / 风险信号）用暖色区分 */
-    &--warn {
-      background: $accent-orange;
-      color: #fff;
-    }
   }
 
   /* 概要行：一条动态 / 一条预警，点击进对应完整页 */
@@ -251,25 +207,6 @@
     margin-top: 6rpx;
     font-size: 22rpx;
     color: $text-3;
-  }
-
-  /* 周报区块：覆盖范围 + 综述摘要 */
-  &__weekly-range {
-    display: block;
-    font-size: 24rpx;
-    font-weight: 500;
-    color: $text-2;
-  }
-
-  &__weekly-summary {
-    margin-top: 12rpx;
-    font-size: 26rpx;
-    line-height: 1.6;
-    color: $text-1;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 4;
-    overflow: hidden;
   }
 
   /* 今日要点卡：页首的判断入口。品牌淡底到白的轻微渐变，暗示「先看这里」，

@@ -28,24 +28,6 @@
     color: #fff;
   }
 
-  /* 身份徽章：与「我的」页顶部卡片的会员标识同源同款（金底 = 生效中） */
-  &__hero-tag {
-    flex-shrink: 0;
-    padding: 4rpx 16rpx;
-    border-radius: 999rpx;
-    border: 2rpx solid rgba(255, 255, 255, 0.4);
-    background: rgba(255, 255, 255, 0.2);
-    font-size: 20rpx;
-    color: #fff;
-
-    &--on {
-      border-color: rgba(255, 255, 255, 0.6);
-      background: linear-gradient(135deg, #ffe9a8 0%, #f5c451 100%);
-      color: #7a4a00;
-      font-weight: 600;
-    }
-  }
-
   &__hero-sub {
     display: block;
     margin-top: 16rpx;

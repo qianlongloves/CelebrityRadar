@@ -32,10 +32,6 @@
     }
   }
 
-  &__loading {
-    padding: 96rpx 0;
-  }
-
   /* ===== 变化筛选：仅当存在「有新内容」时渲染 =====
      左右 32rpx 与 .card 的 margin 对齐（见 src/app.scss） */
   &__filters {

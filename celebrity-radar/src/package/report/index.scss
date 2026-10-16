@@ -235,13 +235,6 @@
     }
   }
 
-  &__title-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16rpx;
-  }
-
   /* 名字行：名字 + 领域。不换行 + 裁剪，行高恒定一行 */
   &__name-row {
     display: flex;
@@ -434,19 +427,6 @@
     font-size: 24rpx;
     line-height: 1.6;
     color: $brand;
-  }
-
-  /*
-   * 刷新失败条里的「再试一次」（P1-8，2026-10-09）：与 __focus-link 同款可点文字。
-   * 刷新失败多是一次性网络 / 上游抖动，就地给一个重试出口，别让用户去翻底部按钮。
-   */
-  &__diff-retry {
-    align-self: flex-start;
-    margin-top: 4rpx;
-    font-size: 24rpx;
-    font-weight: 600;
-    color: $brand-dark;
-    text-decoration: underline;
   }
 
   /*
@@ -900,51 +880,7 @@
     color: $text-2;
   }
 
-  /* ===== 关键词云 + 高频观点（M4-5）：CSS 标签墙，字号按词频分三档，不引 canvas / 图表库 ===== */
-  &__cloud {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 16rpx 20rpx;
-    margin-top: 8rpx;
-  }
-
-  &__cloud-tag {
-    padding: 8rpx 22rpx;
-    border-radius: 999rpx;
-    /* 描边让每个词看起来是「可点的胶囊」而不是一段文字：
-       点词进主题速览（见 pages/topic）是本卡的第二个动作，得先看得出能点。 */
-    border: 1rpx solid $line;
-    background: $bg;
-    color: $text-2;
-    line-height: 1.4;
-
-    /* 三档字号对应三档词频：先看到大的，细看才分辨频次 */
-    &--t1 {
-      font-size: 22rpx;
-    }
-
-    &--t2 {
-      font-size: 26rpx;
-      color: $text-1;
-    }
-
-    &--t3 {
-      font-size: 32rpx;
-      font-weight: 600;
-      color: $brand;
-      background: $brand-weak;
-    }
-
-    /* 模型判定的话题质量高于统计口径，描个边与统计词区分开 */
-    &--topic {
-      border: 1rpx solid $brand-soft;
-    }
-  }
-
-  &__cloud-note,
-  /* 第二批：事实卡的页脚口径小字。与词云卡的口径小字是同一件东西（都说明「这张卡的条目是怎么来的」），
-     故共用一套样式；类名分开只是为了让词云卡里读起来不别扭 */
+  /* 第二批：事实卡的页脚口径小字：说明「这张卡的条目是怎么来的」 */
   &__entry-foot {
     display: block;
     margin-top: 16rpx;
@@ -1329,7 +1265,7 @@
     color: $brand;
   }
 
-  /* ===== 第二批：结构化事实条目（人物档案 / 关系图谱 / 商业合作 / 争议与回应 / 名词解释） =====
+  /* ===== 第二批：结构化事实条目（人物档案 / 人物关系 / 商业合作 / 争议与回应 / 名词解释） =====
      五张卡的数据形态不同（字段-值 / 人名-关系 / 品牌-类别 / 争议-回应 / 词-释义），
      但排版语言统一为三层：主行 → 说明 → 依据。
      依据一律做小做灰，与 AI 点评的 __point-basis 同源：它是附注，不是第二个结论 ——
@@ -1440,85 +1376,6 @@
     }
   }
 
-  /* ===== 语录主题：主题词 + 条数 + 代表原文（比语录卡低一级的字号，避免喧宾夺主） ===== */
-  &__qtheme {
-    margin-top: 20rpx;
-
-    /* 首条不再叠加上边距：卡片标题下已经是留白 */
-    &:first-of-type {
-      margin-top: 8rpx;
-    }
-  }
-
-  &__qtheme-head {
-    display: flex;
-    align-items: baseline;
-    gap: 12rpx;
-  }
-
-  &__qtheme-topic {
-    font-size: 28rpx;
-    font-weight: 600;
-    color: $brand;
-  }
-
-  &__qtheme-count {
-    font-size: 20rpx;
-    color: $text-3;
-  }
-
-  &__qtheme-quote {
-    display: block;
-    margin-top: 8rpx;
-    font-size: 24rpx;
-    line-height: 1.6;
-    color: $text-2;
-    /* 引文可能夹无空格英文长串（模型从素材原样复制），必须允许断词 */
-    word-break: break-all;
-  }
-
-  &__highlights {
-    margin-top: 24rpx;
-    padding-top: 24rpx;
-    border-top: 1rpx solid $line;
-  }
-
-  &__highlights-title {
-    margin-bottom: 16rpx;
-    font-size: 26rpx;
-    font-weight: 600;
-    color: $text-1;
-  }
-
-  &__highlight + &__highlight {
-    margin-top: 20rpx;
-  }
-
-  &__highlight-head {
-    display: flex;
-    align-items: baseline;
-    gap: 12rpx;
-  }
-
-  &__highlight-word {
-    font-size: 26rpx;
-    font-weight: 600;
-    color: $brand-dark;
-  }
-
-  &__highlight-count {
-    font-size: 20rpx;
-    color: $text-3;
-  }
-
-  &__highlight-ref {
-    display: block;
-    margin-top: 6rpx;
-    font-size: 22rpx;
-    line-height: 1.6;
-    color: $text-2;
-  }
-
   &__quote {
     padding: 20rpx 0;
     border-bottom: 1rpx solid $line;
@@ -1541,87 +1398,6 @@
       -webkit-line-clamp: 3;
       overflow: hidden;
     }
-
-    &-foot {
-      margin-top: 12rpx;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-  }
-
-  /* ===== 热度趋势（M4-6）：View + transform 自绘折线，与词云一样不引图表库 =====
-     绘图区固定 630rpx×220rpx（750 - 卡片外边距 32×2 - 卡片内边距 28×2），
-     点的 left/top 是圆心、线段的 width 与 rotate 由端上算好（见 report/index.tsx 的 trendGeometry）。 */
-  &__trend {
-    margin-top: 8rpx;
-  }
-
-  &__trend-plot {
-    position: relative;
-    width: 630rpx;
-    height: 220rpx;
-  }
-
-  &__trend-grid {
-    position: absolute;
-    left: 0;
-    width: 100%;
-    height: 0;
-    border-top: 1rpx dashed $line;
-  }
-
-  &__trend-seg {
-    position: absolute;
-    height: 3rpx;
-    margin-top: -1.5rpx;
-    border-radius: 2rpx;
-    background: $brand-soft;
-    transform-origin: left center;
-  }
-
-  &__trend-dot {
-    position: absolute;
-    width: 12rpx;
-    height: 12rpx;
-    margin: -6rpx 0 0 -6rpx;
-    border-radius: 50%;
-    background: $brand;
-    box-shadow: 0 0 0 4rpx rgba(95, 51, 225, 0.12);
-
-    /* 峰值点换个颜色：一眼看出热度最高的是哪一格 */
-    &--peak {
-      background: $accent-orange;
-      box-shadow: 0 0 0 4rpx rgba(255, 125, 83, 0.16);
-    }
-  }
-
-  &__trend-value {
-    position: absolute;
-    transform: translateX(-50%);
-    font-size: 20rpx;
-    line-height: 1;
-    color: $text-2;
-  }
-
-  &__trend-axis {
-    display: flex;
-    margin-top: 10rpx;
-  }
-
-  &__trend-axis-label {
-    flex: 1;
-    font-size: 20rpx;
-    color: $text-3;
-    text-align: center;
-  }
-
-  &__trend-note {
-    display: block;
-    margin-top: 16rpx;
-    font-size: 20rpx;
-    line-height: 1.6;
-    color: $text-3;
   }
 
   &__timeline-item {
@@ -1629,12 +1405,6 @@
     gap: 20rpx;
     padding: 12rpx 0;
     align-items: baseline;
-
-    &-event {
-      flex: 1;
-      font-size: 26rpx;
-      line-height: 1.6;
-    }
   }
 
   /* 来源域名徽章：小程序内打不开外部网页，域名是用户判断该条可信度的主要线索 */
@@ -1952,7 +1722,7 @@
     }
   }
 
-  /* ===== 卡内小表格（人物档案 / 关系图谱 / 商业合作与代言）：flex 行拼的迷你表 =====
+  /* ===== 卡内小表格（人物档案 / 人物关系 / 商业合作与代言）：flex 行拼的迷你表 =====
      短列用固定 flex-basis 保成列（不定宽则右侧值凑不成一列），最后一列 flex:1 吃满剩余宽度。
      所有单元格允许折行（word-break），保证长文本在卡内换行而不溢出卡片。 */
   &__table {
