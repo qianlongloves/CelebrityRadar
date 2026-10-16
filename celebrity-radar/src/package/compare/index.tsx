@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, View, Text } from '@tarojs/components'
 import Taro, { useDidShow, useRouter, useShareAppMessage } from '@tarojs/taro'
-import { AtButton, AtSearchBar } from 'taro-ui'
+/* 按需引入：'taro-ui' 的包入口（dist/index.js）是打包好的 CJS，50 个组件全在里面且摇不掉，
+   故组件一律从 dist/components/<名字> 取（那一层是 ESM 源码）。用例 70 钉住这一点。 */
+import AtButton from 'taro-ui/dist/components/button'
+import AtSearchBar from 'taro-ui/dist/components/search-bar'
 import { buildPersonKey, domainStyleCode, parsePersonKey, sanitizeDomain } from '@/config/domains'
 import { getCachedReport, getOrBuildReport } from '@/utils/cache'
 import { buildComparison, describeComparison, CompareSide, CompareResult } from '@/utils/compare'

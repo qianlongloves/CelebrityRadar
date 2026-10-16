@@ -185,7 +185,7 @@ const SECTION_BODY: Record<string, SectionBody> = {
   'sec-profile': (r) =>
     (r.profile ?? []).map((p) => line(`${p.label}：${p.value}`, p.basis)).filter(Boolean),
 
-  /* 关系图谱 */
+  /* 人物关系 */
   'sec-relations': (r) =>
     (r.relations ?? [])
       .map((x) => line(`${x.name}（${RELATION_LABEL[x.relation] || x.relation}）：${x.note}`, x.basis))

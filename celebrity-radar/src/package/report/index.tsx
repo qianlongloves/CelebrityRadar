@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import Taro, { useDidShow, useRouter, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
-import { AtButton } from 'taro-ui'
+/* 按需引入：'taro-ui' 的包入口（dist/index.js）是打包好的 CJS，50 个组件全在里面且摇不掉，
+   故组件一律从 dist/components/<名字> 取（那一层是 ESM 源码）。用例 70 钉住这一点。 */
+import AtButton from 'taro-ui/dist/components/button'
 import { buildPersonKey, DOMAIN_COVERAGE_TEXT, domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { FOCUS_META, FocusCode, isFocusCode } from '@/config/filters'
 import EmptyState from '@/components/empty-state'
@@ -147,7 +149,7 @@ const STANCE_META: Record<string, { label: string; cls: string }> = {
 }
 
 /**
- * 关系图谱的类别标签（第二批）。枚举在 utils/report.ts 的 RelationKindEnum 里归一 ——
+ * 人物关系的类别标签（第二批）。枚举在 utils/report.ts 的 RelationKindEnum 里归一 ——
  * 认不出的值在那里就被折成 other，故这里兜底也写「其他」，两边口径一致。
  * 四档标签一律用同一套中性样式（不因「对手」染红）：报告只陈述关系，关系本身没有褒贬。
  */
@@ -1419,7 +1421,7 @@ export default function ReportPage() {
   const stances = report?.stance ?? []
 
   /**
-   * 背景类段落的缺口（P1，2026-10-10）：人物档案 / 关系图谱 / 时间线**本次为空**。
+   * 背景类段落的缺口（P1，2026-10-10）：人物档案 / 人物关系 / 时间线**本次为空**。
    *
    * 与 shortfall 是两件事，别看混了：shortfall 说的是「这次生成不完整，**没扣**你的次数」，
    * 而这条说的是「扣了次数，但确实有几节没内容」—— 计费门槛刻意不把这几节算作失败，
@@ -2442,11 +2444,14 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/* 关系图谱（第二批）：人-人维度。关系必须是素材里明确写到的，
-              故这里的依据与档案同规格；四档关系标签一律中性配色，不因「对手」染色。 */}
+          {/* 人物关系（第二批）：人-人维度。关系必须是素材里明确写到的，
+              故这里的依据与档案同规格；四档关系标签一律中性配色，不因「对手」染色。
+              ⚠ 标题必须与模板 label（report-toc.ts#sec-relations）逐字一致，用例 69 钉住这一点：
+              这一节从「关系图谱」改名为「人物关系」（N-5），因为渲染的是三列表而不是图 ——
+              只改一处就会出现「目录叫 A、卡片叫 B」的第二套名字。 */}
           {report.relations && (
             <View id='sec-relations' className='card'>
-              <View className='card-title'>关系图谱</View>
+              <View className='card-title'>人物关系</View>
               {report.relations.length === 0 && (
                 <Text className='page-report__empty'>
                   本次生成时，素材里没有明确写到的人物关系（不做「同框即关系」一类推测）。
@@ -3014,7 +3019,7 @@ export default function ReportPage() {
 
           {/*
             企业关联（2026-10-12 新增，会员专享）：关联企业 / 合作方 / 参股，结构化条目。
-            与「关系图谱」的分工：那张卡是**人-人**关系而且免费可见，这一节只放**人-机构**关联，
+            与「人物关系」的分工：那张卡是**人-人**关系而且免费可见，这一节只放**人-机构**关联，
             字段 affiliations 只在会员提示词里出现 —— 每条机构名 + 类别 + 说明 + 出处，
             素材里指不出出处的条目在数据层（utils/report.ts#sanitizeReport）就已被整条剔除。
             与 sec-peers / sec-member 同一套闸门（会员 + 非降级简版），故缺这个键时要出说明卡。

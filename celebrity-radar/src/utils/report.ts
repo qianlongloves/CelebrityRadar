@@ -162,7 +162,7 @@ const PeerSchema = z.object({
   gap: looseStr()
 })
 
-/* ===== 第二批：结构化事实字段（人物档案 / 关系图谱 / 商业合作 / 名词解释 / 争议与回应） =====
+/* ===== 第二批：结构化事实字段（人物档案 / 人物关系 / 商业合作 / 名词解释 / 争议与回应） =====
  *
  * 这一批的共同点是**事实**而不是**判断**：它们回答 who（档案）、跟谁（关系）、
  * 商业面（商业合作与代言）、什么意思（名词解释）、吵了什么（争议与回应）。
@@ -508,7 +508,7 @@ export interface Report {
    */
   profile?: Array<z.infer<typeof ProfileItemSchema>>
   /**
-   * 第二批（免费可见）：关系图谱（合作者 / 师承 / 对手 / 其他）。
+   * 第二批（免费可见）：人物关系（合作者 / 师承 / 对手 / 其他）。
    * 关系必须明确写在素材里，不得由「同框」「同公司」推测 —— 出处不是真素材的条目不会落库。
    */
   relations?: Array<z.infer<typeof RelationSchema>>
@@ -1588,7 +1588,7 @@ function briefItemText(n: NewsItem, dropBody = false): string {
  */
 const BACKGROUND_HEAD = [
   '人物背景资料（不限时间，可能较旧）：',
-  '用途限定 —— 只用于 profile（人物档案）/ relations（关系图谱）/ timeline（经历履历）与 glossary；',
+  '用途限定 —— 只用于 profile（人物档案）/ relations（人物关系）/ timeline（经历履历）与 glossary；',
   '**不要**据此写 dynamics（近期动态）与 controversies（争议与回应）：那两段只认上面「素材」里的内容。',
   '出处的写法与上面一致：url 从下面各条原样复制。'
 ].join('\n')
@@ -2526,7 +2526,7 @@ export const SHORTFALL_MIN_FACTS = REPORT_SOURCE.shortfallMinFacts
  *   4. 会员档生成却没有任何专享段落（memberNotes / conflicts / peers / affiliations）—— 会员权益没兑现
  *      （检索不到素材是常见原因），这一份也不该收钱。免费读者不判这一条。
  *
- * ⚠ 刻意**不**判「人物档案 / 关系图谱 / 时间线」为空（P1，2026-10-10「达标判定与用户在意
+ * ⚠ 刻意**不**判「人物档案 / 人物关系 / 时间线」为空（P1，2026-10-10「达标判定与用户在意
  *   的东西对齐」）：这三节的素材来自**不限时间**的背景线，空了多半是这位人物的公开资料
  *   本来就少，判成失败只会让用户反复重试 —— 每次都不扣次数，但每次都拿不到东西，白等一场。
  *   它们的缺口改由 backgroundGaps 交给页面**说明**（不计费，也不劝重试）。
@@ -2629,7 +2629,7 @@ export function reportShortfallRetryable(report: Report, member: boolean): boole
 }
 
 /**
- * 背景类段落**本次确实为空**的节名（人物档案 / 关系图谱 / 时间线）。
+ * 背景类段落**本次确实为空**的节名（人物档案 / 人物关系 / 时间线）。
  *
  * 与 reportShortfall 的分工（P1，2026-10-10）：
  *   · reportShortfall = **计费门槛**：不达标就不扣次数；
@@ -2646,7 +2646,7 @@ export function backgroundGaps(report: Report): string[] {
   if (report.degraded) return []
   const gaps: string[] = []
   if (report.profile && report.profile.length === 0) gaps.push('人物档案')
-  if (report.relations && report.relations.length === 0) gaps.push('关系图谱')
+  if (report.relations && report.relations.length === 0) gaps.push('人物关系')
   if (report.timeline.length === 0) gaps.push('时间线')
   return gaps
 }

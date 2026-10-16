@@ -202,7 +202,7 @@ const SECTION_SPEC: Record<string, SectionSpec> = {
     listed: true,
     items: (r) => (r.profile ?? []).map((p) => ({ key: norm(p.label), text: clipText(p.label, ITEM_TEXT_MAX) }))
   },
-  /* 关系图谱：对方姓名判同；类别只作展示（标签真源在 report-export，不在这里另抄一份） */
+  /* 人物关系：对方姓名判同；类别只作展示（标签真源在 report-export，不在这里另抄一份） */
   'sec-relations': {
     count: (r) => len(r.relations),
     listed: true,

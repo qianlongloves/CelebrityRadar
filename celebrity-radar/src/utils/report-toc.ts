@@ -126,7 +126,7 @@ export const SEARCH_LANES: Record<SearchLaneKey, SearchLane> = {
     want: '本人在社交平台上的一手发声：微博、知乎、B站、小红书、抖音的原创内容',
     include: ['weibo.com', 'zhihu.com', 'bilibili.com', 'xiaohongshu.com', 'douyin.com']
   },
-  /* 人物背景线：「人物档案 / 关系图谱 / 时间线」的素材不进新闻流，30 天窗里天然搜不到 */
+  /* 人物背景线：「人物档案 / 人物关系 / 时间线」的素材不进新闻流，30 天窗里天然搜不到 */
   profile: {
     keywords: '个人资料 简介 出生地 学历 经历 企业关联 代表合作 商业合作',
     freshness: 'evergreen',
@@ -202,7 +202,7 @@ const ready = (report: Report) => !report.degraded
  * 报告模板（顺序 = package/report/index.tsx 里卡片的渲染顺序）。
  *
  * 分档口径（2026-10-12 调整；改档位要同时跑报告页、会员页与 01-pure 的用例）：
- *   · **免费档给「事实与主线判断」** —— 人物速览 / 简介 / AI 解读 / 人物档案 / 关系图谱 /
+ *   · **免费档给「事实与主线判断」** —— 人物速览 / 简介 / AI 解读 / 人物档案 / 人物关系 /
  *     近期动态 / 经典名言 / AI 点评 / 争议与回应 / 风险雷达 / 时间线。
  *     这批是报告的主体，也是别处的下游：时间线被周报的「动态时间线」用，风险雷达与风险监控
  *     同源 —— 抽掉任何一节都不只是「报告页少张卡」，故一律留在免费档。
@@ -225,7 +225,7 @@ const ready = (report: Report) => !report.degraded
  */
 export const REPORT_TEMPLATE: ReportTemplateSection[] = [
   /* ── 基本档案：先回答「是谁」。
-     商业速览（会员档）也归这一组 —— 它讲的是同一个人的商业面，位置又紧挨着关系图谱，
+     商业速览（会员档）也归这一组 —— 它讲的是同一个人的商业面，位置又紧挨着人物关系，
      正好构成连续的 identity 段（组必须连续，见 TOC_GROUPS 的说明）。 */
   { id: 'sec-overview', label: '人物速览', tier: 'free', group: 'identity', visible: (_r, o) => o.hasOverview },
   /* 简介：降级简版且没有 intro 时，空态卡与实体卡两个分支都不成立 */
@@ -233,7 +233,11 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
   /* 本系统评价（批 2）：verdict / reputation / consistency 任一存在才出卡 —— 老报告没有这些字段，整卡不出 */
   { id: 'sec-verdict', label: 'AI 解读', tier: 'free', group: 'identity', visible: (r) => !!(r.verdict || r.reputation || r.consistency) },
   { id: 'sec-profile', label: '人物档案', tier: 'free', group: 'identity', visible: (r) => !!r.profile },
-  { id: 'sec-relations', label: '关系图谱', tier: 'free', group: 'identity', visible: (r) => !!r.relations },
+  /* 人物关系（原「关系图谱」，2026-10-16 改名，N-5）：卡片渲染出来的是一张三列表
+     （名称 / 关系 / 说明），**不是图** —— 名字承诺了可视化，兑现不起就改名字，而不是留一个
+     点进来会失望的标题。做真图（Canvas / 组件）的成本要算进主包体积（见 N-7），不值。
+     `id` 刻意不动：锚点跳转、导出、差异视图都按 id 找节，改 id 牵动四处却没有任何用户可见收益。 */
+  { id: 'sec-relations', label: '人物关系', tier: 'free', group: 'identity', visible: (r) => !!r.relations },
   /* 商业价值速览（第 0 期，会员档）：非降级简版恒出卡 —— 门槛只决定卡里是速览还是
      「缺什么」的说明，两种形态都是一张可读的卡，故目录里始终列它 */
   { id: 'sec-commercial', label: '商业速览', tier: 'member', group: 'identity', visible: ready,

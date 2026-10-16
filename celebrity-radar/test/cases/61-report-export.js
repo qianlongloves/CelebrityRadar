@@ -96,13 +96,13 @@ describe('结构化导出：Markdown 产物', () => {
     const md = exp.markdown
 
     ok(md.includes('## 简介'), '模板节名要原样用（sec-intro → 简介）')
-    ok(md.includes('## 关系图谱'), '同上')
+    ok(md.includes('## 人物关系'), '同上')
     ok(md.includes('## 争议与回应'), '同上')
     ok(md.includes('## 附：来源清单（2 条）'), '来源清单是附录：图带不了链接，这是导出相对长图的核心增值')
 
-    /* 顺序：模板里「简介」在「关系图谱」之前，导出必须同序（否则下面的目录/核对都对不上） */
+    /* 顺序：模板里「简介」在「人物关系」之前，导出必须同序（否则下面的目录/核对都对不上） */
     const iIntro = md.indexOf('## 简介')
-    const iRel = md.indexOf('## 关系图谱')
+    const iRel = md.indexOf('## 人物关系')
     const iDyn = md.indexOf('## 近期动态')
     ok(iIntro > -1 && iRel > -1 && iDyn > -1 && iIntro < iRel && iRel < iDyn, '章节顺序必须与模板一致')
   })

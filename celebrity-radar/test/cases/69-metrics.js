@@ -235,7 +235,7 @@ describe('N-6 接线 · 行定义只有一份', () => {
   const cmpSrc = () => stripComments(read(path.join('utils', 'compare.ts')))
   const wbSrc = () => stripComments(read(path.join('utils', 'workbench.ts')))
   const HAND_WRITTEN =
-    /label: '(领域|热度|近 30 天报道|近 7 天报道|近期动态|经典名言|时间线|争议与回应|关系图谱|人物档案|报告生成)'/
+    /label: '(领域|热度|近 30 天报道|近 7 天报道|近期动态|经典名言|时间线|争议与回应|人物关系|人物档案|报告生成)'/
 
   it('两页都从定义表取行，而不是各写一份', () => {
     ok(/metricsOf\(COMPARE_METRIC_KEYS\)/.test(cmpSrc()), '对比页没有走定义表')
@@ -245,5 +245,28 @@ describe('N-6 接线 · 行定义只有一份', () => {
   it('两个调用方都不许写死行标签与取值', () => {
     notOk(HAND_WRITTEN.test(cmpSrc()), '对比页里又出现了手写的行标签')
     notOk(HAND_WRITTEN.test(wbSrc()), '工作台里又出现了手写的行标签')
+  })
+})
+
+/* ═══════════════════ 4. 节名的唯一真源（N-5） ═══════════════════ */
+
+/**
+ * N-5：把「关系图谱」改成「人物关系」—— 这张卡渲染的是三列表（名称 / 关系 / 说明），不是图。
+ * 名字承诺了可视化却给不出，用户点进来只会失望；做真图的成本要算进主包体积（见 N-7），不值。
+ *
+ * 一次改名要碰到四处：模板 label（真源）、报告页卡片标题、导出标题、缺口提示。其中导出标题
+ * （`## ${s.label}`）与指标行（metrics.ts 的 tocLabel）都取自真源，**只有报告页卡片标题是硬编码**
+ * —— 所以这里专门钉住它与真源逐字一致，改名漏一处就会红。
+ */
+describe('N-5 节名 · 报告页卡片标题必须与模板真源同名', () => {
+  it('sec-relations：标题逐字等于模板 label，且不再叫「图谱」', () => {
+    const { toc } = ALL()
+    const label = toc.REPORT_TEMPLATE.find((s) => s.id === 'sec-relations').label
+    eq(label, '人物关系', '模板真源的名字变了（改名要连报告页标题一起改）')
+    const page = stripComments(read(path.join('package', 'report', 'index.tsx')))
+    const m = /id='sec-relations'[\s\S]{0,240}?card-title'>([^<]+)</.exec(page)
+    ok(!!m, '报告页里找不到 sec-relations 卡片的标题')
+    eq(m[1], label, '卡片标题与模板 label 不一致 = 目录叫 A、卡片叫 B')
+    notOk(/图谱|图表/.test(label), '名字不许再承诺可视化：渲染的是表格，不是图')
   })
 })
