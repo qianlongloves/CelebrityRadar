@@ -1788,6 +1788,28 @@ export default function ReportPage() {
     track('report_lock_see', { locked: tocLocked.length, cut: lockCut })
   }, [report, member, memberReady, tocLocked.length, lockCut])
 
+  /*
+   * 报告阅读基数 `report_open`（2026-10-16）：这一次访问**真的把一份报告呈现给了读者**。
+   *
+   * 它是 S3-1（导出出口 ÷ 阅读）、N-4（导出与历史版本的实际使用率）与 D7 的推翻条件
+   * （「导出使用率极低而站内访问极高」）**共用的分母** —— 而这三处此前都没有分母可用：
+   * `report_hit_cache` 是成本口径，且**刚生成完接着读**的那一次不在它里面（走 `report_generate`），
+   * 偏偏那批人最容易立刻导出；靠事件并集凑分母则每加一条分支都要重新对一遍。故挂在**呈现点**
+   * （详见 utils/events.ts 那条的完整说明）。
+   *
+   * `report` 非空即「屏上真有一份报告」（loading / 等他人出结果 / 冷启动 / 无素材 / 出错时
+   * 它都是空，不算「读了一份报告」）。按 personKey 用 ref 去重：理由与上面 `report_lock_see`
+   * 一字不差 —— 加载、关注态、会员态同步都会触发重渲染，不记就会每次重渲染补一条，
+   * 而重渲染次数与「读了几份报告」没有关系。
+   */
+  const openedSeen = useRef('')
+  useEffect(() => {
+    if (!report) return
+    if (openedSeen.current === report.personKey) return
+    openedSeen.current = report.personKey
+    track('report_open', { personKey: report.personKey, cached: fromCache })
+  }, [report, fromCache])
+
   const jumpToSection = useCallback((id: string) => {
     setTocActive(id)
     setTocOpen(false)

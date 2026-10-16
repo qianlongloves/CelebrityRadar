@@ -215,6 +215,6 @@ describe('R-2 登记：埋点声明与字段登记（events.ts / dbInit）', () 
   })
 
   it('dbInit 在 events 的 enumHint 里登记了两个新事件（沿用 event_subscribe 的追加方式）', () => {
-    ok(/'revisit_open', 'event_subscribe', 'report_lock_see', 'member_entry'/.test(SCHEMA))
+    ok(/'revisit_open', 'event_subscribe', 'report_lock_see', 'report_open', 'member_entry'/.test(SCHEMA))
   })
 })
