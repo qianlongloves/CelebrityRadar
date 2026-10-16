@@ -14,6 +14,7 @@ import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { track } from '@/utils/events'
 import { toUserMessage } from '@/utils/error'
+import { decodeParam } from '@/utils/route'
 import PersonCard, { PersonInfo } from '@/components/person-card'
 import PersonAvatar from '@/components/person-avatar'
 import QaPanel from '@/components/qa-panel'
@@ -174,7 +175,7 @@ function StanceColumn({ side }: { side: CompareSide }) {
 
 export default function Compare() {
   const router = useRouter()
-  const baseKey = useMemo(() => decodeURIComponent(router.params.personKey || ''), [router.params.personKey])
+  const baseKey = useMemo(() => decodeParam(router.params.personKey || ''), [router.params.personKey])
 
   const [phase, setPhase] = useState<Phase>('loading')
   const [base, setBase] = useState<Report | null>(null)

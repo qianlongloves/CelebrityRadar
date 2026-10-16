@@ -3,6 +3,7 @@ import { callCloudFunction } from './cloud'
 import { diagLog } from './cloud-diagnostics'
 import { toUserMessage } from './error'
 import { explainDbFailure, table } from './db'
+import { track } from './events'
 import { normalizeKeyword, splitWatches, WatchRow } from './keyword-alert'
 import { readMemberState } from './member'
 import { requestRiskNotify, riskNotifyConfigured } from './notify'
@@ -146,10 +147,15 @@ async function monitorPersonViaCloud(
  *
  * 失败时若判定为**环境问题**（`keyword_watches` 集合没建 / 权限不允许端上写入），
  * 返回值带 `fatal: true`，调用方改用弹窗把「该做什么」说完（见 db.ts#explainDbFailure）。
+ *
+ * `from` 只是**埋点来源标记**（与 utils/follows.ts#toggleFollow 同一约定，不进任何业务判断）：
+ * 建立监控的入口已不止一处（报告页横幅 / 名人主页 / 预警页取消），而「哪个入口真的带来关系」
+ * 事后无法凭记忆回答 —— 埋点写在**这一个写库口**里，才不会出现「某条入口忘了埋」。
  */
 export async function monitorPerson(
   personKey: string,
-  name: string
+  name: string,
+  from?: string
 ): Promise<{ ok: boolean; message: string; fatal?: boolean }> {
   const userId = useAuth.getState().userId
   if (!userId) return { ok: false, message: '请先到「我的」页登录' }
@@ -163,7 +169,10 @@ export async function monitorPerson(
   /* 云端权威判定优先（分档上限读 memberships，端上改包绕不过）。null = 云端不可用，走下面的回退。 */
   const viaCloud = await monitorPersonViaCloud(personKey, name)
   if (viaCloud) {
-    return viaCloud.ok ? { ok: true, message: `${viaCloud.message}${notifyNote}` } : viaCloud
+    /* 只在**真的建成**时报：把超限 / 失败的点击也算进来，这个入口的转化就被高估了 */
+    if (!viaCloud.ok) return viaCloud
+    track('monitor_add', from ? { personKey, from } : { personKey })
+    return { ok: true, message: `${viaCloud.message}${notifyNote}` }
   }
 
   /*
@@ -216,11 +225,12 @@ export async function monitorPerson(
     return { ok: false, message: personWatchLimitNote(isMember) }
   }
 
+  track('monitor_add', from ? { personKey, from } : { personKey })
   return { ok: true, message: `已开始监控「${name}」${notifyNote}` }
 }
 
-/** 取消监控（列表页显式操作：已确定处于监控态，省去一次存在性查询） */
-export async function unmonitorPerson(personKey: string): Promise<boolean> {
+/** 取消监控（调用方已确定处于监控态，省去一次存在性查询；`from` 同 monitorPerson，只是埋点来源） */
+export async function unmonitorPerson(personKey: string, from?: string): Promise<boolean> {
   const userId = useAuth.getState().userId
   if (!userId) return false
   const { error } = await table('keyword_watches').delete().eq('id', personWatchId(userId, personKey))
@@ -228,6 +238,7 @@ export async function unmonitorPerson(personKey: string): Promise<boolean> {
     diagLog('warn', 'db', `取消监控失败：${error.message ?? error}`)
     return false
   }
+  track('monitor_remove', from ? { personKey, from } : { personKey })
   return true
 }
 

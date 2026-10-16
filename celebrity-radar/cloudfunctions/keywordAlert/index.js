@@ -895,7 +895,9 @@ exports.main = async (event) => {
       await cloud.openapi.subscribeMessage.send({
         touser: openid,
         templateId: tmplId,
-        page: `pages/alerts/index?keyword=${encodeURIComponent(top.keyword)}`,
+        /* ⚠ 分包路径（2026-10-14 起二级页都在 package/ 下）：必须与 app.config.ts 的
+           subpackages 一致，写成 `pages/alerts/index` 用户点开消息会到不了目标页（2026-10-16 修） */
+        page: `package/alerts/index?keyword=${encodeURIComponent(top.keyword)}`,
         miniprogramState: 'formal',
         lang: 'zh_CN',
         data: {

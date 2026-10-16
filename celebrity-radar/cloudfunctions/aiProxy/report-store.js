@@ -188,6 +188,16 @@ module.exports = function createReportStore(deps) {
   const STORE_ABUSE_LIMIT = 400
   /** 主键长度上限：超长先在门口挡住，别把库当网盘 */
   const MAX_KEY_LEN = 120
+  /**
+   * 报告历史版本保留条数（S3-1 ③「报告历史版本」，2026-10-16）。
+   *
+   * ⚠ 这是**运维保留策略**，不是会员权益数值 —— 所以写在这里而不是 `src/config/benefits.ts`
+   *   （那一份每一条都是「卖什么」的真源，会被会员页与权益文案派生；「库里留几行」不是权益）。
+   * 取 5：单份报告 ≤ 100KB，5 版 ≈ 500KB/人物；每次覆盖只多一次写 + 一次裁剪，成本可预计。
+   */
+  const REPORT_VERSION_KEEP = 5
+  /** 历史版本表名（写口写、端上只读；行内不含用户标识，见 dbInit/schema.js 与用例 18） */
+  const VERSION_COLLECTION = 'report_versions'
 
   const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : '')
   const bad = (error) => ({ ok: false, kind: 'badrequest', error })
@@ -224,6 +234,94 @@ module.exports = function createReportStore(deps) {
     if (Array.isArray(pr) && pr.length > 0) return true
     const af = report && report.affiliations
     return Array.isArray(af) && af.length > 0
+  }
+
+  /**
+   * 把**刚被覆盖掉的那一版**记入历史版本表（S3-1 ③，2026-10-16）。
+   *
+   * 为什么落在这里：`report_cache` 一人一份、`force` 重生即整篇替换，旧版就此永久消失。而
+   * 「覆盖」这个动作在 P0-2 收权之后**只从本写口经过**（客户端不可写），所以版本记录落在写口
+   * 等于：端上零改动就覆盖了全部覆盖路径，日后新增生成入口也不会漏记。
+   *
+   * ⚠ **调用顺序必须是「先落库、后记版本」**（见 storeSave 里的调用点）：
+   *   · 反过来的话，落库失败时历史里会多出一条与当前版**逐字相同**的记录 —— 用户会以为这份
+   *     报告真的更新过（假历史，而且是主动误导）；
+   *   · 这个顺序的代价是「落库成功但记版本失败」时旧版彻底丢失（少一条历史）。
+   *     两者都坏，但**缺失**比**假的**可接受：少一条只是信息不全，多一条相同版本是在骗人。
+   *
+   * **best-effort**：记版本失败只打日志，绝不把 `ok` 改成失败 —— 历史版本是辅助能力，不能因为
+   * 它的写失败把一个**已经生成成功**的报告说成写库失败（同 storeRelease 里那条降级取舍）。
+   *
+   * `_id` 取 `<personKey>#<旧版生成时间>`（确定性，而不是随机 id）：同一旧版被覆盖两次
+   * （端上重试 / 双端各自抢到锁后各写一次）只会算出同一个 `_id`，`set` 天然幂等，
+   * 历史里不会出现两条一模一样的版本。
+   *
+   * **不写 openid 或任何用户标识**：版本行是「全站共享事实的一段历史」，与 `report_cache` 同定位
+   * （记忆点：谁覆盖的这一行与读者无关）。写上用户标识会让它变成注销时要按用户清的行 ——
+   * 见 dbInit/schema.js 的说明与用例 18 的「注销删表清单」对齐检查。
+   */
+  async function recordVersion(row, personKey, replacedAt) {
+    const old = row && row.report
+    if (!old || typeof old !== 'object') return /* 首次生成：没有「被覆盖掉的那一版」 */
+    const generatedAt = str(old.generatedAt) || str(row.generated_at)
+    if (!generatedAt) return /* 无时间戳就算不出确定性的 _id，宁可不记也不记成一条时间未知的行 */
+    /* 旧版正文按与 report_cache 同一道体积闸门收口：真源行自己都不该有这个体积 */
+    if (Buffer.byteLength(JSON.stringify(old), 'utf8') > REPORT_MAX_BYTES) return
+
+    const meta = row.search_meta && typeof row.search_meta === 'object' ? row.search_meta : null
+    const newsCount = meta && typeof meta.news_count === 'number' && meta.news_count >= 0 ? meta.news_count : 0
+    try {
+      await db
+        .collection(VERSION_COLLECTION)
+        .doc(`${personKey}#${generatedAt}`)
+        .set({
+          data: {
+            person_key: personKey,
+            name: str(old.name),
+            generated_at: generatedAt,
+            /* 「什么时候被换掉的」——与 generated_at（这一版什么时候生成的）是两件事，
+               页面上要的是前者（「这份报告在 X 更新过，上一版是 Y」） */
+            replaced_at: replacedAt,
+            /* 旧版对应的素材条数（同一个 search_meta 还没被这次覆盖改写）：
+               列表要能与当前版比「这次多了还是少了多少条素材」 */
+            news_count: newsCount,
+            report: old,
+            ...(typeof row.schemaVersion === 'number' ? { schemaVersion: row.schemaVersion } : {})
+          }
+        })
+      await trimVersions(personKey)
+    } catch (err) {
+      console.warn('[report-store] 记录历史版本失败（不影响本次落库）:', failDetail(err))
+    }
+  }
+
+  /**
+   * 保留策略：每个 personKey 只留最近 `REPORT_VERSION_KEEP` 条（超出即删）。
+   *
+   * 排序按 **`_id` 降序**而不是 `generated_at`：`_id` 就是 `<personKey>#<生成时间>`，同一人物下
+   * 它的字典序**等价于**时间序（ISO 时间戳定长可比）。这样裁剪不依赖任何自建索引 ——
+   * `orderBy` 非 `_id` 字段在索引未建 / 排序内存超限时会被云侧拒（`_id` 是主键，天生有索引），
+   * 而裁剪失败意味着这张表会一直长下去，是那种「平时不疼、疼起来很贵」的故障。
+   *
+   * 做法是「按 _id 取回列表 → 逐条删超出的」而不是 `orderBy().skip().remove()`：后者依赖云端对
+   * 「skip 之后 remove 哪些行」的语义，而按 `_id` 显式删除可核对、也能被用例断言。
+   * 每次覆盖后都裁一次 ⇒ 最多只超出一条，故取 `KEEP + 20` 条足够（顺带兜住索引未建时期的积压）。
+   */
+  async function trimVersions(personKey) {
+    try {
+      const res = await db
+        .collection(VERSION_COLLECTION)
+        .where({ person_key: personKey })
+        .orderBy('_id', 'desc')
+        .limit(REPORT_VERSION_KEEP + 20)
+        .get()
+      const rows = (res && res.data) || []
+      for (const r of rows.slice(REPORT_VERSION_KEEP)) {
+        if (r && r._id) await db.collection(VERSION_COLLECTION).doc(r._id).remove()
+      }
+    } catch (err) {
+      console.warn('[report-store] 裁剪历史版本失败（下次覆盖会再试）:', failDetail(err))
+    }
   }
 
   /**
@@ -406,6 +504,11 @@ module.exports = function createReportStore(deps) {
             ...(typeof event.schemaVersion === 'number' ? { schemaVersion: event.schemaVersion } : {})
           }
         })
+      /*
+       * 落库成功之后才记历史版本（顺序不能反，理由见 recordVersion 的注释）。
+       * 此刻 `row.report` 仍指向**旧版** —— 它是本函数开头读出来的那一份，不受上面的 set 影响。
+       */
+      await recordVersion(row, personKey, new Date().toISOString())
       return { ok: true, result: 'saved' }
     } catch (err) {
       return { ok: false, kind: 'upstream', error: `报告落库失败：${failDetail(err)}` }

@@ -34,6 +34,8 @@ import {
 import { clearWeeklyCache } from '@/utils/weekly'
 import { clearMessageState } from '@/utils/messages'
 import { clearInboxSeen } from '@/utils/inbox'
+/* 舆情页冷启动推荐的「已关闭」标记也是本机偏好：清数据 / 注销 / 撤回同意时一并清掉 */
+import { clearPickDismiss } from '@/utils/opinion-pick'
 import { clearQaUsage, qaUsageToday, refreshQaUsage } from '@/utils/qa'
 import type { QaUsage } from '@/utils/qa'
 import { useTabBarSync } from '@/utils/tabbar'
@@ -272,6 +274,8 @@ export default function Mine() {
     clearMessageState()
     /* 风险信号的「上次查看」基线同属本机数据：一并清掉，清空后按「从未看过」重新计（见 utils/inbox） */
     clearInboxSeen()
+    /* 舆情页冷启动推荐的「不用了」同属本机偏好：清掉后新的一轮仍会给出引导（避免留下一个看不见的决定） */
+    clearPickDismiss()
     /* 问答用量同理：清掉本机镜像与连点时间。⚠ 云端 `ask_quota` 不清 ——
        额度挂在账号上，清本机数据不会重置今日提问次数（与生成配额同一口径） */
     clearQaUsage()
@@ -324,6 +328,7 @@ export default function Mine() {
     clearWeeklyCache()
     clearMessageState()
     clearInboxSeen()
+    clearPickDismiss()
     clearQaUsage()
     void loadCounts()
     Taro.showToast({ title: '账号已注销', icon: 'none' })
@@ -362,6 +367,7 @@ export default function Mine() {
     clearWeeklyCache()
     clearMessageState()
     clearInboxSeen()
+    clearPickDismiss()
     clearQaUsage()
     /* 撤销同意（走 store）：app.tsx 订阅到变化 → 同意网关即时重现 */
     useConsent.getState().withdraw()
@@ -479,6 +485,19 @@ export default function Mine() {
       title: '关注的名人',
       note: userId ? `${counts.follows} 位` : '登录后查看',
       onTap: () => Taro.navigateTo({ url: '/package/following/index' })
+    },
+    {
+      /*
+        监测工作台（S3-2，2026-10-16）：与「关注的名人」相邻 —— 一个是「我关注了谁」（内容订阅），
+        一个是「我盯着谁」（职业台账：横向对比 + 导出），两者都在名单层面，放一起才分得清。
+        ⚠ 这里的 note 刻意不写监控人数：本页的 counts 是关注 / 收藏 / 历史三条既有查询，
+        为一个入口再发一次 keyword_watches 查询不值得（工作台进去就显示人数）。
+      */
+      icon: '📊',
+      iconBg: 'brand',
+      title: '监测工作台',
+      note: userId ? '多人台账 · 勾选对比 · 导出简报' : '登录后查看',
+      onTap: () => Taro.navigateTo({ url: '/package/workbench/index' })
     },
     {
       icon: '⭐',

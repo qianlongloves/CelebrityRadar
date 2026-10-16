@@ -58,7 +58,11 @@ export default defineAppConfig({
         /* 关键词舆情预警（消息中心入口 / 预警推送落点：订阅管理 + 预警列表，见 package/alerts） */
         'alerts/index',
         /* 主题知识库（报告页词云词条进入：把已缓存报告按话题重新编目，见 package/topic + utils/topic-digest） */
-        'topic/index'
+        'topic/index',
+        /* 监测工作台（预警页 / 我的页进入：把监控对象横着排成台账，勾选批量对比 + 导出简报，见 package/workbench + utils/workbench） */
+        'workbench/index',
+        /* 报告历史版本（报告页进入：列出被刷新覆盖掉的旧版，免费看列表、会员看正文，见 package/report-history + utils/report-versions） */
+        'report-history/index'
       ]
     }
   ],

@@ -72,7 +72,8 @@ module.exports = {
     "sameBodyRatio": 0.8,
     "sameEventRatio": 0.62,
     "titleMatchMinChars": 8,
-    "shortfallMinFacts": 3
+    "shortfallMinFacts": 3,
+    "coldItemsMax": 5
   },
   "REPORT_BUDGET": {
     "maxItemChars": 1000,
@@ -170,5 +171,11 @@ module.exports = {
     "queriesPerHit": 1,
     "perRunMax": 6,
     "perDayMax": 60
+  },
+  "REPORT_PREVIEW": {
+    "sectionRows": {
+      "free": 3,
+      "member": null
+    }
   }
 }

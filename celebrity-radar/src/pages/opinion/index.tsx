@@ -5,8 +5,11 @@ import { listFollows } from '@/utils/follows'
 import { getFeedDetails } from '@/utils/cache'
 import { readWeeklyCache } from '@/utils/weekly'
 import type { WeeklyReport } from '@/utils/weekly'
+import { listRecentHistory } from '@/utils/history'
+import { track } from '@/utils/events'
+import { loadHotBoard } from '@/utils/hot-board'
 import { loadAlerts, listWatches, markAllSeen, splitWatches } from '@/utils/keyword-alert'
-import { loadRiskSignals } from '@/utils/risk-watch'
+import { loadRiskSignals, monitorPerson } from '@/utils/risk-watch'
 import {
   alertNewCount,
   countNewEvents,
@@ -15,6 +18,16 @@ import {
   riskNewCount
 } from '@/utils/inbox'
 import { EVENT_OVERVIEW_INITIAL, overviewSlice } from '@/utils/opinion-access'
+import {
+  PICK_LIMIT,
+  dismissPick,
+  pickCostNote,
+  pickMonitorCandidates,
+  pickSourceNote,
+  readPickDismissed,
+  shouldShowPick
+} from '@/utils/opinion-pick'
+import type { PickCandidate } from '@/utils/opinion-pick'
 import {
   CRED_LABEL,
   IMPACT_LABEL,
@@ -43,85 +56,13 @@ import {
 import type { EventStatus } from '@/utils/opinion-store'
 import type { OpinionEventRow, RiskSignalRow } from '@/types/db'
 import type { RiskCategory } from '@/utils/risk'
-import { parsePersonKey } from '@/config/domains'
+import { domainLabel, parsePersonKey } from '@/config/domains'
 import { formatMoment8 } from '@/utils/time'
 import { useTabBarSync } from '@/utils/tabbar'
 import './index.scss'
 
 /**
  * 舆情页（底部菜单第三格「盯」，2026-10-13 新增）。
- *
- * 三块原本是首页问候区右侧的三个图标入口，各自跳一个二级页；它们其实是同一件事的三种
- * 切法（都在回答「我关注的东西最近怎么样了」），散在首页既占位又要逐个点开。这里收成一格：
- * 每块给概要 + 「查看全部」，先看概况、要看细节再进完整页。
- *
- * 数据层全部复用既有 utils（follows / cache / weekly / keyword-alert / risk-watch），
- * 不新增集合、不改云函数；每块各自 try/catch，**一块读失败只降级那一块**，不拖垮整页。
- *
- * P1（2026-10-13）：页首新增「今日需要注意的 N 件事」——判断入口。判断规则（分级 / 排序 /
- * 去重 / 挑要点）全在纯函数 utils/opinion-rank.ts 里，本页只负责取数与渲染。
- *
- * P3（2026-10-13）：新增「事件时间线」视角 —— 把同一件事的多条来源聚成一条。
- * 聚类与归因同样是纯函数（utils/opinion-events.ts，复用 P1 的 sameEvent / normalizeTitle 判据），
- * 本页只负责渲染事件卡列表。**聚合 ≠ 认定**：事件卡区保留一句克制的轻量说明。
- *
- * P5（2026-10-13）：事件卡改为**整卡跳转**到独立的事件时间线页（pages/event），**不再内联展开** ——
- * 同一份时间线在两处各渲染一遍必然漂移，且本页已经很长。跳转带上 event_key（稳定主题键）。
- *
- * ⚠ 合规红线（本页同样适用，见 utils/opinion-rank.ts 与 utils/opinion-events.ts 文件头）：
- *   · 涉政涉军仍是拒答 —— 本页只重排 / 归拢**已过滤**的存量条目，不新增任何内容来源；
- *   · 每条必带来源与时间，无来源的不进「今日要点」与事件时间线（显示为「来源未标注」而不是编一个）；
- *   · 分级标签来自「报道里出现的表述类别」，不是平台对人和事的定性（页面底部有免责说明）。
- *
- * 刻意不做的事：不在这里调 generateWeekly（生成要花额度且需用户确认，交给完整页）；
- * **进入本页不会自动 markAllSeen**（若进页即盖章，完整页里那批「新」就凭空消失了）——
- * 只有在用户显式点页首的「全部已读」时才盖章（那是「我要清掉站内未读」的主动意图）。
- *
- * 站内触达收口（2026-10-13）：本页三块的「新 N 条」角标统一走 utils/inbox 的纯函数口径
- * （关注动态 = 有变化的人数、关键词预警 = 各词新增之和、事件 = 复用 reads 的新事件数），
- * 并提供页首「全部已读」一次清掉预警 / 风险 / 事件三处站内未读。口径与各模块既有基线同源，
- * 不新造一套互相冲突的机制（详见 utils/inbox.ts 文件头）。
- */
-
-/**
- * P6（2026-10-13）**口径修正 —— 概要不分档**：本页三张**概要卡**（事件 / 关注动态 / 关键词预警）
- * 统一为「固定首屏 + 按需加载」（`utils/opinion-access.ts#overviewSlice`），**不再按会员档放全**。
- *
- * ⚠ 本页因此**不再**用 `sliceDetail` 渲染任何列表，「明细条数」这一层分层**在舆情页上不再体现**；
- *   分层的其余部分仍生效、且**不在本页**：关注人数 / 关键词监控数 / 风险监控人数上限（P2 门禁，
- *   落在各自新增入口），以及事件**时间线页**的明细门禁（pages/event：免费 5 / 会员全部）。
- *   ⚠ 「今日要点」卡（①）本就不受分层限制 —— 它最多 3 条（utils/opinion-rank.ts#DAILY_FOCUS_MAX），
- *     是留存钩子，免费用户照常看到。
- *
- * P7（2026-10-13）**两张卡去掉页内「加载更多」，改为入口**：
- *   · **事件卡（②）**：保留固定预览（`EVENT_OVERVIEW_INITIAL` = 3 条），**移除卡内「加载更多 / 到底」**，
- *     入口 → 事件列表页 `pages/events`（那里分页加载：首屏第一页 + 触底追加）；
- *     每条事件仍可整卡点进单事件时间线页 `pages/event`（`goEvent` 行为不变）。
- *     ⚠ 入口位置于 2026-10-13 统一：**移到卡头右上角**（与关注动态卡完全同款：同类名 `page-opinion__more`），
- *       **卡底不再有入口** —— 两卡入口形态一致，不再一处卡头、一处卡底。
- *   · **关注动态卡（③）**：同样固定预览 3 条、**移除「加载更多」**；「看全部」由卡头既有的
- *     「查看全部 ›」承担（→ 已存在的 `pages/feed`，不再新增第二个入口）。
- *   · **关键词预警卡（⑤）**（2026-10-13 补统一）：同样固定预览 3 条、**移除卡内「加载更多 / 到底」**，
- *     入口在卡头右上角（与事件卡 / 关注动态卡**完全同款**：同类名 `page-opinion__more`、同文案
- *     「查看全部 ›」），→ 已存在的预警完整页 `pages/alerts`。统计信息（监测词数 / 监控人数 /
- *     相关报道数 / 风险信号数）照常保留。
- *   这样三张卡在数据很多时**长度恒定**，不会把舆情页撑长（正是用户诉求）。
- *
- * P8（2026-10-13）**首屏性能收敛**（本页加载慢的三处根因，逐条改）：
- *   · 关注动态**预览**只读一次批量缓存（`getFeedDetails`），**不再 await** `loadFollowWatches`
- *     （后者为每位关注人各读 report_cache + feed_cache，2N 次只读）—— 角标改为预览之后再补；
- *   · **端上聚类降级不在首屏并发做**：`buildOpinionEvents` 只在落库事件**读完且确实没数据**时才现算
- *     （见 `storedReady` 与 `eventView`）；库里有共享事件时一次都不算；
- *   · 串行读改并行、同一集合只读一次：`loadAlerts(rows)` 复用已读到的订阅行；
- *     「预警分组 ∥ 风险信号」「落库事件 ∥ 我的状态」各自并行。
- *   ⚠ 口径不变：落库优先 / 降级 / 空态 / 错误态 / 合规说明一字未改，只是把重活挪出渲染关键路径。
- *
- * P9（2026-10-14）**布局重构**：关注动态 / 本周周报 / 监控三块由「概要数据卡」改为**页首入口按钮**
- *   （`page-opinion__nav`：纯图标 + 文字，不加载、不渲染列表），只保留「今日要点」与「事件时间线」
- *   两张真正的数据卡。随之：三块数据仍在后台加载（供统一队列 / 今日要点 / 事件降级用），但
- *   **删除了只为卡片角标 / 统计服务的加载与字段**——`loadFollowWatches`（2N 次只读只算「新 N 条」）
- *   与周报的 `collectWeeklyMaterial`（材料可得性提示）随卡片一并移除，首屏更轻。
- *   · 今日要点条目新增归属展示（`label`：人名 / 关键词），点 feed 条目跳对应名人主页时能看出是谁。
  */
 type Status = 'loading' | 'ready' | 'error'
 
@@ -215,6 +156,27 @@ export default function Opinion() {
   const [storedReady, setStoredReady] = useState(false)
   /** 我的事件状态（已读 / 跟进）；读失败 = 空状态（页面照常，只是显示为「都没读过」） */
   const [eventStatus, setEventStatus] = useState<EventStatus>(emptyStatus())
+  /**
+   * 冷启动推荐候选（S1-4 / 决策 D2，2026-10-16）。`[]` = 不显示。
+   *
+   * 为什么存「候选」而不是存一个「显示 / 不显示」的布尔：卡片要靠**候选还剩下几个**决定收不收
+   * （用户从里面建了一个监控就摘掉一行，摘完自然收起），布尔表达不了这个。
+   *
+   * 同样刻意**不用页面的 `Status` 表达它**：它不算「一块读失败」（读失败就是不显示这张引导卡，
+   * 用户无感），也不该多出第四处 `status:'error'`（那会让「每块独立降级」的既有断言失真）。
+   * 与 `storedEvents` 同一处理。
+   */
+  const [pick, setPick] = useState<PickCandidate[]>([])
+  /** 正在建立的那一个（personKey）：防连点，且只禁掉被点的那一行 */
+  const [pickingKey, setPickingKey] = useState('')
+  /**
+   * 建立失败的原因，**就地显示在卡里**（空串 = 没出错）。
+   *
+   * 为什么不是弹窗也不是 toast：本页有一条既有的形态锁 —— **不引入弹窗**（见用例 29，
+   * 「已读 / 跟进」那套「克制的行内交互」），而失败文案（集合没建 / 权限不对 / 额度超限）
+   * 又长到会被 toast 截成半句。所以照这页本来的做法：就地一行，全文显示。
+   */
+  const [pickError, setPickError] = useState('')
 
   /**
    * 关注动态数据：**只读一次批量缓存**（`getFeedDetails`），供统一队列 / 今日要点 / 事件降级用。
@@ -332,11 +294,65 @@ export default function Opinion() {
     setEventStatus(status)
   }, [])
 
+  /**
+   * 冷启动推荐（S1-4 / 决策 D2，2026-10-16）：只在新用户（关注 0 且 监控词 0 且 监控人 0）
+   * 且从未关过时给 2-3 个可一键监控的候选。规则与理由全在 utils/opinion-pick.ts 文件头。
+   *
+   * ⚠ 关系数用**这一次读到的**判，判完就把候选存进 state，**不在渲染期再判一次** ——
+   *   用户从卡里建掉第一个之后关系数就 > 0 了，实时判定会让卡在「还剩两个候选」时突然消失
+   *   （见 utils/opinion-pick#shouldShowPick）。所以卡片的显示与否只由 `pick.length` 决定。
+   *
+   * 四个读口全部只读、零成本、互不依赖（history 是用户自己的表、热门榜是内存 TTL 缓存、
+   * keyword_watches 单集合只读、follows 单集合只读），故并行；任一失败按空处理 ——
+   * 它只是一张引导卡，读不到就不显示，绝不拖慢或拖垮页面（见 loadFeed 的既有约定）。
+   * 这里多读一次 follows / keyword_watches 是**刻意**的：拿另两块 state 反推要等它们回来，
+   * 而那张卡只在冷启动才出现，为此多串一次等待不划算。
+   */
+  const loadPick = useCallback(async () => {
+    try {
+      if (readPickDismissed()) {
+        setPick([])
+        return
+      }
+      const [history, board, rows, follows] = await Promise.all([
+        /* 候选最多只出 PICK_LIMIT 条，所以历史也只取这么多（不必把 50 条流水全读回来） */
+        listRecentHistory(PICK_LIMIT).catch(() => []),
+        loadHotBoard().catch(() => []),
+        listWatches().catch(() => []),
+        listFollows().catch(() => [])
+      ])
+      const { keywords, persons } = splitWatches(rows)
+      if (!shouldShowPick({ relations: follows.length + keywords.length + persons.length })) {
+        setPick([])
+        return
+      }
+      const cands = pickMonitorCandidates({
+        history: history.map((h) => ({ personKey: h.person_key, name: h.name })),
+        board,
+        /* 已监控的人不再出现在候选里（再点一次是空操作，占了位置又点不动） */
+        taken: persons.map((p) => p.person_key).filter((k): k is string => !!k)
+      })
+      /* 埋点只在**真的设入候选**这一刻（卡没显示就不该进分母）：S1-4 此前只有
+         monitor_add 这一个分子，转化率算不出来 —— 理由见 utils/events#opinion_pick */
+      if (cands.length > 0) {
+        track('opinion_pick', {
+          count: cands.length,
+          history: cands.filter((c) => c.reason === 'history').length
+        })
+      }
+      setPick(cands)
+    } catch {
+      /* 引导卡读不出来就不显示：它是锦上添花，绝不能因为它让页面出问题 */
+      setPick([])
+    }
+  }, [])
+
   useDidShow(() => {
     void loadFeed()
     void loadWeekly()
     void loadAlertBlock()
     void loadEvents()
+    void loadPick()
   })
 
   /**
@@ -503,6 +519,39 @@ export default function Opinion() {
     })
 
   /**
+   * 从冷启动推荐里建立监控（S1-4 / 决策 D2）。
+   *
+   * ⚠ **顺序是硬约束**：`monitorPerson` 内部第一条异步就是 `requestSubscribeMessage`（见 notify.ts），
+   *   而微信只认「用户点击后的第一个异步调用」——所以这个处理函数里**除了同步的置忙标记，
+   *   不许在它之前做任何 await**。多插一次 IO 就会让授权静默失败：监控建上了，却永远收不到推送。
+   *   与报告页 / 名人主页那两个监控入口同一条约束（utils/risk-watch#monitorPerson 注释里有完整理由）。
+   */
+  const addPickMonitor = async (c: PickCandidate) => {
+    if (pickingKey) return
+    setPickingKey(c.personKey)
+    setPickError('')
+    const res = await monitorPerson(c.personKey, c.name, 'opinion')
+    setPickingKey('')
+    if (res.ok) {
+      /* 摘掉这一行：同一个候选不再出现；摘完（或关掉）卡片自然收起 */
+      setPick((list) => list.filter((x) => x.personKey !== c.personKey))
+      /* 关系变了 → 简报四格与事件时间线的输入跟着变，立刻重读一次，否则数字要等下次进页面才更新 */
+      void loadAlertBlock()
+      Taro.showToast({ title: res.message, icon: 'success' })
+      return
+    }
+    /* 失败一律**就地一行**（含 res.fatal 那种长文案）：本页不引入弹窗（形态锁见用例 29），
+       而 toast 会把「集合没建 / 权限不对」这类修法截成半句，等于没说 —— 全文写在卡里最稳 */
+    setPickError(res.message)
+  }
+
+  /** 关掉冷启动推荐：关一次永久不再出现（它是给新用户的引导，不是常驻推荐位） */
+  const onDismissPick = () => {
+    dismissPick()
+    setPick([])
+  }
+
+  /**
    * 「标记已读」（P4）：沿用页面既有交互风格 —— 事件卡头部一个小文字按钮，不弹窗、不遮罩。
    * 乐观更新本地态，写库失败则回滚并轻提示；状态落在 opinion_event_status（跨会话 / 跨端生效）。
    */
@@ -630,6 +679,60 @@ export default function Opinion() {
           <Text className='page-opinion__nav-label'>监控</Text>
         </View>
       </View>
+
+      {/* ===== 冷启动推荐（S1-4 / 决策 D2，2026-10-16）：只在新用户且没关过时出现 =====
+          放在简报**之前**：新用户的简报四格全是 0，那一屏上唯一能做的事就是这张卡。
+          为什么不直接替他建好监控 —— 见 utils/opinion-pick.ts 文件头（授权必须由点击触发、
+          免费档只有 3 个额度、新用户没有个性化信号，三条任一条都足以否掉自动预置）。
+          刻意另起 `page-opinion__pick*` 类名而不是复用 `page-opinion__more`：那个类名被用例
+          钉死为「全页只剩事件卡一处」（36 / 39 用例），复用会把「查看全部 ›」的形态锁弄坏。 */}
+      {pick.length > 0 && (
+        <View className='card page-opinion__pick'>
+          <View className='page-opinion__head'>
+            <View className='page-opinion__head-main'>
+              <Text className='page-opinion__head-title'>👀 先盯上几个人</Text>
+            </View>
+            {/* 关掉就永久不再出现：一次明确的拒绝不该被问第二遍（见 utils/opinion-pick#dismissPick） */}
+            <Text className='page-opinion__pick-close' onClick={onDismissPick}>
+              不用了
+            </Text>
+          </View>
+
+          {/* 来源与代价都写在点击**之前**：这几个人是谁挑的、点下去会花掉什么（两个 note 都是纯函数） */}
+          <Text className='page-opinion__pick-note'>
+            {pickSourceNote(pick)}。{pickCostNote()}
+          </Text>
+
+          <View className='page-opinion__pick-list'>
+            {pick.map((c) => (
+              <View key={c.personKey} className='page-opinion__pick-row'>
+                <View className='page-opinion__pick-main' onClick={() => void goProfile(c.personKey)}>
+                  <Text className='page-opinion__pick-name'>{c.name}</Text>
+                  <Text className='page-opinion__pick-meta'>
+                    {[domainLabel(c.domain), c.reason === 'history' ? '你查过' : '热门'].join(' · ')}
+                  </Text>
+                </View>
+                <Text
+                  className={`page-opinion__pick-add${
+                    pickingKey === c.personKey ? ' page-opinion__pick-add--busy' : ''
+                  }`}
+                  onClick={() => void addPickMonitor(c)}
+                >
+                  {pickingKey === c.personKey ? '处理中…' : '＋ 监控'}
+                </Text>
+              </View>
+            ))}
+          </View>
+
+          {/* 出口：不想用推荐的人也要有下一步（这几个人是平台挑的，用户完全有理由全都不认） */}
+          <Text className='page-opinion__pick-note'>也可以直接去首页搜你想盯的人。</Text>
+
+          {/* 建立失败就地一行（全文，不截断）：本页不引入弹窗，toast 又会把修法截成半句 */}
+          {!!pickError && (
+            <Text className='page-opinion__pick-note page-opinion__pick-note--error'>{pickError}</Text>
+          )}
+        </View>
+      )}
 
       {/* ===== 每日舆情简报（P10，2026-10-14）：数字 + CSS 图表，纯前端聚合、不新增模型调用 ===== */}
       <View className='card page-opinion__brief'>

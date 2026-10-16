@@ -1,7 +1,28 @@
 @import '../../styles/variables.scss';
 
 .favorites-view {
+  /* 撑满一屏 + 末尾提示语贴底（2026-10-16）：min-height 只保证高度不小于一屏，
+     要真把末尾提示语推到屏幕底，必须是 flex 列 + 提示语 `margin-top: auto`。
+     本组件由 package/records 渲染在 .glow-page 下，外层不设高度，无影响。 */
   min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+
+  /*
+   * 这里**没有**卡片 margin 补偿：收藏卡片不是根容器的直接子级 ——
+   * 它们被包在一层无类名的 `<View>` 里（tsx 里 renderCard 的容器），
+   * 那层内部仍是块级布局，margin 折叠照旧，间距不受本次改动影响。
+   * 末尾的 SharePoster 是 `position: fixed` 浮层，不占 flex 空间，也不影响贴底。
+   */
+  > .disclaimer {
+    display: block;
+    /* 内容不足一屏 → 剩余空间全给上方，提示贴屏幕底；内容超一屏 → 归 0，
+       由全局 padding-top（24rpx）兜住与上方内容的间距。
+       底部补 safe-area：与关键词预警 / 订单 / 消息页同一处理。 */
+    margin-top: auto;
+    padding-bottom: calc(48rpx + env(safe-area-inset-bottom));
+  }
 
   /* ===== 类型筛选 =====
      选中用浅紫底紫字（而非紫实底）：它是页面的分类开关，不是主导航。

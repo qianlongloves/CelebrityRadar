@@ -589,7 +589,15 @@ export default function QaPanel({
           size='small'
           circle
           loading={asking}
-          disabled={!canSend}
+          /*
+            loading 与 disabled 不能同真（2026-10-16，用户反馈「看不到加载效果」）：
+            asking 时 input 已被 send() 清空，canSend 必然为假，于是按钮同时挂上
+            `at-button--disabled` —— taro-ui 的 `&--disabled { opacity: 0.3 }` 会把整个按钮
+            （含那枚转圈）一起压淡，转圈只在 30% 不透明度下若隐若现，看着就像没反应。
+            这里只保留真正该禁用的两种情形：直连态没有可问对象、或还没输入内容。
+            防连点仍由 send() 开头的 busy 守卫负责（asking 期间再点，question 为空会直接 return）。
+          */
+          disabled={!canSend && !asking}
           onClick={() => void send()}
         >
           发送

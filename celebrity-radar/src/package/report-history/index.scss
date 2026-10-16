@@ -1,0 +1,159 @@
+/* 报告历史版本（S3-1 ③）——分包页，必须自带 variables（漏了 build 会报 SassError） */
+@import '../../styles/variables.scss';
+
+.page-report-history {
+  padding: 24rpx 24rpx 48rpx;
+}
+
+.page-report-history__hint {
+  font-size: 26rpx;
+  color: $text-3;
+  line-height: 1.6;
+}
+
+.page-report-history__intro {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 26rpx;
+  color: $text-2;
+  line-height: 1.65;
+}
+
+/* ── 一版一张卡 ── */
+.page-report-history__ver {
+  margin-top: 24rpx;
+}
+
+.page-report-history__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.page-report-history__when {
+  flex: 1;
+  min-width: 0;
+}
+
+.page-report-history__gen {
+  display: block;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-report-history__sub {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: $text-3;
+}
+
+.page-report-history__btn {
+  flex-shrink: 0;
+  margin-left: 20rpx;
+  padding: 14rpx 26rpx;
+  border-radius: $radius-sm;
+  background: $brand-weak;
+  font-size: 26rpx;
+  color: $brand-dark;
+}
+
+.page-report-history__btn--on {
+  background: $line;
+  color: $text-2;
+}
+
+.page-report-history__btn--tap {
+  opacity: 0.75;
+}
+
+.page-report-history__btn--wide {
+  margin-left: 0;
+  text-align: center;
+}
+
+.page-report-history__facts {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 20rpx;
+}
+
+.page-report-history__fact {
+  margin-right: 20rpx;
+  margin-bottom: 8rpx;
+  font-size: 25rpx;
+  color: $text-2;
+}
+
+/* ── 展开的摘要 ── */
+.page-report-history__body {
+  margin-top: 20rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx solid $line;
+}
+
+.page-report-history__summary {
+  display: block;
+}
+
+.page-report-history__row {
+  display: flex;
+  align-items: flex-start;
+  margin-bottom: 14rpx;
+}
+
+.page-report-history__label {
+  flex-shrink: 0;
+  width: 150rpx;
+  font-size: 25rpx;
+  color: $text-3;
+}
+
+.page-report-history__value {
+  flex: 1;
+  min-width: 0;
+  font-size: 26rpx;
+  color: $text-1;
+  line-height: 1.6;
+}
+
+.page-report-history__note {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  color: $text-3;
+  line-height: 1.6;
+}
+
+/* ── 会员墙：一行说明（非弹窗），整行可点去会员页 ── */
+.page-report-history__wall {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 24rpx;
+}
+
+.page-report-history__wall--tap {
+  opacity: 0.75;
+}
+
+.page-report-history__wall-text {
+  flex: 1;
+  min-width: 0;
+  margin-right: 16rpx;
+  font-size: 25rpx;
+  color: $text-2;
+  line-height: 1.6;
+}
+
+.page-report-history__wall-go {
+  flex-shrink: 0;
+  font-size: 25rpx;
+  color: $brand;
+}
+
+.page-report-history__foot {
+  margin-top: 24rpx;
+  text-align: center;
+}

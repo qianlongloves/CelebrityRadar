@@ -1,3 +1,4 @@
+import { REPORT_PREVIEW } from '../config/benefits'
 import type { Report } from './report'
 
 /**
@@ -180,6 +181,18 @@ export interface ReportTemplateSection {
    * 说明文案取数 —— 让筛选说明与模板同源，而不是在 filters 里再抄一份（改节 / 改名会漂移）。
    */
   desc?: string
+  /**
+   * 会员节的「锁态说明」（**只有 `tier === 'member'` 的节写**，S3-3 2026-10-16）：
+   * 免费档在**它本来该在的位置**渲染一张锁态卡，这句就是卡上那句「这一节讲什么」。
+   *
+   * 为什么放在模板里而不是页面上：锁态卡的节名与位置都取自本表（页面用 `lockedReportToc`
+   * 的 id 集合决定在哪插卡），说明若另写在页面里，就会出现「模板改了节名、锁态卡还印着旧词」
+   * 那种只有用户能发现的错位。
+   *
+   * ⚠ 只写「这一节讲什么」，**不许剧透内容**（不写条数、不写这人的任何具体信息）——
+   *   免费用户读到的是锁，不是半份内容。
+   */
+  lockedNote?: string
 }
 
 /** 「不是降级简版」—— 大多数节的共同门槛（降级简版整份只剩警示条） */
@@ -223,10 +236,12 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
   { id: 'sec-relations', label: '关系图谱', tier: 'free', group: 'identity', visible: (r) => !!r.relations },
   /* 商业价值速览（第 0 期，会员档）：非降级简版恒出卡 —— 门槛只决定卡里是速览还是
      「缺什么」的说明，两种形态都是一张可读的卡，故目录里始终列它 */
-  { id: 'sec-commercial', label: '商业速览', tier: 'member', group: 'identity', visible: ready },
+  { id: 'sec-commercial', label: '商业速览', tier: 'member', group: 'identity', visible: ready,
+    lockedNote: '把这份报告已收录的素材换成商业角度汇总：报道量、媒体口径、争议、具名合作。' },
   /* 商业合作与代言（2026-10-12，会员档）：取代原「后续关注」—— 具名品牌 / 合作方 + 类别 + 说明。
      与「商业速览」同属商业面，故同组紧邻；字段在免费批次（identity）生成，此处只对会员出卡。 */
-  { id: 'sec-endorsement', label: '商业合作', tier: 'member', group: 'identity', visible: (r) => !!r.endorsements },
+  { id: 'sec-endorsement', label: '商业合作', tier: 'member', group: 'identity', visible: (r) => !!r.endorsements,
+    lockedNote: '公开可查的代言、品牌合作与联名：合作方 + 类别 + 说明。' },
   /* ── 事实：素材原样统计出来的那两段（不掺模型判断），是下面「判断」的取材处 */
   { id: 'sec-dynamics', label: '近期动态', tier: 'free', group: 'facts', visible: ready, desc: '近期新闻、公开活动与事件' },
   { id: 'sec-quotes', label: '经典名言', tier: 'free', group: 'facts', visible: ready, desc: '公开表达、观点与金句' },
@@ -243,7 +258,8 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
    */
   { id: 'sec-controversies', label: '争议与回应', tier: 'free', group: 'judgement', visible: ready },
   { id: 'sec-risk', label: '风险雷达', tier: 'free', group: 'judgement', visible: ready },
-  { id: 'sec-member', label: '会员专享', tier: 'member', group: 'judgement', visible: ready },
+  { id: 'sec-member', label: '会员专享', tier: 'member', group: 'judgement', visible: ready,
+    lockedNote: '三条决策向判断：同行对比、需要留意的风险、信源之间的分歧。' },
   /*
    * 同领域坐标（会员档，2026-10-12 新增）：具名同行 + 具体差异。
    *
@@ -251,13 +267,15 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
    * 判断，这一节是**结构化条目**（每条一个具名对象 + 一条可核对的差异），可扫读、可逐条核对。
    * 它与 sec-member 同组、紧邻，构成连续的 judgement 会员段；字段 peers 只在会员提示词里出现。
    */
-  { id: 'sec-peers', label: '同领域坐标', tier: 'member', group: 'judgement', visible: ready },
+  { id: 'sec-peers', label: '同领域坐标', tier: 'member', group: 'judgement', visible: ready,
+    lockedNote: '具名同行各一条具体差异（作品 / 奖项 / 数据 / 路径），每条都可回到出处核对。' },
   /*
    * 企业关联（会员档，2026-10-12 新增）：关联企业 / 合作方 / 参股 —— 人-机构维度的硬信息。
    * 与 sec-peers 同组、紧邻，构成连续的 judgement 会员段；字段 affiliations 只在会员提示词里出现
    * （见 utils/report.ts 的 MEMBER_HINT_REALTIME）。
    */
-  { id: 'sec-affiliation', label: '企业关联', tier: 'member', group: 'judgement', visible: ready },
+  { id: 'sec-affiliation', label: '企业关联', tier: 'member', group: 'judgement', visible: ready,
+    lockedNote: '本人公开披露的关联企业、任职与参股：人-机构维度的硬信息。' },
   /*
    * ── 立场与舆情（2026-10-12 起为会员档）：「大众怎么看 TA」本是判断类，故留在判断组。
    * 移入会员档只是**呈现**上不再给免费用户出卡；数据仍在免费批次里生成 ——
@@ -266,11 +284,13 @@ export const REPORT_TEMPLATE: ReportTemplateSection[] = [
    * 2026-10-10 起撤销「深度视图」组：关键词云 / 语录主题 / 热度趋势三张工具视图已删除
    * （它们回答的是「素材长什么样」而非「这个人怎么样」，见 CHANGELOG 批 25）。
    */
-  { id: 'sec-stance', label: '立场与舆情', tier: 'member', group: 'judgement', visible: ready },
+  { id: 'sec-stance', label: '立场与舆情', tier: 'member', group: 'judgement', visible: ready,
+    lockedNote: '大众与媒体怎么看 TA：情绪构成 + 话题态度两层，各带样本数。' },
   /* ── 细节与延伸：时间轴、看不懂的词 */
   { id: 'sec-timeline', label: '时间线', tier: 'free', group: 'detail', visible: ready, desc: '关键节点与成长脉络' },
   /* 名词解释（2026-10-12 移入会员档）：纯阅读辅助；数据仍在免费批次生成 */
-  { id: 'sec-glossary', label: '名词解释', tier: 'member', group: 'detail', visible: (r) => !!r.glossary }
+  { id: 'sec-glossary', label: '名词解释', tier: 'member', group: 'detail', visible: (r) => !!r.glossary,
+    lockedNote: '把这份报告里出现的行话与背景词逐个解释，不用再跳出去查。' }
 ]
 
 /** 模板总节数（**名义值**：不随某一份报告降级 / 缺字段而变，权益文案与目录提示取它） */
@@ -354,4 +374,58 @@ export function lockedReportToc(
   return MEMBER_ONLY_SECTIONS.filter((s) => s.visible(report, { ...opts, member: true })).map(
     ({ id, label }) => ({ id, label })
   )
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * S3-3（2026-10-16）：免费速览 —— 每节**能看到多少条**那一层分档
+ *
+ * 上面那批函数管「看得到哪几节」（tier），下面这批管「每节能看到多少条」
+ * （`config/benefits.ts#REPORT_PREVIEW`）。两个杠杆合起来才是分档呈现，只有前者时
+ * 免费用户的每一节都是完整长度，观感差异出不来（详见 benefits.ts 里的完整说明）。
+ *
+ * ⚠ 全部是**呈现层**纯函数：数据层一字不动（免费档那几节是周报 / 风险监控 / 对比页 /
+ *   问答 / 导出的共同来源，在数据层截断等于把它们一起砍掉）。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** 这一档每节最多显示几条（`null` = 不截断）。数值只在 config/benefits.ts 写一次 */
+export function previewRowLimit(member: boolean): number | null {
+  const rows = REPORT_PREVIEW.sectionRows
+  return member ? rows.member : rows.free
+}
+
+/** 截断结果：真正渲染的行 + 被藏起来的条数 + 原始总数 */
+export interface PreviewRows<T> {
+  rows: T[]
+  hidden: number
+  total: number
+}
+
+/**
+ * 按档截断一个列表节的渲染数据。**不改入参**（`rows` 永远是原数组的浅拷贝切片）。
+ *
+ * 页面侧只把渲染源换成它、并就地渲染 `previewHiddenNote(hidden)`，别的一律不动：
+ * 该节原有的点击 / 收藏 / 盯进展等交互都只作用于**渲染出来的那几条**，
+ * 这与「免费档只看得到这几条」是同一件事，不需要额外判断。
+ */
+export function previewRows<T>(
+  rows: readonly T[] | null | undefined,
+  member: boolean
+): PreviewRows<T> {
+  const all = rows || []
+  const limit = previewRowLimit(member)
+  if (limit === null || all.length <= limit) {
+    return { rows: all.slice(), hidden: 0, total: all.length }
+  }
+  return { rows: all.slice(0, limit), hidden: all.length - limit, total: all.length }
+}
+
+/**
+ * 截断处那行提示（`hidden === 0` 时返回空串，调用方用 `&&` 短路即可）。
+ *
+ * **必须就地写**：静默少几条，免费用户读到的是「这个人的资料就这么多」——那是骗人；
+ * 写明「还有 N 条」，读到的才是「我拿到的是速览」。措辞与会员页的口径一致，
+ * 由 test/cases/62-report-preview.js 钉住。
+ */
+export function previewHiddenNote(hidden: number): string {
+  return hidden > 0 ? `还有 ${hidden} 条，开通会员查看完整内容` : ''
 }

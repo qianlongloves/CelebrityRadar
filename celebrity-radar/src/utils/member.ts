@@ -2,7 +2,7 @@ import Taro from '@tarojs/taro'
 import { readSelf } from './auth'
 import { diagLog } from './cloud-diagnostics'
 import { FREE_TOC_COUNT, MEMBER_TOC_COUNT, TEMPLATE_SIZE, memberOnlyTocLabels } from './report-toc'
-import { MEMBER_BENEFITS } from '../config/benefits'
+import { MEMBER_BENEFITS, REPORT_PREVIEW } from '../config/benefits'
 
 /**
  * 会员权益层 —— **付费功能唯一的判定入口**。
@@ -91,14 +91,40 @@ export const MEMBER_BENEFIT_POINTS: Array<{ title: string; note: string }> = [
   },
   {
     /*
-     * 2026-10-10 新增（需求「把生成的报告模板纳入会员文字权益」）：报告的**节数**也是权益 ——
-     * 免费档按模板只呈现 FREE_TOC_COUNT 节，会员是完整 TEMPLATE_SIZE 节。
-     * 节数与名单一律取自 utils/report-toc.ts（报告模板的唯一定义处），**不在这里写死**：
-     * 以后改模板档位（挪一节进/出会员档），这条文案与会员页对比表会跟着变，不会各说各话。
-     * 与上一条「深度模式」是两件事：那条讲**生成**多出三段专享文字，这条讲**呈现**多出几节。
+     * 2026-10-10 新增（需求「把生成的报告模板纳入会员文字权益」）；
+     * 2026-10-16 S3-3 扩写：报告的分档其实是**两个**杠杆，现在两个都写进这一条。
+     *
+     *   ① 看得到**哪几节** —— 免费档按模板只呈现 FREE_TOC_COUNT 节，会员是完整 TEMPLATE_SIZE 节；
+     *   ② 每节**能看多少条** —— 免费档列表型的节最多 REPORT_PREVIEW.sectionRows.free 条
+     *      （每处截断都当场注明「还有 N 条」），会员不截断。
+     *
+     * 只有①的时候，免费用户拿到的每一节都是**完整长度**，与会员的差别只剩「少几张卡」——
+     * 而他压根不知道那几张卡本来存在，所以「免费 / 会员观感差异不明显」是必然的（S3-3 修的就是这个）。
+     *
+     * 数字与名单一律取自真源（节数与名单 → utils/report-toc.ts；每节条数 → config/benefits.ts），
+     * **不在这里写死**：以后改档位，这条文案与会员页对比表会跟着变，不会各说各话。
+     * 与上一条「深度模式」是两件事：那条讲**生成**多出三段专享文字，这条讲**呈现**。
      */
     title: `完整报告模板（${TEMPLATE_SIZE} 节）`,
-    note: `免费版按模板只呈现 ${FREE_TOC_COUNT} 节；会员是完整 ${TEMPLATE_SIZE} 节，多出「${memberOnlyTocLabels().join(' / ')}」共 ${MEMBER_TOC_COUNT} 节`
+    note: `免费版按模板只呈现 ${FREE_TOC_COUNT} 节、每节最多 ${REPORT_PREVIEW.sectionRows.free} 条；会员是完整 ${TEMPLATE_SIZE} 节且每节不截断，多出「${memberOnlyTocLabels().join(' / ')}」共 ${MEMBER_TOC_COUNT} 节`
+  },
+  {
+    /*
+     * 2026-10-16 新增（S3-1：付费点从「额度」转向「能力 / 容量 / 导出」）。
+     *
+     * 为什么必须在这里补上，而不是只做功能：**长图导出（2026-10-15）与周报图导出本来就是会员能力，
+     * 却从来没写进任何一份权益表** —— 用户只在被拦的那一下才知道「原来导出要会员」。
+     * 一句话概括这条新权益与前三条的区别：前三条讲「生成出来的东西有多好」（模型 / 内容 / 节数），
+     * 这一条讲**你能不能把它带走**。也正因为如此，它**不随共享缓存变厚而贬值**：
+     * 报告已经在库里，导出是纯本地组装（零上游成本、零等待、零额度），
+     * 而额度是越用越不值钱的那一类（见 doc/产品优化路线图.md §6.4）。
+     *
+     * 不写任何数字：这条是**二元能力**，与长图 / 周报图两处门禁同一口径
+     * （`report-card.ts#canExportReportCard`、`weekly-brief.ts#canExportWeeklyBrief`），
+     * 故也不必在 config/benefits.ts 新增常量。
+     */
+    title: '把报告带走（导出）',
+    note: '长图可保存 / 转发；Markdown 全文每条事实带出处、附完整来源清单，JSON 结构化数据可进文档与表格逐条核对'
   },
   {
     title: `每日主动生成 ${MEMBER_DAILY_GENERATE_LIMIT} 次`,
@@ -134,8 +160,19 @@ export const MEMBER_BENEFIT_POINTS: Array<{ title: string; note: string }> = [
  * 与 MEMBER_BENEFIT_POINTS 一样必须与真实行为一致（改了功能要回来改这里）。
  * ⚠ AI 问答**不在**此列：它现在有独立的每日额度（免费版也有，但有限），
  * 写进「不限次」会与闸门行为矛盾。
+ *
+ * 2026-10-16（S3-1）补上**导出的边界**：原句只说「浏览…不限次」，容易被读成
+ * 「报告里的东西随便带走」。实际上站内看免费、**带走是会员能力**（长图 / Markdown / JSON 三处同一口径）。
+ * 免费用户点导出确实看得到入口（会给一行引导），如实把边界写在这里，比让他点一下才知道诚实。
+ *
+ * 2026-10-16（S3-3）再补上**阅读深度的边界**：S3-3 起免费档是「速览」——
+ * 免费 11 节、每节最多 REPORT_PREVIEW.sectionRows.free 条（会员 18 节且不截断）。
+ * 原句「浏览已生成报告…不限次」单看没错（确实不限次、不限人），但「看得到的是速览」
+ * 必须写出来，否则这句会被读成「报告全文都能看」。
+ * ⚠ 「不限次」说的是**次数**，不是**每节的条数**，两件事别混；
+ * ⚠ 那个 3 取自 config/benefits.ts（不写死），改档位这句跟着变。
  */
-export const FREE_FEATURES_NOTE = '浏览已生成报告、关注 / 收藏 / 历史、热门榜均免费开放，不限次'
+export const FREE_FEATURES_NOTE = `浏览已生成报告（速览：节内最多 ${REPORT_PREVIEW.sectionRows.free} 条）、关注 / 收藏 / 历史、热门榜均免费开放，不限次；导出（长图 / Markdown / JSON）是会员能力`
 
 /** users.membership 的结构（唯一写入方是云函数 payCallback，端上只读） */
 export type Membership = { plan: string; expires_at: string; last_order_id?: string }

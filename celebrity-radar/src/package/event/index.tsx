@@ -24,6 +24,7 @@ import {
 } from '@/utils/opinion-store'
 import type { EventStatus } from '@/utils/opinion-store'
 import { formatMoment8 } from '@/utils/time'
+import { decodeParam } from '@/utils/route'
 import './index.scss'
 
 /**
@@ -98,14 +99,14 @@ export default function EventTimeline() {
   /* event_key 是纯 hex（可能带 -N 后缀），不会因 encode/decode 变形；title 含中文才必须编解码 */
   const rawKey = (() => {
     try {
-      return decodeURIComponent(router.params.eventKey || '')
+      return decodeParam(router.params.eventKey || '')
     } catch {
       return router.params.eventKey || ''
     }
   })()
   const fallbackTitle = (() => {
     try {
-      return decodeURIComponent(router.params.title || '')
+      return decodeParam(router.params.title || '')
     } catch {
       return router.params.title || ''
     }
@@ -330,6 +331,21 @@ export default function EventTimeline() {
   const goBack = () => void Taro.navigateBack()
   const goMember = () => void Taro.navigateTo({ url: '/package/member/index' })
 
+  /**
+   * 页首名称（2026-10-16 新增）：这页此前只有一行灰色说明，没有**名字** —— 用户从事件卡点进来，
+   * 看不出「这页是干什么的、这是哪一种功能」。现按舆情页同款 hero（`__hero-title` + `__hero-sub`）
+   * 给它一个名字：功能名 + 一句它是干什么的。加载态一并渲染，避免「先有说明后冒出标题」的跳变。
+   * 空态（参数非法 / 没找到）**不渲染** —— 那两个分支自带标题，再来一个会变成两行标题。
+   */
+  const hero = (
+    <View className='page-event__hero'>
+      <Text className='page-event__hero-title'>事件时间线</Text>
+      <Text className='page-event__hero-sub'>
+        同一件事的多条来源，按时间排在一起（谁在何时、从哪说的；标「发现于」的是我们首次监测到该报道的时刻）
+      </Text>
+    </View>
+  )
+
   /* ───────────── 空态 / 加载态 ───────────── */
 
   if (status === 'invalid') {
@@ -348,6 +364,7 @@ export default function EventTimeline() {
   if (status === 'loading') {
     return (
       <View className='page-event glow-page safe-bottom'>
+        {hero}
         <Text className='page-event__hint'>正在读取事件时间线…</Text>
       </View>
     )
@@ -377,9 +394,7 @@ export default function EventTimeline() {
 
   return (
     <View className='page-event glow-page safe-bottom'>
-      <View className='page-event__hero'>
-        <Text className='page-event__hero-sub'>同一件事的多条来源，按时间排在一起（谁在何时、从哪说的；标「发现于」的是我们首次监测到该报道的时刻）</Text>
-      </View>
+      {hero}
 
       <View className='card page-event__head'>
         <View className='page-event__title'>

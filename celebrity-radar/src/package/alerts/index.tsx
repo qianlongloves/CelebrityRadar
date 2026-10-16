@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react'
-import Taro, { useDidShow } from '@tarojs/taro'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import Taro, { useDidShow, useRouter } from '@tarojs/taro'
 import { Input, Text, View } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import {
@@ -11,6 +11,7 @@ import {
   loadAlerts,
   listWatches,
   markAllSeen,
+  normalizeKeyword,
   removeWatch,
   splitWatches,
   WatchRow
@@ -31,9 +32,46 @@ import { loadScanLogs, latestLogByKey, SCAN_STATUS_LABEL } from '@/utils/scan-lo
 import { alertNotifyConfigured, requestAlertNotify, requestRiskNotify, riskNotifyConfigured } from '@/utils/notify'
 import { openSourceLink } from '@/utils/source-link'
 import { formatMoment8, fromNow } from '@/utils/time'
+import { decodeParam } from '@/utils/route'
+import { track } from '@/utils/events'
 import type { RiskScanRow, RiskSignalRow, ScanLogRow } from '@/types/db'
 import EmptyState from '@/components/empty-state'
 import './index.scss'
+
+/**
+ * 被推送定位到的那一组卡片的类名（S1-3）：JSX 与滚动选择器共用同一个常量，
+ * 免得改了一边漏另一边 —— 那种漏改不报错，表现只是「点了通知没滚过去」。
+ */
+const FOCUS_GROUP_CLASS = 'page-alerts__group--focus'
+
+/** 用户从推送落地时，那个词的四种处境（S1-3）：文案与埋点共用一套取值 */
+type FocusKind = 'group' | 'watching' | 'gone' | 'guest'
+
+/**
+ * 定位条文案（S1-3）。写成一张按处境索引的表，而不是 JSX 里套三层三元：
+ *   · 表能一眼看出有没有漏掉某一类 —— 未登录就是差点漏掉的那一类，
+ *     它会把「没登录」说成「已不在监测中」，白白吓用户一跳；
+ *   · 同一个 FocusKind 也喂给 `alert_focus` 埋点，文案与埋点不会各说各的。
+ */
+const FOCUS_COPY: Record<FocusKind, (kw: string, count: number) => { title: string; desc: string }> = {
+  guest: (kw) => ({
+    title: `登录后查看「${kw}」`,
+    desc: '预警与监测按账号保存，登录后即可查看'
+  }),
+  group: (kw, count) => ({
+    title: `推送提醒：「${kw}」有新报道`,
+    desc: `已定位到下方这一组，共 ${count} 条。`
+  }),
+  watching: (kw) => ({
+    title: `正在监测「${kw}」`,
+    /* 说清「什么时候才会有」，否则用户会以为这条推送是假的 */
+    desc: '云端每天上午检索一次，有新报道时会出现在下方并提醒你一次。'
+  }),
+  gone: (kw) => ({
+    title: `「${kw}」已不在监测中`,
+    desc: '可能已在别处取消。想继续监测，在上方「关键词监控」里重新添加。'
+  })
+}
 
 /**
  * 关键词舆情预警（2026-10-08）。
@@ -46,9 +84,28 @@ import './index.scss'
  *
  * 为什么列表当收件箱用（已读的条目留在原地、只去掉「新」标记）：全部只给未读的话，
  * 用户看过一次就再也找不回那几条报道了。列表读到之后再调 markAllSeen（顺序见其注释）。
+ *
+ * 第三种进入方式（S1-3，2026-10-16）：**从订阅消息点进来**，page 上带着 `?keyword=`。
+ * 这一页的所有内容都是「多个词并列」，而推送的语义恰好相反 ——「就是这一个词有事」。
+ * 所以带参数进来时先给一条定位条、并高亮那一组，把推送刚建立起来的那点确定性接住。
  */
 export default function Alerts() {
   const { userId } = useAuth()
+  const router = useRouter()
+
+  /**
+   * 推送落点带来的关键词（S1-3）。云端 keywordAlert 的订阅消息 page 是
+   * `package/alerts/index?keyword=<词>`（见 cloudfunctions/keywordAlert 第 5 步）。
+   *
+   * 归一化后再比对：写库时走的就是 normalizeKeyword（见 utils/keyword-alert#addWatch），
+   * 不归一会因词里多一个空格就匹配不上，而高亮失效**没有任何外在表现** —— 最难查的一类 bug。
+   */
+  const focusKeyword = useMemo(
+    () => normalizeKeyword(decodeParam(router.params.keyword || '')),
+    [router.params.keyword]
+  )
+  /** 关掉定位条：推送的语境到此为止，之后的浏览不再被高亮干扰（仅本次进入内有效） */
+  const [focusClosed, setFocusClosed] = useState(false)
 
   /** 我的关键词订阅（用来渲染 chips 与「已监测 N/上限」）—— 不含监控行 */
   const [watches, setWatches] = useState<WatchRow[]>([])
@@ -193,7 +250,7 @@ export default function Alerts() {
       cancelText: '再想想',
       success: async (r) => {
         if (!r.confirm) return
-        const ok = await unmonitorPerson(personKey)
+        const ok = await unmonitorPerson(personKey, 'alerts')
         if (ok) void refresh()
       }
     })
@@ -253,8 +310,77 @@ export default function Alerts() {
   const watchCap = watchLimit(isMember)
   const atWatchLimit = !watchGate(watches.length, isMember).allowed
 
+  /*
+   * 定位条的三种落点（S1-3）—— 一句「正在看 X」盖不住三种处境，必须分开说：
+   *   ① 词还在监测、也已有报道 → 指到下方那一组（高亮 + 滚过去）；
+   *   ② 词还在监测、但还没有报道 → 说清什么时候才会有（云端每天上午一次），
+   *      否则用户会以为这条推送是假的；
+   *   ③ 词已不在监测（用户在别处取消过）→ 直说，别让人对着满页别家的词猜自己点的是什么；
+   *   ④ 未登录（参数在、但账号态读不出来）→ 要说「登录后查看」，不能说成「已不在监测中」。
+   * 四种都给得出下一步，不出现「参数带来了、页面却当没看见」。
+   */
+  const focusWatch = focusKeyword ? watches.find((w) => w.keyword === focusKeyword) : undefined
+  const focusGroup = focusKeyword ? groupByKey.get(focusKeyword) : undefined
+  const showFocus = !!focusKeyword && !focusClosed
+  /* 处境判定只写一遍：文案（FOCUS_COPY）与埋点（alert_focus）都从它取，不会各说各的 */
+  const focusKind: FocusKind = !userId
+    ? 'guest'
+    : focusGroup
+      ? 'group'
+      : focusWatch
+        ? 'watching'
+        : 'gone'
+  const focusCopy = FOCUS_COPY[focusKind](focusKeyword, focusGroup ? focusGroup.items.length : 0)
+
+  /**
+   * 落点埋点（S1-3）：每个词只报一次。
+   * 它观测的是「推送把用户带到了哪一类处境」—— 尤其 `'gone'` 的比例：
+   * 那说明推送名单与用户的订阅脱了节（取消后仍被扫到），而这类错误端上云端都不报错。
+   */
+  const trackedFocus = useRef('')
+  useEffect(() => {
+    if (!focusKeyword || loading || trackedFocus.current === focusKeyword) return
+    trackedFocus.current = focusKeyword
+    track('alert_focus', { keyword: focusKeyword, kind: focusKind })
+  }, [focusKeyword, loading, focusKind])
+
+  /**
+   * 定位条生效时滚到那一组（S1-3）。**只滚一次**：useDidShow 每次进页都会 refresh，
+   * 不设这道闸就会把正在读列表的用户反复拽回那一组。
+   */
+  const scrolledTo = useRef('')
+  useEffect(() => {
+    if (!showFocus || loading || !focusGroup || scrolledTo.current === focusKeyword) return
+    scrolledTo.current = focusKeyword
+    /*
+     * 延后到视图层更新之后再去量：这一组是同一轮渲染出来的，立刻量节点位置会量到 0
+     * （卡片还没上屏），滚过去等于没滚。同报告页目录跳转的写法与理由（Taro.nextTick）。
+     * 找不到节点时 pageScrollTo 会 reject —— 那只是「没滚成」，不该冒到用户面前；
+     * 定位条与高亮仍在，用户照样知道是哪一组。
+     */
+    Taro.nextTick(() => {
+      void Taro.pageScrollTo({ selector: `.${FOCUS_GROUP_CLASS}`, duration: 300 }).catch(() => undefined)
+    })
+  }, [showFocus, loading, focusGroup, focusKeyword])
+
   return (
     <View className='page-alerts'>
+      {/*
+        推送落点定位条（S1-3）：放在首卡之前 —— 它回答的是「我为什么在这」，
+        先于「我能管什么」。可关，关掉即恢复成一张普通的预警页。
+      */}
+      {showFocus && (
+        <View className='page-alerts__focus'>
+          <View className='page-alerts__focus-body'>
+            <Text className='page-alerts__focus-title'>{focusCopy.title}</Text>
+            <Text className='page-alerts__focus-desc'>{focusCopy.desc}</Text>
+          </View>
+          <Text className='page-alerts__focus-close' onClick={() => setFocusClosed(true)}>
+            ✕
+          </Text>
+        </View>
+      )}
+
       {/* 订阅管理 */}
       <View className='card'>
         <View className='card-title'>关键词监控</View>
@@ -312,7 +438,7 @@ export default function Alerts() {
             {watches.map((w) => (
               <View
                 key={w.id}
-                className='page-alerts__chip'
+                className={`page-alerts__chip${showFocus && w.keyword === focusKeyword ? ' page-alerts__chip--focus' : ''}`}
                 hoverClass='page-alerts__chip--tap'
                 onClick={() => handleRemove(w.keyword)}
               >
@@ -354,7 +480,10 @@ export default function Alerts() {
               const g = groupByKey.get(w.keyword)
               const lastRan = log?.ran_at || g?.lastFetchedAt || ''
               return (
-                <View key={w.id} className='page-alerts__tr'>
+                <View
+                  key={w.id}
+                  className={`page-alerts__tr${showFocus && w.keyword === focusKeyword ? ' page-alerts__tr--focus' : ''}`}
+                >
                   <Text className='page-alerts__td page-alerts__td--obj'>{w.keyword}</Text>
                   <Text className='page-alerts__td'>{lastRan ? fromNow(lastRan) : '待首次扫描'}</Text>
                   <Text className='page-alerts__td'>
@@ -419,7 +548,10 @@ export default function Alerts() {
             <Text className='page-alerts__summary'>{`本次新增 ${newTotal} 条报道`}</Text>
           )}
           {groups.map((g) => (
-            <View key={g.keyword} className='card page-alerts__group'>
+            <View
+              key={g.keyword}
+              className={`card page-alerts__group${showFocus && g.keyword === focusKeyword ? ` ${FOCUS_GROUP_CLASS}` : ''}`}
+            >
               <View className='page-alerts__group-head'>
                 <Text className='page-alerts__group-keyword'>{g.keyword}</Text>
                 {g.level !== 'calm' && (
@@ -501,6 +633,19 @@ export default function Alerts() {
                 <Text className='page-alerts__chip-x'>×</Text>
               </View>
             ))}
+          </View>
+          {/*
+            监测工作台入口（S3-2，2026-10-16）：紧跟在「我盯谁」的名单之后 ——
+            上面这群人的**明细**就在本页往下看，而他们的**横向台账**（谁在动 / 勾选对比 / 导出简报）
+            在另一页。放在名单之后而不是页面顶端：它是本页的下游动作，不是本页的替代品。
+          */}
+          <View
+            className='page-alerts__workbench'
+            hoverClass='page-alerts__workbench--tap'
+            onClick={() => void Taro.navigateTo({ url: '/package/workbench/index' })}
+          >
+            <Text className='page-alerts__workbench-text'>把这些人横着排成台账：谁在动 · 勾选对比 · 导出简报</Text>
+            <Text className='page-alerts__workbench-go'>监测工作台 ›</Text>
           </View>
           {riskNotifyReady && (
             <View className='page-alerts__notify'>

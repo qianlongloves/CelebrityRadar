@@ -35,6 +35,31 @@ export interface ReportCacheRow {
   schemaVersion?: number
 }
 
+/**
+ * report_versions：报告历史版本（S3-1 ③，2026-10-16）。
+ *
+ * 存**被覆盖掉的那一版**：`report_cache` 一人一份、`force` 重生即整篇替换，旧版不留就永久消失。
+ * 行由云端写口在**落库成功之后**写入（`aiProxy/report-store.js#recordVersion`），端上只读；
+ * 保留最近 5 版（`REPORT_VERSION_KEEP`，写口每次覆盖顺手裁旧），所以不需要任何定时清理。
+ *
+ * ⚠ 行内**不含用户标识**（`_id` = `<personKey>#<旧版生成时间>`）：它是全站共享事实的一段历史，
+ *   不是「我的那一行」—— 注销时无需按用户删（见 dbInit/schema.js 与用例 18 的白名单）。
+ */
+export interface ReportVersionRow {
+  id: string // `${personKey}#${旧版 generated_at}`
+  person_key: string
+  name: string
+  /** 这一版是什么时候生成的（来自旧版 report.generatedAt） */
+  generated_at: string
+  /** 它是什么时候被覆盖掉的：与 generated_at 的差就是「这一版被用了多久」 */
+  replaced_at: string
+  /** 旧版全文（读取时**必须**按读者身份过滤后再交出去，见 utils/report-versions.ts） */
+  report: Report
+  /** 旧版那时的素材条数（该行当时的 search_meta.news_count） */
+  news_count: number
+  schemaVersion?: number
+}
+
 /** feed_cache：检索结果结构化映射（不存 LLM 产物） */
 export interface FeedCacheRow {
   id: string // personKey

@@ -7,6 +7,7 @@ import {
   isRefusedResult,
   REPORT_SCHEMA_VERSION,
   shortfallVerdict,
+  isColdPerson,
   REPORT_BATCHES
 } from './report'
 import { FocusCode } from '@/config/filters'
@@ -192,10 +193,20 @@ export type ReportOutcome =
        * 而实际上他买到的是可反复查看的报告本体（且热门人物多半是别人先建、他才是受益者）。
        * 页面据此说明「这一次是你为全站建立的」（见 package/report/index.tsx 的首建提示条）。
        *
-       * ⚠ 仅作说明与埋点用，**不参与任何计费**：首建该不该免计费是另一个待定的产品口径
-       *   （同款先例是「会员补齐」免计费，见 utils/quota-guard.ts）。
+       * ⚠ 首建这一次会**申请免计费**（见 finalizeAndReturn 里的 consumeGenerateQuota）：端上只是
+       *   申请，真伪 / 时间窗 / 每日上限由 quotaGuard 复核（同款先例是「会员补齐」免计费）。
        */
       firstBuild?: boolean
+      /**
+       * 本次首建的人物是**冷门**，即公开报道很少的长尾人物（S2-3 首建激励，2026-10-16；
+       * 判据见 utils/report.ts#isColdPerson）。
+       *
+       * 只在「首建 + 冷门」同时成立时才有值。为什么要单独分出来：热门人物多半早被别人建过，
+       * 首建几乎只发生在长尾人物身上 —— 而真正值得给一份**看得见的回报**的正是这一种：
+       * 那种人公开报道少、没人愿意花额度建，第一个建的人补上的是库里长期空着的一个位置。
+       * 页面据此把首建提示条换成荣誉版（见 package/report/index.tsx）。
+       */
+      coldFirstBuild?: boolean
     }
   | { kind: 'coldstart' } // 无联网素材 + 缓存为空（或强刷）：引导态
   | { kind: 'nonews' } // 抓取为空：暂未检索到
@@ -317,8 +328,14 @@ export function shouldKeepMemberVersion(
  *
  * `knownMember` 是给**生成路径**用的：那条路径上身份已经读到了（memberDeep，见配额检查），
  * 再为同一件事读一次库是白付一次往返。读路径不传，由本函数按需读。
+ *
+ * ⚠ 2026-10-16 起**导出**给历史版本页（utils/report-versions.ts）：历史版本的旧版正文同样是
+ *   「发给当前读者的报告」，必须走同一道过滤 —— 旧版里可能带着当时会员生成的段落，
+ *   绕过本函数直接返回 `report` 就是给免费读者发会员内容（stripMemberSections 那条不变式的正题）。
+ *   导出是为了**不新造第二条过滤口径**，不是为了多开一个口子：任何新页面要拿到报告正文，
+ *   都应该经由这里（或 getCachedReport / getCachedReports 这两个已过滤的读口）。
  */
-async function exposeReport(
+export async function exposeReport(
   report: Report,
   knownMember?: boolean
 ): Promise<{ report: Report; locked: string[] }> {
@@ -1189,8 +1206,16 @@ export async function getOrBuildReport(
        * `firstBuild` 是这批埋点里唯一能回答「有多少次生成真的在**新建**一行」的字段
        * （其余都是「生成了一次」）。比例偏低说明绝大多数生成是覆盖既有缓存，那么
        * 「首建免计费」的成本很小；比例偏高才需要重新掂量（口径见 isFirstBuild）。
+       *
+       * S2-3 加了两个维度，缺了它们「冷门人物首建率」这个验收项根本算不出来：
+       *   · cold —— 这一次生成的人物算不算冷门（判据见 utils/report.ts#isColdPerson）。
+       *     必须对**每一次**生成都报，而不是只报首建：只有拿到「冷门人物的生成总数」与其中
+       *     「首建」两个数，才谈得上一个**率**；只报首建的话，分母永远是缺的。
+       *   · materials —— 本次抓到的原样素材条数。冷门线（COLD_ITEMS_MAX）是拍下来的，
+       *     把它与条数一起存下来，日后调线时拿真实分布重算即可，不必再等一批数据。
        */
-      track('report_generate', { personKey, mode: 'realtime', firstBuild })
+      const cold = isColdPerson(report)
+      track('report_generate', { personKey, mode: 'realtime', firstBuild, cold, materials: materialCount })
       /*
        * 配额只在「用户真的拿到一份合格报告」时消耗（公平计费，口径见 utils/quota.ts 文件头）：
        *   上方的 refused / error / coldstart / nonews / shortfall 分支均已提前 return，不计数；
@@ -1222,8 +1247,9 @@ export async function getOrBuildReport(
         fromCache: false,
         prev: prevReport,
         memberLocked: shown.locked,
-        /* 首建才带（见 ReportOutcome.firstBuild）：页面据此说明「这次是你为全站建立的」 */
-        ...(firstBuild ? { firstBuild: true } : {})
+        /* 首建才带（见 ReportOutcome.firstBuild）：页面据此说明「这次是你为全站建立的」；
+           冷门首建再带一个 coldFirstBuild，页面换成荣誉版文案（S2-3） */
+        ...(firstBuild ? { firstBuild: true, ...(cold ? { coldFirstBuild: true } : {}) } : {})
       }
     }
     return finalizeAndReturn(report, news.length)

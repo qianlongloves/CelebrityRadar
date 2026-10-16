@@ -8,6 +8,7 @@ import { parsePersonKey } from '@/config/domains'
 import { getCachedReport } from '@/utils/cache'
 import { readMemberState } from '@/utils/member'
 import type { Report } from '@/utils/report'
+import { decodeParam } from '@/utils/route'
 import './index.scss'
 
 /**
@@ -32,7 +33,7 @@ type Phase = 'loading' | 'missing' | 'ready'
 
 export default function QaPage() {
   const router = useRouter()
-  const personKey = decodeURIComponent(router.params.personKey || '')
+  const personKey = decodeParam(router.params.personKey || '')
   const parsed = parsePersonKey(personKey)
 
   const [phase, setPhase] = useState<Phase>('loading')

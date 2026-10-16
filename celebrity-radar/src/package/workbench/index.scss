@@ -1,0 +1,361 @@
+@import '../../styles/variables.scss';
+
+/*
+  监测工作台（S3-2）。结构与 page-alerts 同源（撑满一屏的 flex 列 + 卡片 + 末尾 auto 免责），
+  沿用同一套「为什么这么写」的补偿式留白，不新造一套间距规则。
+*/
+.page-workbench {
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+
+  /* flex 子项的垂直 margin 不折叠（同 page-alerts）：对半给，还原成块级布局下的 16rpx 间隙 */
+  > .card {
+    margin-top: 8rpx;
+    margin-bottom: 8rpx;
+
+    &:first-child {
+      margin-top: 16rpx;
+    }
+  }
+
+  /* 说明句：比正文浅一档（页面里连着两三句说明时，全用深色会被当成同一段废话略过） */
+  &__intro {
+    display: block;
+    font-size: 24rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__hint {
+    color: $text-3;
+    font-size: 24rpx;
+  }
+
+  /* 达到监控人数上限时的一行升级引导（同 page-alerts__limit：克制、不弹窗） */
+  &__limit {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-top: 20rpx;
+    padding: 20rpx 24rpx;
+    border-radius: 16rpx;
+    background: $brand-weak;
+  }
+
+  &__limit--tap {
+    opacity: 0.9;
+  }
+
+  &__limit-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $text-2;
+  }
+
+  &__limit-go {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
+  /* ── 多人面板 ───────────────────────────────────────────────
+     一行一个人，列 = 对象 / 最近执行 / 命中·累计 / 状态（与预警页表格同一套尺寸，
+     用户在两个页面之间来回时不会因为列宽变化而重新找位置）。
+     与预警页表格唯一的差别：对象列前面多一个勾选框 —— 「勾选成组」是本页的核心动作，
+     放在最左边与行名同格，点整行即勾选，不用去瞄一个小方块。 */
+  &__table {
+    margin-top: 24rpx;
+    border: 1rpx solid $line;
+    border-radius: $radius-sm;
+    overflow: hidden;
+  }
+
+  &__tr {
+    display: flex;
+    align-items: center;
+    min-height: 64rpx;
+    padding: 0 16rpx;
+    border-top: 1rpx solid $line;
+
+    &:first-child {
+      border-top: 0;
+    }
+
+    &--head {
+      min-height: 56rpx;
+      background: $bg;
+    }
+
+    /* 勾选中的行：浅品牌底（与预警页 __tr--focus 同一层意思「就是你选的那一行」） */
+    &--on {
+      background: $brand-weak;
+    }
+
+    &--tap {
+      opacity: 0.85;
+    }
+  }
+
+  &__td {
+    flex: none;
+    width: 150rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-2;
+
+    &--obj {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 12rpx;
+      padding-right: 8rpx;
+      color: $text-1;
+      font-size: 26rpx;
+      font-weight: 600;
+    }
+
+    &--status {
+      text-align: right;
+    }
+  }
+
+  &__tr--head &__td {
+    font-size: 20rpx;
+    color: $text-3;
+  }
+
+  /* 自绘勾选框（不用 checkbox 组件）：这里只需要「勾上没有」两态，
+     原生 checkbox 带自己的标签排版与平台默认色，在这个死宽的表格行里反而更难对齐 */
+  &__check {
+    flex: none;
+    width: 34rpx;
+    height: 34rpx;
+    border: 2rpx solid $text-3;
+    border-radius: 8rpx;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  &__check--on {
+    border-color: $brand;
+    background: $brand;
+  }
+
+  &__check-mark {
+    font-size: 22rpx;
+    line-height: 1;
+    color: #fff;
+  }
+
+  &__obj-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__obj-name {
+    display: block;
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  /* 第二行 = 最近一条信号的标题：只给「新 3 条」还得再跳一次才知道是什么事 */
+  &__obj-sub {
+    display: block;
+    margin-top: 4rpx;
+    font-size: 20rpx;
+    line-height: 1.4;
+    color: $text-3;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* 勾选栏：计数在左、按钮在右，按钮宽度不随计数变化（否则点第二下会点空） */
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    margin-top: 24rpx;
+  }
+
+  &__picked {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  &__btn {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 72rpx;
+    padding: 0 32rpx;
+    border-radius: 999rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 26rpx;
+
+    /* 未满 2 人时仍可点（点了给提示说明为什么不行），只做视觉弱化 */
+    &--off {
+      opacity: 0.45;
+    }
+
+    &--tap {
+      opacity: 0.8;
+    }
+
+    /* 导出按钮独占一行：它在另一张卡片里，且是那一张卡的主出口 */
+    &--wide {
+      margin-top: 20rpx;
+      align-self: flex-start;
+      padding: 0 40rpx;
+    }
+  }
+
+  /* ── 横向对比表 ─────────────────────────────────────────────
+     列 = 人、行 = 指标。列宽用 flex:1 均分而不是固定宽度：
+     对比 2 人与对比 4 人都要能一屏放下，固定宽度会让 4 人时横向滚。 */
+  &__cmp {
+    margin-top: 20rpx;
+    border: 1rpx solid $line;
+    border-radius: $radius-sm;
+    overflow: hidden;
+  }
+
+  &__cmp-tr {
+    display: flex;
+    align-items: center;
+    min-height: 64rpx;
+    padding: 0 16rpx;
+    border-top: 1rpx solid $line;
+
+    &:first-child {
+      border-top: 0;
+    }
+
+    &--head {
+      min-height: 64rpx;
+      background: $bg;
+    }
+  }
+
+  &__cmp-label {
+    flex: none;
+    width: 130rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__cmp-cell {
+    flex: 1;
+    min-width: 0;
+    padding-left: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.4;
+    color: $text-1;
+    word-break: break-word;
+  }
+
+  &__cmp-tr--head &__cmp-cell {
+    font-weight: 600;
+  }
+
+  /* 未生成的人：给出生成入口而不是从表里删掉（删掉会被读成「这个人没问题」） */
+  &__gen {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx dashed $line;
+  }
+
+  &__gen-tip {
+    display: block;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__gen-btn {
+    display: inline-block;
+    margin: 16rpx 16rpx 0 0;
+    padding: 10rpx 28rpx;
+    border: 1rpx solid $brand;
+    border-radius: 999rpx;
+    color: $brand;
+    font-size: 24rpx;
+  }
+
+  &__gen-btn--tap {
+    opacity: 0.7;
+  }
+
+  /* ── 事件跟踪 ─────────────────────────────────────────────── */
+  &__event {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+
+    &:first-of-type {
+      border-top: 0;
+    }
+  }
+
+  &__event--tap {
+    opacity: 0.7;
+  }
+
+  &__event-title {
+    display: block;
+    font-size: 27rpx;
+    line-height: 1.5;
+    color: $text-1;
+  }
+
+  /* 来源数与最近进展：来源数是「这件事有多少家说过」，不是对事情的定性 */
+  &__event-meta {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  &__more {
+    margin-top: 20rpx;
+    padding-top: 20rpx;
+    border-top: 1rpx solid $line;
+    text-align: right;
+    font-size: 24rpx;
+    color: $brand;
+  }
+
+  &__more--tap {
+    opacity: 0.6;
+  }
+
+  /* 导出被拦时的那一行说明（非弹窗）：贴着按钮，不抢按钮 */
+  &__note {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  /* 末尾免责：内容不足一屏时贴屏幕底（同 page-alerts 的补偿式写法） */
+  .disclaimer {
+    display: block;
+    margin-top: auto;
+    padding: 40rpx 64rpx calc(48rpx + env(safe-area-inset-bottom));
+  }
+}

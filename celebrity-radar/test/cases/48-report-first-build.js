@@ -215,11 +215,15 @@ describe('首建判定的接线（源码钉住）', () => {
   })
 
   it('埋点带上 firstBuild（否则「有多少次生成在新建一行」永远答不出来）', () => {
-    ok(src.includes("track('report_generate', { personKey, mode: 'realtime', firstBuild })"))
+    /* 判「firstBuild 在这个 props 对象里」而不是整串：S2-3 往同一个对象上又挂了
+       cold / materials（见 58-report-cold-first-build），钉整串会让每次加维度都改这份用例。 */
+    ok(/track\('report_generate', \{[^}]*\bfirstBuild\b/.test(src))
   })
 
   it('只有落库成功那一条路径交回 firstBuild（其余分支都不带）', () => {
-    const hits = src.split('...(firstBuild ? { firstBuild: true } : {})').length - 1
+    /* 只数 spread 的**头** `...(firstBuild ? { firstBuild: true`：S2-3 在同一个 spread 里
+       又嵌了 coldFirstBuild，整串比对会因为多一个嵌套而误报成「0 处」。 */
+    const hits = src.split('...(firstBuild ? { firstBuild: true').length - 1
 
     eq(hits, 1, '残版 / 保留旧版 / 缓存命中都不该带这个标记')
   })
@@ -241,7 +245,9 @@ describe('首建说明条（报告页 · package/report/index.tsx）', () => {
     const at = page.indexOf('{firstBuild && !closedNotices.firstBuild && (')
     ok(at > 0, '提示条必须挂在 firstBuild 上')
 
-    const block = page.slice(at, at + 800)
+    /* 窗口按**块的实际长度**取：S2-3 加了冷门分支（两条文案各一段），整块已近 900 字符
+       （含 CRLF 换行），仍卡在 800 会把结尾的 NoticeClose 截掉、误判成「关不掉」。 */
+    const block = page.slice(at, at + 1400)
     ok(block.includes('这份报告由你首次生成'))
     ok(block.includes('不再消耗生成次数'), '这句才是这条提示的全部意义：把共享缓存的账说清')
     ok(block.includes('包括你自己'), '用户最可能误以为「我下次再看还要再扣一次」')

@@ -23,7 +23,7 @@ import { HISTORY_LIMIT } from '@/utils/history'
 /* 报告模板的节数与名单也只有一个来源（utils/report-toc.ts），对比表同样只引用不复制 */
 import { FREE_TOC_COUNT, TEMPLATE_SIZE } from '@/utils/report-toc'
 /* 舆情功能的免费 / 会员分层上限（关注人数 / 关键词监测 / 舆情明细）真源：config/benefits.ts */
-import { OPINION_LIMITS } from '@/config/benefits'
+import { OPINION_LIMITS, REPORT_PREVIEW } from '@/config/benefits'
 import { QA_MAX_QUESTION } from '@/utils/qa'
 import { toUserMessage } from '@/utils/error'
 import {
@@ -117,8 +117,31 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
      * 具体多出哪几节写在下方的权益说明里（表格这一列窄，塞不下名单）。
      */
     name: '报告模板',
-    free: `核心 ${FREE_TOC_COUNT} 节`,
-    member: `完整 ${TEMPLATE_SIZE} 节`
+    free: `核心 ${FREE_TOC_COUNT} 节 · 每节 ${REPORT_PREVIEW.sectionRows.free} 条`,
+    member: `完整 ${TEMPLATE_SIZE} 节 · 每节全部`
+  },
+  {
+    /*
+     * 2026-10-16 新增（S3-1：付费点从「额度」转向「能力 / 容量 / 导出」）。
+     *
+     * 这是全表第一条**与共享缓存无因果关系**的权益：上面几行讲「生成出来的东西有多好 / 有多厚」
+     * （模型 / 厚度 / 模板），下面几行讲「能生成多少次」—— 而次数那一类会随 `report_cache`
+     * 变厚而**自动贬值**（查过的名人越便宜，次数越花不完）。「带走」不会贬值：
+     * 报告已经在库里，导出是纯本地组装（零上游成本、零等待、零额度），
+     * 且缓存越厚、能导出的报告越多，这一条越值钱（见 doc/产品优化路线图.md §6.4）。
+     *
+     * ⚠ 顺带补上一个既有缺口：长图导出（2026-10-15）与周报图导出**本来就是会员能力，
+     * 却从来没写进任何一份权益表** —— 用户只在被拦的那一下才知道「原来导出要会员」。
+     *
+     * 两栏都不写数字：导出是**二元能力**（`report-card.ts#canExportReportCard` 与
+     * `weekly-brief.ts#canExportWeeklyBrief` 逐字同一口径），故也不在 config/benefits.ts 新增常量。
+     * 免费栏写「—」是准确的：免费用户**看得到入口**，但点开只会得到一行升级引导。
+     * 位置刻意夹在「报告模板」与「每日主动生成报告」之间：让「能力类」聚在上半部分，
+     * 次数类留在下半部分 —— 这一页要让用户先看到「买到了什么」，而不是「买到了多少个」。
+     */
+    name: '导出报告',
+    free: '—',
+    member: '长图 + Markdown / JSON'
   },
   {
     name: '每日主动生成报告',

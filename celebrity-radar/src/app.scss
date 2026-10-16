@@ -6,13 +6,20 @@ $color-error: #ef4444;
 /*
  * taro-ui 按需引入（2026-10-14）：项目只用了 AtButton / AtSearchBar 两个组件，
  * 原来 `@import 'taro-ui/dist/style/index.scss'` 会把 50 个组件样式全部打进主包 WXSS。
- * 这里只引 button + search-bar，外加 search-bar 依赖的 icon（放大镜 / 清除图标）。
+ * 这里只引 button + search-bar，外加两者依赖的 icon（放大镜 / 清除图标）与 loading。
  * 每个组件 scss 内部会自行 @import variables/default.scss 与 mixins/index.scss，
  * 故上面的主题变量覆盖在按需引入下依然生效（!default 不覆盖已赋值）。
+ *
+ * loading 是 AtButton 的 `loading` 属性的依赖（2026-10-16 补）：loading 为真时 AtButton 会渲染
+ * 一枚 `<AtLoading>`（见 taro-ui/dist/components/button），而转圈的**全部视觉**都只在 loading.scss 里
+ * —— `.at-loading` 的尺寸与 `position: relative`、`.at-loading__ring` 的 `border-radius: 50%`
+ * 与 `animation: loading 1.2s infinite`。缺这一条时，三个 ring 是没有圆角、互不重叠、
+ * 永不旋转的空 view，按钮上等于什么都没有 —— 这正是「点了发送看不到加载效果」的根因。
  */
 @import 'taro-ui/dist/style/components/button.scss';
 @import 'taro-ui/dist/style/components/search-bar.scss';
 @import 'taro-ui/dist/style/components/icon.scss';
+@import 'taro-ui/dist/style/components/loading.scss';
 
 @import './styles/variables.scss';
 

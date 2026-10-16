@@ -4,10 +4,31 @@
    不引入任何新的视觉语言：这是把已有字段重新编排的一页，不是新功能入口。 */
 
 .page-topic {
+  /* 撑满一屏 + 末尾提示语贴底（2026-10-16）：min-height 只保证高度不小于一屏，
+     子元素照样自上而下排 —— 报告少时提示语会浮在半空。必须配 flex 列 +
+     `.disclaimer` 的 `margin-top: auto`，剩余空间才会全归它上方。 */
   min-height: 100vh;
   background: $bg;
   padding-top: 16rpx;
   box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+
+  /* flex 子项的垂直 margin **不折叠**：块级下相邻卡片的 16rpx 会折叠成 16rpx，
+     直接换过来会变 32rpx（整页变松）。对半给还原。
+     本页根容器的直接子级除末尾提示语外全是 .card（每对是「二选一」，但同时可见的仍是兄弟）。 */
+  > .card {
+    margin-top: 8rpx;
+    margin-bottom: 8rpx;
+  }
+
+  /* 末尾提示语（`<Text>`：默认行内，垂直 margin 不生效，先块级化）。
+     底部安全区已由根容器上的全局 .safe-bottom（padding-bottom: calc(24rpx + env(safe-area-inset-bottom))）
+     提供，这里不重复加，否则会叠成两倍留白。 */
+  > .disclaimer {
+    display: block;
+    margin-top: auto;
+  }
 }
 
 /* ===== 概览 ===== */

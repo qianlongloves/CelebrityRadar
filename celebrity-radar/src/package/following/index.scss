@@ -1,7 +1,36 @@
 @import '../../styles/variables.scss';
 
 .page-following {
+  /* 撑满一屏 + 末尾提示语贴底（2026-10-16）：min-height 只保证高度不小于一屏，
+     要真的把末尾提示语推到屏幕底，必须是 flex 列 + 提示语 `margin-top: auto`。 */
   min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+
+  /* 结果区（有数据时才渲染）。两条提示语都在这层里，所以贴底要下探到这一层：
+     它先吃掉根容器的剩余高度（flex: 1），再在自己的内部把剩余空间给最后一条提示语。
+     空态（EmptyState）不在这层里，不需要贴底。 */
+  &__body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+
+    /* flex 子项的垂直 margin 不折叠：块级下相邻卡片的 16rpx 会变成 32rpx，对半还原 */
+    > .card {
+      margin-top: 8rpx;
+      margin-bottom: 8rpx;
+    }
+
+    /* 只让**最后一条**提示语吃剩余空间 —— 上面那条「仅展示最近 N 位」是列表的注解，
+       该紧贴列表，不该被推到底部 */
+    > .disclaimer:last-child {
+      display: block;
+      margin-top: auto;
+      /* 与关键词预警 / 订单 / 消息页同一处理：全面屏 home 条区域不压字 */
+      padding-bottom: calc(48rpx + env(safe-area-inset-bottom));
+    }
+  }
 
   &__loading {
     padding: 96rpx 0;

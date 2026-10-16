@@ -1,7 +1,31 @@
 @import '../../styles/variables.scss';
 
 .page-alerts {
-  padding-bottom: 32rpx;
+  /* 撑满一屏（2026-10-16）：内容不足一屏时（新用户还没订阅任何词）页面高度仍等于屏高，
+     末尾的免责声明才能落在屏幕最底端，而不是浮在半空。
+     ⚠ 只有 `min-height` 是不够的 —— 子元素照样自上而下排，必须配合 flex 列 + 末尾 `margin-top: auto`
+     （见文件末尾 .disclaimer），否则提示语仍紧跟在内容后面。 */
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  /* 底边距交给 .disclaimer 自己（它含安全区），这里不再重复留一段 */
+  padding-bottom: 0;
+
+  /* flex 子项的垂直 margin **不折叠**：块级布局下相邻卡片的 16rpx 会折叠成 16rpx，
+     直接换过来会变成 32rpx（整页变松）。这里对半给，还原成原来的 16rpx 间隙；
+     首卡片的 16rpx 原本是「穿透」到页面外的顶部留白，一并补回来。
+     本页根容器的直接子级只有 .card、.disclaimer 与推送定位条 __focus
+     （__summary / __note 都在卡片内部），所以补偿只需管 `.card` 这一对；
+     __focus 自带留白，从消息点进来时它顶在最前面（见下方 &__focus）。 */
+  > .card {
+    margin-top: 8rpx;
+    margin-bottom: 8rpx;
+
+    &:first-child {
+      margin-top: 16rpx;
+    }
+  }
 
   &__intro {
     display: block;
@@ -15,6 +39,54 @@
   &__intro--guide {
     margin-top: 4rpx;
     color: $text-2;
+  }
+
+  /*
+    推送落点定位条（S1-3，2026-10-16）：从订阅消息点进来时，先回答「我为什么在这」。
+    左色条 + 浅品牌底，与白卡明确区分 —— 它是**一次性的语境**，不是本页的常驻内容，
+    所以刻意不用 .card（.card 的语义是「一段可长期阅读的内容」）。
+  */
+  &__focus {
+    display: flex;
+    align-items: flex-start;
+    gap: 16rpx;
+    margin: 16rpx 32rpx 0;
+    padding: 20rpx 24rpx;
+    border-left: 8rpx solid $brand-soft;
+    border-radius: $radius-sm;
+    background: $brand-weak;
+  }
+
+  /* min-width: 0 是留给长关键词折行的：不加它，12 字的关键词会把右边的 ✕ 顶出屏幕 */
+  &__focus-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__focus-title {
+    display: block;
+    font-size: 26rpx;
+    font-weight: 600;
+    line-height: 1.5;
+    color: $brand-dark;
+    word-break: break-word;
+  }
+
+  &__focus-desc {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+  }
+
+  /* 关闭热区给足：这里点空不会误触发别的动作，但「关不掉」会被当成页面卡住 */
+  &__focus-close {
+    flex-shrink: 0;
+    padding: 0 8rpx 8rpx 16rpx;
+    font-size: 26rpx;
+    line-height: 1.2;
+    color: $text-3;
   }
 
   /* 订阅输入：胶囊输入框 + 胶囊按钮 */
@@ -123,6 +195,47 @@
     line-height: 1;
   }
 
+  /* 推送定位命中的那一个词：换成实底品牌色，省得用户在七八个胶囊里再找一遍
+     （其余胶囊是 $brand-weak 底 + 品牌色字，反差足够，不会误认成另一种状态） */
+  &__chip--focus {
+    background: $brand;
+    color: #fff;
+  }
+
+  /*
+    监测工作台入口（S3-2）：一行「说明 + 去 ›」，与下面的「开启风险提醒」区分开 ——
+    提醒是一条设置（开关式），这里是一次跳转（去别的页面），故用整行品牌色底而不是描边按钮。
+  */
+  &__workbench {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16rpx;
+    margin-top: 20rpx;
+    padding: 20rpx 24rpx;
+    border-radius: 16rpx;
+    background: $brand-weak;
+  }
+
+  &__workbench--tap {
+    opacity: 0.9;
+  }
+
+  &__workbench-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 24rpx;
+    line-height: 1.5;
+    color: $text-2;
+  }
+
+  &__workbench-go {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    font-weight: 600;
+    color: $brand;
+  }
+
   &__notify {
     margin-top: 24rpx;
     padding-top: 20rpx;
@@ -192,6 +305,15 @@
     margin-left: auto;
     font-size: 22rpx;
     color: $text-3;
+  }
+
+  /*
+    定位到的那一组（S1-3）：卡片本身由 .card 提供白底与圆角，这里只加一圈品牌描边。
+    ⚠ 不再叠浅品牌底：这一组里已经有一条（_group-count）与若干条目的灰字，
+    底色一动，整组会被读成「选中项」，而它要表达的只是「就是你点通知要看的那一组」。
+  */
+  &__group--focus {
+    border: 2rpx solid $brand-soft;
   }
 
   /* 「看话题」是这一组的次要出口：靠右、弱于条目本身，但要看得出能点 */
@@ -337,6 +459,11 @@
     color: $text-3;
   }
 
+  /* 定位命中的那一行：一层浅品牌底即可 —— 行内已经有状态色（成功 / 失败），再抢就花了 */
+  &__tr--focus {
+    background: $brand-weak;
+  }
+
   &__status {
     &--ok {
       color: $success;
@@ -407,12 +534,22 @@
     color: $text-2;
   }
 
-  /* 页面最底部的免责声明（2026-10-15 需求 3）：全局 .disclaimer 左右仅 48rpx，
-     比卡片内容（卡片 margin 32rpx + 内边距 28rpx ≈ 60rpx）更贴近屏边，显得「过近」。
-     这里在 alerts 页面局部加大到 64rpx 与屏边保持距离；它本就在 .page-alerts 末尾，
-     天然位于页面最底部，加一点上间距与上方信号段拉开。 */
+  /* 页面最底部的免责声明。全局 .disclaimer 左右仅 48rpx，比卡片内容（卡片 margin 32rpx +
+     内边距 28rpx ≈ 60rpx）更贴近屏边，这里局部加大到 64rpx 与屏边保持距离。
+     2026-10-16 按反馈修两处：
+       · **先 `display: block`** —— `<Text>` 默认是行内元素，而**垂直 margin 对行内元素不生效**，
+         原来那句 `margin-top: 16rpx` 一直空转，文字实际是贴着上方卡片画的，这正是「与边框太近」
+         的根因；块级化之后间距才真的推得开（全局 .disclaimer 不动，避免波及其他页面）。
+       · 上间距交给 margin（不再靠 padding-top 画出来），底部补 `env(safe-area-inset-bottom)`：
+         原值固定 48rpx，全面屏机型上紧贴屏幕下沿的 home 条区域，加了之后随机型自适应。
+     2026-10-16 第二次调整：`margin-top: auto` —— 父容器已是 flex 列（见文件开头），
+     auto 会把剩余空间全吃掉，把提示语推到**屏幕最底端**；内容超过一屏时剩余空间为 0、
+     auto 退化成 0，这时由 `padding-top: 40rpx` 保住与上方卡片的最小间距。
+     它本就在 .page-alerts 的最末尾（页面内容末端），位置无需调整。 */
   .disclaimer {
-    margin-top: 16rpx;
-    padding: 24rpx 64rpx 48rpx;
+    display: block;
+    /* 内容不足一屏 → 剩余空间全给上方，提示贴屏幕底；内容超一屏 → 归 0，靠下面的 padding-top 兜底 */
+    margin-top: auto;
+    padding: 40rpx 64rpx calc(48rpx + env(safe-area-inset-bottom));
   }
 }

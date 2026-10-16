@@ -120,7 +120,7 @@ export default function Following() {
       )}
 
       {!loading && rows.length > 0 && (
-        <View>
+        <View className='page-following__body'>
           <View className='section-head'>
             <Text className='section-head__title'>全部关注</Text>
             <Text className='section-head__extra'>{rows.length} 人 · 下拉刷新</Text>

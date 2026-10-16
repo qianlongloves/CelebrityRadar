@@ -7,8 +7,25 @@
    不额外加「未读」文字标签，列表要能一眼扫过去。
    两个类互斥（页面按 m.unread 二选一挂），不靠样式覆盖去猜。 */
 .page-messages {
+  /* 撑满一屏 + 末尾提示语贴底（2026-10-16）：min-height 之外还要 flex 列，
+     否则内容不足一屏（没消息时）提示语会浮在半空（见 .disclaimer 的 margin-top: auto）。 */
   min-height: 100vh;
-  padding-bottom: 60rpx;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  /* 底部留白交给 .disclaimer（它含安全区），这里不再留一段（原为 60rpx） */
+  padding-bottom: 0;
+
+  /* 本页根容器下没有 .card（消息条目 .page-messages__item 在 __list 里，
+     其 margin 折叠发生在 __list 内部，不受这里改成 flex 的影响），无需卡片补偿 */
+  .disclaimer {
+    display: block;
+    /* 内容不足一屏 → 剩余空间全给上方，提示贴屏幕底；内容超一屏 → 归 0，
+       由全局 padding-top（24rpx）兜住与最后一条消息的间距 */
+    margin-top: auto;
+    /* 与关键词预警 / 订单页同一处理：全面屏 home 条区域不压字 */
+    padding-bottom: calc(48rpx + env(safe-area-inset-bottom));
+  }
 
   &__head {
     padding: 28rpx 32rpx 4rpx;

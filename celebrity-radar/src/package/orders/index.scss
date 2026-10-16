@@ -3,7 +3,37 @@
 /* 我的订单（会员中心入口，仅会员可见）：每条订单一张卡，档位 + 状态 + 金额 + 下单时间。
    卡片沿用全局 .card；这里只加订单特有的排版与状态配色。 */
 .page-orders {
-  padding: 8rpx 0 32rpx;
+  /* 撑满一屏 + 末尾提示语贴底（2026-10-16）：`min-height` 只保证页面高度不小于一屏，
+     子元素照样自上而下排 —— 内容不足一屏（没订单时）提示语会浮在半空。
+     必须配合 flex 列 + `.disclaimer` 的 `margin-top: auto`，剩余空间全归它上方。 */
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  /* 底部留白交给 .disclaimer（它含安全区），这里不再留一段（原为 32rpx） */
+  padding: 8rpx 0 0;
+
+  /* flex 子项的垂直 margin **不折叠**：块级下相邻卡片的 16rpx 会折叠成 16rpx，
+     直接换过来会变成 32rpx（整页变松）。这里对半给还原成 16rpx；
+     首卡片的 16rpx 原本与容器 padding-top 相邻，一并补回。 */
+  > .card {
+    margin-top: 8rpx;
+    margin-bottom: 8rpx;
+
+    &:first-child {
+      margin-top: 16rpx;
+    }
+  }
+
+  /* 页面最底部的免责声明（`<Text>`：默认行内，垂直 margin 不生效，先块级化）。
+     内容不足一屏 → auto 吃掉剩余空间，提示语贴屏幕底；内容超一屏 → auto 归 0，
+     由全局 padding-top（24rpx）保住与上方卡片的最小间距。
+     底部补 env(safe-area-inset-bottom)：与关键词预警页同一处理，全面屏 home 条区域不压字。 */
+  .disclaimer {
+    display: block;
+    margin-top: auto;
+    padding-bottom: calc(48rpx + env(safe-area-inset-bottom));
+  }
 
   /* ===== 订单卡 ===== */
   &__item {

@@ -183,6 +183,48 @@ const collections = [
     indexes: [ix('idx_state', [['state', 'asc']], { optional: true, supports: '运维扫描 building 脏行' })]
   },
   {
+    name: 'report_versions',
+    /* 报告历史版本（S3-1 ③，2026-10-16）：`report_cache` 一人一份、`force` 重生即整篇替换，
+     * 旧版就此永久消失。本表存**被覆盖掉的那一版**，让「这份报告以前是怎么写的」可回溯。
+     *
+     * ⚠ 写入**只发生在写口内部**（`aiProxy` 的 `action:'report'` + `op:'save'` 里、落库成功之后，
+     *   见 report-store.js#recordVersion），客户端不可写 —— 与 report_cache 同一处境、同一收紧口径。
+     *
+     * ⚠ 与 report_cache 一样，**行内不含任何用户标识**（`_id` = `<personKey>#<旧版生成时间>`）：
+     *   它是「全站共享事实的一段历史」，不是「我的那一行」—— 注销时无需按用户删。
+     *   用例 18 的「注销删表清单与 schema 对齐」把它放进「行内无用户标识」白名单，改动前先看那里。
+     *
+     * ⚠ 保留策略在写口（`REPORT_VERSION_KEEP = 5`，每次覆盖顺手裁旧）：本表不会无限增长，
+     *   所以它**不需要**任何定时清理任务。
+     */
+    purpose:
+      '报告历史版本（被覆盖掉的旧版全文，全局共享）：客户端只读，写入走云函数 aiProxy(action:report, op:save) 的落库之后',
+    acl: ACL.publicReadOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('person_key', 'string', { required: true }),
+      f('name', 'string', { required: true }),
+      /* 这一版是什么时候生成的（取自旧版 report.generatedAt，取不到则退回旧行的 generated_at） */
+      f('generated_at', 'string', { required: true }),
+      /* 它是什么时候被覆盖掉的：页面上「X 更新过，上一版是 Y」讲的是这两个时间的差 */
+      f('replaced_at', 'string', { required: true }),
+      f('report', 'object', { required: true }),
+      /* 旧版对应的素材条数（该行当时的 search_meta.news_count）：列表用它比「这次素材多了还是少了」 */
+      f('news_count', 'number', { required: true }),
+      /* 报告 Schema 版本，**故意不给 def**（同 report_cache 的口径：缺失 = 版本未知的老报告） */
+      f('schemaVersion', 'number?')
+    ],
+    /* 只为「按人物取历史」建一条索引。排序键刻意用 `_id` ——
+       `_id` = `<personKey>#<生成时间>`，同人物下的字典序即时间序，且主键天生有索引，
+       所以列表查询不依赖本索引也能排对（索引缺失/排序内存超限时的兜底，见 report-store#trimVersions）。 */
+    indexes: [
+      ix('idx_person_key', [['person_key', 'asc']], {
+        optional: true,
+        supports: '按人物取历史版本列表（端上 report-history 页；排序走 _id，故索引只用于过滤）'
+      })
+    ]
+  },
+  {
     name: 'hot_board',
     purpose: '热门名人榜（AI 每日生产，_id 固定 latest 覆盖写；端上只读）',
     acl: ACL.publicReadOnly,

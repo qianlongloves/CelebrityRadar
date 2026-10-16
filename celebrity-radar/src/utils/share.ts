@@ -21,6 +21,8 @@ import { Report } from './report'
  *    是**可核对的事实**；而「这个人不靠谱」这类是判断，模型都不许替用户下，更不能写进分享标题。
  *    数量都为 0（简版 / 素材极少的报告）时回落简介首句，与推荐卡的 brief 同源。
  * 3) **长度按微信展示裁到 ~24 字**，否则会被截成半句（「…小米在汽车与手」）。
+ * 4) **关注了谁，分享框就换成「我在盯」**（S2-1，见本文件下方同名小节）：
+ *    同一条链接随关系换框，落地页据此把关注入口提到最前 —— 但**没关注的人不许用这个框**。
  */
 
 /** 标题展示上限（含姓名与领域），超出截断加省略号 */
@@ -64,6 +66,14 @@ export function reportSharePath(personKey: string, focus?: string): string {
 }
 
 /**
+ * 领域在标题里的写法：空 / 非法回落「名人」（分享标题里「张三 · 其他」读起来像句病句），
+ * 其余一律走 domainLabel：已知码给中文标签，自创短词原样展示。
+ */
+function domainText(domain: string): string {
+  return sanitizeDomain(domain) === '' ? '名人' : domainLabel(domain)
+}
+
+/**
  * 分享标题：`姓名 · 领域`，有报告时再拼「结论钩子」或一句可核对的简介。
  *
  * @param name 名人姓名（报告未就绪时用路由里解析出来的名字）
@@ -71,14 +81,96 @@ export function reportSharePath(personKey: string, focus?: string): string {
  * @param report 已缓存的报告；为 null 时只出「姓名 · 领域」
  */
 export function personShareTitle(name: string, domain: string, report?: Report | null): string {
-  /*
-   * 空 / 非法领域回落「名人」（分享标题里「张三 · 其他」读起来像句病句），
-   * 其余一律走 domainLabel：已知码给中文标签，自创短词原样展示。
-   */
-  const label = sanitizeDomain(domain) === '' ? '名人' : domainLabel(domain)
-  const head = `${name} · ${label}`
+  const head = `${name} · ${domainText(domain)}`
   /* 钩子优先、简介兜底：两者都是**能在报告里逐条核对**的东西，只是一个说「有多少」，一个说「是谁」 */
   const tail = hookOf(report) || briefOf(report)
   const title = tail ? `${head}｜${tail}` : head
   return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX)}…` : title
+}
+
+/* ===================== 「我在盯的人」分享框（S2-1，2026-10-16） ===================== */
+
+/**
+ * 分享框从「一份报告」升级为「我在盯的人」。
+ *
+ * 为什么值得：此前转发出去的是**一份内容**（`张三 · 科技｜7 处公开争议`），它回答「点开能看什么」，
+ * 但没有回答「为什么是你分享给我的」。而平台上真正稀缺的东西是**关系**：一个人点过关注、
+ * 从此每天被云端扫着风险 —— 这件事本身就是可以分享的信息，也是唯一能顺着人际链走下去的东西。
+ * 分享框写「我在盯」时，对方收到的不是一条广告、而是一个人的判断（社交证明），
+ * 落地页再顺手把「你也可以关注」摆在最前面，链路才是闭环。
+ *
+ * 两条口径：
+ *
+ * 1) **只有分享者本人真的关注了 TA，才敢写「我在盯」**（调用方传 `watched`）。
+ *    没关注的人转发报告，仍然走原来的「一份报告」框 —— 否则是替用户编造关系，
+ *    而这句话对方点开就核对不了（落地页也只能装不知道）。
+ * 2) **标题与落地路径必须成对产出**（`personShare`）：标题说「我在盯」而路径没带 `from=watch`，
+ *    落地页就读不出这是好友分享、给不出那条关注引导 —— 两处分开写迟早会漂移，故收进一个函数。
+ */
+
+/** 「我在盯」分享落地标记（`?from=watch`），落地页据此认人 */
+export const WATCH_FROM = 'watch'
+
+/** 分享落地路径上的标记参数名（与 `focus` / `keyword` 并列，不参与 personKey 与缓存键） */
+const FROM_KEY = 'from'
+
+/**
+ * 「我在盯」的落地路径：与报告分享路径同一个页面，只多一个标记。
+ *
+ * 为什么仍然是报告页（而不是名人主页）：落地页口径全文只有这一条 —— 深度报告是唯一点开
+ * 就看得懂的内容（见文件顶部第 1 条），而这一条的**全部增量**只是「把关注入口提到最前」，
+ * 换页面则要重新回答一遍「点开看到什么」，得不偿失。
+ */
+export function watchSharePath(personKey: string, focus?: string): string {
+  return `${reportSharePath(personKey, focus)}&${FROM_KEY}=${WATCH_FROM}`
+}
+
+/** 落地页判断这次进来的是不是「我在盯」分享（只认这一个值，其余一律按普通分享处理） */
+export function isWatchShare(from: string): boolean {
+  return from === WATCH_FROM
+}
+
+/**
+ * 「我在盯」分享标题：`我在盯张三｜7 处公开争议`。
+ *
+ * 与 `personShareTitle` 的差别只在人头那半句：这里说**分享者的动作**（我在盯），
+ * 后半句一字不改 —— 钩子（可核对的条数）优先、简介兜底，都没有时才补领域。
+ * 补领域是因为「我在盯张三」四个字之外什么都没说：对方既不知道这人是谁，也不知道点开看什么。
+ */
+export function watchShareTitle(name: string, domain: string, report?: Report | null): string {
+  const head = `我在盯${name}`
+  const tail = hookOf(report) || briefOf(report)
+  const title = tail ? `${head}｜${tail}` : `${head} · ${domainText(domain)}`
+  return title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX)}…` : title
+}
+
+/** 一次分享要回给微信的标题与落地路径（成对，见上文第 2 条口径） */
+export interface PersonShare {
+  title: string
+  path: string
+}
+
+export interface PersonShareInput {
+  personKey: string
+  /** 报告未就绪时用路由里解析出来的名字 */
+  name: string
+  domain: string
+  report?: Report | null
+  /** 分享者本人是否关注了这个人才决定分享框：**没关注不许写「我在盯」** */
+  watched?: boolean
+  /** 生成侧重（非 all 时带上，对方点开即落在同一侧重） */
+  focus?: string
+}
+
+/**
+ * 页面分享回调的统一构造口：标题与路径**一起**出来，不可能只改一半。
+ *
+ * 调用方（报告页 / 名人主页）都知道自己有没有关注这个人（跟随关注态实时变），
+ * 于是同一条链接会随关系换框：关注了 →「我在盯」，没关注 →「一份报告」。
+ */
+export function personShare(input: PersonShareInput): PersonShare {
+  const { personKey, name, domain, report, watched, focus } = input
+  return watched
+    ? { title: watchShareTitle(name, domain, report), path: watchSharePath(personKey, focus) }
+    : { title: personShareTitle(name, domain, report), path: reportSharePath(personKey, focus) }
 }

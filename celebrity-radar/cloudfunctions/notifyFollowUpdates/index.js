@@ -291,7 +291,10 @@ exports.main = async () => {
       await cloud.openapi.subscribeMessage.send({
         touser: u._openid,
         templateId: tmplId,
-        page: `pages/report/index?personKey=${encodeURIComponent(lead.personKey)}`,
+        /* ⚠ 分包路径（2026-10-14 起二级页都在 package/ 下）：这里必须与 app.config.ts
+           的 subpackages 一致，写成 `pages/report/index` 用户点开消息会到不了目标页 ——
+           云函数与端上解耦，端上改了路径这边不会报错，只会静默失效（2026-10-16 修）。 */
+        page: `package/report/index?personKey=${encodeURIComponent(lead.personKey)}`,
         miniprogramState: 'formal',
         lang: 'zh_CN',
         data: {

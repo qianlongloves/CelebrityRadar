@@ -2535,6 +2535,29 @@ export function reportShortfall(report: Report, member: boolean): string | null 
   return shortfallVerdict(report, member)?.reason ?? null
 }
 
+/** 「冷门人物」（公开报道很少的长尾人物）的素材条数上限，数值在 config/benefits.ts */
+export const COLD_ITEMS_MAX = REPORT_SOURCE.coldItemsMax
+
+/**
+ * 这份报告的人物算不算「冷门」（S2-3 首建激励，2026-10-16）。
+ *
+ * 判据只用 `report.coverage.items`（端上按检索结果**原样统计**、不经模型改写，与
+ * shortfallVerdict 用的是同一个数、同一句理由：它是这份报告里最可信的一个数）。两个取舍：
+ *
+ *   · **为什么不用热度 / 热榜**：热榜（utils/hot-board.ts）回答的是「谁热」，本来就只收热门的人，
+ *     拿它反推「冷门」等于判「不在榜」——而绝大多数人都不在榜，激励会人人有份，那就不叫激励了。
+ *     素材条数则是**当次生成手上就有**的事实，不必为一个激励再读一次别处的数据。
+ *   · **缺 coverage 的老报告一律不算冷门**（`typeof items !== 'number'` → false）：这是**授予荣誉**
+ *     的判据，宁可少说一句，也不能凭一个缺失字段给出一句兑现不了的说法（同一套「宁可少报」的口径
+ *     见 opinion-store 的 memberTotal）。
+ *
+ * 只影响荣誉与埋点分桶：不参与达标判定（reportShortfall），也不参与任何计费。
+ */
+export function isColdPerson(report: Pick<Report, 'coverage'> | null | undefined): boolean {
+  const items = report?.coverage?.items
+  return typeof items === 'number' && items <= COLD_ITEMS_MAX
+}
+
 /**
  * 不达标的判定结果：`reason` 给日志与页面用，`retryable` 决定页面**劝不劝重试**。
  *

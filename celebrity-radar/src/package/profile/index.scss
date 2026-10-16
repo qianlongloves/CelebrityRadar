@@ -69,6 +69,16 @@
     color: #fff;
   }
 
+  /*
+    「热度」二字用的是全局 .text-secondary（$text-2 灰），那是给浅色底设计的；
+    这一行在紫色渐变头部里（见上方 __info 的 color: #fff），灰字落在紫底上对比度极低，
+    用户反馈「看不清楚」。与上方 `&__meta .text-tertiary` 同一处理：深色头部里反白，
+    只借用它的字号。0.8 而非纯白，是为了让右侧数值（__heat-value，#fff + 600）更靠前。
+  */
+  &__heat .text-secondary {
+    color: rgba(255, 255, 255, 0.8);
+  }
+
   &__heat .heat__bar {
     background: rgba(255, 255, 255, 0.22);
   }
@@ -98,6 +108,63 @@
       background: transparent;
       color: #fff;
       border: 2rpx solid rgba(255, 255, 255, 0.45);
+    }
+  }
+
+  /*
+    ===== 监控风险行（S2-2）=====
+    与上方两枚胶囊按钮同处紫色渐变头部（见 __info），故沿用同一套读法：
+    白描边 + 反白字，不做第三种按钮样式。用一条细分隔线把它和「动作区」分开 ——
+    上面两个是「去哪里看」，这一行是「建立一段长期关系」，不是同一类东西。
+    按钮态用实底白反色（与报告页 __follow--on 一个意思：关系已建立）。
+  */
+  &__monitor {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+    margin-top: 24rpx;
+    padding-top: 24rpx;
+    border-top: 2rpx solid rgba(255, 255, 255, 0.18);
+  }
+
+  &__monitor-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6rpx;
+  }
+
+  &__monitor-title {
+    font-size: 26rpx;
+    font-weight: 600;
+    color: #fff;
+  }
+
+  &__monitor-note {
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.75);
+  }
+
+  &__monitor-btn {
+    flex-shrink: 0;
+    padding: 12rpx 26rpx;
+    border-radius: 999rpx;
+    border: 2rpx solid rgba(255, 255, 255, 0.45);
+    font-size: 24rpx;
+    color: #fff;
+    /* 按钮文案是活的（处理中 / 监控中 / + 监控），不许换行把行高撑开 */
+    white-space: nowrap;
+
+    &--on {
+      background: #fff;
+      border-color: #fff;
+      color: $brand;
+    }
+
+    &--tap {
+      opacity: 0.7;
     }
   }
 

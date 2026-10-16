@@ -909,43 +909,85 @@ exports.main = async (event) => {
     return summary
   }
 
-  // 5. 只推给「已授权风险提醒」的用户；同一个人被多人监控时各自收到一条
+  /*
+   * 5. 只推给「已授权风险提醒」的用户，且**每人本轮最多一条**（2026-10-16 修）。
+   *
+   * ⚠ 这里原先按**名人**推：`for (personKey) → for (watcher)`，于是一个盯了 3 个人的用户
+   *   会在同一轮里被 send 三次 —— 而 `risk_ok` 是**布尔**、一次授权只够一条，第一条发完即复位，
+   *   第 2、3 条**必然** 43101，进 catch 后只落一行 skipped，看起来「一切正常」。
+   *   用户的体感是「我盯了 3 个人，只有一个人的提醒来了」，而日志里没有任何异常。
+   *   同一取舍在另外两条链路上本来就是对的：notifyFollowUpdates 每人一条（`lead` + totalNew 汇总）、
+   *   keywordAlert 每人一条（取本轮新增最多的那个词）。风险链路补齐同一口径。
+   *
+   * 所以先按**用户**聚合，再每人挑一条当正文，剩下的留在预警页（`package/alerts` 看得到全量，
+   * 不必把 N 个人的风险塞进 20 字符的 thing1 里）。
+   */
   const alerters = new Map((await listAll('users', { risk_ok: true })).map((u) => [u._openid, u]))
 
+  /* 挑「本轮该说的那一条」：级别最高 → 媒体发布时间最新 → personKey 兜底。
+     ⚠ 兜底不能省：同级别同（无）发布时间的命中很常见，不稳定排序会让「谁上正文」每次跑都变，
+     正文与用例都会飘。 */
+  const rankOf = (a, b) =>
+    LEVEL_RANK[a.top.level] - LEVEL_RANK[b.top.level] ||
+    String(b.top.published_date || '').localeCompare(String(a.top.published_date || '')) ||
+    String(a.personKey).localeCompare(String(b.personKey))
+
+  const byUser = new Map() // openid -> { u, hits: [{ personKey, view, top }] }
   for (const [personKey, view] of worth) {
     const top = view.signals
       .filter((s) => PUSH_LEVELS.includes(s.level))
       .sort((a, b) => LEVEL_RANK[a.level] - LEVEL_RANK[b.level])[0]
+    if (!top) continue
 
     for (const openid of byPerson.get(personKey).watchers) {
       const u = alerters.get(openid)
       if (!u) continue
-      try {
-        await cloud.openapi.subscribeMessage.send({
-          touser: openid,
-          templateId: tmplId,
-          page: 'pages/alerts/index',
-          miniprogramState: 'formal',
-          lang: 'zh_CN',
-          data: {
-            thing1: { value: clamp(`「${view.name}」出现${top.category_label}类表述：${top.title}`, THING_MAX) },
-            date2: { value: formatDate(new Date()) }
-          }
-        })
-        summary.pushed++
-        /* 一次性订阅：这条用掉了风险模板的授权，立刻复位；否则下次发送必得 43101 */
-        await db.collection('users').doc(u._id).update({ data: { risk_ok: false } })
-      } catch (err) {
-        const msg = String((err && err.errMsg) || (err && err.message) || err)
-        summary.skipped.push({ openid: String(openid).slice(0, 8) + '***', reason: msg })
-        /* 43101 = 用户已取消或授权已消耗；这类失败属正常状态，只记录不告警 */
-        if (/43101|user refuse/i.test(msg)) {
-          await db
-            .collection('users')
-            .doc(u._id)
-            .update({ data: { risk_ok: false } })
-            .catch(() => undefined)
+      if (!byUser.has(openid)) byUser.set(openid, { u, hits: [] })
+      byUser.get(openid).hits.push({ personKey, view, top })
+    }
+  }
+  /* 本轮真正会被打扰的用户数（与 summary.users 不同：后者是「有监控关系命中的用户数」，
+     含没授权、发不出去的人 —— 那个数回答的是「影响面」，这个数回答的是「发了几条」） */
+  summary.pushedUsers = byUser.size
+
+  for (const [openid, { u, hits }] of byUser) {
+    const lead = hits.slice().sort(rankOf)[0]
+    /* ⚠ 多人命中的文案必须**先算长度再定句式**：`thing1` 上限 20 字符，而
+       「N 个监控对象出现风险，最严重：「张三」司法监管」是 21 字 —— 会被 clamp 从**尾部**切掉，
+       切掉的正好是「类别」（最该给用户的信息），用户只看到「…最严重：「乙」…」。
+       所以多人句式压到 17 字起步（3 字姓名也才 19 字），把类别保在前面。 */
+    const text =
+      hits.length > 1
+        ? `${hits.length}人出现风险，最严重「${lead.view.name}」${lead.top.category_label}`
+        : `「${lead.view.name}」出现${lead.top.category_label}类表述：${lead.top.title}`
+
+    try {
+      await cloud.openapi.subscribeMessage.send({
+        touser: openid,
+        templateId: tmplId,
+        /* ⚠ 分包路径（2026-10-14 起二级页都在 package/ 下）：必须与 app.config.ts 的
+           subpackages 一致，写成 `pages/alerts/index` 用户点开消息会到不了目标页（2026-10-16 修） */
+        page: 'package/alerts/index',
+        miniprogramState: 'formal',
+        lang: 'zh_CN',
+        data: {
+          thing1: { value: clamp(text, THING_MAX) },
+          date2: { value: formatDate(new Date()) }
         }
+      })
+      summary.pushed++
+      /* 一次性订阅：这条用掉了风险模板的授权，立刻复位；否则下次发送必得 43101 */
+      await db.collection('users').doc(u._id).update({ data: { risk_ok: false } })
+    } catch (err) {
+      const msg = String((err && err.errMsg) || (err && err.message) || err)
+      summary.skipped.push({ openid: String(openid).slice(0, 8) + '***', reason: msg })
+      /* 43101 = 用户已取消或授权已消耗；这类失败属正常状态，只记录不告警 */
+      if (/43101|user refuse/i.test(msg)) {
+        await db
+          .collection('users')
+          .doc(u._id)
+          .update({ data: { risk_ok: false } })
+          .catch(() => undefined)
       }
     }
   }

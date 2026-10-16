@@ -182,6 +182,59 @@
     text-decoration: underline;
   }
 
+  /* ===== 好友分享落地条（S2-1）=====
+     白底 + 品牌色描边：它正上方是侧重提示条（品牌浅底）、正下方是人物横幅（品牌渐变底），
+     夹在两条紫色之间再用紫底就糊成一片，白底反而是这三条里最跳的。 */
+  &__invite {
+    display: flex;
+    align-items: center;
+    gap: 16rpx;
+    margin: 16rpx 32rpx 0;
+    padding: 18rpx 22rpx;
+    border: 2rpx solid $brand;
+    border-radius: $radius-md;
+    background: #fff;
+  }
+
+  &__invite-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4rpx;
+  }
+
+  /* 人名长度不可控（两个字段都会带名字）：两条都单行省略，绝不换行撑高度 */
+  &__invite-title {
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $text-1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__invite-note {
+    font-size: 22rpx;
+    color: $text-2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__invite-btn {
+    flex-shrink: 0;
+    padding: 10rpx 26rpx;
+    border-radius: 999rpx;
+    background: $brand;
+    color: #fff;
+    font-size: 24rpx;
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
   &__title-row {
     display: flex;
     align-items: center;
@@ -353,6 +406,14 @@
     display: flex;
     align-items: flex-start;
     gap: 12rpx;
+  }
+
+  /* 冷门首建（S2-3，2026-10-16）：同一张提示条，只加厚一档底色 + 收一道描边，
+     让它在同一位置「看起来像一份回报」而不是又一条说明 —— 不为一条荣誉再引一种组件。
+     底色/描边都取品牌色的低透明度值：荣誉是这一页里的重音，不是第二个视觉体系。 */
+  &__diff--first {
+    background: rgba(135, 100, 255, 0.12);
+    border: 2rpx solid rgba(135, 100, 255, 0.3);
   }
 
   &__diff-main {
@@ -1199,6 +1260,75 @@
     color: $brand;
   }
 
+  /* ── S3-3 免费速览（2026-10-16）：每节能看多少条那一层分档 ─────────────────── */
+
+  /* 截断处那行「还有 N 条」。
+     必须**就地**写在被截断的列表下面 —— 静默少几条，免费用户读到的会是「这个人的资料
+     就这么多」，那是在骗人；写明「还有 N 条」，读到的才是「我拿到的是速览」。
+     整行可点（落到会员中心）：它是这一档看不到的量，也就是最该被点到的那一行。 */
+  &__preview-note {
+    display: block;
+    margin-top: 16rpx;
+    padding-top: 14rpx;
+    border-top: 1rpx dashed $line;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $brand;
+  }
+
+  /* 会员节的锁态卡（免费档**就地**占住它本来该在的位置）。
+     一张 7 次出现的卡，不能做成实心重卡 —— 那会把免费报告压成「到处是墙」；
+     但也绝不能藏起来：藏了用户只会以为没有这个功能，而不是发现这是会员能力。
+     故取「虚线边 + 轻底色」：比正文卡轻一档，但一眼看得出「这里还有一节」。 */
+  &__locked {
+    border-style: dashed;
+    border-color: $brand-soft;
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  &__locked-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  &__locked-tag {
+    flex-shrink: 0;
+    margin-right: 12rpx;
+    padding: 2rpx 10rpx;
+    border-radius: 6rpx;
+    background: $brand-soft;
+    font-size: 18rpx;
+    line-height: 1.5;
+    color: $brand;
+  }
+
+  &__locked-label {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  /* 这一节讲什么（模板 lockedNote）：只写「是什么」，不写这人的任何具体信息 */
+  &__locked-note {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+  }
+
+  &__locked-go {
+    display: block;
+    margin-top: 12rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $brand;
+  }
+
   /* ===== 第二批：结构化事实条目（人物档案 / 关系图谱 / 商业合作 / 争议与回应 / 名词解释） =====
      五张卡的数据形态不同（字段-值 / 人名-关系 / 品牌-类别 / 争议-回应 / 词-释义），
      但排版语言统一为三层：主行 → 说明 → 依据。
@@ -1281,6 +1411,33 @@
     color: $text-3;
     /* 与 __point-basis 同款：出处里的长 URL / 长英文串不折行会溢出（见 __table-basis） */
     word-break: break-word;
+  }
+
+  /*
+    「盯这条进展」（S1-1，2026-10-16）：争议条目上的延伸动作，与 __entry-tag 同一套胶囊语言。
+    两态必须一眼分得开 —— 描边=可点（还没盯），实底=已是现状（已经盯了），
+    这正好也是 __entry-tag（只读标签）的底色：识别出「这是状态而不是按钮」。
+    刻意 inline-block 不铺满整行：它是附注级动作，不该抢争议正文的注意力。
+  */
+  &__watch {
+    display: inline-block;
+    margin-top: 12rpx;
+    padding: 2rpx 18rpx;
+    /* 描边用 $brand-soft（中紫）而不是 $brand-weak：后者太浅，在白卡上几乎看不出边，
+       而这一态的**全部**信息就是「这里可以点」 */
+    border: 2rpx solid $brand-soft;
+    border-radius: 999rpx;
+    background: transparent;
+    color: $brand-dark;
+    font-size: 22rpx;
+    line-height: 1.7;
+
+    /* 已盯态：去掉描边、换浅紫实底 —— 与只读的 __entry-tag 同族，读作「状态」而非「按钮」 */
+    &--on {
+      border-color: transparent;
+      background: $brand-weak;
+      color: $brand-dark;
+    }
   }
 
   /* ===== 语录主题：主题词 + 条数 + 代表原文（比语录卡低一级的字号，避免喧宾夺主） ===== */
@@ -1704,10 +1861,51 @@
     line-height: 1.4;
   }
 
+  /*
+    同类名人（S1-2）的第二行是**动态速览**（榜单里的动态标题），不是「共同话题」那种短词，
+    长度不可控。不省略的话，某一条长标题会把这一行的行高撑成两行，
+    同一块里其他行跟着错位（且只有那一条错）。这里压成单行省略。
+  */
+  &__related-words--peer {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
   &__related-arrow {
     flex-shrink: 0;
     color: $brand-soft;
     font-size: 26rpx;
+  }
+
+  /*
+    关注（S1-2）：页尾推荐位上的小胶囊，与顶部横幅的「+ 关注」是同一件事，
+    但**不共用样式** —— 那个是横幅里的主按钮，这个是行内附注级动作，尺寸不同。
+    两态沿用本站一贯的语汇：描边=可点，实底=已成现状（与 __watch 同源）。
+  */
+  &__peer-follow {
+    flex-shrink: 0;
+    padding: 4rpx 20rpx;
+    border: 2rpx solid $brand-soft;
+    border-radius: 999rpx;
+    color: $brand-dark;
+    font-size: 22rpx;
+    line-height: 1.6;
+
+    &--tap {
+      opacity: 0.7;
+    }
+
+    &--on {
+      border-color: transparent;
+      background: $brand-weak;
+      color: $brand-dark;
+    }
+
+    /* 提交中：只降透明度，不换文案 —— 换文案会让按钮宽度跳一下，挤动整行 */
+    &--busy {
+      opacity: 0.5;
+    }
   }
 
   /* 首屏问答入口（--hero）：实心品牌色 —— 它是首屏最重的那个动作，

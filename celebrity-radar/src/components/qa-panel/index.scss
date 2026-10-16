@@ -325,6 +325,26 @@ $qa-icon-pdf-off: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy5
     flex-shrink: 0;
   }
 
+  /*
+    加载态的两处配平（2026-10-16）。AtButton 的 loading 为真时会往按钮里塞一枚转圈
+    （`.at-button__icon` + AtLoading，见 taro-ui/dist/components/button）：
+    ① 宽度：不锁住的话按钮会从「发送」两个字宽撑到「转圈 + 文字」宽，左侧输入框被挤窄、
+       整条输入行跟着抖一下。132rpx ≈ 转圈 30 + 间距 12 + 文字 56 + 左右 padding 32 再加余量，
+       让两种状态同宽。
+    ② 间距：taro-ui 给图标左右各留 20px（= 40rpx，见 button.scss 的 .at-button__icon），
+       在这么小的圆按钮上过宽。
+    选择器写到三级（.qa-panel__send.at-button.at-button--small）是为了稳过 taro-ui 自带的
+    `.at-button--small`（0,1,0），不靠「谁写在后面」这种一改就崩的巧合 —— 同 components/person-card。
+  */
+  &__send.at-button.at-button--small {
+    min-width: 132rpx;
+  }
+
+  &__send .at-button__icon {
+    /* 2PX 是物理像素（Taro 只转换小写 px）：与 taro-ui 原值一致，仅用于图标与文字的基线对齐 */
+    margin: 2PX 12rpx 0 0;
+  }
+
   /* 报告图标（2026-10-12）：输入框左侧一键跳回报告页。
      有报告：红色 PDF 图标、可点；直连态（无报告）：同一枚图标置灰，点一下说明「未基于报告素材」。
      只承载图标本身，不加底色 / 描边 —— 颜色即状态（见文件顶部的 $qa-icon-pdf-*）。 */

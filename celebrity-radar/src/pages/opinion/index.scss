@@ -99,6 +99,75 @@
     color: $brand;
   }
 
+  /* ===== 冷启动推荐卡（S1-4 / 决策 D2，2026-10-16）=====
+     类名独立于 __more：那个类名被用例钉死为「全页只剩事件卡一处」，复用会弄坏那个形态锁。
+     整卡的取舍见 utils/opinion-pick.ts 文件头。 */
+  &__pick-close {
+    flex-shrink: 0;
+    font-size: 24rpx;
+    color: $text-3;
+  }
+
+  /* 来源说明、代价说明、出口提示都用它（这一句是「点之前必须读到」的） */
+  &__pick-note {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-3;
+
+    /* 建立失败就地一行：本页不引入弹窗，长文案（集合没建 / 权限不对）走这里全文显示 */
+    &--error {
+      color: $danger;
+    }
+  }
+
+  &__pick-list {
+    margin-top: 8rpx;
+  }
+
+  &__pick-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16rpx 0;
+    border-top: 1rpx solid $line;
+  }
+
+  &__pick-main {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+  }
+
+  &__pick-name {
+    font-size: 28rpx;
+    font-weight: 500;
+    color: $text-1;
+  }
+
+  &__pick-meta {
+    margin-top: 4rpx;
+    font-size: 22rpx;
+    color: $text-3;
+  }
+
+  /* 一键建立监控：整行右侧的胶囊按钮，点击区域独立于左半边的「进主页」 */
+  &__pick-add {
+    flex-shrink: 0;
+    padding: 8rpx 22rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 24rpx;
+
+    &--busy {
+      background: $line;
+      color: $text-3;
+    }
+  }
+
   /* 卡头右侧动作组（事件卡）：筛选开关 + 「查看全部 ›」并排，不挤左侧标题 */
   &__head-actions {
     display: flex;

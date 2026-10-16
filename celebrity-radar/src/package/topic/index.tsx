@@ -15,6 +15,7 @@ import EmptyState from '@/components/empty-state'
 import Skeleton from '@/components/skeleton'
 import PersonAvatar from '@/components/person-avatar'
 import { readPortraits } from '@/utils/portrait'
+import { decodeParam } from '@/utils/route'
 import './index.scss'
 
 /**
@@ -37,14 +38,14 @@ import './index.scss'
  */
 export default function Topic() {
   const router = useRouter()
-  const topic = useMemo(() => decodeURIComponent(router.params.topic || ''), [router.params.topic])
+  const topic = useMemo(() => decodeParam(router.params.topic || ''), [router.params.topic])
   /** 锚点名人：用户是从 TA 的报告页点进来的，聚合时优先保住这一份 */
   const anchorKey = useMemo(
-    () => decodeURIComponent(router.params.personKey || ''),
+    () => decodeParam(router.params.personKey || ''),
     [router.params.personKey]
   )
   /** 显式来源（预警页等外部入口传），空则由锚点推断 —— 埋点里两者都不丢 */
-  const from = useMemo(() => decodeURIComponent(router.params.from || ''), [router.params.from])
+  const from = useMemo(() => decodeParam(router.params.from || ''), [router.params.from])
   /**
    * 1 个字的说法不值得开一页：词表口径本来就只收 ≥2 字（utils/keywords.ts 的 MIN_LEN），
    * 预警页的关键词是用户手输的、不受这条约束，所以这里按同一门槛兜一道。

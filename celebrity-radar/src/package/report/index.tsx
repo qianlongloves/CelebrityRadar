@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import Taro, { useDidShow, useRouter, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
-import { DOMAIN_COVERAGE_TEXT, domainLabel, domainStyleCode } from '@/config/domains'
+import { buildPersonKey, DOMAIN_COVERAGE_TEXT, domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { FOCUS_META, FocusCode, isFocusCode } from '@/config/filters'
 import EmptyState from '@/components/empty-state'
 import NoticeClose from '@/components/notice-close'
@@ -27,7 +27,15 @@ import { hasLlmChannel } from '@/utils/llm'
 import { Report, backgroundGaps, reportGist } from '@/utils/report'
 import { buildComparison } from '@/utils/compare'
 import { buildRiskSignals, riskHeadline, riskScope, RISK_CATEGORIES, RISK_CATEGORY_LABEL, RISK_FROM_LABEL } from '@/utils/risk'
-import { TEMPLATE_SIZE, buildReportToc, buildReportTocGroups, lockedReportToc } from '@/utils/report-toc'
+import {
+  TEMPLATE_SIZE,
+  REPORT_TEMPLATE,
+  buildReportToc,
+  buildReportTocGroups,
+  lockedReportToc,
+  previewRows,
+  previewHiddenNote
+} from '@/utils/report-toc'
 import { buildCommercialSummary, MIN_AXES } from '@/utils/commercial'
 import {
   favoriteQuote,
@@ -36,9 +44,21 @@ import {
   makeFavoriteId,
   removeFavorite
 } from '@/utils/favorites'
-import { isFollowed, toggleFollow } from '@/utils/follows'
-import { isMonitored, listPersonWatches, monitorPerson, unmonitorPerson } from '@/utils/risk-watch'
+import { isFollowed, listFollows, toggleFollow } from '@/utils/follows'
+import { loadHotBoard } from '@/utils/hot-board'
+import { isMonitored, monitorPerson, unmonitorPerson } from '@/utils/risk-watch'
+import {
+  addWatch,
+  listWatches,
+  normalizeKeyword,
+  removeWatch,
+  splitWatches,
+  validateKeyword
+} from '@/utils/keyword-alert'
+import { alertNotifyConfigured, requestAlertNotify } from '@/utils/notify'
+import { track } from '@/utils/events'
 import { addHistory } from '@/utils/history'
+import { decodeParam } from '@/utils/route'
 import { ensurePortrait, readPortraits } from '@/utils/portrait'
 import {
   dismissPromo,
@@ -49,13 +69,22 @@ import {
   readMemberState,
   reportMemberPromo
 } from '@/utils/member'
-import { personShareTitle, reportSharePath } from '@/utils/share'
+import { isWatchShare, personShare, reportSharePath } from '@/utils/share'
 import {
   buildReportCard,
   canExportReportCard,
   reportExportNote,
   ReportCardModel
 } from '@/utils/report-card'
+import {
+  buildReportExport,
+  canExportReport,
+  EXPORT_FORMATS,
+  exportFileName,
+  reportDataExportNote,
+  ExportKind,
+  ReportExport
+} from '@/utils/report-export'
 import { renderReportPoster, reportCardHeight } from '@/utils/share-card'
 import { openSourceLink } from '@/utils/source-link'
 import { toUserMessage } from '@/utils/error'
@@ -240,6 +269,65 @@ async function loadRelated(self: Report): Promise<RelatedPerson[]> {
   return scored.sort((a, b) => b.total - a.total).slice(0, RELATED_MAX)
 }
 
+/* ===== 同类名人（S1-2）===== */
+
+/** 展示上限：与相关名人一样取 3 —— 页尾这块只回答「下一本读谁」，多于 3 位就成了新的一屏 */
+const PEER_MAX = 3
+
+interface PeerPerson {
+  personKey: string
+  name: string
+  domain: string
+  /** 领域标签（榜单条目自带，缺省是领域名） */
+  tag: string
+  /** 一句动态速览（榜单条目自带，可能为空串） */
+  trend: string
+  followed: boolean
+}
+
+/**
+ * 「同类名人」= 与本报告**同领域**的其他名人（S1-2，2026-10-16）。
+ *
+ * 为什么要有它：上面的「相关名人」用的是**共同话题**，精准但条件苛刻 —— 交集为空就整块不渲染，
+ * 而没收藏过报告的人连候选都没有（`picked.length === 0` 直接返回）。新用户读完报告，
+ * 页尾因此什么都没有，动线到此为止。这一块改用**领域**兜底：只要有榜单就一定有内容。
+ *
+ * 不新造链路：复用首页那套现成的热门榜（`utils/hot-board.ts`，AI 每日榜 → 真实热度 →
+ * 静态种子三级兜底、带 5 分钟内存缓存、**永不 reject**）。排序也沿用榜单顺序（数组顺序即排名），
+ * 端上不重排 —— 榜单是「当下谁在被关注」的唯一真源。
+ *
+ * 领域只做**相等**判断、不做任何映射：领域自 2026-10-12 起是自由短串，映射表一改，
+ * 这里就会悄悄换成另一批人，而且不报任何错。
+ */
+async function loadPeers(self: Report, exclude: Set<string>): Promise<PeerPerson[]> {
+  const parsed = parsePersonKey(self.personKey)
+  const domain = parsed ? parsed.domain : ''
+  /* 'other' 是「领域没填上」的兜底桶（见 loadRelated 里 split 的默认值）：
+     那一桶里的人彼此没有关系，凑在一起就是随机推荐，不如不推荐 */
+  if (domain === '' || domain === 'other') return []
+
+  const board = await loadHotBoard()
+  const picked = board
+    .filter((p) => p.domain === domain && !exclude.has(buildPersonKey(p.name, p.domain)))
+    .slice(0, PEER_MAX)
+  if (picked.length === 0) return []
+
+  /* 关注态一次读全表（与预警页同款做法）：3 个人各查一次 isFollowed 就是三次往返 */
+  const follows = await listFollows()
+  const followedKeys = new Set(follows.map((f) => f.person_key))
+  return picked.map((p) => {
+    const personKey = buildPersonKey(p.name, p.domain)
+    return {
+      personKey,
+      name: p.name,
+      domain: p.domain,
+      tag: p.tag,
+      trend: p.trend,
+      followed: followedKeys.has(personKey)
+    }
+  })
+}
+
 /** 日期倒序（缺日期的排最后）：模型返回顺序不保证，最新动态应排最前 */
 function byDateDesc(a: string, b: string): number {
   if (!a) return 1
@@ -333,6 +421,41 @@ function SectionTable({
   )
 }
 
+/**
+ * S3-3 锁态卡：免费档把**会员节原本该在的位置**占住（就地，插在正文流里）。
+ *
+ * 与目录底部那行「完整模板 18 节 · 会员另含 7 节」是两种补法，缺一不可：
+ * 那行要展开目录才看得到（多数人不点），而免费用户滑到正文这里只会觉得「报告到底了」。
+ * 锁态卡把「这里还有一节」放在它本来该在的位置 —— 这是免费 / 会员观感差异的主要来源。
+ *
+ * 口径：
+ *   · 节名与说明**都取自** `utils/report-toc.ts` 的模板真源（`label` / `lockedNote`），
+ *     页面不另抄 —— 否则模板改了节名，锁态卡还印着旧词；
+ *   · **不渲染任何内容片段**：免费用户读到的是锁，不是半份内容（`lockedNote` 只写
+ *     「这一节讲什么」，不写条数、不写这人的任何具体信息）；
+ *   · 出现条件由调用方用 `lockedIds`（=`lockedReportToc` 的 id 集合）判断，
+ *     与目录那行永远同一份条件；会员根本不进这张卡。
+ */
+function LockedCard({ id, onOpen }: { id: string; onOpen: () => void }) {
+  const sec = REPORT_TEMPLATE.find((s) => s.id === id)
+  if (!sec) return null
+  return (
+    <View
+      id={id}
+      className='card page-report__locked'
+      hoverClass='page-report__locked--tap'
+      onClick={onOpen}
+    >
+      <View className='page-report__locked-head'>
+        <Text className='page-report__locked-tag'>会员</Text>
+        <Text className='page-report__locked-label'>{sec.label}</Text>
+      </View>
+      {!!sec.lockedNote && <Text className='page-report__locked-note'>{sec.lockedNote}</Text>}
+      <Text className='page-report__locked-go'>开通会员查看这一节 ›</Text>
+    </View>
+  )
+}
+
 export default function ReportPage() {
   const router = useRouter()
   /**
@@ -340,8 +463,8 @@ export default function ReportPage() {
    * 塞不下 personKey 加别的参数），值是 URL 编码后的 personKey（见 utils/share-code.ts）。
    * 两种入口取到的都是同一个人，故与 personKey 合并成一个来源，其余逻辑一行不用改。
    */
-  const sceneKey = decodeURIComponent(router.params.scene || '')
-  const personKey = decodeURIComponent(router.params.personKey || '') || sceneKey
+  const sceneKey = decodeParam(router.params.scene || '')
+  const personKey = decodeParam(router.params.personKey || '') || sceneKey
   /** 发现页「关注」筛选（生成侧重，§2.3 六段可聚焦） */
   const focusParam = router.params.focus || 'all'
   const focus: FocusCode = isFocusCode(focusParam) ? focusParam : 'all'
@@ -353,7 +476,15 @@ export default function ReportPage() {
    * 缺失 / 空串时**与改造前逐字一致**：下方以 `keywordParam || undefined` 传入，等价于「不传该可选形参」，
    * getOrBuildReport 内部即按「没有关键词」走（见 utils/search-plan.ts#applyKeyword 对空值的处理）。
    */
-  const keywordParam = decodeURIComponent(router.params.keyword || '')
+  const keywordParam = decodeParam(router.params.keyword || '')
+  /**
+   * 「我在盯的人」分享落地标记（S2-1，2026-10-16）。
+   *
+   * 与 focus / keyword 同路：**只是这一次的读法，不进 personKey、不进缓存键** ——
+   * 同一个人全站始终只有一份报告，标记只决定「首屏要不要把关注入口提到最前」。
+   * 认不出的一律当普通分享（`isWatchShare` 只认 `'watch'` 一个值）。
+   */
+  const watchArrival = isWatchShare(decodeParam(router.params.from || ''))
   const [state, setState] = useState<PageState>({ phase: 'loading' })
   /**
    * 「手上已经有一份能读的报告」——供 `load` 判断这次 force 能不能不清屏。
@@ -397,10 +528,32 @@ export default function ReportPage() {
   /** 已收藏的内容 id（名言 / 动态 / 履历节点三类共用；整份报告单独用 reportFaved） */
   const [favedIds, setFavedIds] = useState<Set<string>>(new Set())
   const [followed, setFollowed] = useState(false)
+  /**
+   * 关注态是否**已经读过一次**（S2-1）。
+   *
+   * 初值是 `false`（没关注），所以「好友分享落地条」不能直接判 `!followed` ——
+   * 已经关注了 TA 的人点开自己分享出去的链接，会先看到一秒钟「朋友在盯 TA，点这里关注」，
+   * 然后才被读库结果纠正。这条浮层本来就是要抢第一眼的，闪一下反而最刺眼。
+   * 故落地条等这一次读完再渲染（读取失败 / 未登录也照样算读过：那不阻塞引导）。
+   */
+  const [followRead, setFollowRead] = useState(false)
   /** 是否在「监控此人」（风险信号订阅，见 utils/risk-watch.ts）；与关注相互独立 */
   const [monitored, setMonitored] = useState(false)
   /** 监控按钮提交中：防止连点写出两行（后一个会撞主键） */
   const [monitorBusy, setMonitorBusy] = useState(false)
+  /**
+   * 已在监测的**词**（S1-1，2026-10-16）：驱动「争议与回应」每条旁边的「盯这条进展」按钮态。
+   *
+   * 存集合而不是一个布尔：「盯进展」是**逐条**的（一份报告可能有三四条争议，各自独立），
+   * 且它与「监控此人」是两套独立额度、同住 keyword_watches 表（靠 type 区分，见 utils/keyword-alert.ts）。
+   */
+  const [watchedKeywords, setWatchedKeywords] = useState<Set<string>>(new Set())
+  /** 正在提交的那一条（存词，不存布尔）：只把被点的那条置忙，其余条目照常可点 */
+  const [watchBusy, setWatchBusy] = useState<string | null>(null)
+  /** 同类名人（S1-2）：仅在「相关名人」为空时才有值（见下方 effect 里的取舍） */
+  const [peers, setPeers] = useState<PeerPerson[]>([])
+  /** 正在提交关注的那位（存 personKey）：只把被点的那位置忙，其余照常可点 */
+  const [peerBusy, setPeerBusy] = useState<string | null>(null)
   /** 上一版报告：仅当用户点「刷新最新」且真的重新生成了才有值 */
   const [prevReport, setPrevReport] = useState<Report | null>(null)
   /**
@@ -431,6 +584,12 @@ export default function ReportPage() {
    * 只驱动下面那条说明（为什么要说这句，见渲染处的注释）—— 不是任何判定的输入。
    */
   const [firstBuild, setFirstBuild] = useState(false)
+  /**
+   * 本次首建的人物还是**冷门**（公开报道很少的长尾人物，S2-3，2026-10-16）。
+   * 判据在 utils/report.ts#isColdPerson（写在缓存层而不是这一页：交给页面的必须是
+   * **与埋点同一个判定**的结果，否则「埋点说冷门、页面说不是」这类分歧没人能发现）。
+   */
+  const [coldFirstBuild, setColdFirstBuild] = useState(false)
 
   /**
    * 本页可关闭的提示条条目名。
@@ -501,8 +660,14 @@ export default function ReportPage() {
    * 面板拿到的永远是一份「可以出图」的内容。
    */
   const [posterCard, setPosterCard] = useState<ReportCardModel | null>(null)
-  /** 免费用户点过「导出报告长图」：页面上多一行升级引导（不弹窗，不打断阅读） */
-  const [exportGuide, setExportGuide] = useState(false)
+  /**
+   * 免费用户点过导出：页面上多一行升级引导（不弹窗，不打断阅读）。
+   *
+   * ⚠ 记的是**哪一个**出口被点了（'card' 长图 / 'data' 结构化数据），不是布尔：
+   * 两个出口带走的东西不同（一张图 vs 一份可核对的数据），引导语也必须不同（S3-1）。
+   * 用同一句话会让用户以为点哪个都一样。
+   */
+  const [exportGuide, setExportGuide] = useState<'' | 'card' | 'data'>('')
   /**
    * 本机生成的真实进度（2026-10-11）：由 `getOrBuildReport` 的 onProgress 透传，喂给等待动画。
    *
@@ -544,6 +709,7 @@ export default function ReportPage() {
       setShortfall(null)
       setShortfallRetryable(false)
       setFirstBuild(false)
+      setColdFirstBuild(false)
       setMemberLocked([])
       /* 新一轮的刷新结果条要能被看到：把上一轮「已关」的记忆整体清掉（见 closedNotices 注释） */
       setClosedNotices({})
@@ -583,6 +749,7 @@ export default function ReportPage() {
           setShortfall(outcome.shortfall ?? null)
           setShortfallRetryable(outcome.shortfallRetryable === true)
           setFirstBuild(outcome.firstBuild === true)
+          setColdFirstBuild(outcome.coldFirstBuild === true)
           setMemberLocked(outcome.memberLocked ?? [])
           /* 降级警示条若是这版才出的，已由上面 load 开头的整体复位放行（见 closedNotices 注释） */
           setRefreshError(failureNote)
@@ -662,14 +829,15 @@ export default function ReportPage() {
   }, [state.phase, load])
 
   /**
-   * 相关名人（O-16）：放在报告就绪之后而不是与 load 并发 —— 它要拿当前报告的关键词做交集，
-   * 没有报告就没有比对基准。算不出来（没收藏过报告 / 交集为空 / 读失败）就是空数组，
-   * 页面因此不会出现一块「加载中的相关名人」（这块内容不值得一个骨架屏）。
+   * 相关名人（O-16）+ 同类名人（S1-2）：放在报告就绪之后而不是与 load 并发 —— 前者要拿
+   * 当前报告的关键词做交集，没有报告就没有比对基准。算不出来（没收藏过报告 / 交集为空 /
+   * 读失败）就是空数组，页面因此不会出现一块「加载中的推荐」（这块内容不值得一个骨架屏）。
    */
   useEffect(() => {
     const rep = state.phase === 'ready' ? state.report : null
     if (!rep) {
       setRelated([])
+      setPeers([])
       return
     }
     /*
@@ -678,11 +846,25 @@ export default function ReportPage() {
      */
     void ensurePortrait(rep.personKey, rep.name)
     let alive = true
-    void loadRelated(rep).then((rows) => {
+    void loadRelated(rep).then(async (rows) => {
       if (!alive) return
       setRelated(rows)
       /* 延伸阅读是一组人：一次批量读预热内存缓存，避免每行各打一次云函数 */
-      if (rows.length > 0) void readPortraits(rows.map((r) => r.personKey))
+      if (rows.length > 0) {
+        void readPortraits(rows.map((r) => r.personKey))
+        return
+      }
+      /*
+       * 同类名人（S1-2）只在「相关名人」为空时才取，两个理由：
+       *   1. 两者回答的是同一个问题（接下来读谁），连着摆两串人只会让用户在两串之间再挑一遍；
+       *      共同话题是更强的相似信号，所以它优先，领域只用来兜底；
+       *   2. 顺带省掉这次读榜 —— 有收藏的用户根本走不到这一支（`loadHotBoard` 要读
+       *      hot_board，缺榜时还会扫一批 report_cache 兜底，不该白读）。
+       */
+      const fallback = await loadPeers(rep, new Set([rep.personKey]))
+      if (!alive) return
+      setPeers(fallback)
+      if (fallback.length > 0) void readPortraits(fallback.map((p) => p.personKey))
     })
     return () => {
       alive = false
@@ -712,20 +894,76 @@ export default function ReportPage() {
    * 显示「已关注」的僵尸按钮。
    */
   useDidShow(() => {
-    if (!personKey || !useAuth.getState().userId) return
-    void isFollowed(personKey).then(setFollowed)
+    /* 未登录 = 「没有关注关系」这一事实已确定，同样要放行落地条（见 followRead 的注释） */
+    if (!personKey || !useAuth.getState().userId) {
+      setFollowRead(true)
+      return
+    }
+    void isFollowed(personKey).then(
+      (f) => {
+        setFollowed(f)
+        setFollowRead(true)
+      },
+      /* 读失败按「没关注」处理并放行：这里只是引导条的一道理性检查，不值得为它挡住用户 */
+      () => setFollowRead(true)
+    )
     /* 监控态与关注态一起同步：用户可能刚在预警页取消监控（本页实例还在、personKey 没变），
-       只在别处读一次会留下一个显示「监控中」的僵尸按钮 */
-    void listPersonWatches().then((rows) => setMonitored(isMonitored(rows, personKey)))
+       只在别处读一次会留下一个显示「监控中」的僵尸按钮。
+       「盯进展」的词态（S1-1）取同一份数据：两种订阅同住 keyword_watches，读一次拆两用
+       （原先调 listPersonWatches()，而它内部本来就是「读全表再拆」—— 两个态就是两次读库）。 */
+    void listWatches().then((rows) => {
+      const { keywords, persons } = splitWatches(rows)
+      setMonitored(isMonitored(persons, personKey))
+      setWatchedKeywords(new Set(keywords.map((w) => w.keyword)))
+    })
   })
 
-  /** 关注 / 取关。报告页此前没有关注入口，看完报告想关注必须退回名人主页，动线是断的。 */
-  const onToggleFollow = async () => {
-    const next = await toggleFollow(personKey, 'report')
+  /**
+   * 好友分享落地的埋点（S2-1）：**每个页面实例只报一次**。
+   *
+   * 为什么用 ref 而不是把它塞进下面某个 effect 的依赖：`personKey` 不变、`watchArrival` 不变，
+   * 但本页会在返回 / 刷新时重新渲染很多次，靠依赖数组去重迟早会漏（或反过来永远不重报）。
+   * 它要回答的是「这条入口带来了多少人」，一人一次才对得上。
+   */
+  const arrivalTrackedRef = useRef(false)
+  useEffect(() => {
+    if (arrivalTrackedRef.current || !watchArrival || !personKey) return
+    arrivalTrackedRef.current = true
+    track('watch_share_arrive', { personKey })
+  }, [watchArrival, personKey])
+
+  /**
+   * 关注 / 取关。报告页此前没有关注入口，看完报告想关注必须退回名人主页，动线是断的。
+   *
+   * `source` 只进埋点（`'report'` = 横幅按钮，`'watch_share'` = 好友分享落地条，S2-1）：
+   * 写库口径仍然只有 `toggleFollow` 一份 —— 拆成两个函数才会出现
+   * 「一边能取关、另一边报操作失败」这种分裂。
+   */
+  const onToggleFollow = async (source = 'report') => {
+    const next = await toggleFollow(personKey, source)
     /* null = 失败或未登录：follows.ts 已给出原因 toast，不更新按钮态 */
     if (next === null) return
     setFollowed(next)
     Taro.showToast({ title: next ? '已关注' : '已取消关注', icon: 'none' })
+  }
+
+  /**
+   * 关注页尾推荐的同类名人（S1-2）。与关注本人只差埋点来源，其余全部复用
+   * `toggleFollow`：关注态、失败提示、写库口径都只有一份（两处各写一遍，才会出现
+   * 一边能取关、另一边报「操作失败」这种分裂）。
+   */
+  const onTogglePeerFollow = async (p: PeerPerson) => {
+    if (peerBusy) return
+    setPeerBusy(p.personKey)
+    const next = await toggleFollow(p.personKey, 'report_peer')
+    setPeerBusy(null)
+    if (next === null) return
+    setPeers((prev) => prev.map((x) => (x.personKey === p.personKey ? { ...x, followed: next } : x)))
+    /* 说清关注之后去哪儿找 TA：关注本身不推送，动态要回「关注动态」页汇总看 */
+    Taro.showToast({
+      title: next ? `已关注${p.name}，动态可在「关注动态」页查看` : `已取消关注${p.name}`,
+      icon: 'none'
+    })
   }
 
   /**
@@ -820,7 +1058,7 @@ export default function ReportPage() {
         cancelText: '再想想',
         success: async (r) => {
           if (!r.confirm) return
-          const ok = await unmonitorPerson(personKey)
+          const ok = await unmonitorPerson(personKey, 'report')
           if (ok) {
             setMonitored(false)
             Taro.showToast({ title: '已取消监控', icon: 'none' })
@@ -830,7 +1068,7 @@ export default function ReportPage() {
       return
     }
     setMonitorBusy(true)
-    const res = await monitorPerson(personKey, name)
+    const res = await monitorPerson(personKey, name, 'report')
     setMonitorBusy(false)
     if (res.ok) {
       setMonitored(true)
@@ -842,6 +1080,101 @@ export default function ReportPage() {
        对权限类失败的处理）。其余失败（断网 / 超时）仍是一句 toast 让用户重试。 */
     if (res.fatal) {
       await Taro.showModal({ title: '监控没能开启', content: res.message, showCancel: false, confirmText: '知道了' })
+      return
+    }
+    Taro.showToast({ title: res.message, icon: 'none' })
+  }
+
+  /**
+   * 「盯这条进展」（S1-1，2026-10-16）。
+   *
+   * 盯的是**这条争议的后续报道**，与「监控此人」互补，不是它的替代：
+   *   · 监控此人 = 每天按人检索一次、命中风险词典（司法 / 税务 / 商业 / 名誉）才写信号，
+   *     回答的是「这个人整体有没有出事」；
+   *   · 盯这条   = 把争议点当作**监测词**，回答的是「这桩事后来怎么样了」——
+   *     后者单靠人名检索会淹在全部报道里，而它恰恰是用户读完争议卡最想知道的那件事。
+   *
+   * 实现上不新造链路：`addWatch` 写的仍是 keyword_watches 的 `type='keyword'` 行，
+   * 与预警页手动加词共用同一份额度（分档见 config/benefits.ts#OPINION_LIMITS）、
+   * 同由云函数 keywordAlert 每天 09:20 扫描 —— 用户也能在预警页看到并取消。
+   *
+   * 只做争议、不做「风险雷达」里的信号：那边每条是**词典命中词**（「诉讼」「解约」），
+   * 拿它当检索词太泛，每天扫回一堆同名不同事的内容，是给用户制造噪音而不是信息。
+   */
+  const onToggleWatchTopic = async (rawTopic: string) => {
+    if (watchBusy) return
+    /*
+     * ⚠ 顺序不能动（微信要求订阅授权出现在点击的同步调用栈里，见 utils/notify.ts）：
+     *   1. 同步校验（validateKeyword 不碰网络）；
+     *   2. 请求授权 = **点击后的第一个 await**；
+     *   3. 之后才是查库 / 写库（addWatch 内部要读一次库做去重）。
+     * 把授权放到后面，按钮会直接失效 —— 这是 monitorPerson 已经踩过的同一个坑。
+     */
+    const topic = normalizeKeyword(rawTopic)
+    const check = validateKeyword(topic)
+    /*
+     * 模型的 topic 偶尔会越界（提示词要求 12 字内，见 utils/report.ts 的字段说明）。
+     * 只回一句「关键词不超过 12 个字」用户不知道下一步该干什么，所以这里把出路一起说了：
+     * 改用上方的「+ 监控风险」盯这个人 —— 别让一次失败的点击变成死路。
+     */
+    if (!check.ok) {
+      await Taro.showModal({
+        title: '这条不能直接盯',
+        content: `${check.message}。可以改用上方的「+ 监控风险」盯这个人，他/她的风险情况一样会出现在预警页。`,
+        showCancel: false,
+        confirmText: '知道了'
+      })
+      return
+    }
+    const keyword = check.keyword
+
+    if (watchedKeywords.has(keyword)) {
+      /* 取消走二次确认：盯一条就是一份每天的检索成本，误触会让用户以后收不到、却不知道为什么 */
+      void Taro.showModal({
+        title: '取消盯这条',
+        content: `不再关注「${keyword}」的新报道？已收集的内容会从预警页移除。`,
+        confirmText: '取消盯',
+        cancelText: '再想想',
+        success: async (r) => {
+          if (!r.confirm) return
+          const ok = await removeWatch(keyword)
+          if (!ok) return
+          track('watch_remove', { keyword, from: 'report_controversy', personKey })
+          setWatchedKeywords((prev) => {
+            const next = new Set(prev)
+            next.delete(keyword)
+            return next
+          })
+          Taro.showToast({ title: '已取消', icon: 'none' })
+        }
+      })
+      return
+    }
+
+    /*
+     * 授权拿不到也照常订阅（与 utils/risk-watch.ts 取舍 3 同源）：站内预警页能看到，是这条链路的下限。
+     * 授权结果只决定订阅成功后那句话怎么说，不决定订不订得上 —— 不能让用户以为「没授权 = 没盯」。
+     */
+    let notifyOk = false
+    if (alertNotifyConfigured()) {
+      const notify = await requestAlertNotify()
+      notifyOk = notify.ok
+    }
+
+    setWatchBusy(keyword)
+    const res = await addWatch(keyword)
+    setWatchBusy(null)
+    if (res.ok) {
+      track('watch_add', { keyword, from: 'report_controversy', personKey })
+      setWatchedKeywords((prev) => new Set(prev).add(keyword))
+      Taro.showToast({
+        title: notifyOk ? '已盯上，有新报道会推送提醒' : '已盯上，新报道会出现在预警页',
+        icon: 'none'
+      })
+      return
+    }
+    if (res.fatal) {
+      await Taro.showModal({ title: '没能开始盯', content: res.message, showCancel: false, confirmText: '知道了' })
       return
     }
     Taro.showToast({ title: res.message, icon: 'none' })
@@ -971,15 +1304,25 @@ export default function ReportPage() {
    * 全项目此前没有注册任何分享回调，右上角「转发」只会带走一个不含参数的页面地址，
    * 对方打开直接落到「缺少 personKey 参数」的错误态 —— 而深度报告恰恰是最该被分享的内容。
    * 加载中与失败态也给一个可读标题，避免分享出去是一句「生成失败」。
+   *
+   * 分享框随**我自己的关注态**换（S2-1）：关注了这个人，分享出去的是「我在盯 TA」，
+   * 落地页据此把关注入口提到最前（`?from=watch`）。标题与路径由 `personShare` 成对产出，
+   * 不会出现「标题说我在盯、路径里没有标记」这种半截状态；没关注的人仍走原来的报告框
+   * （替用户编造关系，对方点开就核对不了）。转发与朋友圈同源：朋友圈单页模式下看到的
+   * 仍是同一句话，不会一边一个说法。
    */
-  const sharePath = reportSharePath(personKey, focus)
-  /* 文案与名人主页 / 发现页 / 提问页同源（见 utils/share.ts）：先给结论钩子（N 处公开争议 / N 条近期动态），
-     没有钩子才回落那句可核对的简介；不写「深度报告」这种自夸式后缀 —— 分享出去的标题应该说明
-     「点开能得到什么 / 这个人是谁」，而不是我们的栏目名。 */
-  const shareTitle = personShareTitle(report?.name ?? name, domain, report)
+  const share = personShare({ personKey, name: report?.name ?? name, domain, report, watched: followed, focus })
 
-  useShareAppMessage(() => ({ title: shareTitle, path: sharePath }))
-  useShareTimeline(() => ({ title: shareTitle, query: sharePath.split('?')[1] ?? '' }))
+  /* 分享侧的埋点：微信转发面板每次被调起时各报一次（`frame` 用来对比两种框的分享量，
+     与落地侧的 watch_share_arrive 一起算「分享 → 打开」的转化）。 */
+  useShareAppMessage(() => {
+    track('share', { personKey, channel: 'forward', frame: followed ? 'watch' : 'report' })
+    return { title: share.title, path: share.path }
+  })
+  useShareTimeline(() => {
+    track('share', { personKey, channel: 'timeline', frame: followed ? 'watch' : 'report' })
+    return { title: share.title, query: share.path.split('?')[1] ?? '' }
+  })
 
   /** 渲染顺序：动态最新在前、履历从早到晚（模型返回顺序不作保证） */
   const dynamicsView = report ? [...report.dynamics].sort((a, b) => byDateDesc(a.date, b.date)) : []
@@ -1160,6 +1503,14 @@ export default function ReportPage() {
   const ageDays = reportAgeDays(report?.generatedAt)
   const staleReport = isStaleReport(report?.generatedAt)
 
+  /**
+   * 冷门首建那条荣誉里要露出的**素材条数**（S2-3，见渲染处）。
+   *
+   * `coldFirstBuild` 为真时它必定是个数字 —— 判据本身就是「这个数 ≤ COLD_ITEMS_MAX」
+   * （utils/report.ts#isColdPerson），这里的 `?? 0` 只是过类型，不会真显示成 0 条。
+   */
+  const coldFirstItems = report?.coverage?.items ?? 0
+
   /** 刷新结果对比：只有本次真的重新生成、且库里本来就有旧版时才算得出来 */
   const diff = report && prevReport ? computeDiff(report, prevReport) : null
   const diffParts: string[] = diff
@@ -1257,11 +1608,60 @@ export default function ReportPage() {
       void Taro.showToast({ title: '这份报告暂不支持导出图片', icon: 'none' })
       return
     }
-    if (!canExportReportCard(member)) {
-      setExportGuide(true)
+    const allowed = canExportReportCard(member)
+    /* 被拦也报（allowed:false）：只报放行的话，付费墙的效果永远测不出来（见 utils/events.ts） */
+    track('report_export', { personKey, kind: 'card', allowed })
+    if (!allowed) {
+      setExportGuide('card')
       return
     }
     setPosterCard(card)
+  }
+
+  /** 把某一种格式的导出内容送进剪贴板（本机能力，与会员态无关 —— 门禁已在 onExportData 把过） */
+  const copyExport = (exp: ReportExport, kind: ExportKind) => {
+    const data = kind === 'json' ? exp.json : exp.markdown
+    return Taro.setClipboardData({ data })
+      .then(() => {
+        /* 只在这一刻报「真的带走了」：用户选完格式又放弃复制的不算（见 utils/events.ts） */
+        track('report_exported', { personKey, kind })
+        void Taro.showToast({ title: `已复制 ${exportFileName(exp, kind)}`, icon: 'none' })
+      })
+      .catch((err: unknown) => {
+        void Taro.showToast({ title: toUserMessage(err, '复制失败，请重试'), icon: 'none' })
+      })
+  }
+
+  /**
+   * 导出结构化数据（S3-1，2026-10-16）—— 与长图**并列的第二个出口**，不是替代。
+   *
+   * 长图用来发给人看；这份用来看：每条事实带出处、末尾附完整来源清单（图带不了链接）、
+   * JSON 可进表格或二次处理。之所以值得单独开一个付费出口：它**与共享缓存无因果关系**
+   * （报告已在库里，导出是纯本地组装，零上游成本），不像额度会随缓存变厚而贬值。
+   *
+   * 门的顺序与 onExportCard 一致，只在第 2、3 步之间多一格：
+   *   1. 先组装 —— 人物命中本地敏感名单时 `buildReportExport` 返回 null，这类报告连入口都不该往下走；
+   *      （导出一旦离开 App 就不再受内容检查约束，这里是唯一的拦点）
+   *   2. 再看身份 —— 免费用户给一行升级引导，且**在选格式之前**：
+   *      格式选择本身就是要卖的能力，让他先选再被拦，是白点一次；
+   *   3. 最后才选格式并复制。
+   */
+  const onExportData = () => {
+    if (state.phase !== 'ready') return
+    const exp = buildReportExport(state.report, { member })
+    if (!exp) {
+      void Taro.showToast({ title: '这份报告暂不支持导出数据', icon: 'none' })
+      return
+    }
+    const allowed = canExportReport(member)
+    track('report_export', { personKey, kind: 'data', allowed })
+    if (!allowed) {
+      setExportGuide('data')
+      return
+    }
+    void Taro.showActionSheet({ itemList: EXPORT_FORMATS.map((f) => f.label) })
+      .then((res) => copyExport(exp, EXPORT_FORMATS[res.tapIndex]?.kind ?? 'markdown'))
+      .catch(() => undefined) // 用户取消：不是失败，不提示
   }
 
   /**
@@ -1307,6 +1707,28 @@ export default function ReportPage() {
    * 这里只负责把「差几节」说清楚 —— 免费用户不会在页面里遇到那些卡片，得让他知道有。
    */
   const tocLocked = lockedReportToc(report, { member, hasOverview: tocHasOverview })
+  /*
+   * S3-3：免费档把会员节的位置**就地**占住（锁态卡）。
+   * 用 `tocLocked` 的 id 集合，而不是在页面里另写七个 `!member` 判断 —— 这样目录那行
+   * 「会员另含 N 节」与这几张卡永远是**同一份条件**（某节被 visible 判掉时两边一起消失），
+   * 以后动模板不需要动页面。
+   */
+  const lockedIds = new Set(tocLocked.map((s) => s.id))
+
+  /*
+   * S3-3：免费档「速览」—— 列表型节按档截断（免费 3 条 / 会员不截断）。
+   *
+   * ⚠ 只截**渲染源**，`dynamicsView` / `report.*` 一律保持完整：
+   *   · `dynamicsView` 还被算出覆盖区间的算法读着（见上面的 `coverageSpan`），截了会改变速览卡的数字；
+   *   · `report` 本身是周报 / 风险监控 / 对比页 / 问答 / 导出的共同来源，截了是另一件严重的事
+   *     （理由写在 config/benefits.ts#REPORT_PREVIEW）。
+   * 节名后面括号里的总数（如「近期动态（11）」）也保持**真实总数** —— 标题说实话、
+   * 正文给 3 条并注明「还有 8 条」，读者才知道自己拿到的是速览。
+   */
+  const profilePreview = previewRows(report ? report.profile : null, member)
+  const relationsPreview = previewRows(report ? report.relations : null, member)
+  const dynamicsPreview = previewRows(dynamicsView, member)
+  const quotesPreview = previewRows(report ? report.quotes : null, member)
 
   const jumpToSection = useCallback((id: string) => {
     setTocActive(id)
@@ -1391,6 +1813,39 @@ export default function ReportPage() {
             <Text className='page-report__focus-text'>本次侧重：{FOCUS_META[focus].desc}</Text>
           )}
           <NoticeClose onClose={() => setFocusClosed(true)} />
+        </View>
+      )}
+
+      {/*
+        好友分享落地条（S2-1，2026-10-16）。
+
+        为什么要有它：对方是**顺着朋友的分享**进来的陌生人 —— 他从没听过这个产品，
+        第一眼看到的却是一份陌生人的报告，读完也不知道该做什么。这条把分享者的动作
+        （「朋友在盯 TA」）摆在首屏，并当场给一个关注入口：关注之后 TA 的动态会进
+        「关注动态」页，这既是对方留下的一步，也是这条分享链路的全部目的。
+
+        三个位置上的取舍：
+          · 摆在人物横幅**之上**（横幅内部的「+ 关注」仍是全站通用的那个按钮）——
+            陌生人进来看的是「谁分享给我的、我该干嘛」，先给这件事；
+          · 不放在 `{report && ...}` 里：报告可能还没生成（要点开长图/等生成才看得到），
+            而关注这件事**完全不需要报告**（只认 personKey）。放进横幅里就等于
+            「先等 30 秒生成，再谈关注」—— 那是最容易丢人的 30 秒；
+          · 关注后整条消失（`!followed`）：它是一次性的引导，不是常驻广告位。
+      */}
+      {watchArrival && followRead && !followed && (
+        <View className='page-report__invite'>
+          <View className='page-report__invite-main'>
+            <Text className='page-report__invite-title'>{`朋友在盯 ${name}`}</Text>
+            <Text className='page-report__invite-note'>关注后 TA 的动态会汇总到「关注动态」</Text>
+          </View>
+          {/* 来源标 watch_share：这条引导的转化率要能与横幅上的关注分开算 */}
+          <View
+            className='page-report__invite-btn'
+            hoverClass='page-report__invite-btn--tap'
+            onClick={() => void onToggleFollow('watch_share')}
+          >
+            + 关注
+          </View>
         </View>
       )}
 
@@ -1533,15 +1988,31 @@ export default function ReportPage() {
 
         只在**首建且落库成功**时出现：命中缓存、覆盖刷新、产物不达标都不带 firstBuild（见缓存层），
         所以它不会在「我只是看看别人的报告」时冒出来。可关闭，且与其余提示条各关各的。
+
+        冷门首建（S2-3，2026-10-16）换一套说法：上面那段把账说清了，但读完的感受是「我明白了」，
+        不是「我这趟值」。而**公开报道很少的长尾人物**正是「没人愿意花额度建」的那一类——
+        第一个建的人补上的是库里长期空着的一个位置，值得一句看得见的回报（判据与埋点同源，
+        见 utils/report.ts#isColdPerson）。三件事一起说：他建的是什么人（附本次素材条数，可自查）、
+        此前的位置是空的、这份之后全站共用。**不加码任何承诺**（不说「免计费」「送次数」，
+        那笔账由 quotaGuard 复核、端上给不了准话）。
+        仍是同一个 notice key（`firstBuild`）——不为荣誉再长出一条提示条，用户已经嫌多。
       */}
       {firstBuild && !closedNotices.firstBuild && (
-        <View className='page-report__diff'>
+        <View className={coldFirstBuild ? 'page-report__diff page-report__diff--first' : 'page-report__diff'}>
           <View className='page-report__diff-main'>
-            <Text className='page-report__diff-head'>这份报告由你首次生成</Text>
-            <Text className='page-report__diff-body'>
-              报告按人物全站共用一份：之后任何人查看都不再消耗生成次数（包括你自己），
-              你这次的检索与整理会留在库里，供之后一直查看。
+            <Text className='page-report__diff-head'>
+              {coldFirstBuild ? '🏅 你是 TA 报告的第一位建立者' : '这份报告由你首次生成'}
             </Text>
+            {coldFirstBuild ? (
+              <Text className='page-report__diff-body'>
+                {`TA 的公开报道不多（本次检索到 ${coldFirstItems} 条素材），此前库里没有 TA 的报告 —— 你补上的这一份此后全站共用、长期可查，之后任何人查看都不再消耗生成次数（包括你自己）。`}
+              </Text>
+            ) : (
+              <Text className='page-report__diff-body'>
+                报告按人物全站共用一份：之后任何人查看都不再消耗生成次数（包括你自己），
+                你这次的检索与整理会留在库里，供之后一直查看。
+              </Text>
+            )}
           </View>
           <NoticeClose onClose={() => closeNotice('firstBuild')} />
         </View>
@@ -1706,13 +2177,28 @@ export default function ReportPage() {
       )}
 
       {state.phase === 'error' && (
-        <EmptyState
-          icon='⚠️'
-          title='生成失败'
-          desc={state.message}
-          actionText='重试'
-          onAction={() => void load(false)}
-        />
+        /*
+          缺 personKey 的两种来路：转发时链接被截断、小程序码 scene 编不完（见 utils/share-code.ts）。
+          这一态**不是「生成失败」**，原先把两者合在一起（标题「生成失败」+ 按钮「重试」）会让用户
+          反复点重试 —— 而参数缺失重试一万次也还是缺，那是个走不出去的圈。它需要的是出路（2026-10-16）。
+        */
+        !personKey ? (
+          <EmptyState
+            icon='🔗'
+            title='这条链接没带上要看的人'
+            desc='多半是转发时被截断了。回首页搜索名字，就能看到 TA 的报告。'
+            actionText='去首页搜名人'
+            onAction={() => void Taro.switchTab({ url: '/pages/index/index' })}
+          />
+        ) : (
+          <EmptyState
+            icon='⚠️'
+            title='生成失败'
+            desc={state.message}
+            actionText='重试'
+            onAction={() => void load(false)}
+          />
+        )
       )}
 
       {report && (
@@ -1756,7 +2242,7 @@ export default function ReportPage() {
                   onClick={onPromoTap}
                 >
                   <Text className='page-report__toc-more-text'>
-                    {`完整模板 ${TEMPLATE_SIZE} 节 · 会员另含 ${tocLocked.length} 节`}
+                    {`完整模板 ${TEMPLATE_SIZE} 节 · 会员另含 ${tocLocked.length} 节 · 每节看全部`}
                   </Text>
                   <Text className='page-report__toc-more-go'>开通会员 ›</Text>
                 </View>
@@ -1917,8 +2403,14 @@ export default function ReportPage() {
               {report.profile.length > 0 && (
                 <SectionTable
                   columns={['字段', '内容']}
-                  rows={report.profile.map((p) => ({ cells: [p.label, p.value], basis: p.basis }))}
+                  rows={profilePreview.rows.map((p) => ({ cells: [p.label, p.value], basis: p.basis }))}
                 />
+              )}
+              {/* S3-3 速览提示：就地写「还有 N 条」（静默少几条等于骗人，见 benefits.ts#REPORT_PREVIEW） */}
+              {!!profilePreview.hidden && (
+                <Text className='page-report__preview-note' onClick={onPromoTap}>
+                  {previewHiddenNote(profilePreview.hidden)}
+                </Text>
               )}
               <Text className='page-report__entry-foot'>每条档案均出自本报告收录的素材，找不到出处的信息不收录。</Text>
             </View>
@@ -1937,7 +2429,7 @@ export default function ReportPage() {
               {report.relations.length > 0 && (
                 <SectionTable
                   columns={['名称', '关系', '说明']}
-                  rows={report.relations.map((r) => ({
+                  rows={relationsPreview.rows.map((r) => ({
                     cells: [
                       r.name,
                       <Text className='page-report__entry-tag'>{RELATION_META[r.relation] ?? '其他'}</Text>,
@@ -1947,11 +2439,17 @@ export default function ReportPage() {
                   }))}
                 />
               )}
+              {!!relationsPreview.hidden && (
+                <Text className='page-report__preview-note' onClick={onPromoTap}>
+                  {previewHiddenNote(relationsPreview.hidden)}
+                </Text>
+              )}
               <Text className='page-report__entry-foot'>关系出自素材的明确记载，不做「同框即关系」一类推测。</Text>
             </View>
           )}
 
           
+          {lockedIds.has('sec-commercial') && <LockedCard id='sec-commercial' onOpen={onPromoTap} />}
           {member && commercial && !report.degraded && (
             <View id='sec-commercial' className='card page-report__vip-card'>
               <View className='card-title'>会员专享 · 商业价值速览</View>
@@ -2019,6 +2517,7 @@ export default function ReportPage() {
             字段在免费批次里生成（utils/report.ts 的 BATCH_SPEC.identity），此处只对会员出卡；
             每条都带出处（指不出素材的条目不落库），故这里可以像档案 / 关系那样给出 basis。
           */}
+          {lockedIds.has('sec-endorsement') && <LockedCard id='sec-endorsement' onOpen={onPromoTap} />}
           {member && report.endorsements && !report.degraded && (
             <View id='sec-endorsement' className='card page-report__vip-card'>
               <View className='card-title'>会员专享 · 商业合作与代言</View>
@@ -2110,7 +2609,7 @@ export default function ReportPage() {
                   </View>
                 </View>
               )}
-              {dynamicsView.map((d, i) => {
+              {dynamicsPreview.rows.map((d, i) => {
                 const domain = hostOf(d.url)
                 return (
                   <View key={i} className='page-report__item'>
@@ -2147,6 +2646,11 @@ export default function ReportPage() {
                   </View>
                 )
               })}
+              {!!dynamicsPreview.hidden && (
+                <Text className='page-report__preview-note' onClick={onPromoTap}>
+                  {previewHiddenNote(dynamicsPreview.hidden)}
+                </Text>
+              )}
             </View>
           )}
 
@@ -2158,7 +2662,7 @@ export default function ReportPage() {
                   本次生成时，素材里没有可确认的原文语录（声称有出处、却指不出是哪条素材的，整条不收录）。
                 </Text>
               )}
-              {report.quotes.map((q, i) => {
+              {quotesPreview.rows.map((q, i) => {
                 const favId = favIdOf('quote', `${personKey}:${q.text}`)
                 const faved = !!favId && favedIds.has(favId)
                 return (
@@ -2183,6 +2687,11 @@ export default function ReportPage() {
                   </View>
                 )
               })}
+              {!!quotesPreview.hidden && (
+                <Text className='page-report__preview-note' onClick={onPromoTap}>
+                  {previewHiddenNote(quotesPreview.hidden)}
+                </Text>
+              )}
             </View>
           )}
 
@@ -2258,15 +2767,37 @@ export default function ReportPage() {
                   本次生成时，素材里没有可确认的公开争议（只有素材真的写到才收录，不把「没看到争议」写成「没有争议」）。
                 </Text>
               )}
-              {(report.controversies ?? []).map((c, i) => (
-                <View key={`${i}-${c.topic}`} className='page-report__entry'>
-                  <Text className='page-report__entry-name'>{c.topic}</Text>
-                  <Text className='page-report__entry-text'>争议：{c.claim}</Text>
-                  {c.response !== '' && <Text className='page-report__entry-text'>回应：{c.response}</Text>}
-                  <Text className='page-report__entry-basis'>依据：{c.basis}</Text>
-                </View>
-              ))}
-              <Text className='page-report__entry-foot'>只记录素材中已公开的争议与回应，平台不作真伪判定，也不做评价。</Text>
+              {(report.controversies ?? []).map((c, i) => {
+                /*
+                 * 逐条算「盯没盯上」：比较用的是 normalizeKeyword 归一后的词，与 addWatch 的判定同口径
+                 * （否则「A  B」这种多空格会被当成两个不同的词，按钮态就与库里那一行对不上）。
+                 */
+                const topic = normalizeKeyword(c.topic)
+                const watching = watchedKeywords.has(topic)
+                return (
+                  <View key={`${i}-${c.topic}`} className='page-report__entry'>
+                    <Text className='page-report__entry-name'>{c.topic}</Text>
+                    <Text className='page-report__entry-text'>争议：{c.claim}</Text>
+                    {c.response !== '' && <Text className='page-report__entry-text'>回应：{c.response}</Text>}
+                    <Text className='page-report__entry-basis'>依据：{c.basis}</Text>
+                    {/*
+                      「盯这条进展」（S1-1）：把争议点当监测词，之后抓到新报道时在预警页提醒。
+                      排在依据之后 —— 它是对这一条的**延伸动作**，不是这一条的内容本身，
+                      得让用户先读完争议，再决定要不要盯。
+                    */}
+                    <View
+                      className={`page-report__watch ${watching ? 'page-report__watch--on' : ''}`}
+                      onClick={() => void onToggleWatchTopic(c.topic)}
+                    >
+                      {watching ? '✓ 已盯进展' : '+ 盯这条进展'}
+                    </View>
+                  </View>
+                )
+              })}
+              <Text className='page-report__entry-foot'>
+                只记录素材中已公开的争议与回应，平台不作真伪判定，也不做评价。「盯这条进展」是把这条
+                争议点当作监测词 —— 之后抓到新报道时，会出现在预警页。
+              </Text>
             </View>
           )}
 
@@ -2365,6 +2896,7 @@ export default function ReportPage() {
             ⚠ 两个字段要**各自**判空：老会员报告只有 memberNotes，新报告才可能有 conflicts，
               用 memberNotes 的存在与否去决定整卡出不出，会让只带 conflicts 的报告整张消失。
           */}
+          {lockedIds.has('sec-member') && <LockedCard id='sec-member' onOpen={onPromoTap} />}
           {member && !report.degraded && (
             <View id='sec-member' className='card page-report__notes'>
               {/* 标题行兼作「会员权益已生效」的确认位（O-25）：顶部促销条已对会员隐藏，
@@ -2434,6 +2966,7 @@ export default function ReportPage() {
             与 sec-member 同一套闸门（会员 + 非降级简版），故读到的 report 里通常没有这个键时
             要出「为什么没有」的说明卡，而不是让整卡消失。
           */}
+          {lockedIds.has('sec-peers') && <LockedCard id='sec-peers' onOpen={onPromoTap} />}
           {member && !report.degraded && (
             <View id='sec-peers' className='card page-report__notes'>
               <View className='card-title'>会员专享 · 同领域坐标</View>
@@ -2460,6 +2993,7 @@ export default function ReportPage() {
             素材里指不出出处的条目在数据层（utils/report.ts#sanitizeReport）就已被整条剔除。
             与 sec-peers / sec-member 同一套闸门（会员 + 非降级简版），故缺这个键时要出说明卡。
           */}
+          {lockedIds.has('sec-affiliation') && <LockedCard id='sec-affiliation' onOpen={onPromoTap} />}
           {member && !report.degraded && (
             <View id='sec-affiliation' className='card page-report__vip-card'>
               <View className='card-title'>会员专享 · 企业关联</View>
@@ -2489,6 +3023,7 @@ export default function ReportPage() {
               态度）都可能为空，但卡片本身照出 —— 空的那块写明口径，别让整卡消失。降级简版除外。
               ⚠ 数据仍在**免费批次**里生成（对比页 / 话题速览 / 问答要拿它当上下文，见
                  utils/report-toc.ts 顶部的分档口径），这里只是不再给免费用户出这张卡。 */}
+          {lockedIds.has('sec-stance') && <LockedCard id='sec-stance' onOpen={onPromoTap} />}
           {member && !report.degraded && (
             <View id='sec-stance' className='card'>
               <View className='card-title'>会员专享 · 立场与舆情</View>
@@ -2609,6 +3144,7 @@ export default function ReportPage() {
               是当「页脚工具」用 —— 读到这里遇到没看懂的词，往回翻不如就地查。也是全项目唯一
               不带出处的模型段落（它答的是词义，不是关于本人的事实断言，理由见 utils/report.ts
               的 Schema 注释）。数据仍在免费批次生成，此处只对会员出卡。 */}
+          {lockedIds.has('sec-glossary') && <LockedCard id='sec-glossary' onOpen={onPromoTap} />}
           {member && report.glossary && (
             <View id='sec-glossary' className='card'>
               <View
@@ -2656,6 +3192,24 @@ export default function ReportPage() {
             <Text className='page-report__compare-arrow'>→</Text>
           </View>
 
+          {/* 历史版本（S3-1 ③，2026-10-16）：报告是全站共享的一份、刷新即整篇替换，
+              「上一次是怎么说的」过去无处可查。与上面的对比条同款（都是一次跳转，不是就地生效），
+              且**刻意不在进页时先查一次库**判断「有没有历史版本」—— 那会给每次进报告页都加一次读。
+              没有历史时那一页会如实回答「从生成到现在没有被刷新过」，这本身也是把这份报告的
+              更新机制讲清楚的地方（共享缓存 → 别人刷新也会覆盖旧版）。 */}
+          <View
+            className='page-report__compare'
+            hoverClass='page-report__compare--tap'
+            onClick={() =>
+              void Taro.navigateTo({
+                url: `/package/report-history/index?personKey=${encodeURIComponent(personKey)}&name=${encodeURIComponent(report ? report.name : '')}`
+              })
+            }
+          >
+            <Text className='page-report__compare-text'>历史版本</Text>
+            <Text className='page-report__compare-arrow'>→</Text>
+          </View>
+
           {/* 相关名人（O-16）：把「共同高频话题」当作继续读下去的理由，比再摆一份随机推荐更可能命中。
               交集为空时整卡不渲染 —— 宁可没有这一块，也不摆一段「暂无相关名人」。 */}
           {related.length > 0 && (
@@ -2680,6 +3234,55 @@ export default function ReportPage() {
                   <View className='page-report__related-main'>
                     <Text className='page-report__related-name'>{r.name}</Text>
                     <Text className='page-report__related-words'>{`共同话题：${r.shared.join(' / ')}`}</Text>
+                  </View>
+                  <Text className='page-report__related-arrow'>→</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* 同类名人（S1-2，2026-10-16）：上一块的兜底 —— 那边要「共同话题」，
+              交集为空就整块不出现，而没收藏过报告的人（绝大多数、尤其新用户）连候选都没有，
+              读完报告页尾因此什么都没有。这一块改用**领域**，只要有榜单就取得到人。
+              两块共用同一套行样式（同一种东西：接下来读谁），但**不会同时出现**，见上方 effect。 */}
+          {peers.length > 0 && (
+            <View className='page-report__related'>
+              <Text className='page-report__related-head'>同领域的其他名人</Text>
+              <Text className='page-report__related-note'>
+                按热门榜与已收录报告取同领域名人，仅供延伸阅读；关注后可在「关注动态」页汇总查看
+              </Text>
+              {peers.map((p) => (
+                <View
+                  key={p.personKey}
+                  className='page-report__related-item'
+                  hoverClass='page-report__related-item--tap'
+                  onClick={() => Taro.navigateTo({ url: reportSharePath(p.personKey) })}
+                >
+                  <PersonAvatar
+                    personKey={p.personKey}
+                    name={p.name}
+                    domain={p.domain}
+                    className={`page-report__related-avatar page-report__related-avatar--${domainStyleCode(p.domain)}`}
+                  />
+                  <View className='page-report__related-main'>
+                    <Text className='page-report__related-name'>{p.name}</Text>
+                    {/* 动态速览可能是一整条标题，故这一行单独做单行省略（见 scss 的 --peer 变体） */}
+                    <Text className='page-report__related-words page-report__related-words--peer'>
+                      {p.trend !== '' ? p.trend : p.tag}
+                    </Text>
+                  </View>
+                  {/* 关注按钮：必须先吃掉点击，否则点「关注」会连带跳进对方的报告 */}
+                  <View
+                    className={`page-report__peer-follow${p.followed ? ' page-report__peer-follow--on' : ''}${
+                      peerBusy === p.personKey ? ' page-report__peer-follow--busy' : ''
+                    }`}
+                    hoverClass='page-report__peer-follow--tap'
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void onTogglePeerFollow(p)
+                    }}
+                  >
+                    {p.followed ? '已关注' : '关注'}
                   </View>
                   <Text className='page-report__related-arrow'>→</Text>
                 </View>
@@ -2722,9 +3325,21 @@ export default function ReportPage() {
             <Text className='page-report__export-title'>导出报告长图</Text>
             <Text className='page-report__export-sub'>带结论、依据与出处，可保存 / 转发</Text>
           </View>
-          {exportGuide && (
+
+          {/*
+            导出结构化数据（S3-1，2026-10-16）：与长图并列的第二条出口。
+            长图发给别人看，这份留着自己用 —— 每条事实带出处、末尾附完整来源清单（图带不了链接），
+            JSON 还能进表格。免费用户同样只多一行引导，且引导语与长图那句**不同**
+            （两个出口带走的东西不一样，用同一句话会让用户以为点哪个都一样）。
+          */}
+          <View className='page-report__export' onClick={onExportData}>
+            <Text className='page-report__export-title'>导出结构化数据</Text>
+            <Text className='page-report__export-sub'>Markdown 全文（每条带出处）+ JSON，可进文档与表格核对</Text>
+          </View>
+
+          {!!exportGuide && (
             <View className='page-report__export-guide' onClick={onPromoTap}>
-              <Text>{reportExportNote()}</Text>
+              <Text>{exportGuide === 'data' ? reportDataExportNote() : reportExportNote()}</Text>
             </View>
           )}
 

@@ -12,9 +12,12 @@ import { readPortraits } from '@/utils/portrait'
 import { quoteCopyText } from '@/utils/quote-check'
 import { Report } from '@/utils/report'
 import { isFollowed, toggleFollow } from '@/utils/follows'
-import { personShareTitle, reportSharePath } from '@/utils/share'
+import { personShare } from '@/utils/share'
+import { track } from '@/utils/events'
+import { isMonitored, listPersonWatches, monitorPerson, unmonitorPerson } from '@/utils/risk-watch'
 import { fromNow } from '@/utils/time'
 import { buildProfileStats } from '@/utils/stats'
+import { decodeParam } from '@/utils/route'
 import './index.scss'
 
 /** 日期正序（缺日期的排最后）：时间线是履历脉络，从早到晚读才顺（与报告页同一口径） */
@@ -32,7 +35,7 @@ function num(v: number | null): string {
 /** 名人主页（M2 简版动态 / 名言双 Tab + V1.5 时间线 Tab，数据读报告缓存，不触发生成） */
 export default function Profile() {
   const router = useRouter()
-  const personKey = decodeURIComponent(router.params.personKey || '')
+  const personKey = decodeParam(router.params.personKey || '')
   const parsed = parsePersonKey(personKey)
   const name = parsed?.name ?? '名人'
   const domain = parsed?.domain ?? 'other'
@@ -40,10 +43,13 @@ export default function Profile() {
   const [loading, setLoading] = useState(true)
   const [report, setReport] = useState<Report | null>(null)
   const [followed, setFollowed] = useState(false)
+  /* 监控态（S2-2）：与「关注」相互独立，取自同一份 keyword_watches 名单（预警页读的也是它） */
+  const [monitored, setMonitored] = useState(false)
+  const [monitorBusy, setMonitorBusy] = useState(false)
   const [tab, setTab] = useState(0)
 
   /**
-   * 转发（优化建议 O-13）。
+   * 转发（优化建议 O-13；S2-1 起随关注态换框）。
    *
    * 本页此前没注册任何分享回调：右上角「转发」带出的是一个**不含参数的地址**，
    * 对方点开落在「缺少 personKey」的错误态 —— 名人主页是最常被分享的页面之一，
@@ -52,11 +58,19 @@ export default function Profile() {
    * 落地页统一落到报告页（见 utils/share.ts 的口径）：分享一个名人时，对方想看的
    * 正是「这个人是谁」，报告页是唯一点开就看得懂的内容，而 tabBar 页也不能作落地页。
    * 本页只是「转发」的出发点，标题与报告页、发现页、提问页同源。
+   *
+   * 名人主页是「分享我在盯的人」最自然的出发点：用户在这一页关注 TA，也正是在这一页
+   * 读到 TA 的动态 —— 关注态一读出来（`load` 里与报告并发取），分享框就换成「我在盯」。
    */
-  const sharePath = reportSharePath(personKey)
-  const shareTitle = personShareTitle(name, domain, report)
-  useShareAppMessage(() => ({ title: shareTitle, path: sharePath }))
-  useShareTimeline(() => ({ title: shareTitle, query: sharePath.split('?')[1] ?? '' }))
+  const share = personShare({ personKey, name, domain, report, watched: followed })
+  useShareAppMessage(() => {
+    track('share', { personKey, channel: 'forward', frame: followed ? 'watch' : 'report' })
+    return { title: share.title, path: share.path }
+  })
+  useShareTimeline(() => {
+    track('share', { personKey, channel: 'timeline', frame: followed ? 'watch' : 'report' })
+    return { title: share.title, query: share.path.split('?')[1] ?? '' }
+  })
 
   const load = async () => {
     setLoading(true)
@@ -66,9 +80,16 @@ export default function Profile() {
      * fire-and-forget，不阻塞报告加载，也不会抛错。
      */
     void readPortraits([personKey])
-    const [r, f] = await Promise.all([getCachedReport(personKey), isFollowed(personKey)])
+    /*
+     * 监控态必须**真实读一次**（S2-2），不能按「报告页才有监控」假设成 false：
+     * 用户可能早就在报告页 / 预警页建过监控，本页若默认「+ 监控」，一点下去会得到
+     * 「已在监控中」这类回执，而按钮状态与库里的真实关系不一致。
+     * 三件事互不依赖，并发取（名单读失败返回 []，最坏退化成「未监控」而不是卡住本页）。
+     */
+    const [r, f, watches] = await Promise.all([getCachedReport(personKey), isFollowed(personKey), listPersonWatches()])
     setReport(r)
     setFollowed(f)
+    setMonitored(isMonitored(watches, personKey))
     setLoading(false)
   }
 
@@ -86,6 +107,55 @@ export default function Profile() {
     if (next === null) return
     setFollowed(next)
     Taro.showToast({ title: next ? '已关注' : '已取消关注', icon: 'none' })
+  }
+
+  /**
+   * 监控风险 / 取消监控（S2-2，2026-10-16）。
+   *
+   * 这一页此前**只有关注**：想监控只能绕到报告页横幅的「+ 监控风险」或舆情页 ——
+   * 而「读到这个人 → 想盯着他」正好发生在本页（同一个人、同一次决策，却要换两个页面）。
+   * 链路口径与报告页共用 utils/risk-watch.ts（同一张表、同一套门禁与文案），不新造一套。
+   *
+   * 四个与报告页逐字对齐的点（两处各写一份就会各说各话）：
+   *   · **授权顺序**：`requestSubscribeMessage` 必须是点击后的第一个异步调用（微信要求），
+   *     故 `monitorPerson` 内部第一条就是 requestRiskNotify —— 本函数在这行之前不能有任何 await
+   *     （setState 是同步的，不算）；
+   *   · **取消走二次确认**：监控是每天真金白银的检索，误触取消会让用户第二天收不到提醒；
+   *   · **忙碌闸**：并发点击会同时走到「先查数、再插入」，端上做不了原子计数；
+   *   · **环境类失败改用弹窗**（`fatal`）：文案长（去哪建表、改成什么权限），toast 会截成半句。
+   */
+  const onToggleMonitor = async () => {
+    if (monitorBusy) return
+    if (monitored) {
+      void Taro.showModal({
+        title: '取消监控',
+        content: `不再监控「${name}」的风险情况？已收集的信号会从预警页移除。`,
+        confirmText: '取消监控',
+        cancelText: '再想想',
+        success: async (r) => {
+          if (!r.confirm) return
+          const ok = await unmonitorPerson(personKey, 'profile')
+          if (ok) {
+            setMonitored(false)
+            Taro.showToast({ title: '已取消监控', icon: 'none' })
+          }
+        }
+      })
+      return
+    }
+    setMonitorBusy(true)
+    const res = await monitorPerson(personKey, name, 'profile')
+    setMonitorBusy(false)
+    if (res.ok) {
+      setMonitored(true)
+      Taro.showToast({ title: res.message, icon: 'success' })
+      return
+    }
+    if (res.fatal) {
+      await Taro.showModal({ title: '监控没能开启', content: res.message, showCancel: false, confirmText: '知道了' })
+      return
+    }
+    Taro.showToast({ title: res.message, icon: 'none' })
   }
 
   const heat = report?.heat ?? 0
@@ -197,6 +267,28 @@ export default function Profile() {
           >
             {followed ? '已关注' : '+ 关注'}
           </AtButton>
+        </View>
+        {/*
+          监控风险（S2-2）：不挤进上面那行胶囊按钮，而是独占一行 —— 两个理由：
+            · 「关注」和「监控」动作相邻、语义完全不同（关注是记一笔，监控是让云端每天替你盯风险），
+              三个等宽按钮里「+ 监控风险」会被挤成省略号，缩成「+ 监控」又与「+ 关注」分不清；
+            · 监控是**每天真花一次检索**的订阅，先说清它做什么、去哪取消，再让用户点
+              （报告页同样把「风险」二字写进按钮文案，这里更进一步给一行说明）。
+        */}
+        <View className='page-profile__monitor'>
+          <View className='page-profile__monitor-main'>
+            <Text className='page-profile__monitor-title'>监控风险</Text>
+            <Text className='page-profile__monitor-note'>
+              云端每天按人检索一次公开报道，命中风险词才会记一条信号，可在预警页查看或取消。
+            </Text>
+          </View>
+          <View
+            className={`page-profile__monitor-btn${monitored ? ' page-profile__monitor-btn--on' : ''}`}
+            hoverClass='page-profile__monitor-btn--tap'
+            onClick={() => void onToggleMonitor()}
+          >
+            {monitorBusy ? '处理中' : monitored ? '监控中' : '+ 监控'}
+          </View>
         </View>
       </View>
 

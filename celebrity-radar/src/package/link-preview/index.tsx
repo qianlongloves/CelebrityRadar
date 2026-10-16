@@ -4,6 +4,7 @@ import { View, Text, WebView } from '@tarojs/components'
 import { AtButton } from 'taro-ui'
 import EmptyState from '@/components/empty-state'
 import { publicConfig } from '@/config/public'
+import { decodeParam } from '@/utils/route'
 import './index.scss'
 
 /**
@@ -39,11 +40,11 @@ function hitWhitelist(host: string): boolean {
 export default function LinkPreviewPage() {
   const router = useRouter()
   /* query 的值由报告页 encodeURIComponent 处理过（见 pages/report 的 openSource） */
-  const url = decodeURIComponent(router.params.url || '')
-  const title = decodeURIComponent(router.params.title || '')
-  const source = decodeURIComponent(router.params.source || '')
-  const date = decodeURIComponent(router.params.date || '')
-  const summary = decodeURIComponent(router.params.summary || '')
+  const url = decodeParam(router.params.url || '')
+  const title = decodeParam(router.params.title || '')
+  const source = decodeParam(router.params.source || '')
+  const date = decodeParam(router.params.date || '')
+  const summary = decodeParam(router.params.summary || '')
 
   /* 内嵌加载失败（域名未登记 / 站点拒绝内嵌）时退回预览卡，别把用户晾在一片空白上 */
   const [failed, setFailed] = useState(false)
