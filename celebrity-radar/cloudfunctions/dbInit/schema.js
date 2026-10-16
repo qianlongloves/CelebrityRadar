@@ -357,12 +357,22 @@ const collections = [
   },
   {
     name: 'events',
-    purpose: '埋点（9 类 + 周报 weekly_generate + 消息中心 messages_open）',
+    purpose: '埋点（事件名真源 = src/utils/events.ts#TrackEvent；本文件只登记、不校验）',
     acl: ACL.creator,
     fields: [
       f('_id', 'string', { system: true, required: true }),
       f('openid', 'string?', { required: true }),
-      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'revisit_ready', 'revisit_open', 'event_subscribe', 'report_lock_see', 'report_open', 'member_entry'] }),
+      /*
+       * event 的 enumHint 是 `src/utils/events.ts#TrackEvent` 的**登记副本**（本次按该联合类型的顺序排列，
+       * 顺序本身没有语义、用例只钉**名单**）。
+       * 本文件在云侧、读不到 src，只能手抄 ⇒ 必须有个东西盯着，否则它**静默落后**：
+       * 2026-10-16 补齐前它只列了 17 个，而联合类型已有 37 个 —— 少了整整 20 个（都是没被
+       * 「顺手追加」的那批，如 watch_add / report_export / workbench_* / report_history_view）。
+       * 用例 test/cases/74-event-enum.js 钉住**双向一致**（少一个、多一个都红），新增埋点必须两边同步。
+       * ⚠ 它只是**登记**：dbInit 目前并不消费 enumHint（不校验、不告警），别把它当成生效中的白名单 ——
+       * 它保证的仅仅是「埋点名单有唯一真源可对」，而不是「写错会被拦住」。
+       */
+      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'report_kept_member', 'report_knowledge_fallback', 'report_generate_shortfall', 'report_generate_retry', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'report_qa_ask', 'topic_open', 'watch_add', 'watch_remove', 'alert_focus', 'watch_share_arrive', 'monitor_add', 'monitor_remove', 'report_open', 'report_export', 'report_exported', 'workbench_compare', 'workbench_export', 'report_history_view', 'report_version_open', 'report_version_diff', 'revisit_ready', 'revisit_open', 'opinion_pick', 'event_subscribe', 'report_lock_see', 'member_entry'] }),
       f('person_key', 'string?', { required: true }),
       f('props', 'object?', { required: true }),
       f('created_at', 'string', { required: true })

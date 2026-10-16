@@ -557,7 +557,8 @@ describe('E1-② 接线：埋点登记与字段声明（events.ts / dbInit）', 
 
   it("dbInit 声明了 subs 字段，并在 events 的 enumHint 里登记 event_subscribe", () => {
     ok(/f\('subs', 'object\?'/.test(SCHEMA))
-    ok(/'revisit_open', 'event_subscribe'/.test(SCHEMA))
+    const hint = (SCHEMA.match(/enumHint:\s*\[[^\]]*'event_subscribe'[^\]]*\]/) || [])[0] || ''
+    ok(/'event_subscribe'/.test(hint), '只钉「在不在」；名单全量一致由用例 74-event-enum.js 钉住')
     ok(/订阅对象/.test(SCHEMA), '字段用途要写清「键不是 event_key」')
   })
 

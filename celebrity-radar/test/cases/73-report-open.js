@@ -181,8 +181,9 @@ describe('report_open props 与去重', () => {
 /* ═══════════════ 6. 登记：dbInit 的 enumHint ═══════════════ */
 
 describe('report_open 登记进 dbInit 的 events.enumHint', () => {
-  it('enumHint 里追加了 report_open（沿用 event_subscribe 的追加方式）', () => {
-    ok(/'report_lock_see', 'report_open', 'member_entry'/.test(SCHEMA))
+  it('events.enumHint 里登记了 report_open（名单全量一致由用例 74-event-enum.js 机械钉住）', () => {
+    const hint = (SCHEMA.match(/enumHint:\s*\[[^\]]*'report_open'[^\]]*\]/) || [])[0] || ''
+    ok(/'report_open'/.test(hint), '只钉「在不在」；完整名单的双向一致归 74')
   })
 
   it('只登记事件名，不动 events 表的字段（person_key / props 早已在那）', () => {

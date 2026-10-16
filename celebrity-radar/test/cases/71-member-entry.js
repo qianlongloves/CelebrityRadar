@@ -214,7 +214,8 @@ describe('R-2 登记：埋点声明与字段登记（events.ts / dbInit）', () 
     ok(/props\.cut/.test(EVENTS_TS))
   })
 
-  it('dbInit 在 events 的 enumHint 里登记了两个新事件（沿用 event_subscribe 的追加方式）', () => {
-    ok(/'revisit_open', 'event_subscribe', 'report_lock_see', 'report_open', 'member_entry'/.test(SCHEMA))
+  it('dbInit 在 events 的 enumHint 里也登记了这两个（只钉「在不在」，名单全量一致由用例 74 机械钉住）', () => {
+    const hint = (SCHEMA.match(/enumHint:\s*\[[^\]]*'member_entry'[^\]]*\]/) || [])[0] || ''
+    ok(/'report_lock_see'/.test(hint) && /'member_entry'/.test(hint))
   })
 })
