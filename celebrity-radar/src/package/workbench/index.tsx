@@ -13,6 +13,7 @@ import { canExportReport } from '@/utils/report-export'
 import { personWatchLimit } from '@/utils/opinion-access'
 import { fromNow } from '@/utils/time'
 import { track } from '@/utils/events'
+import { openMemberPage } from '@/utils/member-entry'
 import {
   BRIEF_SIGNAL_MAX,
   COMPARE_PICK_MAX,
@@ -252,7 +253,7 @@ export default function Workbench() {
               <View
                 className='page-workbench__limit'
                 hoverClass='page-workbench__limit--tap'
-                onClick={() => Taro.navigateTo({ url: '/package/member/index' })}
+                onClick={() => openMemberPage('workbench')}
               >
                 <Text className='page-workbench__limit-text'>{`免费档最多监控 ${cap} 位`}</Text>
                 <Text className='page-workbench__limit-go'>看会员额度 ›</Text>

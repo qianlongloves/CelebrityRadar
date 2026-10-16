@@ -362,7 +362,7 @@ const collections = [
     fields: [
       f('_id', 'string', { system: true, required: true }),
       f('openid', 'string?', { required: true }),
-      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'revisit_ready', 'revisit_open', 'event_subscribe'] }),
+      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'revisit_ready', 'revisit_open', 'event_subscribe', 'report_lock_see', 'member_entry'] }),
       f('person_key', 'string?', { required: true }),
       f('props', 'object?', { required: true }),
       f('created_at', 'string', { required: true })

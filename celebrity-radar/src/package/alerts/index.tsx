@@ -36,6 +36,7 @@ import { openSourceLink } from '@/utils/source-link'
 import { formatMoment8, fromNow } from '@/utils/time'
 import { decodeParam } from '@/utils/route'
 import { track } from '@/utils/events'
+import { openMemberPage } from '@/utils/member-entry'
 import type { RiskScanRow, RiskSignalRow, ScanLogRow } from '@/types/db'
 import type { EventStatus } from '@/utils/opinion-store'
 import type { SubjectHit } from '@/utils/event-subscribe'
@@ -488,7 +489,7 @@ export default function Alerts() {
             <View
               className='page-alerts__limit'
               hoverClass={isMember ? '' : 'page-alerts__limit--tap'}
-              onClick={isMember ? undefined : () => Taro.navigateTo({ url: '/package/member/index' })}
+              onClick={isMember ? undefined : () => openMemberPage('alerts')}
             >
               <Text className='page-alerts__limit-text'>{watchLimitNote(isMember)}</Text>
               {!isMember && <Text className='page-alerts__limit-go'>去升级 ›</Text>}

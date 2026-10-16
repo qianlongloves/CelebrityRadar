@@ -5,6 +5,7 @@ import Taro from '@tarojs/taro'
    故组件一律从 dist/components/<名字> 取（那一层是 ESM 源码）。用例 70 钉住这一点。 */
 import AtButton from 'taro-ui/dist/components/button'
 import { MEMBER_DAILY_ASK_LIMIT } from '@/utils/member'
+import { openMemberPage } from '@/utils/member-entry'
 import NoticeClose from '@/components/notice-close'
 import {
   QA_HISTORY_MAX,
@@ -538,7 +539,7 @@ export default function QaPanel({
         <View
           className='qa-panel__upsell'
           hoverClass='qa-panel__upsell--tap'
-          onClick={() => Taro.navigateTo({ url: '/package/member/index' })}
+          onClick={() => openMemberPage('qa')}
         >
           <Text className='qa-panel__upsell-text'>
             {`开通会员 · 每日提问提到 ${MEMBER_DAILY_ASK_LIMIT} 次`}

@@ -59,6 +59,8 @@ import {
 } from '@/utils/keyword-alert'
 import { alertNotifyConfigured, requestAlertNotify } from '@/utils/notify'
 import { track } from '@/utils/events'
+import { openMemberPage } from '@/utils/member-entry'
+import type { MemberEntryFrom } from '@/utils/member-entry'
 import { addHistory, markReportViewed } from '@/utils/history'
 import { decodeParam } from '@/utils/route'
 import { ensurePortrait, readPortraits } from '@/utils/portrait'
@@ -1609,12 +1611,17 @@ export default function ReportPage() {
   }, [report, member, memberReady, memberLocked])
 
   /**
-   * 促销条的唯一动作：去会员中心。
+   * 本页所有「去会员中心」动作的唯一出口（促销条、锁态卡、截断提示、目录那行、导出引导）。
    *
    * O-25 删掉了原先「会员态页内滚动到专享卡」的分支 —— 随会员态整条隐藏一起消失，
    * 连带 `Taro.pageScrollTo` 与专享卡上的 `#report-notes` 锚点一并移除，不留死代码。
+   *
+   * ⚠ `from` 是必填的，且**四种呈现各报各的**（R-2，2026-10-16）：本页的升级位有五种形态，
+   * 而 R-2 要回答的正是「哪种呈现真的把人推去了会员页」—— 合成一个来源就再也拆不开，
+   * 而这类数据必须发版时就在（一次发版 = 一次归因窗口，事后补不回来）。
+   * 跳转与埋点都在 `utils/member-entry.ts#openMemberPage`（收口一处，避免漏报）。
    */
-  const onPromoTap = () => void Taro.navigateTo({ url: '/package/member/index' })
+  const onPromoTap = (from: MemberEntryFrom) => openMemberPage(from)
 
   /**
    * 导出报告长图（获客 P0，2026-10-15）。
@@ -1757,6 +1764,29 @@ export default function ReportPage() {
   const relationsPreview = previewRows(report ? report.relations : null, member)
   const dynamicsPreview = previewRows(dynamicsView, member)
   const quotesPreview = previewRows(report ? report.quotes : null, member)
+
+  /*
+   * R-2 的分母：免费读者**真的看到**锁态呈现的那一次页面访问（2026-10-16）。
+   *
+   * 「真的看到」= 会员态已就位 + 不是会员 + 至少有一张锁态卡或一处截断，三者缺一都不报 ——
+   * 否则分母里会混进「这一页本来就没有锁态」的访问，转化率被系统性低估
+   * （与 `opinion_pick`「只在真的设入候选那一刻报」同一条道理）。
+   *   · 必须等 `memberReady`：那之前 `member` 还是初值 false，会把会员当成免费读者报一遍
+   *     （同上面促销条掷骰子的取舍）；
+   *   · 已报过的 personKey 用 ref 记住：报告加载、关注态同步、会员态同步都会触发重渲染，
+   *     不记就每次重渲染补一条，而重渲染次数与「看了几眼」没有关系；
+   *   · 换一份报告要重新报（personKey 变 = 另一次「看到速览」的访问）。
+   */
+  const lockCut =
+    profilePreview.hidden + relationsPreview.hidden + dynamicsPreview.hidden + quotesPreview.hidden
+  const lockSeen = useRef('')
+  useEffect(() => {
+    if (!report || !memberReady || member) return
+    if (lockSeen.current === report.personKey) return
+    if (tocLocked.length === 0 && lockCut === 0) return
+    lockSeen.current = report.personKey
+    track('report_lock_see', { locked: tocLocked.length, cut: lockCut })
+  }, [report, member, memberReady, tocLocked.length, lockCut])
 
   const jumpToSection = useCallback((id: string) => {
     setTocActive(id)
@@ -1980,7 +2010,11 @@ export default function ReportPage() {
         （见 memberReady 的注释）。
       */}
       {report && memberReady && !member && promoOn && (
-        <View className='page-report__vip' hoverClass='page-report__vip--tap' onClick={onPromoTap}>
+        <View
+          className='page-report__vip'
+          hoverClass='page-report__vip--tap'
+          onClick={() => onPromoTap('report_promo')}
+        >
           <Text className='page-report__vip-tag'>会员专享</Text>
           <Text className='page-report__vip-note'>{promo.text}</Text>
           <Text className='page-report__vip-action'>{`${promo.action} ›`}</Text>
@@ -2267,7 +2301,7 @@ export default function ReportPage() {
                 <View
                   className='page-report__toc-more'
                   hoverClass='page-report__toc-more--tap'
-                  onClick={onPromoTap}
+                  onClick={() => onPromoTap('report_toc')}
                 >
                   <Text className='page-report__toc-more-text'>
                     {`完整模板 ${TEMPLATE_SIZE} 节 · 会员另含 ${tocLocked.length} 节 · 每节看全部`}
@@ -2436,7 +2470,7 @@ export default function ReportPage() {
               )}
               {/* S3-3 速览提示：就地写「还有 N 条」（静默少几条等于骗人，见 benefits.ts#REPORT_PREVIEW） */}
               {!!profilePreview.hidden && (
-                <Text className='page-report__preview-note' onClick={onPromoTap}>
+                <Text className='page-report__preview-note' onClick={() => onPromoTap('report_preview')}>
                   {previewHiddenNote(profilePreview.hidden)}
                 </Text>
               )}
@@ -2471,7 +2505,7 @@ export default function ReportPage() {
                 />
               )}
               {!!relationsPreview.hidden && (
-                <Text className='page-report__preview-note' onClick={onPromoTap}>
+                <Text className='page-report__preview-note' onClick={() => onPromoTap('report_preview')}>
                   {previewHiddenNote(relationsPreview.hidden)}
                 </Text>
               )}
@@ -2480,7 +2514,7 @@ export default function ReportPage() {
           )}
 
           
-          {lockedIds.has('sec-commercial') && <LockedCard id='sec-commercial' onOpen={onPromoTap} />}
+          {lockedIds.has('sec-commercial') && <LockedCard id='sec-commercial' onOpen={() => onPromoTap('report_lock')} />}
           {member && commercial && !report.degraded && (
             <View id='sec-commercial' className='card page-report__vip-card'>
               <View className='card-title'>会员专享 · 商业价值速览</View>
@@ -2548,7 +2582,7 @@ export default function ReportPage() {
             字段在免费批次里生成（utils/report.ts 的 BATCH_SPEC.identity），此处只对会员出卡；
             每条都带出处（指不出素材的条目不落库），故这里可以像档案 / 关系那样给出 basis。
           */}
-          {lockedIds.has('sec-endorsement') && <LockedCard id='sec-endorsement' onOpen={onPromoTap} />}
+          {lockedIds.has('sec-endorsement') && <LockedCard id='sec-endorsement' onOpen={() => onPromoTap('report_lock')} />}
           {member && report.endorsements && !report.degraded && (
             <View id='sec-endorsement' className='card page-report__vip-card'>
               <View className='card-title'>会员专享 · 商业合作与代言</View>
@@ -2678,7 +2712,7 @@ export default function ReportPage() {
                 )
               })}
               {!!dynamicsPreview.hidden && (
-                <Text className='page-report__preview-note' onClick={onPromoTap}>
+                <Text className='page-report__preview-note' onClick={() => onPromoTap('report_preview')}>
                   {previewHiddenNote(dynamicsPreview.hidden)}
                 </Text>
               )}
@@ -2719,7 +2753,7 @@ export default function ReportPage() {
                 )
               })}
               {!!quotesPreview.hidden && (
-                <Text className='page-report__preview-note' onClick={onPromoTap}>
+                <Text className='page-report__preview-note' onClick={() => onPromoTap('report_preview')}>
                   {previewHiddenNote(quotesPreview.hidden)}
                 </Text>
               )}
@@ -2927,7 +2961,7 @@ export default function ReportPage() {
             ⚠ 两个字段要**各自**判空：老会员报告只有 memberNotes，新报告才可能有 conflicts，
               用 memberNotes 的存在与否去决定整卡出不出，会让只带 conflicts 的报告整张消失。
           */}
-          {lockedIds.has('sec-member') && <LockedCard id='sec-member' onOpen={onPromoTap} />}
+          {lockedIds.has('sec-member') && <LockedCard id='sec-member' onOpen={() => onPromoTap('report_lock')} />}
           {member && !report.degraded && (
             <View id='sec-member' className='card page-report__notes'>
               {/* 标题行兼作「会员权益已生效」的确认位（O-25）：顶部促销条已对会员隐藏，
@@ -2997,7 +3031,7 @@ export default function ReportPage() {
             与 sec-member 同一套闸门（会员 + 非降级简版），故读到的 report 里通常没有这个键时
             要出「为什么没有」的说明卡，而不是让整卡消失。
           */}
-          {lockedIds.has('sec-peers') && <LockedCard id='sec-peers' onOpen={onPromoTap} />}
+          {lockedIds.has('sec-peers') && <LockedCard id='sec-peers' onOpen={() => onPromoTap('report_lock')} />}
           {member && !report.degraded && (
             <View id='sec-peers' className='card page-report__notes'>
               <View className='card-title'>会员专享 · 同领域坐标</View>
@@ -3024,7 +3058,7 @@ export default function ReportPage() {
             素材里指不出出处的条目在数据层（utils/report.ts#sanitizeReport）就已被整条剔除。
             与 sec-peers / sec-member 同一套闸门（会员 + 非降级简版），故缺这个键时要出说明卡。
           */}
-          {lockedIds.has('sec-affiliation') && <LockedCard id='sec-affiliation' onOpen={onPromoTap} />}
+          {lockedIds.has('sec-affiliation') && <LockedCard id='sec-affiliation' onOpen={() => onPromoTap('report_lock')} />}
           {member && !report.degraded && (
             <View id='sec-affiliation' className='card page-report__vip-card'>
               <View className='card-title'>会员专享 · 企业关联</View>
@@ -3054,7 +3088,7 @@ export default function ReportPage() {
               态度）都可能为空，但卡片本身照出 —— 空的那块写明口径，别让整卡消失。降级简版除外。
               ⚠ 数据仍在**免费批次**里生成（对比页 / 话题速览 / 问答要拿它当上下文，见
                  utils/report-toc.ts 顶部的分档口径），这里只是不再给免费用户出这张卡。 */}
-          {lockedIds.has('sec-stance') && <LockedCard id='sec-stance' onOpen={onPromoTap} />}
+          {lockedIds.has('sec-stance') && <LockedCard id='sec-stance' onOpen={() => onPromoTap('report_lock')} />}
           {member && !report.degraded && (
             <View id='sec-stance' className='card'>
               <View className='card-title'>会员专享 · 立场与舆情</View>
@@ -3175,7 +3209,7 @@ export default function ReportPage() {
               是当「页脚工具」用 —— 读到这里遇到没看懂的词，往回翻不如就地查。也是全项目唯一
               不带出处的模型段落（它答的是词义，不是关于本人的事实断言，理由见 utils/report.ts
               的 Schema 注释）。数据仍在免费批次生成，此处只对会员出卡。 */}
-          {lockedIds.has('sec-glossary') && <LockedCard id='sec-glossary' onOpen={onPromoTap} />}
+          {lockedIds.has('sec-glossary') && <LockedCard id='sec-glossary' onOpen={() => onPromoTap('report_lock')} />}
           {member && report.glossary && (
             <View id='sec-glossary' className='card'>
               <View
@@ -3369,7 +3403,7 @@ export default function ReportPage() {
           </View>
 
           {!!exportGuide && (
-            <View className='page-report__export-guide' onClick={onPromoTap}>
+            <View className='page-report__export-guide' onClick={() => onPromoTap('report_export')}>
               <Text>{exportGuide === 'data' ? reportDataExportNote() : reportExportNote()}</Text>
             </View>
           )}

@@ -3,6 +3,7 @@ import Taro, { useDidShow } from '@tarojs/taro'
 import { View, Text, Button, Input, Image } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { ensureLogin, updateProfile } from '@/utils/auth'
+import { openMemberPage } from '@/utils/member-entry'
 import {
   clearLocalSettings,
   clearLocalSettingsCache,
@@ -180,7 +181,7 @@ export default function Mine() {
         confirmText: '去开通',
         cancelText: '再想想'
       })
-      if (res.confirm) Taro.navigateTo({ url: '/package/member/index' })
+      if (res.confirm) openMemberPage('mine_quality')
       return
     }
     setPreferredTier(q.key)
@@ -807,7 +808,7 @@ export default function Mine() {
           <View
             className='page-mine__member-entry'
             hoverClass='page-mine__member-entry--tap'
-            onClick={() => Taro.navigateTo({ url: '/package/member/index' })}
+            onClick={() => openMemberPage('mine')}
           >
             <View className='page-mine__member-entry-main'>
               <Text className='page-mine__member-entry-title'>

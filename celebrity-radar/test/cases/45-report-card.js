@@ -379,7 +379,7 @@ describe('报告页：导出入口 / 非弹窗引导 / 长图弹层（静态约�
   it('免费引导是**非弹窗**：就地一行 + 跳会员页，不用 showModal', () => {
     ok(page.includes('page-report__export-guide'), '缺引导行样式钩子')
     ok(page.includes('reportExportNote('), '引导文案取自 utils/report-card（不页面内写死）')
-    ok(page.includes("'/package/member/index'"), '引导行点了要能进会员页')
+    ok(page.includes("onPromoTap('report_export')"), '引导行点了要能进会员页（来源 report_export）')
     ok(scss.includes('&__export-guide'), '引导行样式缺失')
     notOk(page.slice(at, at + 900).includes('showModal'), '免费拦截不得用弹窗')
   })

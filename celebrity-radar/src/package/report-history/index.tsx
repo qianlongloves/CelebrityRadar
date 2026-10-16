@@ -7,6 +7,7 @@ import { decodeParam } from '@/utils/route'
 import { clipText } from '@/utils/text'
 import { fromNow } from '@/utils/time'
 import { track } from '@/utils/events'
+import { openMemberPage } from '@/utils/member-entry'
 import {
   canViewVersionReport,
   compareUnavailableNote,
@@ -266,7 +267,7 @@ export default function ReportHistory() {
         <View
           className='card page-report-history__wall'
           hoverClass='page-report-history__wall--tap'
-          onClick={() => void Taro.navigateTo({ url: '/package/member/index' })}
+          onClick={() => openMemberPage('history')}
         >
           <Text className='page-report-history__wall-text'>{versionHistoryNote()}</Text>
           <Text className='page-report-history__wall-go'>看会员权益 ›</Text>

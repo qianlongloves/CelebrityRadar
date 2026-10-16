@@ -28,6 +28,7 @@ import { useAuth } from '@/stores/auth'
 import { domainLabel, domainStyleCode } from '@/config/domains'
 import { dayKey8, fromNow } from '@/utils/time'
 import { track } from '@/utils/events'
+import { openMemberPage } from '@/utils/member-entry'
 import { toUserMessage } from '@/utils/error'
 import './index.scss'
 
@@ -275,7 +276,7 @@ export default function Weekly() {
     track('share', { channel: 'copy', scope: 'weekly' })
   }
 
-  const goMember = () => void Taro.navigateTo({ url: '/package/member/index' })
+  const goMember = () => openMemberPage('weekly')
 
   /**
    * 「导出分享图」入口（P4-B，对所有用户可见，分层在点击那一刻生效）：

@@ -276,7 +276,7 @@ describe('周报页：导出入口 / 非弹窗引导 / 弹层（静态约束）'
   it('免费引导是**非弹窗**：就地一行 + 跳会员页，不用 showModal', () => {
     ok(page.includes('page-weekly__export-guide'), '缺引导行样式钩子')
     ok(page.includes('weeklyExportNote('), '引导文案取自 utils/weekly-brief（不页面内写死）')
-    ok(page.includes("'/package/member/index'"), '引导行点了要能进会员页')
+    ok(page.includes("openMemberPage('weekly')"), '引导行点了要能进会员页（收口到 openMemberPage，来源 weekly）')
     ok(scss.includes('&__export-guide'), '引导行样式缺失')
     /* 导出入口附近不得出现 showModal（分层必须是「非弹窗」的） */
     const at = page.indexOf('const onExport')

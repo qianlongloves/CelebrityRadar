@@ -169,7 +169,7 @@ describe('S3-3 报告页接入', () => {
     const src = page()
     const notes = src.match(/page-report__preview-note/g) || []
     eq(notes.length, 4, `四处截断各一条提示，实际 ${notes.length} 处`)
-    const clickable = src.match(/className='page-report__preview-note' onClick=\{onPromoTap\}/g) || []
+    const clickable = src.match(/className='page-report__preview-note' onClick=\{\(\) => onPromoTap\('report_preview'\)\}/g) || []
     eq(clickable.length, 4, '提示要可点（它是这一档看不到的量，也就是最该被点到的那一行）')
     ok(/previewHiddenNote\(/.test(src), '文案要走 previewHiddenNote（口径统一在真源里）')
   })

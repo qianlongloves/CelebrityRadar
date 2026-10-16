@@ -25,6 +25,7 @@ import {
 import type { EventStatus } from '@/utils/opinion-store'
 import { findSubjectSub, toggleSubject, SUB_MAX } from '@/utils/event-subscribe'
 import { track } from '@/utils/events'
+import { openMemberPage } from '@/utils/member-entry'
 import { formatMoment8 } from '@/utils/time'
 import { decodeParam } from '@/utils/route'
 import './index.scss'
@@ -373,7 +374,7 @@ export default function EventTimeline() {
   })
 
   const goBack = () => void Taro.navigateBack()
-  const goMember = () => void Taro.navigateTo({ url: '/package/member/index' })
+  const goMember = () => openMemberPage('event')
 
   /**
    * 页首名称（2026-10-16 新增）：这页此前只有一行灰色说明，没有**名字** —— 用户从事件卡点进来，

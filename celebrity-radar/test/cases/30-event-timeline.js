@@ -200,7 +200,7 @@ describe('时间线分层：免费限 5 条、会员不受限（复用同一套�
     const page = read('package/event/index.tsx')
     ok(page.includes('sliceDetail('), '免费限 5 要走 sliceDetail')
     ok(page.includes('moreDetailNote('), '截断提示复用 moreDetailNote')
-    ok(page.includes('/package/member/index'), '提示行应能跳会员页')
+    ok(page.includes("openMemberPage('event')"), '提示行应能跳会员页（收口到 openMemberPage，来源 event）')
     ok(page.includes('pageSlice('), '分页走 pageSlice')
     ok(page.includes('usePullDownRefresh(') && page.includes('useReachBottom('), '下拉刷新 + 触底加载更多')
   })
