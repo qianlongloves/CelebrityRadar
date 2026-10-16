@@ -535,6 +535,12 @@ const collections = [
     ],
     indexes: [
       ix('idx_last_at', [['last_at', 'desc']], { optional: true, supports: '端上按最近活动时间取事件' }),
+      /* 事件时间线页按 `event_key` 只取**这一条**（见 opinion-store#loadStoredEventByKey）；
+         没有它，每次进详情页都得扫全表。`event_key` 唯一，单个升序键即可 */
+      ix('idx_event_key', [['event_key', 'asc']], {
+        optional: true,
+        supports: '按 event_key 单条读取（事件时间线页）'
+      }),
       /* 云函数每轮按 updated_at 降序取「最近更新的 N 条」来沿用旧键（见 opinionCluster#listRecent）；
          没有它，每轮比较都要对全表排序 */
       ix('idx_updated_at', [['updated_at', 'desc'], ['_id', 'asc']], {

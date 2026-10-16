@@ -522,6 +522,38 @@ describe('端上降级：读库失败 / 集合为空 → 回落本端聚类', ()
     eq(await store.loadStoredEvents(), null)
   })
 
+  it('loadStoredEventByKey：只取该 event_key 的一条（未命中 [] / 读失败 null）', async () => {
+    env.resetAll()
+    loginStore()
+    const store = env.load('utils/opinion-store')
+    env.db.__seed('opinion_events', [
+      makeRow({ _id: 'e1', event_key: 'k1', title: '甲事件' }),
+      makeRow({ _id: 'e2', event_key: 'k2', title: '乙事件' })
+    ])
+
+    const hit = await store.loadStoredEventByKey('k2')
+    eq(hit.length, 1, '命中就只有那一条（不再是「读回整表再 filter」）')
+    eq(hit[0].event_key, 'k2')
+    eq((await store.loadStoredEventByKey('nope')).length, 0, '库里没有这一键 = 空数组（不是失败）')
+    eq((await store.loadStoredEventByKey('')).length, 0, '空 key 不查库')
+
+    env.db.__setReadFailing('opinion_events', true)
+    eq(await store.loadStoredEventByKey('k1'), null, '读失败 = null（调用方据此回落本端聚类）')
+  })
+
+  it('loadEventDigest：只回 event_key + last_at（收件箱不该把整条事件拉回来）', async () => {
+    env.resetAll()
+    loginStore()
+    const store = env.load('utils/opinion-store')
+    env.db.__seed('opinion_events', [makeRow({ _id: 'e1', event_key: 'k1', title: '甲事件' })])
+
+    const rows = await store.loadEventDigest()
+    eq(rows.length, 1)
+    eq(rows[0].event_key, 'k1')
+    ok(typeof rows[0].last_at === 'string', 'last_at 必须带回来（判「有新进展」用的是它）')
+    eq(rows[0].title, undefined, '整条事件的字段不该回（投影生效 —— 这里就是省流量的证据）')
+  })
+
   it('事件概要卡固定首屏（不按会员档放全）；单事件时间线仍按会员档限 5 条', () => {
     env.resetAll()
     const store = env.load('utils/opinion-store')

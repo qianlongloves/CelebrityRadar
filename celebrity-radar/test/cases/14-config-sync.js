@@ -192,4 +192,16 @@ describe('权益配置真源 / 云端副本（config:sync 机制）', () => {
     ok(pkg.scripts['config:sync'], '缺 config:sync')
     ok(pkg.scripts['config:check'], '缺 config:check（测试与 CI 用它做只读校验）')
   })
+
+  it('`npm test` 必须含页面级类型检查（页面 .tsx 不在 test/tsconfig 的 include 里）', () => {
+    const pkg = JSON.parse(read(rel('package.json')))
+    /* 由来：`test/tsconfig.test.json` 的 include 只有 utils / config / stores / types，
+       `src/pages`、`src/package`、`src/components` 下的 .tsx **完全不在类型检查范围内** ——
+       实测有一个类型错误正是这样「测试全绿」溜过去的（只有手工跑 tsc -p tsconfig.json 才发现）。
+       所以把页面级检查钉进 test 脚本：CI 绿必须同时意味着页面能编译。 */
+    ok(
+      /tsc\s+--noEmit\s+-p\s+tsconfig\.json/.test(pkg.scripts['test'] || ''),
+      'npm test 里要跑 `tsc --noEmit -p tsconfig.json`（否则页面层类型错误测不出来）'
+    )
+  })
 })

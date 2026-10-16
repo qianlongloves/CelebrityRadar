@@ -15,6 +15,7 @@ import type { OpinionEvent } from '@/utils/opinion-events'
 import {
   emptyStatus,
   eventNewness,
+  invalidateStoredEvents,
   loadEventStatus,
   loadStoredEvents,
   markEventRead,
@@ -189,6 +190,10 @@ export default function Events() {
    * `resetPage` 只在**下拉刷新**（用户显式要求从头来）时为 true —— 从子页返回（`useDidShow`）
    * 虽然也调用本函数**重取数据**（数据一定刷新，不含「为了保位置就不更新」），但**不重置页号**，
    * 用户之前翻到的位置得以保留。
+   *
+   * 落库事件走 `loadStoredEvents` 的**内存级 TTL 缓存**（见 `EVENT_CACHE_TTL`）：页面重入 / 与舆情页
+   * 共用一份数据时不再重复跨页拉 200 条。作废缓存只发生在**下拉刷新**那一处（用户显式要求重取，
+   * 见下方 usePullDownRefresh）—— 否则用户拉了一下却仍看到缓存里那份数据，就成了「拉了没用」。
    */
   const load = useCallback(
     async (resetPage = false) => {
@@ -230,7 +235,10 @@ export default function Events() {
   })
 
   usePullDownRefresh(async () => {
-    /* 下拉刷新 = 重新取数并回到第一页（用户显式要求从头来） */
+    /* 下拉刷新 = 重新取数并回到第一页（用户显式要求从头来）。
+       这里**显式作废**落库事件的内存级缓存：否则「拉了刷新」会命中 TTL 内的缓存、界面纹丝不动
+       —— 那正是这层缓存唯一可能被用户察觉到的副作用，必须在唯一一个「显式重取」入口上关掉。 */
+    invalidateStoredEvents()
     await load(true)
     Taro.stopPullDownRefresh()
   })

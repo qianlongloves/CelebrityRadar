@@ -16,7 +16,7 @@ import {
   emptyStatus,
   eventNewness,
   loadEventStatus,
-  loadStoredEvents,
+  loadStoredEventByKey,
   markEventRead,
   newnessLabel,
   resolveEventByKey,
@@ -264,10 +264,12 @@ export default function EventTimeline() {
       setEventStatus(emptyStatus())
     }
 
-    /* 读落库事件（读失败返回 null，与「集合为空」区分开，都回落到本端聚类） */
-    let stored: Awaited<ReturnType<typeof loadStoredEvents>> = null
+    /* 读落库事件（读失败返回 null，与「集合为空」区分开，都回落到本端聚类）。
+       只按本页的 `event_key` 取**这一条**：以前是把最近 200 条全读回来再 filter，
+       为了定位 1 条事件花掉十次往返、几百 KB。 */
+    let stored: Awaited<ReturnType<typeof loadStoredEventByKey>> = null
     try {
-      stored = await loadStoredEvents()
+      stored = await loadStoredEventByKey(rawKey)
     } catch {
       stored = null
     }

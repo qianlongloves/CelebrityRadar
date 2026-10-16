@@ -8,11 +8,12 @@
  * 撤销会员同样是写会员数据 —— 换个地方写，这条不变量就只剩一半，「会员为什么变了」不再只有一个答案。
  * 顺带也不新增部署单元：对账挂在 payCallback 自己的定时触发器上（cloudbaserc.json 的 `payReconcile`）。
  *
- * 本模块做三件事 + 一个写口，全部**幂等、可重复跑**（对账的全部价值就在这里）：
+ * 本模块做三件事 + 一个写口 + 一处报告，全部**幂等、可重复跑**（对账的全部价值就在这里）：
  *   ① 补发货：`granting` 残留且已超出微信重试窗口 ⇒ 继续发货 + 置 `paid`（P1-7 前半）
  *   ② 补镜像：权威行与镜像行不一致 ⇒ **以权威覆盖镜像**（P1-7 后半）
  *   ③ 撤销：订单已 `refunded` 且未处理过 ⇒ 从会员有效期里扣掉这一单买的天数（P1-6）
  *   ④ `adminOp:'refund'`：运营写口，把订单置 `refunded`（能这么写订单的只有它）
+ *   ⑤ 闸门留痕报告：被调用方闸门拦下且带订单号的单 ⇒ 报进 summary 等人工核对（**只报不改**）
  *
  * 四处边界（都是最容易做错的地方）：
  *   - ② 只能「以权威覆盖镜像」，**绝不能反方向**。users 是「仅创建者可读写」，端上能改自己那一行；
@@ -22,7 +23,9 @@
  *     反过来说：本函数做的是「把端上能改的那份拉回与权威一致」，跑得越勤，端上伪造的窗口越小。
  *   - ③ 只扣「这一单确实发过货」的天数（`granted_at` 有值，或权威行 `last_order_id` 命中这一单）。
  *     没发过货的退款单只改订单状态、不碰会员 —— 否则会连用户其它订单买的天数一起吞掉。
- *     扣减按 `max(now, 原有效期 - days)`：只退掉这一单的，不顺带把用户变成「从未是会员」。
+ *     扣减**优先用订单账本重算**「不含这一单」的到期时刻，`max(now, 原有效期 - days)` 只是下界与退路：
+ *     「直接减 days」只在**这一单是最后一单**时才对，退一单更早的订单会把之后那一单买的天数一起吃掉
+ *     （详见 ledgerExpiryWithout）。下限是现在 —— 不顺带把用户变成「从未是会员」。
  *   - ① 只碰超出微信重试窗口的 `granting`：让微信自己补优先（它更快，退避重试到 24 小时），
  *     对账只在它彻底放弃之后兜底。窗口取 30 分钟，与最长一次退避（3600 秒）同量级。
  *   - ④ 拒绝 `granting` 态的订单：那时候货发到一半，置 `refunded` 会和发货竞态
@@ -53,6 +56,14 @@ const MIRROR_SCAN_LIMIT = 100
 /** 权威行上「已撤销退款的订单号」名单保留多少条（真正的幂等判据在订单行的 refund_revoked_at，
  *  这个名单只用来自愈「扣了权威、还没写标记」那一段，留 20 条远够） */
 const REFUND_LOG_MAX = 20
+/**
+ * 退款撤销时最多读多少条订单账本（见 ledgerExpiryWithout）。
+ * 命中这个上限说明账本被截断、算出来的有效期不可信 —— 那时宁可退回「按天数减法」，也不拿半份账本乱算。
+ * 200 单 × 31 天 ≈ 17 年会员，正常用户到不了；真到了就退回保守口径并留日志。
+ */
+const LEDGER_LIMIT = 200
+/** 账本翻页的每页条数：取小程序端也吃得下的 20，两端行为一致（与端上 db.ts 的分页口径同源） */
+const LEDGER_PAGE = 20
 
 module.exports = function createAfterSales(deps) {
   const {
@@ -106,7 +117,14 @@ module.exports = function createAfterSales(deps) {
       /* 扣减基数取**权威**的有效期（不信镜像：那是端上能改的一份），下限是现在 ——
          只退掉这一单买的天数，不顺带把用户变成「从未是会员」 */
       const base = tsOf(auth.expires_at)
-      expiresAt = new Date(Math.max(Date.now(), base - days * DAY_MS)).toISOString()
+      const subtract = Math.max(Date.now(), base - days * DAY_MS)
+      /* 但「直接减 days」只在**这一单是最后一单**时才是精确答案（见 ledgerExpiryWithout）：
+         退一单更早的订单，那样减会把之后那一单买的天数一起吃掉。故优先用订单账本重算；
+         账本拿不到就退回减法。取 max 是因为账本**不含人工发放**（adminOp:'grantMember' 不产生订单行），
+         那一支保住人工发放的天数；clamp 到 base 是「退款只能减、绝不能加」。 */
+      const ledger = await ledgerExpiryWithout(openid, outTradeNo)
+      const next = ledger === null ? subtract : Math.min(base, Math.max(subtract, ledger))
+      expiresAt = new Date(Math.max(Date.now(), next)).toISOString()
       /* 先权威后镜像 —— 与发货同一个顺序、同一套理由：权威生效即「云端认的会员已经变了」 */
       await writeMembership(openid, {
         plan: auth.plan,
@@ -114,7 +132,10 @@ module.exports = function createAfterSales(deps) {
         last_order_id: auth.last_order_id,
         refunded_orders: logged.concat([outTradeNo]).slice(-REFUND_LOG_MAX)
       })
-      log(`退款撤销：订单 ${outTradeNo} openid=${openid} 扣 ${days} 天，有效期 ${auth.expires_at} → ${expiresAt}`)
+      log(
+        `退款撤销：订单 ${outTradeNo} openid=${openid} 扣 ${days} 天，有效期 ${auth.expires_at} → ${expiresAt}` +
+        `（${ledger === null ? '拿不到订单账本，按天数减法' : '按订单账本重算'}）`
+      )
     } else {
       log(`退款撤销：订单 ${outTradeNo} 已扣过（权威行 refunded_orders 命中），本次只补镜像`)
     }
@@ -129,6 +150,63 @@ module.exports = function createAfterSales(deps) {
     }
 
     return { revoked: !already, skipped: already ? '已扣过，本次只补镜像' : null, expires_at: expiresAt }
+  }
+
+  /**
+   * 用 `orders` 账本重算「不含这一单」时的到期时刻；**拿不到账本就返回 `null`**（调用方退回减法）。
+   *
+   * 为什么需要它：发货时的叠加是**栈式**的 —— `exp = max(exp, 这一单的 granted_at) + days`。
+   * 于是「退掉某一单」的精确答案 = 把**其余已付款单**按 `granted_at` 升序重新叠一遍：
+   *   · 只做减法（`原有效期 - days`）等价于假设「这一单是最后一单」；
+   *   · 用户「先买 A、又买 B」之后退 A（更早的那单），减法会把 **B 买的天数一起吃掉** ——
+   *     那是用户已经付过钱的天数，本项目最不能接受的失败模式。
+   *   · 反过来，A 的天数在买 B 之前就已经漫过（`granted_at(B) > 到期(A)`）时，退 A 本该**一天都不扣**，
+   *     减法也会扣掉 days 天。两种偏差都指向「必须按账本重算」。
+   *
+   * 何时返回 `null`（都退回减法，宁可保守也不拿半份数据乱算）：
+   *   · 读 `orders` 失败；· 命中 `LEDGER_LIMIT`（被截断的账本算出来偏小，会多扣）。
+   * 账本**不含人工发放**（`adminOp:'grantMember'` 不产生订单行），所以本函数的返回值只是下界，
+   * 调用方取 `max(减法结果, 账本值)` —— 人工发放的天数由减法那一支保住。
+   */
+  async function ledgerExpiryWithout(openid, outTradeNo) {
+    try {
+      /* 必须**翻页**读：单次 `get` 的条数上限各端不同（小程序 20 / 云函数 100），
+         而超限时它**不报错、只是少给几行** —— 想确认「有没有更多」只能靠「这一页没取满」。 */
+      const rows = []
+      for (let offset = 0; offset < LEDGER_LIMIT; offset += LEDGER_PAGE) {
+        const res = await db
+          .collection('orders')
+          .where({ _openid: openid, status: 'paid' })
+          .orderBy('granted_at', 'asc')
+          /* 末尾必须补唯一的 `_id` 排序键（同端上 db.ts#fetchAll 的口径）：
+             下面是 `skip/limit` 深分页，而 skip 分页只对**排序确定**的结果集安全 ——
+             同一时刻发货的多单 `granted_at` 常常一模一样，主键相同时它们在库里的先后没有承诺，
+             两次请求之间就会重复或漏掉文档。漏行 ⇒ 重算出的有效期偏小 ⇒ **多扣用户天数**；
+             重复 ⇒ 偏大（少扣，稍好但也错）。补唯一键之后顺序整体确定，切片才等于「按确定顺序切」。 */
+          .orderBy('_id', 'asc')
+          .skip(offset)
+          .limit(LEDGER_PAGE)
+          .get()
+        const page = res.data || []
+        rows.push(...page)
+        if (page.length < LEDGER_PAGE) break
+      }
+      if (rows.length >= LEDGER_LIMIT) {
+        log(`退款撤销：订单账本已达 ${LEDGER_LIMIT} 单上限，退回按天数减法（订单 ${outTradeNo}）`)
+        return null
+      }
+      let exp = 0
+      for (const o of rows) {
+        if (!o || String(o._id) === outTradeNo) continue
+        const d = Number(o.days) || 0
+        if (d <= 0) continue
+        exp = Math.max(exp, tsOf(o.granted_at)) + d * DAY_MS
+      }
+      return exp
+    } catch (err) {
+      log(`退款撤销：读订单账本失败，退回按天数减法（订单 ${outTradeNo}）—— ${msgOf(err)}`)
+      return null
+    }
   }
 
   /**
@@ -342,10 +420,64 @@ module.exports = function createAfterSales(deps) {
     }
   }
 
+  /* ────────────────── ④ 闸门留痕：只报不改，等人工核对 ────────────────── */
+
+  /**
+   * 把「被调用方闸门拦下、且带着订单号」的单报出来（痕迹由 index.js#markGuardBlocked 写下）。
+   *
+   * **只报不改**：能被拦下说明调用方自称「我收到了支付成功通知」，而这份载荷端上同样造得出 ——
+   * 拿它发货，等于把 A2 那道闸门又打开一次（自授会员）。真正能作为发货依据的只有向微信查单
+   * （`cloud.cloudPay.queryOrder`），那需要线上真机验证过接口形态之后再接；
+   * 在那之前，这里把它变成**一轮对账内必然被看见**的一行日志 + summary，
+   * 运营核对商户平台后可用 `adminOp:'grantMember'` 人工补发。
+   *
+   * 为什么否则就没人发现：闸门拦下的调用**不会**把订单推进 `granting`，
+   * 于是 ①补发货那一趟永远扫不到它 —— 订单会静静停在 `pending`，直到用户来投诉。
+   *
+   * 报过就打 `guard_blocked_reported` 标记，避免每轮对账都重复报同一单（噪声会淹没真信号）；
+   * 痕迹 `guard_blocked` 本身留着，供事后查「这一单当时是不是真的付过钱」。
+   */
+  async function reconcileGuardBlocked(summary) {
+    const _ = db.command
+    try {
+      const res = await db
+        .collection('orders')
+        .where(
+          _.and([
+            { guard_blocked: true },
+            _.or([{ guard_blocked_reported: _.exists(false) }, { guard_blocked_reported: null }])
+          ])
+        )
+        .orderBy('_id', 'asc')
+        .limit(SCAN_LIMIT)
+        .get()
+      const rows = res.data || []
+      summary.guardBlocked = rows.length
+      for (const o of rows) {
+        if (!o || !o._id) continue
+        summary.skipped.push(
+          `${o._id}: 支付通知带着端上上下文被闸门拦下（${o.guard_blocked_at || '时间未知'}），` +
+          `请核对商户平台是否已收款，已收款则用 adminOp:'grantMember' 补发`
+        )
+        await db
+          .collection('orders')
+          .doc(o._id)
+          .update({ data: { guard_blocked_reported: nowIso() } })
+      }
+    } catch (err) {
+      /* 报告本身失败不该影响对账的其它三类（它们是真补救，这里只是叫人来看） */
+      summary.skipped.push(`闸门留痕扫描失败：${msgOf(err)}`)
+    }
+  }
+
   /**
    * 一轮对账（定时触发器 `payReconcile` 触发，或运营用 `adminOp:'reconcile'` 手动跑）。
-   * 单类失败不影响其它两类：这里刻意**不**兜住整体异常 —— 三类各自的 for 里已经逐条兜住，
-   * 真从外面抛出来的只可能是「整张表读不到」，那本该在日志里显眼一点。
+   *
+   * **四类各自兜住**（2026-10-16 修）：原先只在各自的 for 里逐条兜，而 `await ...get()` 那一步
+   * 抛错（整张表读不到 —— 权限没开、集合缺失、瞬时故障）会**整轮中断**：后面三类的补救一条都不跑。
+   * 表现是「对账跑了两小时，退款撤销一次都没执行」，而日志里只有一条读表错误，
+   * 看起来像「这几类都没活干」。一道闸门坏掉不该关上另外三道，故每一类外面再兜一层，
+   * 把失败记进 skipped（人工视角要能看见），下一轮（每小时）自愈。
    */
   async function reconcile() {
     const summary = {
@@ -358,18 +490,36 @@ module.exports = function createAfterSales(deps) {
       revoked: 0,
       /** 自动补救次数用尽的单（P2-24）：>0 就该有人去看一眼，别只看 skipped 的总数 */
       stuck: 0,
+      /** 被调用方闸门拦下、且带着订单号的单（见 reconcileGuardBlocked）：>0 必须人工核对 */
+      guardBlocked: 0,
       skipped: []
     }
-    await reconcileStaleGrants(summary)
-    await reconcileMirrors(summary)
-    await reconcileRefunds(summary)
+    /* 逐类跑、逐类兜（见本函数注释）：一类读表失败只丢自己那一类，绝不拖掉另外三类 */
+    const step = async (label, run) => {
+      try {
+        await run(summary)
+      } catch (err) {
+        summary.skipped.push(`${label}：本轮整类失败（${msgOf(err)}）`)
+        log(`对账「${label}」整类失败（其余几类照跑，下一轮再试）：${msgOf(err)}`)
+      }
+    }
+    await step('补发货', reconcileStaleGrants)
+    await step('补镜像', reconcileMirrors)
+    await step('退款撤销', reconcileRefunds)
+    await step('闸门留痕', reconcileGuardBlocked)
     log(
       `对账完成：granting 候选 ${summary.granting} / 补发货 ${summary.granted}，` +
       `补镜像 ${summary.mirrors}，退款单 ${summary.refunded} / 撤销 ${summary.revoked}，` +
-      `转人工 ${summary.stuck}，跳过 ${summary.skipped.length}`
+      `闸门留痕 ${summary.guardBlocked}，转人工 ${summary.stuck}，跳过 ${summary.skipped.length}`
     )
     if (summary.stuck > 0) {
       log(`⚠ 有 ${summary.stuck} 笔订单自动补救已达 ${MAX_RECONCILE_ATTEMPTS} 次上限，请人工核查（见 skipped 明细）`)
+    }
+    if (summary.guardBlocked > 0) {
+      log(
+        `⚠ 有 ${summary.guardBlocked} 笔订单曾被调用方闸门拦下（形如「端上上下文的支付通知」）：` +
+        `若它们在商户平台确已支付，用 adminOp:'grantMember' 补发；否则清理这些痕迹`
+      )
     }
     return summary
   }
@@ -424,8 +574,8 @@ module.exports = function createAfterSales(deps) {
    *
    * 为什么不新开一个云函数：写会员数据 = 写 `memberships` 权威 + 写 `users.membership` 镜像，
    * 本函数是全项目**唯一允许写会员数据的地方**（见 index.js 顶部）。手动发放同样要两处都写、
-   * 值一致，于是复用 grantMembership 的 `base = max(now, 权威, 镜像)` 与 writeMembership /
-   * writeMirror，不另起炉灶。
+   * 值一致，于是复用 grantMembership 的基数口径（`max(now, 权威有效期)`，镜像只在权威行没有
+   * 有效期时才参与）与 writeMembership / writeMirror，不另起炉灶。
    *
    * last_order_id **保留权威行现有值**（若为首次发放则用 `manual:<时间>` 占位）：
    * 手动发放不该覆盖真实订单留在权威行上的发货凭据 —— 覆盖了，微信再重试那笔订单时
@@ -444,7 +594,10 @@ module.exports = function createAfterSales(deps) {
 
     const auth = await readMembership(openid)
     const mirror = row.membership || null
-    const base = Math.max(Date.now(), tsOf(auth && auth.expires_at), tsOf(mirror && mirror.expires_at))
+    /* 与发货同一套基数口径：权威行有有效期就只信权威；镜像只在权威行没有有效期（迁移期老会员）时才用
+       —— 端上能改镜像，取 max 等于把端上自授的值搬进权威行（见 index.js#grantMembership） */
+    const authTs = tsOf(auth && auth.expires_at)
+    const base = Math.max(Date.now(), authTs, authTs > 0 ? 0 : tsOf(mirror && mirror.expires_at))
     const expiresAt = new Date(base + days * DAY_MS).toISOString()
     const lastOrderId = (auth && auth.last_order_id) || `manual:${nowIso()}`
 

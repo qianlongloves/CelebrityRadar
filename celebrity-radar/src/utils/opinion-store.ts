@@ -180,18 +180,141 @@ export async function setEventFollow(
 /* ─────────────────────────── 读事件 + 展示转换 ─────────────────────────── */
 
 /**
+ * 落库事件的**内存级 TTL 缓存**时长（毫秒）。
+ *
+ * 为什么要有这层缓存：读一次 `opinion_events` 要跨页取 `EVENT_READ_LIMIT`(200) 条 ——
+ * 小程序端单页上限 20 ⇒ 10 次往返、约 500 KB。而**同一次启动里它会被读好几遍**：
+ *   · 舆情页 `useDidShow`：首屏一次、从事件列表 / 事件详情返回各一次；
+ *   · 事件列表页 `useDidShow`：首屏一次、从详情返回又一次。
+ * 可这份数据几乎不变（云函数 `opinionCluster` 每天产出一轮，端上全程只读），
+ * 于是「同一份数据在一次启动里被拉三遍」纯属白等，弱网下直接拖慢首屏。
+ *
+ * 取 60 秒的理由：足够覆盖「进列表 → 进详情 → 返回」这类秒级连续动作，
+ * 又不至于让用户**手动**下拉刷新之后还长时间盯着旧数据 —— 何况下拉刷新会显式调
+ * `invalidateStoredEvents()` 把缓存丢掉，不靠这个时长兜底（见该函数）。
+ */
+export const EVENT_CACHE_TTL = 60 * 1000
+
+/** 缓存住的行（`null` = 还没有可用缓存 —— 读失败**不缓存**，见 loadStoredEvents） */
+let cachedRows: OpinionEventRow[] | null = null
+/** 缓存写入时刻（毫秒） */
+let cachedAt = 0
+/** 在途请求：同一次启动里的并发调用合并成一次读库（不再是「四块数据各拉一遍」） */
+let inflight: Promise<OpinionEventRow[] | null> | null = null
+/** 在途请求所属的世代（与 `generation` 不等即已作废，见下方 generation 注释） */
+let inflightGen = -1
+/**
+ * 「缓存世代」：每次 `invalidateStoredEvents()` 自增。
+ *
+ * 为什么必须有它：invalidate 之后可能仍有**旧世代**的读在途（用户下拉刷新时，上一轮
+ * 页面重入的十次往返可能还没跑完）。若不认世代，那一轮旧结果回来会把刚作废的缓存**又填回去**
+ * —— 用户明明拉了一下刷新，看到的却还是刷新前那份数据。故：只有「发起时与落地时同世代」
+ * 的结果才允许写缓存，且旧世代的在途请求不再被新调用复用（新的调用重新发一次读）。
+ */
+let generation = 0
+
+/**
+ * 丢掉落库事件缓存，让下一次 `loadStoredEvents()` 重新读库。
+ *
+ * 调用点只有「用户显式要求重取」那一处（事件列表页下拉刷新）。**不要在普通的页面重入
+ * （`useDidShow`）里调它** —— 那等于把缓存又作废掉，白白多十次往返。
+ */
+export function invalidateStoredEvents(): void {
+  cachedRows = null
+  cachedAt = 0
+  generation++
+}
+
+/**
  * 读落库事件。**读失败返回 `null`**（与「集合为空返回 `[]`」区分开）：调用方据此决定回落本端聚类。
+ *
+ * 带内存级 TTL 缓存（见 `EVENT_CACHE_TTL`），三条口径：
+ *   · **TTL 内命中缓存直接返回**（不读库）—— 页面重入 / 多入口同用一份数据时省掉十次往返；
+ *   · **读失败不写缓存**（`null` 不入缓存）：失败要能立刻重试，否则一次网络抖动会让整页
+ *     在 TTL 内一直回落到本端聚类；
+ *   · **空集合 `[]` 照常缓存**：云函数没跑过时「空」也是稳定事实，重复去读同样十次往返。
+ * 并发调用（同一时刻多个入口各读一次）合并为**一次**读库请求（在途 promise 复用）。
+ * 拿到的是**同一份数组引用**：调用方（页面）只读不写，别就地改它。
  */
 export async function loadStoredEvents(): Promise<OpinionEventRow[] | null> {
+  if (cachedRows !== null && Date.now() - cachedAt < EVENT_CACHE_TTL) return cachedRows
+  /* 只复用**同世代**的在途请求：被 invalidate 作废的那一次不能拿来交差（见 generation 注释） */
+  if (inflight && inflightGen === generation) return inflight
+
+  const gen = generation
+  const task = (async (): Promise<OpinionEventRow[] | null> => {
+    const { data, error } = await table(EVENT_TABLE)
+      .select('*')
+      .order('last_at', { ascending: false })
+      .limit(EVENT_READ_LIMIT)
+    if (error) {
+      diagLog('warn', 'db', `${EVENT_TABLE} 读取失败，回落本端聚类：${error.message ?? error}`)
+      return null
+    }
+    return (data as OpinionEventRow[]) ?? []
+  })()
+
+  inflight = task
+  inflightGen = gen
+  const rows = await task
+  /* 只清自己那一次（期间可能已被新一轮取代） */
+  if (inflight === task) inflight = null
+  /* 世代不符 = 期间被 invalidate 过：这份结果已经作废，交回调用方但**不许**写缓存 */
+  if (rows !== null && gen === generation) {
+    cachedRows = rows
+    cachedAt = Date.now()
+  }
+  return rows
+}
+
+/**
+ * 按 `event_key` 只读**这一条**（事件时间线页用）。
+ *
+ * 原先那一页调的是 `loadStoredEvents()`：为了定位 1 条事件，把最近 `EVENT_READ_LIMIT` 条全拉回来
+ * 再 `filter` —— 进一次详情页要十次往返、几百 KB，而其中 199 条是白读的。
+ * 事件身份本就是 `event_key`（唯一），把这个条件**下推到库里**：1 次请求、1 条文档。
+ *
+ * 口径与 `loadStoredEvents` 逐条对齐：读失败返回 `null`（调用方据此回落本端聚类），
+ * 库里没有这一键返回 `[]`（不是失败）。`eventKey` 原样使用、不做 trim ——
+ * 必须与 `resolveEventByKey` 的匹配口径完全一致（那边也是原样比较），否则会出现
+ * 「按 key 查得到、拿结果去匹配又匹配不上」的错位。
+ */
+export async function loadStoredEventByKey(eventKey: string): Promise<OpinionEventRow[] | null> {
+  const key = typeof eventKey === 'string' ? eventKey : ''
+  if (!key) return []
   const { data, error } = await table(EVENT_TABLE)
     .select('*')
-    .order('last_at', { ascending: false })
-    .limit(EVENT_READ_LIMIT)
+    .eq('event_key', key)
+    .limit(1)
   if (error) {
-    diagLog('warn', 'db', `${EVENT_TABLE} 读取失败，回落本端聚类：${error.message ?? error}`)
+    diagLog('warn', 'db', `${EVENT_TABLE} 按 event_key 读取失败，回落本端聚类：${error.message ?? error}`)
     return null
   }
   return (data as OpinionEventRow[]) ?? []
+}
+
+/**
+ * 只读「身份 + 时间」两列（站内触达算「事件有没有新进展」用）。
+ *
+ * 为什么单独开一个读口：收件箱只需要 `event_key` 和 `last_at`，而 `loadStoredEvents` 会把整条
+ * 事件（成员 ≤30 + 时间线 ≤30 + 来源列表）全拉回来 —— 单条实测约 2.8 KB，200 条要跨 10 页取、
+ * 合计 500 KB 上下，而这些字段在算完一个计数之后就被丢掉了。投影之后每次请求只回两列。
+ *
+ * 失败返回 `null`（与 `loadStoredEvents` 同口径）：调用方按「没有事件」处理即可。
+ */
+export async function loadEventDigest(): Promise<Array<{ event_key: string; last_at: string }> | null> {
+  const { data, error } = await table(EVENT_TABLE)
+    .select('event_key,last_at')
+    .order('last_at', { ascending: false })
+    .limit(EVENT_READ_LIMIT)
+  if (error) {
+    diagLog('warn', 'db', `${EVENT_TABLE} 摘要读取失败：${error.message ?? error}`)
+    return null
+  }
+  const rows = (data as Array<{ event_key?: unknown; last_at?: unknown }>) ?? []
+  return rows
+    .map((r) => ({ event_key: String(r?.event_key ?? ''), last_at: String(r?.last_at ?? '') }))
+    .filter((r) => !!r.event_key)
 }
 
 /** 「与我相关」现算：成员 label 直接命中，或标题 / 摘要正文里出现我盯的词 / 人名（与 opinion-rank#toEntry 同口径） */

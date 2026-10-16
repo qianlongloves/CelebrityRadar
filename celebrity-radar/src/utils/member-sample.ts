@@ -107,7 +107,20 @@ export function pickMemberSample(rows: unknown): MemberSample | null {
   return null
 }
 
-/** 读最近的就绪报告；排序依赖 generated_at 索引，索引未建时退化为无排序扫描 */
+/**
+ * 无索引回退路径拿到的行**没有可靠顺序**，而本模块的口径是「取**最近**一份会员报告」。
+ * 端上补一次按生成时间降序，否则示例卡可能取自一份陈年报告（不报错，只是「示例不像产品现状」）。
+ * 解析失败的行按 0 处理（沉到最后）。
+ */
+function sortByGeneratedAtDesc(rows: any[]): any[] {
+  const at = (r: any): number => {
+    const t = typeof r?.generated_at === 'string' ? Date.parse(r.generated_at) : NaN
+    return Number.isFinite(t) ? t : 0
+  }
+  return rows.slice().sort((a, b) => at(b) - at(a))
+}
+
+/** 读最近的就绪报告；排序依赖 generated_at 索引，索引未建时退化为不排序扫描（端上补排序） */
 async function queryRows(): Promise<any[]> {
   const ordered = await table('report_cache')
     .select('*')
@@ -116,13 +129,13 @@ async function queryRows(): Promise<any[]> {
     .limit(SCAN)
   if (!ordered.error) return (ordered.data as any[]) ?? []
 
-  diagLog('warn', 'db', `会员示例按时间读取失败，回退无排序：${ordered.error.message ?? ordered.error}`)
+  diagLog('warn', 'db', `会员示例按时间读取失败，回退无排序 + 端上排序：${ordered.error.message ?? ordered.error}`)
   const plain = await table('report_cache').select('*').eq('state', 'ready').limit(SCAN)
   if (plain.error) {
     diagLog('warn', 'db', `会员示例读取失败，本次不出示例卡：${plain.error.message ?? plain.error}`)
     return []
   }
-  return (plain.data as any[]) ?? []
+  return sortByGeneratedAtDesc((plain.data as any[]) ?? [])
 }
 
 let memo: { at: number; value: MemberSample | null } | null = null

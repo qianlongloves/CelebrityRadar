@@ -156,6 +156,24 @@ function merge(cloud: CloudCandidate[]): HotPerson[] {
   return [...merged.values()].sort((a, b) => (b.heat ?? 0) - (a.heat ?? 0)).slice(0, BOARD_LIMIT)
 }
 
+/**
+ * 无索引回退路径拿到的行**没有顺序保证**（库不承诺，跨页时还可能重复或漏行，见 db.ts#fetchAll）。
+ * 端上补一次按生成时间降序，让「最近」在端上仍有定义：兜底榜随后按热度重排（见 merge），
+ * 但**热度相同**时谁进榜就由这个顺序决定 —— 不补的话，榜面边界上谁进谁出取决于库当时怎么返回，
+ * 同一批数据两次进页可能给出不同的榜。
+ *
+ * ⚠ 顺序补得回来，「只拿到任意 40 份」这件事补不回来：没有索引就没有「取最近的 N 份」可言。
+ * 兜底榜可能因此漏掉真正热门的人 —— 这正是它只配当兜底、主路径必须是 AI 每日榜的原因。
+ * 解析失败的行按 0 处理（沉到最后），不影响其余行的相对顺序。
+ */
+function sortByGeneratedAtDesc(rows: any[]): any[] {
+  const at = (r: any): number => {
+    const t = typeof r?.generated_at === 'string' ? Date.parse(r.generated_at) : NaN
+    return Number.isFinite(t) ? t : 0
+  }
+  return rows.slice().sort((a, b) => at(b) - at(a))
+}
+
 /** 读 report_cache 的 ready 行；失败返回空数组，由调用方走种子兜底 */
 async function queryRows(): Promise<any[]> {
   const ordered = await table('report_cache')
@@ -165,15 +183,16 @@ async function queryRows(): Promise<any[]> {
     .limit(CLOUD_SCAN)
   if (!ordered.error) return (ordered.data as any[]) ?? []
 
-  /* orderBy 依赖 generated_at 索引（建表脚本 §四）。索引未建时云侧会拒，
-     退化为不排序扫描：数据量小时端上排序等价，量大也只是榜单不够「新」 */
-  diagLog('warn', 'db', `热门榜按时间读取失败，回退无排序：${ordered.error.message ?? ordered.error}`)
+  /* orderBy 依赖 generated_at 索引（建表脚本 §四）。索引未建时云侧会拒，退化为不排序扫描。
+     无排序的取数本身是**无顺序保证**的（还会跨页，见 db.ts#fetchAll），所以这里在端上补排序：
+     数据量小时与有序路径等价，量大时也不至于让兜底榜取到一批陈年报告 */
+  diagLog('warn', 'db', `热门榜按时间读取失败，回退无排序 + 端上排序：${ordered.error.message ?? ordered.error}`)
   const plain = await table('report_cache').select('*').eq('state', 'ready').limit(CLOUD_SCAN)
   if (plain.error) {
     diagLog('warn', 'db', `热门榜读取失败，回落静态种子：${plain.error.message ?? plain.error}`)
     return []
   }
-  return (plain.data as any[]) ?? []
+  return sortByGeneratedAtDesc((plain.data as any[]) ?? [])
 }
 
 let memo: { at: number; board: HotPerson[] } | null = null

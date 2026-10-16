@@ -4,7 +4,7 @@ import { listFollows } from './follows'
 import { loadFollowWatches } from './watch'
 import { loadAlerts } from './keyword-alert'
 import { listPersonWatches, loadRiskSignals } from './risk-watch'
-import { eventNewness, loadEventStatus, loadStoredEvents } from './opinion-store'
+import { eventNewness, loadEventDigest, loadEventStatus } from './opinion-store'
 import type { EventStatus } from './opinion-store'
 
 /**
@@ -279,7 +279,9 @@ export async function loadInboxSummary(opts: { feed?: boolean } = {}): Promise<I
       return riskNewCount(await loadRiskSignals(keys), seen.risk)
     }, '风险信号'),
     safeCount(async () => {
-      const [rows, status] = await Promise.all([loadStoredEvents(), loadEventStatus()])
+      /* 这里只要「身份 + 时间」两列，所以走投影读口（loadEventDigest）：
+         用 loadStoredEvents 会把整条事件的成员 / 时间线 / 来源全拉回来，纯属白读 */
+      const [rows, status] = await Promise.all([loadEventDigest(), loadEventStatus()])
       const events = (rows ?? []).map((r) => ({ key: r.event_key, at: r.last_at }))
       return countNewEvents(events, status)
     }, '舆情事件')

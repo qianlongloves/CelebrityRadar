@@ -16,6 +16,10 @@ node_modules/
 # 测试产物：test/tsconfig.test.json 把 src 编译到这里，由 tsc 重新生成
 test/.build/
 
+# 本地排障产物：`tcb db nosql dump` 导出的库内容（JSONL，含真实用户数据）
+# 只作一次性核对，用完即删；这里兜一层，免得哪次误提交把用户数据带进仓库
+tmp-audit/
+
 # 本地配置（模板见 src/config/local.example.ts）
 src/config/local.ts
 

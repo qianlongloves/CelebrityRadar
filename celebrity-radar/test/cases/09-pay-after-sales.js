@@ -7,7 +7,10 @@
  *  1. **谁在调它**：云函数部署了就能被端上 `wx.cloud.callFunction` 调到，而 payCallback 的事件
  *     内容是「我收到了支付成功通知」—— 以前这是约定不是事实，于是任何人都能用开发者工具
  *     给自己发货（金额天然对得上，单是自己下的）。闸门按 `getWXContext().OPENID` 判，
- *     灰度开关 `PAY_CALLBACK_GUARD` 的**默认值**（log，只记日志）也在这里钉住：默认值不该被谁顺手改。
+ *     开关 `PAY_CALLBACK_GUARD` 的**默认值**（strict，未配置即拦截）也在这里钉住：默认值不该被谁顺手改。
+ *     ⚠ 判据本身是**推断**（判不了真回调带不带 openid），所以拦下时必须留痕 +
+ *     由对账报出来（见本文件末尾「闸门拦下之后」一组）：判据万一错了，
+ *     表现是「一轮对账内有人发现」+ 人工补发，而不是用户付了钱没人知道。
  *  2. **退款要能撤销会员**：`refunded` 以前全仓只被读、没有写入方，也没有任何代码在退款后收回权益。
  *     现在由运营写口置状态、由 settleRefund 扣天数 —— 扣的**只有这一单买的天数**。
  *  3. **对账**：微信重试耗尽后 `granting` 会永久停在半路；双写「权威 memberships + 镜像
@@ -39,6 +42,10 @@ function loadFn(envVars) {
   delete process.env.PAY_CALLBACK_GUARD
   delete process.env.PAY_ADMIN_TOKEN
   Object.assign(process.env, envVars || {})
+  /* 调用方身份也要重置：`callerOpenid` 是模块级变量，上一条例例设过之后会一直粘着 ——
+     默认闸门转 strict 后，这种用例间残留会让后面每一条都先被闸门拦掉、走不到自己要测的分支。
+     默认 = 非端上（微信回调 / 定时器 / 控制台）；要模拟端上伪造的用例自己显式设。 */
+  callerOpenid = ''
 
   const db = env.db.database()
   const fake = {
@@ -118,18 +125,45 @@ function seedShipped(expiresAt, over) {
 }
 
 describe('payCallback 调用方闸门', () => {
-  it('默认 log 只记录不拦截：端上伪造的支付通知仍会走完（灰度是刻意的）', async () => {
-    const fn = loadFn() /* 不设 PAY_CALLBACK_GUARD ⇒ 默认 log */
+  it('默认 strict（fail closed）：未配置开关时，端上伪造的支付通知被拒', async () => {
+    const fn = loadFn() /* 不设 PAY_CALLBACK_GUARD ⇒ 默认 strict */
     env.db.__seed('orders', [makeOrder()])
     env.db.__seed('users', [makeUser()])
     callerOpenid = 'attacker-openid'
 
     const res = await fn.main(notify())
 
-    /* 这条是在钉**灰度默认值**，不是在认可这个行为：先观察真机回调的上下文形态，
-       确认「微信回调不带 openid」后再切 strict（切完这条用例要一起改）。 */
-    eq(res.errcode, 0, '默认 log 不拦截（还没确认真机回调的上下文形态）')
-    eq(order().status, 'paid', 'log 模式下照常发货 —— 这就是灰度期剩下的风险窗口')
+    /* 这条钉的是**默认值本身**：默认值不该是「放行」。口径与 handleAdminOp 的
+       「未配置 PAY_ADMIN_TOKEN 一律拒绝」一致 —— 没配就放行等于给漏洞留一扇常开的门。 */
+    notOk(res.errcode === 0, '未配置开关时必须拦截')
+    eq(order().status, 'pending', '被拒的调用不得动订单')
+    eq(membership(), null, '绝不能给自己发货')
+  })
+
+  it('拼错的开关值按 strict 处理：拼错一个名字不该等于放行', async () => {
+    const fn = loadFn({ PAY_CALLBACK_GUARD: 'Strictt' /* 手滑多打一个 t */ })
+    env.db.__seed('orders', [makeOrder()])
+    env.db.__seed('users', [makeUser()])
+    callerOpenid = 'attacker-openid'
+
+    const res = await fn.main(notify())
+
+    notOk(res.errcode === 0, '未知取值一律 fail closed')
+    eq(order().status, 'pending')
+  })
+
+  it('log 只在显式配置时生效：观察档，换回真机回调的现场证据', async () => {
+    const fn = loadFn({ PAY_CALLBACK_GUARD: 'log' })
+    env.db.__seed('orders', [makeOrder()])
+    env.db.__seed('users', [makeUser()])
+    callerOpenid = 'attacker-openid'
+
+    const res = await fn.main(notify())
+
+    /* log 是「怀疑真回调带 openid」时的观察档，必须能真的放行才叫观察：
+       否则运维切过去只看得到拦截，拿不到任何现场信息。 */
+    eq(res.errcode, 0, '显式 log 时不拦截')
+    eq(order().status, 'paid', 'log 档照常发货 —— 这是它必须被显式配置、而不能当默认的原因')
   })
 
   it('strict：端上伪造的支付通知被拒，订单与会员都不动', async () => {
@@ -140,7 +174,7 @@ describe('payCallback 调用方闸门', () => {
 
     const res = await fn.main(notify())
 
-    notOk(res.errcode === 0, '必须返回非 0：万一判据错了，非 0 还能靠微信重试与对账补救')
+    notOk(res.errcode === 0, '必须返回非 0：万一判据错了，非 0 还能靠微信继续重试')
     eq(order().status, 'pending', '被拒的调用不得动订单')
     eq(membership(), null, '绝不能给自己发货 —— 这就是这条闸门存在的全部理由')
     eq(authority(), null)
@@ -199,8 +233,10 @@ describe('退款运营写口（adminOp）', () => {
     eq(order().status, 'paid', '订单不得被动')
   })
 
-  it('口令不符时拒绝（端上即便能调到这个分支也猜不出口令）', async () => {
-    const fn = loadFn({ PAY_ADMIN_TOKEN: 'secret' })
+  it('口令不符时拒绝：即便闸门被回滚成 off，端上猜不出口令也进不来', async () => {
+    /* 显式把调用方闸门回滚成 off，才谈得上「端上能调到这个分支」—— 这是最坏情况
+       （闸门失效）下对**第二道防线**的独立验证：口令闸门与它必须各自成立。 */
+    const fn = loadFn({ PAY_ADMIN_TOKEN: 'secret', PAY_CALLBACK_GUARD: 'off' })
     seedShipped(ahead(100 * DAY_MS))
     callerOpenid = 'attacker-openid'
 
@@ -1142,5 +1178,249 @@ describe('P2-32 热榜构建锁', () => {
 
     eq(res.ok, true, JSON.stringify(res))
     eq(res.count, 24)
+  })
+})
+
+/* ═══════════ 2026-10-16 复查修复：闸门留痕 / 续费基数 / 退款账本 ═══════════
+   三处都属「改了不报错、但会静默漏发或静默多扣用户天数」的口径，故各配一条能复现原故障的用例。 */
+
+describe('调用方闸门拦下之后：留痕 + 对账报出（而不是静静停住）', () => {
+  it('拦下时在订单上留痕，但一步都不发货', async () => {
+    const fn = loadFn({ PAY_CALLBACK_GUARD: 'strict' })
+    env.db.__seed('orders', [makeOrder()])
+    env.db.__seed('users', [makeUser()])
+    callerOpenid = 'attacker-openid'
+
+    const res = await fn.main(notify())
+
+    notOk(res.errcode === 0)
+    eq(order().status, 'pending', '拦下就是拦下：订单一步都不许动')
+    eq(authority(), null, '绝不发货')
+    eq(order().guard_blocked, true, '要留痕 —— 闸门判据是推断，判错了必须有人能发现')
+    ok(order().guard_blocked_at, '留时间戳')
+    eq(order().guard_blocked_fee, 1900, '金额一起记下，便于和商户平台逐单核对')
+  })
+
+  it('端上乱调（载荷不像支付通知）不留痕：痕迹本身也要有意义', async () => {
+    const fn = loadFn({ PAY_CALLBACK_GUARD: 'strict' })
+    env.db.__seed('orders', [makeOrder()])
+    env.db.__seed('users', [makeUser()])
+    callerOpenid = 'attacker-openid'
+
+    await fn.main({ action: 'whatever' })
+
+    notOk(order().guard_blocked, '没有订单号的调用不该在订单上留痕')
+  })
+
+  it('对账把留痕的单报进 summary（只报不改），且不重复报', async () => {
+    const fn = loadFn()
+    env.db.__seed('orders', [
+      makeOrder({ guard_blocked: true, guard_blocked_at: '2026-10-08T00:00:00.000Z', guard_blocked_fee: 1900 })
+    ])
+    env.db.__seed('users', [makeUser()])
+
+    const first = await fn.main(timerEvent())
+
+    /* 闸门拦下的单**不会**进 granting，所以 ①补发货那一趟永远扫不到它 —— 没有这一趟，
+       「真回调万一也带 openid」的表现就是「订单永远 pending、用户付了钱没人知道」。 */
+    eq(first.guardBlocked, 1, '被拦下的疑似真单必须报出来 —— 这是判据错了的唯一发现途径')
+    eq(first.granted, 0, '只报不改：载荷端上造得出，拿它发货等于把闸门再开一次')
+    eq(order().status, 'pending', '订单状态也不许被对账改动')
+    ok(order().guard_blocked_reported, '报过打标记，避免每轮重复报')
+    ok(
+      first.skipped.some((s) => s.indexOf('T1') === 0 && /闸门拦下/.test(s)),
+      `明细要写清怎么处理，实际 ${JSON.stringify(first.skipped)}`
+    )
+
+    const second = await fn.main(timerEvent())
+
+    eq(second.guardBlocked, 0, '已经报过的单不再重复报（噪声会淹没真信号）')
+    eq(second.skipped.length, 0, '也不该再往 skipped 里塞同一条')
+  })
+})
+
+describe('续费基数：端上能改的那份镜像不得抬高基数', () => {
+  it('端上先把镜像改到 3000 天后，再走正常回调：权威有效期不得被抬起来', async () => {
+    const fn = loadFn()
+    env.db.__seed('orders', [makeOrder()])
+    const real = ahead(10 * DAY_MS)
+    const forged = ahead(3000 * DAY_MS) /* 端上自己写进 users.membership 的值 */
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: real, last_order_id: 'OLD' }
+    ])
+    env.db.__seed('users', [
+      makeUser({ membership: { plan: 'month', expires_at: forged, last_order_id: 'OLD' } })
+    ])
+
+    const res = await fn.main(notify())
+
+    eq(res.errcode, 0)
+    const expected = iso(Date.parse(real) + 31 * DAY_MS)
+    eq(
+      authority().expires_at,
+      expected,
+      `只该在权威那 10 天上续 31 天；取镜像的 max 等于把端上自授的假值搬进权威，实际 ${authority().expires_at}`
+    )
+    eq(membership().expires_at, expected, '镜像回到与权威一致（对账口径）')
+  })
+
+  it('迁移期（权威行还没有有效期）仍认镜像：老会员付过的天数不能被吃掉', async () => {
+    const fn = loadFn()
+    env.db.__seed('orders', [makeOrder()])
+    const legacy = ahead(20 * DAY_MS)
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: null, last_order_id: 'OLD' }
+    ])
+    env.db.__seed('users', [
+      makeUser({ membership: { plan: 'month', expires_at: legacy, last_order_id: 'OLD' } })
+    ])
+
+    const res = await fn.main(notify())
+
+    eq(res.errcode, 0)
+    eq(
+      authority().expires_at,
+      iso(Date.parse(legacy) + 31 * DAY_MS),
+      '迁移期只有镜像有值，那一份就是唯一线索：丢了等于吃掉他付过的天数'
+    )
+  })
+})
+
+describe('退款撤销：按订单账本重算，不吃用户后来那一单买的天数', () => {
+  it('退一单更早的订单：不该动到之后那一单的天数', async () => {
+    const fn = loadFn({ PAY_ADMIN_TOKEN: 'secret' })
+    const laterAt = ahead(10 * DAY_MS) /* 后来那一单（B）的发货时刻 */
+    const current = iso(Date.parse(laterAt) + 31 * DAY_MS) /* B 的 31 天：用户付过钱，退 A 不许动它 */
+    env.db.__seed('orders', [
+      /* A：更早买的一单，天数早已漫过，现在要退它 */
+      makeOrder({ _id: 'A', status: 'paid', granted_at: ago(200 * DAY_MS) }),
+      makeOrder({ _id: 'B', status: 'paid', granted_at: laterAt })
+    ])
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: current, last_order_id: 'B' }
+    ])
+    env.db.__seed('users', [
+      makeUser({ membership: { plan: 'month', expires_at: current, last_order_id: 'B' } })
+    ])
+
+    const res = await fn.main({ adminOp: 'refund', token: 'secret', outTradeNo: 'A' })
+
+    eq(res.ok, true)
+    eq(res.revoked, true, '这一单确实要结清（幂等标记必须落下）')
+    eq(
+      authority().expires_at,
+      current,
+      `退一单早已漫过的旧单本该一天都不扣；直接减 days 会把 B 的 31 天吃掉，实际 ${authority().expires_at}`
+    )
+    eq(membership().expires_at, current, '镜像同步')
+    ok(order('A').refund_revoked_at, '幂等标记仍然要写')
+    eq(order('B').status, 'paid', 'B 一天都没被碰')
+  })
+
+  it('账本读不完整（命中上限）就退回按天数减法：宁可保守，也不拿半份账本乱算', async () => {
+    const fn = loadFn({ PAY_ADMIN_TOKEN: 'secret' })
+    const future = ahead(100 * DAY_MS)
+    /* 201 条流水 > 账本上限 200：账本被截断，算出来的天数只会偏少（=多扣用户） */
+    const filler = Array.from({ length: 200 }, (_, i) =>
+      makeOrder({ _id: 'L' + i, status: 'paid', days: 365, granted_at: '2026-01-01T00:00:00.000Z' })
+    )
+    env.db.__seed('orders', [
+      makeOrder({ _id: 'A', status: 'paid', granted_at: '2026-10-01T00:00:02.000Z' })
+    ].concat(filler))
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: future, last_order_id: 'A' }
+    ])
+    env.db.__seed('users', [
+      makeUser({ membership: { plan: 'month', expires_at: future, last_order_id: 'A' } })
+    ])
+
+    const res = await fn.main({ adminOp: 'refund', token: 'secret', outTradeNo: 'A' })
+
+    eq(res.ok, true)
+    eq(res.revoked, true)
+    eq(
+      authority().expires_at,
+      iso(Date.parse(future) - 31 * DAY_MS),
+      `半份账本算出来的有效期偏大（会少扣），必须退回按天数减法，实际 ${authority().expires_at}`
+    )
+  })
+
+  it('账本超过一页时要翻页取全：只读第一页会算小 ⇒ 多扣用户天数', async () => {
+    const fn = loadFn({ PAY_ADMIN_TOKEN: 'secret' })
+    /* A：最早那一单，也是本轮要退的那单（会被账本排除），其余 25 单都要参与重算 */
+    const orders = [makeOrder({ _id: 'A', status: 'paid', granted_at: ago(400 * DAY_MS) })]
+    for (let i = 0; i < 25; i++) {
+      orders.push(
+        makeOrder({
+          _id: 'L' + i,
+          status: 'paid',
+          /* 相邻 10 天、每单 31 天 ⇒ 会按要求叠起来（晚的几单把有效期推到未来） */
+          granted_at: ago((390 - i * 10) * DAY_MS)
+        })
+      )
+    }
+    env.db.__seed('orders', orders)
+
+    /* 期望值：按发货同一套公式（granted_at 升序、逐个 max 后叠加）重算一遍 */
+    const ledgerRows = orders
+      .filter((o) => o._id !== 'A')
+      .sort((a, b) => Date.parse(a.granted_at) - Date.parse(b.granted_at))
+    let exp = 0
+    for (const o of ledgerRows) exp = Math.max(exp, Date.parse(o.granted_at)) + o.days * DAY_MS
+    const truth = iso(Math.max(Date.now(), exp))
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: truth, last_order_id: 'A' }
+    ])
+    env.db.__seed('users', [
+      makeUser({ membership: { plan: 'month', expires_at: truth, last_order_id: 'A' } })
+    ])
+
+    const res = await fn.main({ adminOp: 'refund', token: 'secret', outTradeNo: 'A' })
+
+    eq(res.ok, true)
+    eq(
+      authority().expires_at,
+      truth,
+      `26 单要跨页取全才算得对；只读第一页（20 条）会把有效期算小、进而多扣天数，实际 ${authority().expires_at}`
+    )
+  })
+
+  it('账本查询带唯一次级排序键：skip 深分页下 granted_at 相同的行不能飘', () => {
+    /* 静态钉住：这是「同一毫秒发货的多单」才会踩到的坑，mock 的排序是稳定的、复现不出来，
+       只能钉代码口径（与端上 db.ts#fetchAll 补 `_id` 的同一套理由）。 */
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'cloudfunctions', 'payCallback', 'after-sales.js'),
+      'utf8'
+    )
+    const i = src.indexOf("orderBy('granted_at', 'asc')")
+    ok(i >= 0, '账本按 granted_at 升序')
+    ok(
+      /orderBy\('_id', 'asc'\)/.test(src.slice(i, i + 600)),
+      'granted_at 之后必须紧跟 _id 升序：主键相同时库内先后无承诺，深分页会重复或漏行（漏行=多扣天数）'
+    )
+  })
+})
+
+describe('对账的容错：一类读表失败不该把另外三类一起拖下水', () => {
+  it('orders 表读不了：补镜像照样跑完，整轮不抛错', async () => {
+    const fn = loadFn()
+    const truth = ahead(20 * DAY_MS)
+    env.db.__seed('users', [makeUser()]) /* 镜像为空：与权威不一致 */
+    env.db.__seed('memberships', [
+      { _id: 'u1', _openid: 'u1', plan: 'month', expires_at: truth, last_order_id: 'T1' }
+    ])
+    env.db.__setReadFailing('orders', true) /* ①③ 与闸门留痕都读 orders ⇒ 整类失败 */
+
+    const res = await fn.main(timerEvent())
+
+    eq(res.ok, true, '一类整表读不到不该让整个定时任务抛错')
+    eq(res.mirrors, 1, '补镜像只依赖 memberships + users，不该被 orders 的读失败拖掉')
+    eq(membership().expires_at, truth, '镜像仍然被拉回与权威一致')
+    ok(
+      res.skipped.some((s) => /补发货/.test(s)),
+      `失败的类别要写进明细，否则人工看不出「这轮没干这件事」，实际 ${JSON.stringify(res.skipped)}`
+    )
+
+    env.db.__setReadFailing('orders', false)
   })
 })

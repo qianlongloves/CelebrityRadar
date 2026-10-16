@@ -143,8 +143,8 @@ function parseOrExpr(expr: string): Cond[] {
 class Builder implements PromiseLike<DbResult<any>> {
   private conds: Cond[] = []
   private orGroups: Cond[][] = []
-  private orderCol: string | null = null
-  private orderAsc = true
+  /** 排序键（可多列，先入先排）。末位的稳定次级键由 fetchAll 统一补，见那边的注释 */
+  private orderCols: Array<{ col: string; asc: boolean }> = []
   private limitN: number | null = null
   private skipN = 0
   private rangeStart: number | null = null
@@ -155,17 +155,34 @@ class Builder implements PromiseLike<DbResult<any>> {
   private wantsReturn = false
   private one = false
   private pending: Promise<DbResult<any>> | null = null
+  /** 列投影（PostgREST 口径的 `select('a,b')`）；null = 全字段 */
+  private fields: string[] | null = null
 
   constructor(private readonly name: string) {}
 
-  select(_cols?: string): this { this.wantsReturn = true; return this }
+  select(cols?: string): this {
+    this.wantsReturn = true
+    /* 这个参数曾经**名不符实**：旧实现只设 wantsReturn、把 cols 整个丢掉，于是
+       `select('id')` 与 `select('*')` 完全等价 —— 调用点以为在省流量，实际每次都在拉整行。
+       现在真正落成云开发的 field()。投影里不必手动补 `_id`（云开发始终返回它），
+       出参再由 toRow 把 `_id` 映回 `id`，所以 `select('id')` 照样拿得到主键。 */
+    const list = typeof cols === 'string' ? cols.split(',').map((s) => s.trim()).filter(Boolean) : []
+    this.fields = list.length === 0 || list.includes('*') ? null : list
+    return this
+  }
   eq(col: string, val: unknown): this { this.conds.push({ col, op: 'eq', val }); return this }
   in(col: string, val: unknown[]): this { this.conds.push({ col, op: 'in', val }); return this }
   or(expr: string): this { this.orGroups.push(parseOrExpr(expr)); return this }
 
+  /**
+   * 追加一个排序键（多次调用 = 多列，先入先排）。
+   *
+   * 这里从「覆盖」改成了「追加」：改前连调两次 `order()` 只有最后一次生效（静默丢掉前一个键），
+   * 而调用方看起来像是在写多列排序 —— 那种写法一旦出现就是查错数据的 bug。
+   * 现有 12 处调用点全是单次调用，所以这个改动对它们等价。
+   */
   order(col: string, opts?: { ascending?: boolean }): this {
-    this.orderCol = col
-    this.orderAsc = opts?.ascending !== false
+    this.orderCols.push({ col, asc: opts?.ascending !== false })
     return this
   }
 
@@ -233,8 +250,33 @@ class Builder implements PromiseLike<DbResult<any>> {
     while (out.length < want) {
       const take = Math.min(PAGE_SIZE, want - out.length)
       let q = where ? coll.where(where) : coll
-      if (this.orderCol) {
-        q = q.orderBy(toDbField(this.orderCol), this.orderAsc ? 'asc' : 'desc')
+      if (this.orderCols.length > 0 || want > PAGE_SIZE) {
+        /* 排序键 = 调用方声明的那些 + 末尾一个**稳定次级键** `_id`（升序）。
+           为什么必须有它：下面是 `skip/limit` 深分页，而 skip 分页只对**排序确定**的结果集安全 ——
+           主排序值相同的文档，它们在库里的先后是**没有承诺**的（事件表的 `last_at` 正是这种字段：
+           一轮聚类的产物常常带同一分钟的时间戳）。顺序不定时，两次请求之间会重复或漏掉文档，
+           表现就是「列表偶尔出现重复条目」或「某一条怎么刷新都不出来」，且极难复现。
+           补上唯一的 `_id` 之后顺序整体确定，skip 分页才真的等于「按确定的顺序切片」。
+
+           ⚠ **调用方没写 `.order()` 时同样要补**（2026-10-16 修）：只要 `want > PAGE_SIZE` 就得翻页，
+           翻页就同样怕顺序不定。原先这个分支只看 `orderCols.length > 0`，于是「无排序 + 取 40 条」
+           这类兜底扫描（热门榜 / 会员示例在索引未建时的回落路径）会真的以无 ORDER BY 的方式翻页 ——
+           库返回顺序随数据变化而变，第二页切到不确定的位置，候选集里就会重复或漏掉文档。
+           这类调用方本身不关心顺序（拿到行后会自己排），但**漏行**照样会把内容少给一半。
+           只为需要翻页的查询补：`want <= PAGE_SIZE` 是单次 get，不翻页就不需要这个保证，
+           也免得给「只取一条」这种最高频的查询平白加上一次排序。 */
+        const plan = this.orderCols.slice()
+        if (!plan.some((o) => o.col === 'id')) plan.push({ col: 'id', asc: true })
+        for (const o of plan) {
+          q = q.orderBy(toDbField(o.col), o.asc ? 'asc' : 'desc')
+        }
+      }
+      if (this.fields) {
+        /* 投影要**跟着每一页**下发：云开发的 field() 是查询级链式调用，
+           只写在第一页上会让后续页白白拉回整行（省流量就白省了） */
+        const projection: Record<string, true> = {}
+        for (const f of this.fields) projection[toDbField(f)] = true
+        q = q.field(projection)
       }
       const res = await q.skip(offset).limit(take).get()
       const batch: any[] = res?.data ?? []
@@ -266,8 +308,20 @@ class Builder implements PromiseLike<DbResult<any>> {
       if (this.kind === 'update') {
         const where = this.buildWhere(cmd)
         if (!where) throw new Error('update 必须带过滤条件，拒绝全表更新')
+        /* ⚠ 小程序端单次 where().update() 最多命中 20 条，超出部分**静默不动**，
+           而云开发不返回「是否被截断」的标记 —— 只有 stats.updated 一个数。
+           这里没有做 _id 分块循环，因为当前唯一的批量 update 调用点是
+           `keyword-alert#markAllSeen`，它更新的是关键词行，条数 = 会员档
+           `OPINION_LIMITS.watchCount.member = 10` < 20，够不着这个上限。
+           **若将来把该上限提到 20 以上（或新增别的批量 update 调用点），
+           必须改成「先分页取 _id、再按 20 个一批 update」**，否则超出的行会
+           悄悄保持旧值（表现：部分条目反复提醒「已看过」却还在）。 */
         const res = await coll.where(where).update({ data: this.mapPayload(this.payload!, false) })
         const updated = res?.stats?.updated ?? 0
+        const UPDATE_PAGE_LIMIT = 20
+        if (updated >= UPDATE_PAGE_LIMIT) {
+          diagLog('warn', 'db', `${this.name} update 命中 ${updated} 条（达小程序端单次上限），如有更多条件命中则未被更新`)
+        }
         return { data: this.wantsReturn ? (updated > 0 ? [this.payload] : []) : null, error: null }
       }
 
@@ -280,9 +334,17 @@ class Builder implements PromiseLike<DbResult<any>> {
 
       const where = this.buildWhere(cmd)
       if (!where) throw new Error('delete 必须带过滤条件，拒绝全表删除')
-      for (let i = 0; i < 50; i++) {
+      /* 每次 remove 最多删 20 条（小程序端上限），故要循环；循环 50 次 = 1000 条封顶。
+         撞到封顶必须喊一声：原先它是**静默截断**的 —— 调用点以为删干净了，
+         库里还剩一批，而「剩下的那批」在下次读取时又冒出来，现场极难对上。 */
+      const DELETE_MAX_ROUNDS = 50
+      let rounds = 0
+      for (; rounds < DELETE_MAX_ROUNDS; rounds++) {
         const res = await coll.where(where).remove()
         if ((res?.stats?.removed ?? 0) === 0) break
+      }
+      if (rounds >= DELETE_MAX_ROUNDS) {
+        diagLog('warn', 'db', `${this.name} delete 达到 ${DELETE_MAX_ROUNDS} 轮上限（约 ${DELETE_MAX_ROUNDS * PAGE_SIZE} 条），可能仍有未删除的文档`)
       }
       return { data: null, error: null }
     } catch (err) {

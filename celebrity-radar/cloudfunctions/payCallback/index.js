@@ -12,13 +12,22 @@
  * ①② 的实现都在 `./after-sales.js`（那里有为什么「售后也必须长在本函数上」的理由）。
  *
  * 六处幂等 / 安全设计（支付链路上最容易出错的地方）：
- *   0. **调用方闸门**（2026-10-09 新增，灰度）：云函数只要部署了，端上 `wx.cloud.callFunction`
- *      就能调到它 ——「进来的必然是微信回调」曾经只是约定，不是事实。于是任何人用开发者工具调
- *      `{returnCode:'SUCCESS', resultCode:'SUCCESS', outTradeNo:<自己刚下的单>, totalFee:<单金额>}`
- *      就能**给自己发货**（金额天然对得上，因为单是自己下的）。闸门按 `getWXContext().OPENID`
- *      判：端上调用必带 openid，微信回调 / 定时器 / 控制台「云端测试」都没有。灰度开关
- *      `PAY_CALLBACK_GUARD` 见 callerGuard —— 先用默认的 `log` 观察真机回调的上下文，
- *      确认后再切 `strict`。（即便判错了，对账任务也会把滞留的 `granting` 补上，不会永久丢单。）
+ *   0. **调用方闸门**（2026-10-09 新增，2026-10-16 转 fail-closed）：云函数只要部署了，端上
+ *      `wx.cloud.callFunction` 就能调到它 ——「进来的必然是微信回调」曾经只是约定，不是事实。
+ *      于是任何人用开发者工具调 `{returnCode:'SUCCESS', resultCode:'SUCCESS',
+ *      outTradeNo:<自己刚下的单>, totalFee:<单金额>}` 就能**给自己发货**（金额天然对得上，
+ *      因为单是自己下的）。闸门按 `getWXContext().OPENID` 判：端上调用必带 openid，
+ *      平台侧回调 / 定时器 / 控制台「云端测试」都没有。
+ *      **默认已是 `strict`（未配置即拦截）**；`log` 降为「显式配置才生效」的观察档，`off` 一键回滚。
+ *      为什么敢把默认从 log 收紧（三个当时可查的事实，不是推测）：
+ *        ① 回调由**云支付平台侧**触发 —— payCreate 走的是 `cloudPay.unifiedOrder({ envId,
+ *           functionName })`，平台直接调云函数，不是小程序端调用 ⇒ 不带 openid；
+ *        ② 线上 `tcb fn log payCallback` **零调用日志**；
+ *        ③ orders 集合当时只有一条 mock 行（`MRMOCK…` / `mock-tx-demo-0001`）⇒ 从无真实回调，
+ *           也就是「判错的代价」在收紧那一刻恰好为零。
+ *      若将来发现真回调被拦（日志会明确写「拒绝端上调用（OPENID=…）」），把
+ *      `PAY_CALLBACK_GUARD` 设为 `log` 即刻回到观察档，再按日志里的实际形态补判据。
+ *      （即便判错了，对账任务也会把滞留的 `granting` 补上，不会永久丢单。）
  *   1. **金额必须与订单一致**：不等则**不发货**并标记 failed，留人工核对。
  *      回调里的金额不可信（可能被伪造 / 串单），订单里的金额才是我们写的。
  *   2. **订单状态条件更新抢占发货权**：`status: 'pending' → 'granting'`，`updated === 0`
@@ -196,9 +205,13 @@ async function findUserRow(openid) {
 /**
  * 发货：把会员有效期往后延 `order.days` 天，先写权威、再写镜像。
  *
- * 续期而非覆盖 —— `base = max(now, 权威行 expires_at, 镜像行 expires_at)`。
- * 两处都取 max 是必需的：迁移期可能只有一处有值（老会员只有 users.membership，
- * 新会员两处都有），只读一处会把另一处更晚的有效期算短，等于吃掉用户已付的天数。
+ * 续期而非覆盖 —— `base = max(now, 权威行 expires_at)`；镜像行**只在权威行没有有效期时**
+ * 才参与取值（迁移期老会员只有 users.membership 有值，那一份就是唯一线索，丢了等于吃掉他付过的天数）。
+ *
+ * ⚠ 权威行一旦有有效期，就**不再**取镜像的 max（2026-10-16 修）：`users` 是「仅创建者可读写」，
+ * 端上能改自己那一行 —— 取 max 等于允许用户先把自己的镜像改到 3000 天后、再正常买一单，
+ * 这个假值会被直接搬进权威行；之后连「以权威覆盖镜像」的对账也救不回来（权威自己就错了）。
+ * 这正是 A2 要防的「端上自授会员」，只是入口从「读」换成了「发货时取 max」。
  *
  * 幂等按**订单号跨两处**判，而不是按某一处判：
  *   ① 权威行已记录这一单 ⇒ 只补镜像；
@@ -258,11 +271,9 @@ async function grantMembership(order, outTradeNo) {
   }
 
   /* ③ 新发货：先权威（成功即真会员生效），再镜像（端上界面用） */
-  const base = Math.max(
-    Date.now(),
-    tsOf(auth && auth.expires_at),
-    tsOf(mirror && mirror.expires_at)
-  )
+  const authTs = tsOf(auth && auth.expires_at)
+  /* 镜像只在「权威行没有有效期」时才参与取值 —— 端上能改镜像，取 max 会把它搬成权威值 */
+  const base = Math.max(Date.now(), authTs, authTs > 0 ? 0 : tsOf(mirror && mirror.expires_at))
   const expiresAt = new Date(base + days * DAY_MS).toISOString()
 
   await writeMembership(openid, {
@@ -300,36 +311,80 @@ async function markGranted(outTradeNo) {
  * 调用方闸门：本函数不该被端上调用（端上只调 payCreate 下单，从不自己下发支付回调）。
  *
  * 判据：`getWXContext().OPENID` 非空 ⇒ 这一趟来自端上 `wx.cloud.callFunction`。
- * 微信支付回调、定时器触发、控制台的「云端测试」都没有 openid。
+ * 平台侧支付回调（云支付 unifiedOrder 注册进来的）、定时器、控制台「云端测试」都没有 openid。
  *
- * 灰度开关 `PAY_CALLBACK_GUARD`（环境变量，可不配）：
- *   - `log`（**默认**）：检测到端上调用只记日志、照常往下走。理由：「真机回调的上下文里到底
- *     有没有 openid」只有付一笔才敢确认，而猜错的代价是**所有真实回调被拒** —— 那比漏洞更难收场。
- *   - `strict`：端上调用一律拒绝。**在日志里确认过真机回调的形态之后**再切到这个值。
+ * 开关 `PAY_CALLBACK_GUARD`（环境变量）：
+ *   - `strict`（**默认**）：端上调用一律拒绝。**未配置即此档** —— 与 handleAdminOp 的
+ *     「未配置 PAY_ADMIN_TOKEN 一律拒绝」、dbInit 的 DB_ADMIN_TOKEN 同一口径：
+ *     「没配就放行」是最常见的一种自我安慰，而出事的恰恰是没配的那一次。
+ *   - `log`：**只在显式配置时生效**，检测到端上调用只记日志、照常往下走。这是观察档：
+ *     怀疑真回调可能带 openid 时，用它换回现场证据（绝不再作为默认）。
  *   - `off`：完全不判（一键回滚用）。
+ *   - 其它值（含拼错的）：走 strict —— 拼错一个开关名不该等于放行。
  *
  * 拒绝时返回非 0 而不是 `ack`：对端上来说两者没差别，但万一判据错了、被拦下的是真回调，
- * 非 0 会让微信继续重试 —— 重试耗尽后还有对账任务扫 `granting` 兜底。在这个函数里，
- * 「宁可让它重试」永远是对的。
+ * 非 0 会让微信继续重试。「宁可让它重试」永远是对的。
+ *
+ * ⚠ 但**别指望「对账扫 `granting` 兜底」能救被拦下的真回调**：`granting` 是回调**进来之后**
+ * 才会写的中间态（见 handleNotify 的形状分支），被拦下的单压根走不到那一步 ——
+ * 它会永远停在 `pending`，对账的三类扫描（granting / 镜像 / 退款）一类都扫不到它。
+ * 所以拦截口必须**自己留痕**（`markGuardBlocked`）：真回调万一也带 OPENID，
+ * 判据错了就是「一轮对账内被发现 + 人工 `adminOp:'grantMember'` 补发」，而不是用户付了钱没人知道。
  */
 function callerGuard() {
   const wxContext = (cloud.getWXContext && cloud.getWXContext()) || {}
   const openid = wxContext.OPENID
   if (!openid) return null
 
-  const mode = String(process.env.PAY_CALLBACK_GUARD || 'log').toLowerCase()
+  const mode = String(process.env.PAY_CALLBACK_GUARD || 'strict').toLowerCase()
   if (mode === 'off') return null
 
   const who = `${String(openid).slice(0, 8)}***`
-  if (mode === 'strict') {
+  if (mode !== 'log') {
     log(`拒绝端上调用（OPENID=${who}）：支付回调不接受端上触发`)
     return { errcode: -1, errmsg: '本函数不接受端上调用' }
   }
   log(
     `⚠ 端上调用（OPENID=${who}）—— PAY_CALLBACK_GUARD=log 只记录不拦截。` +
-    `在日志里确认真机支付回调不带 openid 后，把该变量切成 strict`
+    `确认过真机回调的形态之后，把该环境变量删掉（缺省即 strict）或显式写上 strict，回到拦截档`
   )
   return null
+}
+
+/**
+ * 被闸门拦下时，在订单上留一个**对账看得见**的痕迹（只对「像微信支付通知」的载荷做）。
+ *
+ * 为什么必须留：闸门的判据（`OPENID` 非空 ⇒ 端上调用）是**推断**，本函数没法自证它对不对。
+ * 若真回调也带 OPENID，被拦的就是真人真钱 —— 而订单会永远停在 `pending`，
+ * 对账扫不到（理由见 callerGuard 注释）。于是：拦截 → 留痕 → 对账报出来 → 运营核对
+ * 微信商户平台的这一单是否确已支付 → `adminOp:'grantMember'` 补发。判据万一错了，
+ * 一轮对账内就有人知道，而不是等用户来投诉。
+ *
+ * ⚠ 痕迹**不作为发货依据**：端上同样造得出这个载荷（它只能触发「留痕」、触发不了发货），
+ * 所以对账只报不改。要做成自动补发，唯一正当的依据是向微信查单（`cloud.cloudPay.queryOrder`）——
+ * 那需要线上真机验证过接口形态之后才能接，别凭推断写。
+ */
+async function markGuardBlocked(event) {
+  const outTradeNo = String(pick(event || {}, ['outTradeNo', 'out_trade_no']) || '')
+  if (!outTradeNo) return null /* 不像支付通知（例如端上乱调）→ 不值得留痕 */
+  try {
+    await db
+      .collection('orders')
+      .doc(outTradeNo)
+      .update({
+        data: {
+          guard_blocked: true,
+          guard_blocked_at: new Date().toISOString(),
+          guard_blocked_fee: Number(pick(event || {}, ['totalFee', 'total_fee'])) || null
+        }
+      })
+    log(`⚠ 已拦下并留痕：订单 ${outTradeNo} —— 若该单在商户平台确已支付，用 adminOp:'grantMember' 补发（对账也会报出来）`)
+    return outTradeNo
+  } catch (err) {
+    /* 单不存在 / 写不进去都不该改变拦截结论：留痕只是「让人能发现」，不是安全边界 */
+    log(`拦截留痕失败（不影响拦截结论）：订单 ${outTradeNo} —— ${(err && err.message) || err}`)
+    return null
+  }
 }
 
 /* 售后（退款写口 + 定时对账）：实现全在 ./after-sales.js，这里只接线。
@@ -351,7 +406,11 @@ const afterSales = createAfterSales({
 
 exports.main = async (event) => {
   const blocked = callerGuard()
-  if (blocked) return blocked
+  if (blocked) {
+    /* 拦下之后先留痕再回绝：万一判据错了，对账才看得见这单（见 markGuardBlocked） */
+    await markGuardBlocked(event)
+    return blocked
+  }
 
   const e = event || {}
 

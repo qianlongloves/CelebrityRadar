@@ -206,6 +206,30 @@ function createDb(opts = {}) {
     }
   }
 
+  /**
+   * 故障注入：集合名 -> true 时**带 `orderBy` 的查询**抛错，不带排序的照常成功。
+   *
+   * 用来覆盖「排序不可用 → 端上回退到不排序扫描」这条分支（热门榜 / 会员示例的兜底路径）。
+   * 这两处在源码里都写着「`orderBy` 依赖某字段索引，索引未建时云侧会拒」，但此前 mock
+   * 无论有无排序都成功 —— 于是**回退分支一次都没被执行过**，里面的排序/取值口径没人钉。
+   * 真机上「排序会失败」至少有两条确凿的来路：字段无索引时的排序内存超限、
+   * 以及建表脚本尚未跑过的新环境。注入的是这个场景本身，不是某个具体错误码。
+   */
+  const orderByFailing = new Set()
+  const guardOrder = (name, orders) => {
+    /* 判据只看**非 `_id` 的排序键**：`_id` 是主键、天生有索引，按它排序不会因为「索引未建」被拒。
+       而 db.ts#fetchAll 在需要翻页时会**自动补一个 `_id` 次级键**（它自己的稳定化手段）——
+       把补出来的键也算进判据，注入就从「这个字段没有索引」变成「这个集合不许排序」，
+       回退分支会被连坐：热门榜回退是不排序取 40 条 ⇒ 补了 `_id` ⇒ 回退自己也失败 ⇒ 直接落静态种子，
+       于是「回退到不排序扫描」这条分支永远测不到（实测踩过一次）。 */
+    const reliesOnIndex = (o) => o[0] !== '_id'
+    if (orders.some(reliesOnIndex) && orderByFailing.has(name)) {
+      throw Object.assign(new Error(`mock: 集合 ${name} 排序失败（故障注入：索引未建 / 排序内存超限）`), {
+        errCode: -502001
+      })
+    }
+  }
+
   const coll = (name) => {
     if (!tables.has(name)) tables.set(name, new Map())
     return tables.get(name)
@@ -218,6 +242,7 @@ function createDb(opts = {}) {
       this._orders = []
       this._skip = 0
       this._limit = PLATFORM_PAGE_MAX
+      this._field = null
     }
 
     _next(patch) {
@@ -225,6 +250,7 @@ function createDb(opts = {}) {
       q._orders = this._orders.slice()
       q._skip = this._skip
       q._limit = this._limit
+      q._field = this._field
       Object.assign(q, patch)
       return q
     }
@@ -233,10 +259,15 @@ function createDb(opts = {}) {
     orderBy(field, dir) { return this._next({ _orders: this._orders.concat([[field, dir === 'desc' ? -1 : 1]]) }) }
     skip(n) { return this._next({ _skip: n }) }
     limit(n) { return this._next({ _limit: n }) }
-    field() { return this }
+    /* 投影（`.field({a:true})`）。原先写成 `field() { return this }` —— 参数被丢掉，
+       于是「端上 `select('id')` 只取主键」这件事在测试里**永远测不出来**（mock 总回整行），
+       投影是否真的生效只有真机才知道。现在真裁剪：传了列名却去读别的字段的调用点，
+       会在测试里立刻暴露（这正是本次给 db.ts#select 补实现时要防的回归）。 */
+    field(projection) { return this._next({ _field: projection || null }) }
 
     async get() {
       guardRead(this.name)
+      guardOrder(this.name, this._orders)
       stats.getCalls++
       let rows = [...coll(this.name).values()].filter((d) => matchDoc(d, this._where))
       for (const [f, dir] of this._orders.slice().reverse()) {
@@ -249,6 +280,15 @@ function createDb(opts = {}) {
       }
       const take = Math.min(this._limit, PLATFORM_PAGE_MAX)
       rows = rows.slice(this._skip, this._skip + take)
+      if (this._field) {
+        rows = rows.map((d) => {
+          const o = {}
+          for (const [k, v] of Object.entries(this._field)) if (v && k in d) o[k] = d[k]
+          /* 云开发**始终返回 _id**（没写进投影也给）—— 照做，否则 db.ts#toRow 映射不出 id */
+          if ('_id' in d) o._id = d._id
+          return o
+        })
+      }
       return { data: rows.map(clone), errMsg: 'collection.get:ok' }
     }
 
@@ -358,9 +398,18 @@ function createDb(opts = {}) {
     __setFailing(name, on) { if (on) failing.add(name); else failing.delete(name) },
     /** 故障注入（P1-10）：只让该集合的**读**抛错，写照常成功 —— 区分「读失败」与「行不存在」 */
     __setReadFailing(name, on) { if (on) readFailing.add(name); else readFailing.delete(name) },
+    /** 故障注入：只让该集合**带 orderBy 的查询**抛错（覆盖「索引未建 → 回退不排序扫描」分支） */
+    __setOrderByFailing(name, on) { if (on) orderByFailing.add(name); else orderByFailing.delete(name) },
     /** V-1：让 doc(id).update() 打到不存在的行时抛错（复刻另一种真机可能行为） */
     __setMissingDocUpdateThrows(on) { missingDocUpdateThrows = !!on },
-    __reset() { tables.clear(); seq = 0; failing.clear(); readFailing.clear(); missingDocUpdateThrows = false },
+    __reset() {
+      tables.clear()
+      seq = 0
+      failing.clear()
+      readFailing.clear()
+      orderByFailing.clear()
+      missingDocUpdateThrows = false
+    },
     database() {
       return {
         collection: (name) => new Query(name, null),

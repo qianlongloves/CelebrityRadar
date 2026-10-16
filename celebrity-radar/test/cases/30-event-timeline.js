@@ -87,7 +87,10 @@ describe('事件时间线页：已注册且不是 tab 页（静态约束）', ()
     ]) {
       ok(page.includes(imp), `事件时间线页应复用 ${imp}`)
     }
-    ok(page.includes('loadStoredEvents('), '读落库事件应走 loadStoredEvents')
+    ok(
+      page.includes('loadStoredEventByKey('),
+      '读落库事件应走 loadStoredEventByKey（只按 event_key 取这一条，不再把最近 200 条全读回来 filter）'
+    )
     ok(page.includes('loadEventStatus('), '读我的状态应走 loadEventStatus')
     ok(page.includes('buildOpinionEvents('), '降级应回落 buildOpinionEvents')
     ok(page.includes('resolveEventByKey('), '按 event_key 定位应走 resolveEventByKey')
@@ -230,8 +233,8 @@ describe('事件时间线页：参数缺失 / 非法的空态分支', () => {
     ok(page.includes("status: 'invalid'") || page.includes("'invalid'"), '缺「参数非法」空态分支')
     ok(page.includes('page-event__empty'), '空态要有明确落点样式')
     ok(page.includes('navigateBack'), '空态要能返回')
-    /* 门禁必须排在读库之前：非法的判断要在 loadStoredEvents 之前 */
-    ok(page.indexOf('isValidEventKey(') < page.indexOf('loadStoredEvents('), '参数校验要早于读库')
+    /* 门禁必须排在读库之前：非法的判断要在读库调用之前 */
+    ok(page.indexOf('isValidEventKey(') < page.indexOf('loadStoredEventByKey('), '参数校验要早于读库')
   })
 })
 
