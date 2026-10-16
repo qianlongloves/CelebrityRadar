@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import Taro, { useDidShow, useRouter, useShareAppMessage, useShareTimeline } from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
-/* 按需引入：'taro-ui' 的包入口（dist/index.js）是打包好的 CJS，50 个组件全在里面且摇不掉，
-   故组件一律从 dist/components/<名字> 取（那一层是 ESM 源码）。用例 70 钉住这一点。 */
-import AtButton from 'taro-ui/dist/components/button'
+/* 本页不再引 taro-ui 组件（2026-10-16）：页脚那两个 AtButton 随工具卡上移后已换成普通 View，
+   `import AtButton from 'taro-ui/dist/components/button'` 与相应的按需引入说明一并删掉 ——
+   留着就是一份「看着在用、其实摇不掉也占预算」的死引入（A-9）。 */
 import { buildPersonKey, DOMAIN_COVERAGE_TEXT, domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
 import { FOCUS_META, FocusCode, isFocusCode } from '@/config/filters'
 import EmptyState from '@/components/empty-state'
@@ -2197,24 +2197,96 @@ export default function ReportPage() {
       )}
 
       {/*
-        AI 问答入口（M4-8）：原先放在页面最底部（读完报告才看得到），用户反馈「找不到」，
-        故提到首屏 —— 紧跟人物横幅与会员促销条之后，仍在首屏之内，是第一眼能看到的动作之一。
-        问答只读已缓存报告、不消耗生成次数（见 utils/qa.ts 三条硬口径）。
-        ⚠ 文案（2026-10-12 用户反馈「有歧义」）：原先只写「不消耗生成次数」，而面板头部又有
-        「今日还可问 N 次」，两处并列时读起来像「不消耗生成、却消耗提问」的矛盾句。两个额度池
-        本就不同（生成池 / 提问池），文案必须把**两个池的名字都写出来并各自定性**，歧义即消。
+        报告工具卡（2026-10-16）。
+
+        为什么合并（用户反馈）：同一份报告的五个动作原本散在页面的**首尾两端** ——
+        首屏只有一条「向 AI 提问」，而「收藏 / 刷新 / 导出长图 / 导出数据」要滚到页面最底部
+        才看得见。读了一半想收藏、或想导出的用户，得先滚到底、再滚回来。
+        它们语义上本就是同一类东西（**对这份报告做什么**）、且都不依赖正文，故收进同一张卡、
+        落在首屏：紧跟人物横幅与会员促销条之后，随报告一起出现。
+
+        三处刻意保留：
+          · 「向 AI 提问」仍是本卡最重的动作（图标按钮 + 主副文案 + 箭头），不降级成第四个工具 ——
+            它是本卡唯一会**另开一条阅读动线**的入口，其余四个都是就地生效；
+          · 两个导出仍是**会员权益**（门禁见 utils/report-card.ts#canExportReportCard /
+            utils/report-export.ts#canExportReport，一处没动），故各自带「会员」角标 ——
+            混成四个等重的图标按钮、又不标权益，用户会以为点哪个都一样；
+          · 卡尾仍留一行小字说清两个导出各给什么（原两块导出区的说明收敛成一行）。
+
+        文案（2026-10-12 用户反馈「有歧义」）必须原样保留：原先只写「不消耗生成次数」，
+        而问答面板头部又有「今日还可问 N 次」，两处并列时读起来像「不消耗生成、却消耗提问」
+        的矛盾句。两个额度池本就不同（生成池 / 提问池），文案必须把**两个池的名字都写出来
+        并各自定性**，歧义即消。
       */}
       {report && (
-        <View
-          className='page-report__ask page-report__ask--hero'
-          hoverClass='page-report__ask--tap'
-          onClick={() => Taro.navigateTo({ url: `/package/qa/index?personKey=${encodeURIComponent(personKey)}` })}
-        >
-          <View className='page-report__ask-main'>
-            <Text className='page-report__ask-text'>向 AI 提问</Text>
-            <Text className='page-report__ask-desc'>就这份报告继续追问 · 只计「每日提问次数」，不占「报告生成次数」</Text>
+        <View className='page-report__tools'>
+          <View
+            className='page-report__tools-ask'
+            hoverClass='page-report__tools-ask--tap'
+            onClick={() => Taro.navigateTo({ url: `/package/qa/index?personKey=${encodeURIComponent(personKey)}` })}
+          >
+            <Text className='page-report__tools-ask-icon'>AI</Text>
+            <View className='page-report__tools-ask-main'>
+              <Text className='page-report__tools-ask-title'>向 AI 提问</Text>
+              <Text className='page-report__tools-ask-desc'>
+                就这份报告继续追问 · 只计「每日提问次数」，不占「报告生成次数」
+              </Text>
+            </View>
+            <Text className='page-report__tools-ask-arrow'>→</Text>
           </View>
-          <Text className='page-report__ask-arrow'>→</Text>
+
+          <View className='page-report__tools-row'>
+            {/* 收藏报告：就地生效，故不做二次确认 */}
+            <View
+              className={`page-report__tool${reportFaved ? ' page-report__tool--on' : ''}`}
+              hoverClass='page-report__tool--tap'
+              onClick={() => void toggleReportFav()}
+            >
+              <Text className='page-report__tool-icon'>{reportFaved ? '★' : '☆'}</Text>
+              <Text className='page-report__tool-label'>{reportFaved ? '已收藏' : '收藏'}</Text>
+            </View>
+
+            {/*
+              刷新最新：非破坏式刷新时 phase 仍是 ready，只看 phase 这颗按钮会像「没反应」，
+              故 refreshing 一并算进忙碌态（是否值得花这次额度统一由确认弹窗把门，
+              见 requestRefresh 的注释 —— 按钮不替用户做决定，只如实显示在做什么）。
+            */}
+            <View
+              className={`page-report__tool${
+                state.phase === 'loading' || refreshing ? ' page-report__tool--busy' : ''
+              }`}
+              hoverClass='page-report__tool--tap'
+              onClick={() => void requestRefresh()}
+            >
+              <Text className='page-report__tool-icon'>⟳</Text>
+              <Text className='page-report__tool-label'>
+                {state.phase === 'loading' || refreshing ? '刷新中' : '刷新'}
+              </Text>
+            </View>
+
+            {/* 导出报告长图：会员权益，角标只在非会员时出现（会员不需要被告知自己买过什么） */}
+            <View className='page-report__tool' hoverClass='page-report__tool--tap' onClick={onExportCard}>
+              <Text className='page-report__tool-icon'>▤</Text>
+              <Text className='page-report__tool-label'>长图</Text>
+              {!member && <Text className='page-report__tool-vip'>会员</Text>}
+            </View>
+
+            <View className='page-report__tool' hoverClass='page-report__tool--tap' onClick={onExportData}>
+              <Text className='page-report__tool-icon'>▦</Text>
+              <Text className='page-report__tool-label'>数据</Text>
+              {!member && <Text className='page-report__tool-vip'>会员</Text>}
+            </View>
+          </View>
+
+          <Text className='page-report__tools-note'>
+            长图带结论、依据与出处，可保存 / 转发；数据为 Markdown 全文（每条带出处）+ JSON，可核对
+          </Text>
+
+          {!!exportGuide && (
+            <View className='page-report__export-guide' onClick={() => onPromoTap('report_export')}>
+              <Text>{exportGuide === 'data' ? reportDataExportNote() : reportExportNote()}</Text>
+            </View>
+          )}
         </View>
       )}
 
@@ -3377,58 +3449,11 @@ export default function ReportPage() {
             </View>
           )}
 
-          {/* 底部动作一行两个：收藏报告是「读完之后留一份」，刷新最新是「要新版本」。
-              分享由右上角原生分享承担；单条名言出图的入口只在收藏页（「名言卡」）。
-              报告长图另起一行（见下方 __export）：它不是第三个同等按钮，而是会员权益入口 ——
-              混在这一行里，用户会以为它和「刷新最新」一样随手可用。 */}
-          <View className='page-report__foot-actions'>
-            <AtButton type='secondary' circle onClick={() => void toggleReportFav()}>
-              {reportFaved ? '已收藏' : '收藏报告'}
-            </AtButton>
-            {/*
-              refreshing 也转圈：非破坏式刷新时 phase 仍是 ready，不这样按钮会看着没反应。
-
-              P2-18 的禁用态已撤销（2026-10-10）：原先它与顶部状态行共用 showFresh 判据，
-              刚生成完就变灰「已是最新」，与「重新生成随时可用」直接冲突。现在两处入口都走
-              requestRefresh，按钮不再有禁用态、文案也不再随状态变化 ——
-              「要不要花这一次」统一由确认弹窗把门，不再由按钮替用户做决定。
-            */}
-            <AtButton
-              type='primary'
-              circle
-              loading={state.phase === 'loading' || refreshing}
-              onClick={() => void requestRefresh()}
-            >
-              刷新最新
-            </AtButton>
-          </View>
-
           {/*
-            导出报告长图（获客 P0，2026-10-15）：结论 + 依据 + 争议与回应 + 动态出处压成一张图，
-            页脚带免责与小程序码（见 utils/share-card.ts#renderReportPoster）。
-            免费用户点它只会多出一行升级引导，不弹窗 —— 他还在读报告，不该被拦住。
+            页脚原有的「收藏报告 / 刷新最新」与两块导出入口已于 2026-10-16 全部上移到首屏
+            工具卡（见上方 __tools）：同一份报告的五个动作散在首尾两端，读到一半想收藏 / 导出
+            得先滚到底再滚回来。页脚现在只剩免责声明。
           */}
-          <View className='page-report__export' onClick={onExportCard}>
-            <Text className='page-report__export-title'>导出报告长图</Text>
-            <Text className='page-report__export-sub'>带结论、依据与出处，可保存 / 转发</Text>
-          </View>
-
-          {/*
-            导出结构化数据（S3-1，2026-10-16）：与长图并列的第二条出口。
-            长图发给别人看，这份留着自己用 —— 每条事实带出处、末尾附完整来源清单（图带不了链接），
-            JSON 还能进表格。免费用户同样只多一行引导，且引导语与长图那句**不同**
-            （两个出口带走的东西不一样，用同一句话会让用户以为点哪个都一样）。
-          */}
-          <View className='page-report__export' onClick={onExportData}>
-            <Text className='page-report__export-title'>导出结构化数据</Text>
-            <Text className='page-report__export-sub'>Markdown 全文（每条带出处）+ JSON，可进文档与表格核对</Text>
-          </View>
-
-          {!!exportGuide && (
-            <View className='page-report__export-guide' onClick={() => onPromoTap('report_export')}>
-              <Text>{exportGuide === 'data' ? reportDataExportNote() : reportExportNote()}</Text>
-            </View>
-          )}
 
           {/* AI 生成内容免责声明：合规要求必须出现在页面上，不能只藏在可复制的文本里 */}
           <Text className='disclaimer'>{report.disclaimer}</Text>

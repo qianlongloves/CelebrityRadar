@@ -66,7 +66,10 @@ page {
    *
    * 直接子级的浮层（fixed/absolute 遮罩、悬浮卡）挂上这个类即可放行 —— 这里 (0,2,0) 稳赢 (0,1,1)。
    * z-index 必须在这里给死，不能只放开 position：否则组件自己的 z-index 仍会被 `> view` 压成 1。
-   * 1200 是明确的层栈顺序：要盖住 custom-tab-bar 的 999、share-poster 的 1000。
+   * 1200 是明确的层栈顺序：要盖住 custom-tab-bar 的 999。
+   * ⚠ share-poster 也挂了这个类（2026-10-16）——它此前只写 `position: fixed; z-index: 1000`，
+   *   被上面那条 `> view` 按回文档流，于是报告长图直接摊在页面最下方（用户反馈「不是弹框」）。
+   *   它自己那条 1000 现在只在**非 glow-page 宿主**下生效；宿主带 .glow-page 时一律走这里的 1200。
    * 其余浮层若只求「在内容之上、在 tab 栏之下」，请自行声明，不要复用这个类。
    */
   > .glow-overlay {

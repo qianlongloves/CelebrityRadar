@@ -1520,11 +1520,12 @@
     }
   }
 
-  /* 底部两个整行跳转入口（「向 AI 提问」/「与另一位名人对比」）共用一套描边条：
-     描边（而非实心）表明它们是跳转入口，与下方就地生效的「收藏 / 刷新」拉开层级。
-     左右 32rpx 与 .card 的 margin 对齐。 */
-  &__compare,
-  &__ask {
+  /* 整行跳转入口（「与另一位名人对比」）的描边条：
+     描边（而非实心）表明它是跳转入口，与就地生效的工具按钮拉开层级。
+     左右 32rpx 与 .card 的 margin 对齐。
+     ⚠ 「向 AI 提问」原先与本条共用这套描边条，2026-10-16 已并入首屏工具卡 __tools
+     （描边条样式随之不再共享，故这里只剩 __compare 一个选择器）。 */
+  &__compare {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1542,8 +1543,7 @@
     }
   }
 
-  &__compare-arrow,
-  &__ask-arrow {
+  &__compare-arrow {
     color: $brand-soft;
   }
 
@@ -1678,48 +1678,146 @@
     }
   }
 
-  /* 首屏问答入口（--hero）：实心品牌色 —— 它是首屏最重的那个动作，
-     淡描边样式压在横幅下面的浅背景里太轻，用户扫不到（见 pages/report 的注释）。
-     副文案顺带说明「不消耗生成次数」，这是免费用户最担心的一件事。 */
-  &__ask--hero {
-    margin-top: 24rpx;
-    border: none;
-    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
-    box-shadow: 0 12rpx 32rpx rgba(95, 51, 225, 0.24);
+  /*
+    ===== 报告工具卡（2026-10-16）=====
 
-    .page-report__ask-text,
-    .page-report__ask-arrow {
-      color: #fff;
+    首屏那张「对这份报告做什么」的卡：上面一个「向 AI 提问」图标按钮，下面四个工具
+    （收藏 / 刷新 / 导出长图 / 导出数据）。原先这五件事散在页面首尾两端 ——
+    首屏只有问答入口，另外四个要滚到最底部（见 index.tsx 里工具卡的注释）。
+
+    视觉上刻意保留一条层级：问答是**实心图标按钮 + 主副文案**（唯一会另开一条阅读动线的
+    入口），四个工具是**等宽的图标按钮**（就地生效）。两者同卡不同重，一眼能分。
+  */
+  &__tools {
+    margin: 24rpx 32rpx 0;
+    padding: 24rpx 28rpx;
+    border-radius: $radius-md;
+    background: rgba(255, 255, 255, 0.86);
+    box-shadow: $shadow-card;
+
+    /* 免费用户点过导出后才出现的一行升级引导：在卡里就地显示，与上面那颗按钮贴在一起
+       （原先是页脚整行，会离触发它的按钮很远）。 */
+    .page-report__export-guide {
+      margin: 16rpx 0 0;
     }
   }
 
-  &__ask-main {
+  &__tools-ask {
+    display: flex;
+    align-items: center;
+    gap: 20rpx;
+
+    &--tap {
+      opacity: 0.7;
+    }
+  }
+
+  /* 图标按钮本体：实心品牌色圆角方块。它是「按钮」而不是装饰，故不藏在文字里。 */
+  &__tools-ask-icon {
+    flex-shrink: 0;
+    width: 76rpx;
+    height: 76rpx;
+    border-radius: 24rpx;
+    background: linear-gradient(135deg, $brand 0%, $brand-soft 100%);
+    box-shadow: 0 8rpx 20rpx rgba(95, 51, 225, 0.24);
+    color: #fff;
+    font-size: 28rpx;
+    font-weight: 700;
+    line-height: 76rpx;
+    text-align: center;
+  }
+
+  &__tools-ask-main {
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 4rpx;
   }
 
-  &__ask-desc {
-    font-size: 22rpx;
-    font-weight: 400;
-    color: rgba(255, 255, 255, 0.82);
+  &__tools-ask-title {
+    color: $text-1;
+    font-size: 28rpx;
+    font-weight: 600;
   }
 
-  /*
-    底部「收藏报告 / 刷新最新」一行（2026-10-09 改名）。
-    原先与头部横幅的关注按钮行共用 `page-report__actions`，而两条规则同时命中同一个
-    class：这里给横幅按钮行带来了 `margin: 24rpx`（左边缘比名字缩进 24rpx），
-    横幅那条又反过来给底部这行加了 `flex-wrap: wrap` + `margin-top: 4rpx`。
-    两行长得很像但没有任何共同点，故拆开：本行 = 卡片内的一行按钮，横幅行另起名字。
-  */
-  &__foot-actions {
-    display: flex;
-    gap: 20rpx;
-    margin: 24rpx;
+  /* 副文案必须留住「两个池各自的名字」：只写「不消耗生成次数」会和面板头的
+     「今日还可问 N 次」并列成矛盾句（2026-10-12 用户反馈）。 */
+  &__tools-ask-desc {
+    color: $text-3;
+    font-size: 21rpx;
+    line-height: 1.5;
+  }
 
-    .at-button {
-      flex: 1;
+  &__tools-ask-arrow {
+    flex-shrink: 0;
+    color: $brand-soft;
+    font-size: 26rpx;
+  }
+
+  /* 四个工具：等宽一行，图标 + 两字标签。 */
+  &__tools-row {
+    display: flex;
+    margin-top: 22rpx;
+    padding-top: 22rpx;
+    border-top: 1rpx solid $line;
+  }
+
+  &__tool {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8rpx;
+    padding: 8rpx 0;
+
+    &--tap {
+      opacity: 0.6;
     }
+
+    /* 已收藏 / 刷新中：整项转品牌色，与静止态一眼可分 */
+    &--on,
+    &--busy {
+      .page-report__tool-icon,
+      .page-report__tool-label {
+        color: $brand;
+      }
+    }
+  }
+
+  &__tool-icon {
+    color: $text-3;
+    font-size: 34rpx;
+    line-height: 1;
+  }
+
+  &__tool-label {
+    color: $text-2;
+    font-size: 22rpx;
+  }
+
+  /* 「会员」角标：压在图标右上角，不占行高。两个导出是会员权益，缺了它用户会以为
+     点哪个都一样，点下去没反应就成了失望（原两块导出区的两行文案收敛成下面一行）。 */
+  &__tool-vip {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    margin-left: 16rpx;
+    padding: 0 8rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    color: $brand;
+    font-size: 18rpx;
+    line-height: 26rpx;
+  }
+
+  &__tools-note {
+    display: block;
+    margin-top: 14rpx;
+    color: $text-3;
+    font-size: 21rpx;
+    line-height: 1.5;
   }
 
   /* ===== 卡内小表格（人物档案 / 人物关系 / 商业合作与代言）：flex 行拼的迷你表 =====
@@ -1871,36 +1969,13 @@
   }
 
   /*
-    导出报告长图（获客 P0，2026-10-15）。
-
-    为什么独立成行、而不是并进上面的 __foot-actions：上面两颗按钮是「操作这份报告」
-    （收藏、刷新，免费即可），而它是**会员权益入口** —— 混在同一行会让用户以为它一样
-    随手可用，点下去没反应就成了失望。独立一行 + 浅紫底 + 两行文案（能做什么 / 有什么），
-    与下方免责声明之间留出距离，视觉上自成一块。
+    免费用户点过导出后才出现的一行升级引导（与周报页同一克制风格，非弹窗）。
+    ⚠ 2026-10-16：原先这里是页脚两块 __export（长图 / 结构化数据）各自成行 + 浅紫底 +
+    两行文案，理由是「混进操作行会让用户以为它一样随手可用」。这两个入口已上移进首屏
+    工具卡，同样的目的改由两条更轻的手段承担：①两颗按钮各带「会员」角标；
+    ②卡尾一行 __tools-note 说清两个导出各给什么。故 __export / __export-title /
+    __export-sub 三条规则随之删除，只留这一行引导（它的落点改在 __tools 内，见上）。
   */
-  &__export {
-    display: block;
-    margin: 0 24rpx 16rpx;
-    padding: 26rpx 32rpx;
-    border-radius: 32rpx;
-    background: $brand-weak;
-  }
-
-  &__export-title {
-    display: block;
-    font-size: 28rpx;
-    font-weight: 600;
-    color: $brand;
-  }
-
-  &__export-sub {
-    display: block;
-    margin-top: 6rpx;
-    font-size: 22rpx;
-    color: $text-3;
-  }
-
-  /* 免费用户点过「导出报告长图」后才出现的一行升级引导（与周报页同一克制风格，非弹窗） */
   &__export-guide {
     display: block;
     margin: 0 24rpx 16rpx;

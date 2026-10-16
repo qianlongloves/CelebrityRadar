@@ -322,9 +322,14 @@ describe('结构化导出：报告页接入', () => {
   const page = () => read('package/report/index.tsx')
 
   it('报告页有两个并列的导出出口，且各有入口文案', () => {
+    /*
+     * 2026-10-16：两个出口从页脚并列的两块导出行搬进首屏工具卡，标签缩成「长图」「数据」
+     * （详细说明收成卡尾一行 note，见 test/cases/75-report-tools.js）。
+     * 这里钉**真实渲染标记**而非注释里的旧长句 —— 后者搬完位置也还在，会变成假绿。
+     */
     const src = page()
-    ok(src.includes('导出报告长图'), '长图出口保留（不是被替换）')
-    ok(src.includes('导出结构化数据'), '数据出口新增')
+    ok(/page-report__tool-label'>长图</.test(src), '长图出口保留（不是被替换）')
+    ok(/page-report__tool-label'>数据</.test(src), '数据出口新增')
     ok(/onClick=\{onExportData\}/.test(src), '数据出口绑到 onExportData')
     ok(/onClick=\{onExportCard\}/.test(src), '长图出口仍绑 onExportCard')
   })

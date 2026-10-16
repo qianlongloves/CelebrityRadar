@@ -362,7 +362,12 @@ describe('报告页：导出入口 / 非弹窗引导 / 长图弹层（静态约�
   const at = page.indexOf('const onExportCard')
 
   it('导出入口对所有用户可见，点击才分层', () => {
-    ok(page.includes('导出报告长图'), '缺导出入口')
+    /*
+     * 2026-10-16：导出入口从页脚搬进首屏工具卡，标签由「导出报告长图」缩成「长图」。
+     * 故这里改钉**真实渲染标记** —— 老写法（`includes('导出报告长图')`）会被挪位置后
+     * 残留的那句注释"骗过"：注释不是入口。
+     */
+    ok(/page-report__tool-label'>长图</.test(page), '缺导出入口（首屏工具卡里的「长图」）')
     ok(page.includes('onExportCard'), '导出入口要有处理函数')
     ok(page.includes('buildReportCard('), '内容组装走 utils/report-card')
     ok(page.includes('这份报告暂不支持导出图片'), '脏报告给明确提示（不白屏、不出空壳图）')

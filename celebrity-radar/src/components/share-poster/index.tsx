@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import Taro from '@tarojs/taro'
-import { View, Text, Image, Canvas } from '@tarojs/components'
+import { View, Text, Image, Canvas, ScrollView } from '@tarojs/components'
 import {
   POSTER_CANVAS_ID,
   POSTER_WIDTH,
@@ -121,8 +121,18 @@ export default function SharePoster({
   }
 
   return (
-    <View className='share-poster'>
-      <View className='share-poster__mask' onClick={onClose} />
+    /*
+      根节点必须同时挂 `glow-overlay`（层级口径见 app.scss），否则**它根本不是弹层**。
+      宿主页（报告 / 收藏 / 周报）的根容器都带 `.glow-page`，而 app.scss 里
+      `.glow-page > view { position: relative; z-index: 1 }` 的特异性是 (0,1,1)，
+      盖过组件自己 `.share-poster { position: fixed; z-index: 1000 }` 的 (0,1,0) ——
+      于是这个「全屏浮层」被按回文档流，长图直接摊在页面最下方、撑开一条长滚动。
+      这正是用户报「保存长图不是弹框、在页面下方突出一段长图」的成因，不是布局细节问题。
+      `glow-overlay` 以 (0,2,0) 把 position / z-index 放回来，同时压过 custom-tab-bar 的 999。
+    */
+    <View className='share-poster glow-overlay'>
+      {/* catchMove：遮罩上滑动不该把底下的报告页一起滚走（与 report-refreshing 同一口径） */}
+      <View className='share-poster__mask' catchMove onClick={onClose} />
 
       {/* 离屏画布：必须真实存在（display:none 会让节点查询拿不到），故放到屏幕外 */}
       <Canvas
@@ -151,7 +161,16 @@ export default function SharePoster({
               <Text>正在生成卡片…</Text>
             </View>
           ) : (
-            <Image className='share-poster__preview' src={path} mode='widthFix' showMenuByLongpress />
+            /*
+              预览必须是**可滚动**的（2026-10-16）。名言卡是 3:4 竖版、一屏放得下，
+              但报告长图能到几千 px —— 此前用 `max-height + overflow: hidden` 硬裁，
+              长图只剩最上面一截，用户既看不到下面的内容、也不知道自己被裁了，
+              而这张图马上要进相册 / 发给别人，看不到就无从核对（用户反馈的另一半成因）。
+              固定 58vh 视口 + 纵向滚动，等价「原尺寸逐段看」，短卡片则自动无滚动条。
+            */
+            <ScrollView className='share-poster__scroll' scrollY>
+              <Image className='share-poster__preview' src={path} mode='widthFix' showMenuByLongpress />
+            </ScrollView>
           )}
         </View>
 

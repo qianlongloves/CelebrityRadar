@@ -61,21 +61,35 @@
     padding: 8rpx 12rpx;
   }
 
-  /* 预览区：按屏高收口，动作按钮始终留在屏幕内 */
+  /*
+   * 预览区：按屏高收口，动作按钮始终留在屏幕内。
+   * loading / error 两态仍走这里的居中；出图成功后由 &__scroll 接管（见下）。
+   */
   &__stage {
     display: flex;
     align-items: center;
     justify-content: center;
     min-height: 400rpx;
-    max-height: 60vh;
-    overflow: hidden;
+    max-height: 58vh;
     border-radius: $radius-md;
     background: $bg;
   }
 
-  &__preview {
+  /*
+   * 长图预览的滚动视口（2026-10-16）。
+   * 高度必须是**确定值**（ScrollView 不给高度就不滚），58vh 与 stage 的 max-height 对齐 ⇒
+   * 面板总高可控、按钮不会被顶出屏幕。名言卡（3:4）在这块视口里放得下，自动不出现滚动条。
+   * 此前 preview 带 `max-height: 60vh` 被 stage 的 overflow:hidden 硬裁 —— 长图只剩最上面一截。
+   */
+  &__scroll {
     width: 100%;
-    max-height: 60vh;
+    height: 58vh;
+  }
+
+  /* 图按宽度铺满、高度自适应（长图就是靠自然高度撑出滚动空间的，故不能再限 max-height） */
+  &__preview {
+    display: block;
+    width: 100%;
   }
 
   &__loading,
