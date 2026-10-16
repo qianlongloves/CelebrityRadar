@@ -9,10 +9,16 @@ export default defineAppConfig({
    *   指引未配置而本字段为 true 时，调用头像 / 昵称等隐私接口会被平台**直接拒绝** ——
    *   这不是端上能兜住的错，故上线前必须先在后台把指引配好再发这一版。
    *
-   * ── 当前状态（开发调试）───────────────────────────────────────────
-   * 现用测试 appid（wx0000000000000000）在公众平台配不了隐私指引，此时保持 true
-   * 会直接拒绝 chooseAvatar / nickname，表现为「点头像弹不出选择器」。故开发期先置
-   * false 让头像昵称能力可用；**上线前必须在真实 appid 后台配好指引后改回 true**。
+   * ── 当前状态（2026-10-16 核对）───────────────────────────────────
+   * 取值是 false，且不是改错：本机已用真实 appid（在**未跟踪**的
+   * project.private.config.json 里；受跟踪的 project.config.json 里是占位号），
+   * 但「后台指引配没配、过没过审」端上无从得知。没配好就置 true，
+   * chooseAvatar / nickname 会被平台直接拒绝，表现为「点头像弹不出选择器」，
+   * 而这是端上兜不住的错。故顺序固定：**后台指引过审 → 本字段改 true → 重新构建**。
+   *
+   * ⚠ 这一项不在 `src/config/local.ts` 的 debug 节里，独立于 utils/debug 的启动告警，
+   * 过去只靠这段注释被人记住 —— 已收进 `npm run release:check`
+   * （scripts/release-check.js）与路线图 §5 S0-5 行统一对账。
    */
   __usePrivacyCheck__: false,
   /*

@@ -12,6 +12,7 @@
     "test": "tsc -p test/tsconfig.test.json && tsc --noEmit -p tsconfig.json && node test/run.js",
     "test:only": "node test/run.js",
     "config:sync": "node scripts/sync-config.js",
+    "release:check": "node scripts/release-check.js",
     "config:check": "node scripts/sync-config.js --check"
   },
   "browserslist": [

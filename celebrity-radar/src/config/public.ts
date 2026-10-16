@@ -33,7 +33,7 @@
  * 「厂商 + 质量档」（见 llm.vendors / llm.qualities）；报告走结构化槽、问答走推理槽，
  * 槽位由云端按用途裁决（见 cloudfunctions/aiProxy/llm.config.js）。
  *
- * 【调试开关】debug 的五个值同样取自 local.ts，**仓库默认五项全 false**：
+ * 【调试开关】debug 的六个值同样取自 local.ts，**仓库默认六项全 false**：
  * 四个 disable* 都会放大成本（免费层限流、提问额度与 429 冷却同时失效），
  * 只在本地联调时置 true。逐项说明见 local.example.ts。
  *
@@ -207,6 +207,6 @@ export const publicConfig = {
    */
   webviewDomains: localConfig.webviewDomains,
 
-  /** 调试开关（取值见 src/config/local.ts；仓库默认五项全 false，上线前必须保持） */
+  /** 调试开关（取值见 src/config/local.ts；仓库默认六项全 false，上线前必须保持 —— `npm run release:check` 会拦） */
   debug: localConfig.debug
 } as const

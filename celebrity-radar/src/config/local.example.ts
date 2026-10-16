@@ -50,7 +50,7 @@ export interface LocalDebugFlags {
    *   disableCooldown       放开 10 分钟上游限流冷却（搜索源与大模型共用）
    * rawIoLog 只影响控制台噪音（上游原始报文），不改变任何行为。
    *
-   * **仓库默认五项全 false** —— 这是「别人 clone 下来直接跑」时唯一安全的取值。
+   * **仓库默认六项全 false** —— 这是「别人 clone 下来直接跑」时唯一安全的取值。
    *
    * ⚠ 这四个只放开**端上**的闸门，不顶替云端：生成 / 提问 / 缓存写口在 aiProxy 入口
    *   还会各判一次（计数由端上照旧 consume，debug 下照样涨到上限）。所以它们全开，

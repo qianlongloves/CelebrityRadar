@@ -7,7 +7,7 @@ import { publicConfig } from '@/config/public'
  * 额度与冷却分属 quota / cache / qa / cooldown 四个模块，开关散着放，改一次要跳四个文件；
  * 集中到一个配置节后，上线前对账只需检查一处，也不必在四个文件里各怀疑一遍。
  *
- * ⚠ 上线口径：`debug` 节五项必须全为 false —— 否则免费层限流（每日 3 次生成 / 5 次提问）
+ * ⚠ 上线口径：`debug` 节六项必须全为 false（含合规开关 allowRestrictedSearch）—— 否则免费层限流（每日 3 次生成 / 5 次提问）
  *   与 429 冷却保护（10 分钟）都会失效，等于把上游成本敞给所有人；
  *   `rawIoLog` 为 true 只是噪音（上游原始报文进控制台），不改变行为。
  *
