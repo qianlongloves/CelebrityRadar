@@ -474,7 +474,9 @@ describe('S3-1 ③ 端上：读口', () => {
   })
 
   it('过滤口径是新造一份吗？不是 —— 复用 cache.ts#exposeReport', () => {
-    ok(/import \{ exposeReport \} from '@\/utils\/cache'/.test(rvSrc), '派生第二条过滤口径迟早漂移')
+    /* 允许同一行里还取别的读口（N-9 的 `getCachedReport` 就是：对比对象可能是当前版），
+       但 exposeReport 必须来自 cache.ts —— 派生第二条过滤口径迟早漂移 */
+    ok(/import \{[^}]*\bexposeReport\b[^}]*\} from '@\/utils\/cache'/.test(rvSrc), '派生第二条过滤口径迟早漂移')
     ok(/await exposeReport\(/.test(rvSrc))
   })
 
@@ -503,10 +505,14 @@ describe('S3-1 ③ 页面与接线', () => {
 
   it('免费用户点「看这一版」不读正文（不是「读了不显示」）', () => {
     const i = pageSrc.indexOf('canViewVersionReport(isMember)')
-    const j = pageSrc.indexOf('await loadVersionReport(row.id')
+    /*
+     * 读口在 N-9 之后是 `loadVersionPair`（一次把「这一版 + 更新的一版」都取回来，差异视图才有得比）：
+     * 钉的仍是同一件事 —— 门禁在读口**之前**，被拦下时一个字节都不落到本地。
+     */
+    const j = pageSrc.indexOf('await loadVersionPair(')
     ok(i > 0 && j > i, '门禁必须在读正文之前')
     const freeSeg = pageSrc.slice(i, pageSrc.indexOf('setNoteVisible(true)', i))
-    notOk(/loadVersionReport/.test(freeSeg), '被拦下时不该把旧版正文读到本地')
+    notOk(/loadVersionPair|loadVersionReport/.test(freeSeg), '被拦下时不该把旧版正文读到本地')
   })
 
   it('本页只读：不生成报告、不写库', () => {

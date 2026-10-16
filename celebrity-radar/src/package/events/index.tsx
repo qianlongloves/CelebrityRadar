@@ -6,7 +6,7 @@ import { getFeedDetails } from '@/utils/cache'
 import { readWeeklyCache } from '@/utils/weekly'
 import { loadAlerts, listWatches, splitWatches } from '@/utils/keyword-alert'
 import { loadRiskSignals } from '@/utils/risk-watch'
-import { countNewEvents } from '@/utils/inbox'
+import { countFollowUpdates, countNewEvents } from '@/utils/inbox'
 import { EVENTS_PAGE_SIZE, pageSlice } from '@/utils/opinion-access'
 import { CRED_LABEL, IMPACT_LABEL, RESPONSE_LABEL } from '@/utils/opinion-rank'
 import type { OpinionInput } from '@/utils/opinion-rank'
@@ -24,6 +24,7 @@ import {
   setEventFollow
 } from '@/utils/opinion-store'
 import type { EventStatus } from '@/utils/opinion-store'
+import { buildSubjectHits, subscribedLabelByEvent, subjectFreshCount } from '@/utils/event-subscribe'
 import { formatMoment8 } from '@/utils/time'
 import './index.scss'
 
@@ -301,6 +302,29 @@ export default function Events() {
     eventStatus
   )
 
+  /**
+   * 「我盯的（已跟进）里有多少件有新进展」（E1，2026-10-16）：与 opinion-store 同源判据、
+   * 只收窄到已跟进的键。本页没有「全部已读」，列出来是为了让用户一眼看到**自己点名要跟的事**
+   * 里哪几件动了 —— 盯的对象越多，这个提示越重要（这也是工作台之外的「盯事」入口）。
+   */
+  const followCount = countFollowUpdates(
+    events.map((e) => ({ key: e.key, at: e.date })),
+    eventStatus
+  )
+
+  /**
+   * 订阅的对象（E1-②，2026-10-16）：与上面的「盯的」（跟进**单条**事件）刻意分开 —
+   * 这是「我订阅的**对象**里有几个动了」（判据见 utils/event-subscribe.ts）。
+   * 两个数字分开报，因为它们回答两个问题：`followCount` = 我点名要跟的事里哪几件动了，
+   * `subFreshCount` = 我盯的人/词里有几个在动；合并成一个数会让「订阅了 3 个人、只有 1 个人动」
+   * 显示成「有 1 条新进展」，看不出覆盖面。
+   * ⚠ 与页头角标（`newCount`）**同源不重复**：订阅只做筛选与标注，不新增「消掉」的语义
+   * （本页没有「全部已读」，不推进订阅自己的水位）。
+   */
+  const subHits = buildSubjectHits(events, eventStatus)
+  const subFreshCount = subjectFreshCount(subHits)
+  const subLabelByEvent = subscribedLabelByEvent(events, eventStatus)
+
   return (
     <View className='page-events glow-page safe-bottom'>
       <View className='page-events__hero'>
@@ -313,6 +337,10 @@ export default function Events() {
             {events.length > 0 ? `🧩 事件 · ${events.length} 件事` : '🧩 事件'}
           </Text>
           {newCount > 0 && <Text className='count-badge'>新 {newCount} 条</Text>}
+          {/* 已跟进的另有计数：跟进 = 订阅（云端日报按同一判据提醒，见 opinion-store 文件头） */}
+          {followCount > 0 && <Text className='count-badge'>盯的 {followCount} 条有新进展</Text>}
+          {/* 订阅的对象（E1-②）：「盯的」是**单条事件**，「订阅的 N 个对象」是**对象**这一层 */}
+          {subFreshCount > 0 && <Text className='count-badge'>订阅的 {subFreshCount} 个对象有新动向</Text>}
         </View>
       </View>
 
@@ -335,6 +363,8 @@ export default function Events() {
             const badge = newnessLabel(newness)
             const read = !!eventStatus.reads[ev.key]
             const following = !!eventStatus.follows[ev.key]
+            /* 命中订阅的事件（E1-②）：标出「这是我订阅的那个对象」，与 NEW / 有新进展两个角标并列 */
+            const subLabel = subLabelByEvent[ev.key] || ''
             return (
               /* 整卡跳转到事件时间线页；已读 / 跟进按钮 stopPropagation，避免被整卡手势带走 */
               <View key={ev.key} className='card page-events__item' onClick={() => goEvent(ev)}>
@@ -342,6 +372,10 @@ export default function Events() {
                   <Text className='page-events__title-text'>{ev.title}</Text>
                   {badge ? (
                     <Text className={`page-events__badge page-events__badge--${newness}`}>{badge}</Text>
+                  ) : null}
+                  {/* 带上对象名而不是干写「订阅」：用户可能订了好几个对象，只写「订阅」等于让他自己回忆订了谁 */}
+                  {subLabel ? (
+                    <Text className='page-events__badge page-events__badge--sub'>订阅·{subLabel}</Text>
                   ) : null}
                 </View>
                 <Text className='page-events__meta'>

@@ -126,6 +126,120 @@
   line-height: 1.6;
 }
 
+/* ── N-9：与更新的一版的差异（摘要之下、同一张卡里的一块） ──
+   底色比卡片略深：让「这一版」与「两版之间的差别」在视觉上分开，
+   而不是又一段并列的正文 —— 并列正是这一块要替代掉的那种呈现。 */
+.page-report-history__diff {
+  display: block;
+  margin-top: 20rpx;
+  padding: 20rpx;
+  border-radius: $radius-sm;
+  background: $bg;
+}
+
+.page-report-history__diff-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8rpx;
+}
+
+.page-report-history__diff-title {
+  font-size: 27rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-report-history__diff-sum {
+  flex-shrink: 0;
+  margin-left: 16rpx;
+  font-size: 24rpx;
+  color: $text-3;
+}
+
+.page-report-history__diff-heat {
+  display: block;
+  font-size: 25rpx;
+  color: $text-2;
+}
+
+.page-report-history__diff-sec {
+  display: block;
+  margin-top: 18rpx;
+}
+
+.page-report-history__diff-sechead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.page-report-history__diff-label {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-report-history__diff-count {
+  flex-shrink: 0;
+  margin-left: 16rpx;
+  font-size: 24rpx;
+  color: $text-2;
+}
+
+.page-report-history__diff-items {
+  display: block;
+  margin-top: 10rpx;
+}
+
+.page-report-history__diff-tag {
+  font-size: 23rpx;
+  color: $text-3;
+}
+
+.page-report-history__diff-chips {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 8rpx;
+}
+
+.page-report-history__diff-chip {
+  margin: 0 12rpx 10rpx 0;
+  padding: 6rpx 16rpx;
+  border-radius: $radius-sm;
+  background: #fff;
+  font-size: 23rpx;
+  color: $text-2;
+}
+
+.page-report-history__diff-more {
+  display: block;
+  font-size: 23rpx;
+  color: $text-3;
+}
+
+.page-report-history__diff-prose {
+  display: block;
+  margin-top: 18rpx;
+}
+
+.page-report-history__diff-text {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 25rpx;
+  color: $text-2;
+  line-height: 1.6;
+}
+
+/* 前提条件（降级简版 / 会员段一侧为空）单独一块视觉：它不是差异的一部分，而是读差异的前提 */
+.page-report-history__diff-caveat {
+  display: block;
+  margin-top: 16rpx;
+  font-size: 23rpx;
+  color: $text-3;
+  line-height: 1.6;
+}
+
 /* ── 会员墙：一行说明（非弹窗），整行可点去会员页 ── */
 .page-report-history__wall {
   display: flex;

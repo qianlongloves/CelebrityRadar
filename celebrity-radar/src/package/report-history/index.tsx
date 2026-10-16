@@ -9,14 +9,26 @@ import { fromNow } from '@/utils/time'
 import { track } from '@/utils/events'
 import {
   canViewVersionReport,
+  compareUnavailableNote,
   heldText,
   loadReportVersions,
-  loadVersionReport,
+  loadVersionPair,
   newsDeltaText,
+  pairTargetLabel,
   versionHistoryNote,
   type VersionBoard,
   type VersionListRow
 } from '@/utils/report-versions'
+import {
+  buildReportDiff,
+  diffCaveats,
+  diffCountText,
+  diffHeatText,
+  diffMoreText,
+  diffSummaryText,
+  type DiffBucket,
+  type ReportDiff
+} from '@/utils/report-diff'
 import type { Report } from '@/utils/report'
 import EmptyState from '@/components/empty-state'
 import './index.scss'
@@ -41,9 +53,17 @@ import './index.scss'
  * ③ **不做「哪一版更好」的评价**。只并列事实（素材多了还是少了、用了多久），
  *    同工作台对比表的取舍：一旦平台替用户排序，他看到的就不是自己的判断了。
  *
- * ⚠ 旧版正文**必须**经 `utils/report-versions#loadVersionReport` 取（内部走
- *   `cache.ts#exposeReport` 按当前读者身份过滤）：旧版里可能带着当时会员生成的段落，
- *   直接读库渲染就是给免费读者发会员内容。
+ * ④ **真要回答的是「改了什么」**（N-9，与 N-2 同批）。上一版只做到「把两版并排」——
+ *    并列本身不等于对比：用户得自己来回看两坨文字找差别。故展开某一版时**同时**取它
+ *    与「更新的一版」（最近被换掉的那一版，就是上面一行；第一条则是**当前版**，
+ *    这也是 N-2 回访要的那一对），把条数增减、新增 / 消失的条目、判断类正文的旧→新对照
+ *    一并摆出来。口径（谁能列条目、谁只给条数、null 与 0 怎么分）全在 utils/report-diff.ts，
+ *    页面只渲染、不另立一套。
+ *
+ * ⚠ 旧版正文**必须**经 `utils/report-versions#loadVersionPair` 取（内部走
+ *   `loadVersionReport → cache.ts#exposeReport` 按当前读者身份过滤）：旧版里可能带着当时
+ *   会员生成的段落，直接读库渲染就是给免费读者发会员内容。差异视图同理 ——
+ *   它比的就是这两个**已过滤**的对象，不是库里的原始行。
  */
 export default function ReportHistory() {
   const { userId } = useAuth()
@@ -56,8 +76,8 @@ export default function ReportHistory() {
   const [isMember, setIsMember] = useState(false)
   /** 正在展开的那一版（`null` = 都收着） */
   const [openId, setOpenId] = useState<string | null>(null)
-  /** 展开版的正文（已按读者身份过滤）。`null` 且 `openId` 非空 = 正在读 / 读不到 */
-  const [openReport, setOpenReport] = useState<Report | null>(null)
+  /** 展开出来的东西：这一版正文（已按读者身份过滤）+ 与更新的一版的差异。`null` = 正在读 / 读不到 */
+  const [openView, setOpenView] = useState<OpenView | null>(null)
   const [openBusy, setOpenBusy] = useState(false)
   /** 会员墙的那一行说明（免费点开时出现，非弹窗） */
   const [noteVisible, setNoteVisible] = useState(false)
@@ -85,14 +105,17 @@ export default function ReportHistory() {
   })
 
   /**
-   * 受控展开：再点一次收起（并清掉正文，别把一份旧报告留在内存里）。
+   * 受控展开：再点一次收起（并清掉正文与对比，别把两份旧报告留在内存里）。
    * 免费用户点「看这一版」不进这里，只显示那一行说明 —— 数据也不会被读下来（不是「读了不显示」）。
+   *
+   * `index` 是这一行在**已排序**列表里的位置（`loadVersionPair` 靠它找「更新的一版」）：
+   * 传行对象而不是位置就得在页面里再 find 一次，那等于把排序口径搬进页面。
    */
   const onOpen = useCallback(
-    async (row: VersionListRow) => {
+    async (index: number, row: VersionListRow) => {
       if (openId === row.id) {
         setOpenId(null)
-        setOpenReport(null)
+        setOpenView(null)
         return
       }
       setNoteVisible(false)
@@ -107,21 +130,34 @@ export default function ReportHistory() {
         return
       }
       setOpenId(row.id)
-      setOpenReport(null)
+      setOpenView(null)
       setOpenBusy(true)
       try {
-        const report = await loadVersionReport(row.id, isMember)
-        setOpenReport(report)
+        const pair = await loadVersionPair(board.rows, index, personKey, isMember)
+        /* 两版都拿到才谈得上对比：少一侧就只出这一版的摘要（不拿半份数据拼一份「看起来像对比」的东西） */
+        const diff = pair.prev && pair.next ? buildReportDiff(pair.prev, pair.next) : null
+        setOpenView(pair.prev ? { report: pair.prev, diff, nextIsCurrent: pair.nextIsCurrent } : null)
         track('report_version_open', {
           personKey,
           allowed: true,
           ...(typeof row.heldMs === 'number' ? { heldDays: Math.round(row.heldMs / 86400000) } : {})
         })
+        /* 只在**真的算出来**那一刻报：算不出却上报，会把「没有可比对象」记成「比过、没变化」 */
+        if (diff) {
+          track('report_version_diff', {
+            personKey,
+            sections: diff.changedSections.length,
+            prose: diff.changedProse.length,
+            added: diff.addedTotal,
+            removed: diff.removedTotal,
+            current: pair.nextIsCurrent
+          })
+        }
       } finally {
         setOpenBusy(false)
       }
     },
-    [openId, isMember, personKey]
+    [openId, isMember, personKey, board.rows]
   )
 
   const goCurrent = () =>
@@ -171,7 +207,7 @@ export default function ReportHistory() {
           desc='这份报告从生成到现在没有被刷新过。等它下次更新后，这里就会出现「上一版是怎么写的」'
         />
       ) : (
-        board.rows.map((row) => {
+        board.rows.map((row, index) => {
           const on = openId === row.id
           const delta = newsDeltaText(row.newsDelta)
           const held = heldText(row.heldMs)
@@ -185,7 +221,7 @@ export default function ReportHistory() {
                 <View
                   className={`page-report-history__btn${on ? ' page-report-history__btn--on' : ''}`}
                   hoverClass='page-report-history__btn--tap'
-                  onClick={() => void onOpen(row)}
+                  onClick={() => void onOpen(index, row)}
                 >
                   <Text>{on ? '收起' : '看这一版'}</Text>
                 </View>
@@ -202,13 +238,18 @@ export default function ReportHistory() {
                 <View className='page-report-history__body'>
                   {openBusy ? (
                     <Text className='page-report-history__hint'>正在读取这一版…</Text>
-                  ) : !openReport ? (
+                  ) : !openView ? (
                     <Text className='page-report-history__hint'>
                       这一版已经读不到了（可能已被更久的新版本挤掉）。
                     </Text>
                   ) : (
                     <>
-                      <VersionSummary report={openReport} />
+                      <VersionSummary report={openView.report} />
+                      {openView.diff ? (
+                        <VersionDiff diff={openView.diff} target={pairTargetLabel(openView.nextIsCurrent)} />
+                      ) : (
+                        <Text className='page-report-history__hint'>{compareUnavailableNote()}</Text>
+                      )}
                       <Text className='page-report-history__note'>
                         这里只列这一版报告里实际有的关键内容；完整版式请查看当前版。
                       </Text>
@@ -282,6 +323,89 @@ function VersionSummary({ report }: { report: Report }) {
           <Text className='page-report-history__value'>{r.value}</Text>
         </View>
       ))}
+    </View>
+  )
+}
+
+/* ══════════════════════════ N-9：差异视图 ══════════════════════════ */
+
+/** 展开出来的东西：这一版的正文 + 与更新的一版的差异 */
+interface OpenView {
+  /** 这一版正文（已按读者身份过滤） */
+  report: Report
+  /** 差异；`null` = 没有可比对象（拿不到更新的一版，或两版不是同一个人的报告） */
+  diff: ReportDiff | null
+  /** 对比对象是不是当前版（决定标题说「与当前版相比」还是「与更新的一版相比」） */
+  nextIsCurrent: boolean
+}
+
+/**
+ * 「与更新的一版相比，改了什么」。
+ *
+ * 页面只做渲染：条数怎么算、哪些节能列条目、null 与 0 怎么分、文案怎么写，全在
+ * `utils/report-diff.ts`。这里唯一自己决定的是**顺序与分组**（先把可数的条目摆出来，
+ * 再给判断类正文的对照）—— 事实在前、口径在后。
+ *
+ * ⚠ 一遍也没有「哪一版更好」这类措辞：只有增减与并列，理由见页面文件头 ③。
+ */
+function VersionDiff({ diff, target }: { diff: ReportDiff; target: string }) {
+  const heat = diffHeatText(diff)
+  const caveats = diffCaveats(diff)
+  return (
+    <View className='page-report-history__diff'>
+      <View className='page-report-history__diff-head'>
+        <Text className='page-report-history__diff-title'>{`与${target}相比`}</Text>
+        <Text className='page-report-history__diff-sum'>{diffSummaryText(diff)}</Text>
+      </View>
+      {heat ? <Text className='page-report-history__diff-heat'>{heat}</Text> : null}
+
+      {diff.changedSections.map((s) => (
+        <View className='page-report-history__diff-sec' key={s.id}>
+          <View className='page-report-history__diff-sechead'>
+            <Text className='page-report-history__diff-label'>{s.label}</Text>
+            <Text className='page-report-history__diff-count'>{diffCountText(s)}</Text>
+          </View>
+          {s.added.total > 0 ? <DiffItems tag='新版新增' bucket={s.added} /> : null}
+          {s.removed.total > 0 ? <DiffItems tag='新版去掉' bucket={s.removed} /> : null}
+        </View>
+      ))}
+
+      {diff.changedProse.map((p) => (
+        <View className='page-report-history__diff-prose' key={p.id}>
+          <Text className='page-report-history__diff-label'>{p.label}</Text>
+          <Text className='page-report-history__diff-text'>{`这一版：${p.prev || '（当时没有这一段）'}`}</Text>
+          <Text className='page-report-history__diff-text'>{`新版：${p.next || '（没有这一段）'}`}</Text>
+        </View>
+      ))}
+
+      {caveats.map((c) => (
+        <Text className='page-report-history__diff-caveat' key={c}>
+          {c}
+        </Text>
+      ))}
+    </View>
+  )
+}
+
+/**
+ * 一个方向上的条目：标签 + 胶囊 + 「还有 N 条」。
+ *
+ * 折叠数**必须**显示出来：这一页每节最多列 4 条，只显示前 4 条而不说还有多少，
+ * 会被读成「这一节只多了 4 条」（同 S3-3「不许静默截断」）。
+ */
+function DiffItems({ tag, bucket }: { tag: string; bucket: DiffBucket }) {
+  const more = diffMoreText(bucket.hidden)
+  return (
+    <View className='page-report-history__diff-items'>
+      <Text className='page-report-history__diff-tag'>{tag}</Text>
+      <View className='page-report-history__diff-chips'>
+        {bucket.items.map((it) => (
+          <Text className='page-report-history__diff-chip' key={it.key}>
+            {it.text}
+          </Text>
+        ))}
+      </View>
+      {more ? <Text className='page-report-history__diff-more'>{more}</Text> : null}
     </View>
   )
 }

@@ -6,7 +6,7 @@ import { diagLog } from './cloud-diagnostics'
 import { toUserMessage } from './error'
 
 /**
- * 关注更新提醒（微信订阅消息）。
+ * 更新提醒（微信订阅消息）。
  *
  * 微信「一次性订阅」的规则决定了这个功能的产品形态：**授权一次只够推一条**，
  * 推送后授权即消耗，用户想再收到提醒必须再点一次授权。所以：
@@ -14,6 +14,12 @@ import { toUserMessage } from './error'
  *   - 客户端只做「请求授权 + 落库置位」；
  *   - 真正的发送由云函数 notifyFollowUpdates 在定时任务里检测到新动态时执行，
  *     发完把 subscribe_ok 复位。
+ *
+ * 一枚授权、两类候选（E1，2026-10-16）：**关注的人有新动态**与**我盯（跟进）的事件有新进展**
+ * 共用这一枚模板与这一位授权 —— 一次授权只够一条消息，再要一枚模板就是再向用户要一次授权
+ * （三枚模板至今一枚未开通）。两者同时成立时谁上正文，由云函数按会员档位决定
+ * （见 cloudfunctions/notifyFollowUpdates 文件头「候选挑选」）；所以这里的文案**不能**
+ * 只说「关注的人」，用户点「跟进」时也该知道这件事会给他带来一条提醒。
  */
 
 /** 模板 ID 是否已配置（未配置时入口只给指引，不发一个必然失败的授权请求） */
@@ -65,7 +71,8 @@ export async function requestNotify(): Promise<{ ok: boolean; message: string }>
 
   const saved = await setSubscribeOptIn(true)
   if (!saved) return { ok: false, message: '授权成功但记录失败，请重试' }
-  return { ok: true, message: '已开启：关注的人有新动态时会提醒你一次' }
+  /* 文案要覆盖两类候选（关注的人 / 我盯的事件），只写前者会让用户以为跟进的事不会被提醒 */
+  return { ok: true, message: '已开启：关注的人、我盯的事有新动态时会提醒你一次' }
 }
 
 /* ── 关键词舆情预警的推送（2026-10-08）──────────────────────────────

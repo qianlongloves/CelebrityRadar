@@ -72,6 +72,13 @@
       background: $accent-orange-bg;
       color: $accent-orange;
     }
+
+    /* 「订阅·某某」（E1-②）：中性灰，与 NEW（品牌色）/ 有新进展（橙）明确区分 ——
+       它不是「这条有多新」，而是「这条属于我订的人」；用品牌色会跟 NEW 混淆，用橙会跟「有新进展」混淆 */
+    &--sub {
+      background: $bg;
+      color: $text-2;
+    }
   }
 
   &__meta {

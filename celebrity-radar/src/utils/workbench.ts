@@ -30,7 +30,9 @@
 import { domainLabel, parsePersonKey } from '@/config/domains'
 import { isNewSince } from './inbox'
 import { SCAN_STATUS_LABEL } from './scan-log'
-import { dayKey8, formatMoment8, shortDay8 } from './time'
+import { dayKey8, formatMoment8 } from './time'
+import { metricText, metricValue, metricsOf, WORKBENCH_METRIC_KEYS } from './metrics'
+import type { MetricDef } from './metrics'
 import type { Report } from './report'
 import type { RiskScanRow, RiskSignalRow, ScanLogRow } from '@/types/db'
 
@@ -220,8 +222,12 @@ export interface CompareCell {
  * 对比表的一行指标。
  * `blank`：整行所有人都是 0 ⇒ 这一行不值得占版面（例：四个人的报告都没有「争议与回应」）。
  * 刻意**不删行**、只标 blank 由页面决定藏不藏 —— 判定与呈现分开，用例才好钉住「谁被算成空行」。
+ *
+ * ⚠ 名字里带 `Table` 是刻意的：对比页 (`utils/compare.ts`) 也有一个 `CompareMetric`，
+ * 那是「两个人并排两格」的行，这里是「N 个人并排 N 格」的行。同名不同形状的两个类型
+ * 迟早会被 import 错一个，而错的那个在类型层面往往还能过。
  */
-export interface CompareMetric {
+export interface CompareTableMetric {
   key: string
   label: string
   cells: CompareCell[]
@@ -230,7 +236,7 @@ export interface CompareMetric {
 
 export interface CompareTable {
   rows: CompareRow[]
-  metrics: CompareMetric[]
+  metrics: CompareTableMetric[]
 }
 
 /** 对比表的一列输入：报告为 null = 这个人还没生成过（**仍然出现**，标未生成） */
@@ -252,7 +258,17 @@ export interface CompareInput {
  * 而这一页的定位是台账（事实搬运）。比较是用户自己的事。
  */
 export function buildCompareTable(items: CompareInput[]): CompareTable {
-  const rows: CompareRow[] = (Array.isArray(items) ? items : []).filter((it) => !!it?.personKey).map((it) => {
+  /*
+    ⚠ 先 filter 再 map：行与入参 `items` 的下标从此**不再一一对应**，所以报告要在这条链上一起取出来，
+    不要在下面用 `items[i]` 回查 —— 中间少掉一个人（personKey 为空的脏输入）就会整体错位一格，
+    而错位的表格看起来完全正常（数字都在，只是挂到了别人名下）。
+
+    顺带：两页的指标行定义都在 utils/metrics.ts（唯一真源），这里只负责把定义套到每一列上，
+    不写死任何标签或取值 —— 各写一份就是两套口径（见那个模块顶部的说明）。
+  */
+  const valid = (Array.isArray(items) ? items : []).filter((it) => !!it?.personKey)
+  const reports: Array<Report | null> = valid.map((it) => it.report ?? null)
+  const rows: CompareRow[] = valid.map((it) => {
     const r = it.report
     const parsed = parsePersonKey(it.personKey)
     return {
@@ -271,35 +287,18 @@ export function buildCompareTable(items: CompareInput[]): CompareTable {
 
   /**
    * 未生成的人：这一格的字是「未生成」，数值记 0（于是不会因为一个人没报告就让整行被当成非空）。
-   *
-   * `always` = 这一行永远要显示（`blank` 恒为 false，即使全员为 0）；
-   * `ofUncached` = **没生成报告也算得出**这一格（例：领域来自 personKey，与缓存无关）——
-   * 少了它，「领域」这一行会对未生成的人显示「未生成」，而那一行本来正是为了让人
-   * 「即使没报告也知道这是什么领域的人」。
+   * 必须用 `report` 是否存在判，而不是行的 `cached` 之外另算一遍 —— 两份判据迟早会不一致。
    */
-  const metricOf = (
-    key: string,
-    label: string,
-    of: (r: CompareRow) => { text: string; num: number | null },
-    opts: { always?: boolean; ofUncached?: boolean } = {}
-  ): CompareMetric => {
-    const cells = rows.map((r) => (r.cached || opts.ofUncached ? of(r) : { text: NOT_GENERATED, num: 0 }))
-    return { key, label, cells, blank: !opts.always && cells.every((c) => !c.num) }
+  const metricOf = (def: MetricDef): CompareTableMetric => {
+    const cells = rows.map((r, i) => {
+      const report = reports[i] ?? null
+      if (!report && !def.ofUncached) return { text: NOT_GENERATED, num: 0 }
+      return { text: metricText(def, report, r.personKey, NOT_GENERATED), num: metricValue(def, report) }
+    })
+    return { key: def.key, label: def.label, cells, blank: !def.always && cells.every((c) => !c.num) }
   }
 
-  const metrics: CompareMetric[] = [
-    /* 领域来自 personKey，与缓存无关，所以未生成的人也照实标 —— 这一行永远有意义 */
-    metricOf('domain', '领域', (r) => ({ text: r.domain || '未标注', num: null }), {
-      always: true,
-      ofUncached: true
-    }),
-    metricOf('heat', '热度', (r) => ({ text: String(r.heat), num: r.heat })),
-    metricOf('dynamics', '近期动态', (r) => ({ text: `${r.dynamics} 条`, num: r.dynamics })),
-    metricOf('controversies', '争议与回应', (r) => ({ text: `${r.controversies} 条`, num: r.controversies })),
-    metricOf('relations', '关系图谱', (r) => ({ text: `${r.relations} 条`, num: r.relations })),
-    metricOf('profile', '人物档案', (r) => ({ text: `${r.profileItems} 条`, num: r.profileItems })),
-    metricOf('generated', '报告生成', (r) => ({ text: shortDay8(r.generatedAt) || '—', num: null }), { always: true })
-  ]
+  const metrics: CompareTableMetric[] = metricsOf(WORKBENCH_METRIC_KEYS).map(metricOf)
 
   return { rows, metrics }
 }

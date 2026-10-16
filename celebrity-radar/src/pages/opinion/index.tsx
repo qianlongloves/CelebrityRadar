@@ -12,6 +12,7 @@ import { loadAlerts, listWatches, markAllSeen, splitWatches } from '@/utils/keyw
 import { loadRiskSignals, monitorPerson } from '@/utils/risk-watch'
 import {
   alertNewCount,
+  countFollowUpdates,
   countNewEvents,
   markModuleSeen,
   readInboxSeen,
@@ -464,6 +465,18 @@ export default function Opinion() {
     [events, eventStatus]
   )
 
+  /**
+   * 「我盯的（已跟进）里有多少条有新进展」（E1，2026-10-16）。
+   *
+   * 与上面那个角标**同源不同范围**：这个只数已跟进的事件，用来兑现「跟进 = 订阅」这件事
+   * （云端日报也按同一判据提醒一次）。为什么不做成第三个角标颜色：跟进的语义是「我要知道后续」，
+   * 而**有新进展 ≠ 我没读过** —— 它更像是给用户的一句提示，不参与首页入口的未读求和。
+   */
+  const followNew = useMemo(
+    () => countFollowUpdates(events.map((e) => ({ key: e.key, at: e.date })), eventStatus),
+    [events, eventStatus]
+  )
+
   /** 首页「舆情」入口角标口径：预警 + 风险 + 事件（关注动态归铃铛，见 utils/inbox 文件头） */
   const inboxTotal = alerts.newTotal + alerts.riskNew + eventNew
 
@@ -599,6 +612,11 @@ export default function Opinion() {
    *   · 舆情事件 → 把当前有角标的键**一次性**走 opinion_event_status.reads（复用 markEventsRead，
    *     不另立事件已读；与逐条「标记已读」同源，只是合成一次读-改-写）。
    *
+   * ⚠ **已跟进的键不在此列**（E1，2026-10-16）：跟进的含义是「这件事的后续我要知道」，
+   * 一键清屏把它一起抹掉，等于用户明确点过的那几件事反而最容易被清成「没事发生」——
+   * 它们是云端日报的候选（见 notifyFollowUpdates），角标留着才对得上「我盯的 N 条有新进展」。
+   * 想让角标消掉仍然做得到：进事件页点「标记已读」（单条路径不受影响）。
+   *
    * 不做「关注动态」的已读：它的基线是每个人的 followed_at（关注那一刻），没有「清掉」的动作，
    * 且已由「消息中心（铃铛）」覆盖。完成后重读本块，让计数与库内状态对齐。
    */
@@ -607,8 +625,9 @@ export default function Opinion() {
     if (alerts.keywords.length) await markAllSeen(alerts.keywords)
     /* 风险信号：推进本机基线（无写库） */
     markModuleSeen('risk')
-    /* 事件：当前有角标（new / update）的键一次性标已读，乐观更新本地态，失败回滚 */
+    /* 事件：当前有角标（new / update）**且未跟进**的键一次性标已读，乐观更新本地态，失败回滚 */
     const newKeys = events
+      .filter((ev) => !eventStatus.follows[ev.key])
       .filter((ev) => eventNewness({ event_key: ev.key, last_at: ev.date }, eventStatus) !== 'seen')
       .map((ev) => ev.key)
     if (newKeys.length) {
@@ -629,7 +648,11 @@ export default function Opinion() {
       }
     }
     await loadAlertBlock()
-    Taro.showToast({ title: '已全部标为已读', icon: 'none' })
+    /* 已跟进的事件刻意留着角标（见上面的注释）：不把这件事说出来，用户会以为「按钮坏了」 */
+    Taro.showToast({
+      title: followNew > 0 ? `已读；我盯的 ${followNew} 条仍留着` : '已全部标为已读',
+      icon: 'none'
+    })
   }
 
   /** 分级标签行（影响面 / 可信度 / 是否需回应）的可复用渲染：单条与事件卡共用 */
@@ -854,6 +877,9 @@ export default function Opinion() {
             <Text className='page-opinion__head-title'>🧩 事件时间线</Text>
             {/* 「新 N 条」：口径来自 utils/inbox#countNewEvents（复用 opinion_event_status.reads） */}
             {eventNew > 0 && <Text className='count-badge'>新 {eventNew} 条</Text>}
+            {/* 「我盯的 N 条有新进展」：口径来自 utils/inbox#countFollowUpdates（只数已跟进的，
+                它们不会被「全部已读」清掉，见 markAllRead 与 opinion-store 文件头） */}
+            {followNew > 0 && <Text className='count-badge'>盯的 {followNew} 条有新进展</Text>}
           </View>
           {/* 右侧动作组：「查看全部 ›」入口 */}
           <View className='page-opinion__head-actions'>

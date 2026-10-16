@@ -1,6 +1,7 @@
 import { domainLabel, parsePersonKey } from '@/config/domains'
 import type { Report } from './report'
 import { extractKeywords, KeywordItem } from './keywords'
+import { COMPARE_METRIC_KEYS, metricText, metricValue, metricsOf } from './metrics'
 
 /**
  * 两名人横向对比（M4-7，V2）—— 端上聚合实现。
@@ -56,7 +57,8 @@ export interface CompareMetric {
    *
    * 报道量（news / recent）虽是「曝光度」读数，却是按**原样素材**统计的：深度档一次抓约 40 条、
    * 免费档约 18 条，故它取决于「这份报告当初是谁生成的」，直接比大小等于把档位差异当成人气差异。
-   * 与动态 / 言论 / 履历一样，内容量多不代表更好，一律 null（hint 会说明数字仍按原样给出）。
+   * 与动态 / 名言 / 时间线一样，内容量多不代表更好，一律 null（hint 会说明数字仍按原样给出）。
+   * 标记本身由行定义给（utils/metrics.ts#MetricDef.higher），这里只描述口径。
    */
   higher: 'a' | 'b' | null
   /** 口径说明（表下小字，避免指标沦为玄学数字） */
@@ -176,36 +178,27 @@ export function buildComparison(a: Report, b: Report): CompareResult {
   const sideA = sideOf(a)
   const sideB = sideOf(b)
 
-  const num = (v: number | null): string => (v === null ? '—' : String(v))
-  const metrics: CompareMetric[] = [
-    {
-      key: 'heat',
-      label: '热度',
-      a: String(sideA.heat),
-      b: String(sideB.heat),
-      higher: sideA.heat === sideB.heat ? null : sideA.heat > sideB.heat ? 'a' : 'b',
-      hint: '由近 30 天与近 7 天报道条数按固定公式算出（§1.6），同口径可直接比大小'
-    },
-    {
-      key: 'news',
-      label: '近 30 天报道',
-      a: num(sideA.newsCount),
-      b: num(sideB.newsCount),
-      higher: null,
-      hint: '检索窗口内抓到的素材条数（原样统计）。深度档会抓得更多，故与热度不同口径，只作参考、不判优劣'
-    },
-    {
-      key: 'recent',
-      label: '近 7 天报道',
-      a: num(sideA.recentCount),
-      b: num(sideB.recentCount),
-      higher: null,
-      hint: '其中发布于最近 7 天的条数（原样统计）。热度只取前 20 条计算，故本行数值会大于等于热度口径'
-    },
-    { key: 'dynamics', label: '报告内动态', a: String(sideA.dynamics), b: String(sideB.dynamics), higher: null },
-    { key: 'quotes', label: '收录言论', a: String(sideA.quotes), b: String(sideB.quotes), higher: null },
-    { key: 'timeline', label: '履历节点', a: String(sideA.timeline), b: String(sideB.timeline), higher: null }
-  ]
+  /**
+   * 指标行**不在这里手写**：全部由 `utils/metrics.ts` 的行定义生成。
+   *
+   * 这个模块只回答「对比页显示哪几行」（COMPARE_METRIC_KEYS），标签 / 取值 / 单位 / 口径说明
+   * 都在那份唯一定义里 —— 同一个数字在对比页与监测工作台必须同名同口径，
+   * 否则就是两套口径各自漂移（见 utils/metrics.ts 顶部的说明）。
+   * 方向标记仍只有热度拿得到（def.higher，理由见 CompareMetric.higher）。
+   */
+  const metrics: CompareMetric[] = metricsOf(COMPARE_METRIC_KEYS).map((def) => {
+    const va = metricValue(def, a)
+    const vb = metricValue(def, b)
+    return {
+      key: def.key,
+      label: def.label,
+      /* 取不到给「—」：那是「这份报告没有这个数」，不是 0 */
+      a: metricText(def, a, a.personKey),
+      b: metricText(def, b, b.personKey),
+      higher: def.higher && va !== null && vb !== null && va !== vb ? (va > vb ? 'a' : 'b') : null,
+      hint: def.hint
+    }
+  })
 
   const { common, onlyA, onlyB } = pickCommon(sideA, sideB)
 

@@ -117,7 +117,7 @@ export const MEMBER_BENEFIT_POINTS: Array<{ title: string; note: string }> = [
      * 一句话概括这条新权益与前三条的区别：前三条讲「生成出来的东西有多好」（模型 / 内容 / 节数），
      * 这一条讲**你能不能把它带走**。也正因为如此，它**不随共享缓存变厚而贬值**：
      * 报告已经在库里，导出是纯本地组装（零上游成本、零等待、零额度），
-     * 而额度是越用越不值钱的那一类（见 doc/产品优化路线图.md §6.4）。
+     * 而额度是越用越不值钱的那一类（见 doc/产品优化路线图.md §3.3 S3-1 / §6 D6）。
      *
      * 不写任何数字：这条是**二元能力**，与长图 / 周报图两处门禁同一口径
      * （`report-card.ts#canExportReportCard`、`weekly-brief.ts#canExportWeeklyBrief`），

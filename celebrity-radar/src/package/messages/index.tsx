@@ -34,11 +34,18 @@ import './index.scss'
  *
  * 本页**不做**「清空全部」：消息是「有新内容」类通知，逐条删才对应「这条我看过了」的本意；
  * 一键清空更容易被误触，且清完明天照样有新消息，收益与风险不成比例。
+ *
+ * 报告更新（N-2 回访，2026-10-16）落在这里、不新开页面：它的问题（「我看过的人后来变了吗」）
+ * 已经有一个能回答「改了什么」的落地页 —— 报告历史页的差异视图（N-9）。消息行只说「变过」，
+ * 点进去才是条数与条目级的差异，两处说不重复的东西。判据与代价见 utils/revisit.ts。
  */
 
 const KIND_ICON: Record<MessageKind, string> = {
   follow: '📣',
   weekly: '📊',
+  /* 报告更新（N-2 回访）：与「关注的人有新动态」分开一个图标 —— 两件事的问题不同
+     （我盯的人有新信号 / 我看过的人的结论变了），图标混用会让列表看起来只有一种消息 */
+  report: '🔄',
   system: '📢'
 }
 
@@ -66,6 +73,13 @@ export default function Messages() {
       setLoading(false)
       /* 埋点取「打开时」的未读数：与逐条标记无关，口径是入口使用率 */
       track('messages_open', { unread: feed.unread, total: feed.items.length })
+      /*
+       * 回访理由（N-2）：只在真有「看过的名人报告更新了」时上报。
+       * 一律上报会让这个数变成「打开次数」（与 messages_open 重复，分母失去意义）；
+       * 只在 >0 时报，`revisit_ready / messages_open` 就是**带理由打开的比例**——
+       * 那正是「站内回访够不够用」要看的数（推送已被类目限制冻结，见路线图 D8）。
+       */
+      if (feed.revisitTotal > 0) track('revisit_ready', { count: feed.revisitTotal })
     })
     return () => {
       alive = false
@@ -120,6 +134,12 @@ export default function Messages() {
    * 公告的下一步本来就该是「平台现在有什么可看的」，停在原地是最差的答案。
    */
   const open = (m: MessageItem) => {
+    /*
+     * 报告更新（N-2）点开时单独记一笔：`messages_open` 只能回答「有没有人用消息中心」，
+     * 回答不了「回访理由有没有把人带回报告里」。按人聚合（personKey）之后还能看出
+     * 「是少数几个人反复被点开，还是分散在很多名人上」—— 后者才说明回访是可规模化的理由。
+     */
+    if (m.kind === 'report' && m.personKey) track('revisit_open', { personKey: m.personKey })
     if (m.url) {
       void Taro.navigateTo({ url: m.url })
       return
@@ -186,7 +206,7 @@ export default function Messages() {
         <EmptyState
           icon='🔔'
           title='暂无新消息'
-          desc='关注几位名人后，TA 们的报告更新与动态会出现在这里'
+          desc='关注几位名人后 TA 们的动态会出现在这里；你看过的名人报告更新时也会提醒你'
           actionText='去发现页看看'
           onAction={() => void Taro.switchTab({ url: '/pages/index/index' })}
         />

@@ -105,6 +105,14 @@
     }
   }
 
+  /* 「已跟进」时的含义说明（E1）：跟进 = 订阅，得让用户知道点下去会发生什么 */
+  &__follow-note {
+    margin-top: 8rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+  }
+
   /* 时间线：左侧一条竖线 + 各节点圆点；日期行含 时间 · 来源 · 来源性质 · 归属 */
   &__timeline {
     margin-top: 16rpx;

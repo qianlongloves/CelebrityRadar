@@ -24,7 +24,7 @@
  */
 
 import { table } from '@/utils/db'
-import { exposeReport } from '@/utils/cache'
+import { exposeReport, getCachedReport } from '@/utils/cache'
 import { diagLog } from '@/utils/cloud-diagnostics'
 import type { ReportVersionRow } from '@/types/db'
 import type { Report } from '@/utils/report'
@@ -217,4 +217,58 @@ export async function loadVersionReport(id: string, knownMember?: boolean): Prom
   const { data, error } = await table('report_versions').select('id,report').eq('id', key).maybeSingle()
   if (error || !data?.report) return null
   return (await exposeReport(data.report as Report, knownMember)).report
+}
+
+/**
+ * 「某一版 + 更新的一版」两份正文（N-9 差异视图用，纯读口，比对逻辑在 `utils/report-diff.ts`）。
+ *
+ * 方向由列表顺序定（`rows` 来自 `loadReportVersions`，按生成时间降序）：第 `index` 行「更新的一版」
+ * 就是第 `index - 1` 行；而第 0 行（最近被换掉的那一版）「更新的一版」是**当前版**
+ * （`report_cache` 里那一行）—— 这正是 N-2「报告更新回访」要的那一对，也是持有 `heldDays`
+ * 那条埋点想验证的判断（用户要的是「今天这次改了什么」，故先把这一对做出来）。
+ *
+ * 两侧各自可能取不到（这一版已被保留策略裁掉 / 当前版还没生成 / 读库失败）：**不抛错、
+ * 也不拿半份数据拼一个看起来像对比的东西**，返回 `null` 的那一侧由调用方决定不出这一块。
+ */
+export interface VersionPair {
+  /** 用户点开的这一版（旧的那一侧） */
+  prev: Report | null
+  /** 更新的一侧；`null` = 取不到（见上） */
+  next: Report | null
+  /** `next` 是不是**当前版** —— 页面据此说「与当前版相比」而不是「与更新的一版相比」 */
+  nextIsCurrent: boolean
+}
+
+export async function loadVersionPair(
+  rows: VersionListRow[],
+  index: number,
+  personKey: string,
+  knownMember?: boolean
+): Promise<VersionPair> {
+  const row = rows?.[index]
+  const nextIsCurrent = index === 0
+  if (!row?.id) return { prev: null, next: null, nextIsCurrent }
+  const newer = nextIsCurrent ? null : rows?.[index - 1]
+
+  const [prev, next] = await Promise.all([
+    loadVersionReport(row.id, knownMember),
+    nextIsCurrent ? getCachedReport(personKey) : newer?.id ? loadVersionReport(newer.id, knownMember) : null
+  ])
+
+  return { prev, next, nextIsCurrent }
+}
+
+/**
+ * 对比对象的名字：当前版 / 更新的一版。
+ *
+ * 不写「新版」是因为这一页里「新版」有两种：最近被换掉的那一版（就在上面一行）与**当前版**
+ * —— 两者相差可能好几版。含糊的写法会让人以为在比相邻两行，方向一错整块对比都读反了。
+ */
+export function pairTargetLabel(nextIsCurrent: boolean): string {
+  return nextIsCurrent ? '当前版' : '更新的一版'
+}
+
+/** 读到了这一版、但没有可比对象时的那一行说明（N-9；不弹窗，与页面其余提示同款） */
+export function compareUnavailableNote(): string {
+  return '更新的一版暂时读不到，所以这次只能看这一版的内容，给不出「改了什么」。'
 }

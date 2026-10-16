@@ -23,6 +23,8 @@ import {
   setEventFollow
 } from '@/utils/opinion-store'
 import type { EventStatus } from '@/utils/opinion-store'
+import { findSubjectSub, toggleSubject, SUB_MAX } from '@/utils/event-subscribe'
+import { track } from '@/utils/events'
 import { formatMoment8 } from '@/utils/time'
 import { decodeParam } from '@/utils/route'
 import './index.scss'
@@ -37,10 +39,18 @@ import './index.scss'
  * ## 数据来源（**不读错集合**）
  *
  * 事件落在 `opinion_events`（云函数 `opinionCluster` 写、端上只读）；个人状态在
- * `opinion_event_status`（`_id = openid`，只有 reads / follows 两个 map）。本页**不另写读库代码**、
+ * `opinion_event_status`（`_id = openid`，reads / follows / subs 三个 map）。本页**不另写读库代码**、
  * 不另起字段名 —— 复用 `utils/opinion-store.ts` 的 `loadStoredEvents` / `toDisplayEvents` /
  * `loadEventStatus` / `markEventRead` / `setEventFollow`，类型用 `types/db.ts#OpinionEventRow`。
  * 事件身份是 `event_key`（稳定主题键）：路由参数、读库、端上聚类三处都用它对齐。
+ *
+ * ## 三个动作的分工（别混成一个「收藏」）
+ *
+ *   · **标记已读**：推进角标基线，只此一个作用；
+ *   · **跟进**（`follows`，键 = `event_key`）：「**这一条**事件的后续我要知道」—— 云端日报候选；
+ *   · **订阅**（`subs`，键 = 对象标签）：「**这个对象**（人 / 关键词）之后的**所有**事件我要看到」——
+ *     站内落点（预警页「订阅的对象」），口径在 `utils/event-subscribe.ts`。
+ *   粒度差一层，键空间也不同：按钮文案与说明分别写清，避免用户以为「订阅 = 更贵的跟进」。
  *
  * ## 降级与健壮性
  *
@@ -241,6 +251,40 @@ export default function EventTimeline() {
     }
   }
 
+  /**
+   * 订阅 / 取消订阅「这个对象」（人 / 关键词）的后续事件（E1-②）。口径在 utils/event-subscribe.ts，
+   * 这里只管乐观更新 + 失败回滚 + 满员提示。
+   *
+   * ⚠ 「满员」不是失败：库里**没写**，所以也要回滚乐观态，并明确告诉用户上限是多少、该做什么 ——
+   * 静默不生效会让人以为订阅成功了（同 S3-2 工作台 togglePick 的口径：满员回 rejected，不静默丢弃）。
+   */
+  const toggleSubjectSub = async (label: string) => {
+    const key = String(label ?? '').trim()
+    if (!key) return
+    const prevSubs = { ...(eventStatus.subs ?? {}) }
+    const on = !findSubjectSub(eventStatus, key)
+    const now = new Date().toISOString()
+    setEventStatus((s) => {
+      const subs = { ...(s.subs ?? {}) }
+      const hit = findSubjectSub(s, key)
+      if (on) subs[key] = now
+      else if (hit) delete subs[hit.label]
+      return { ...s, subs }
+    })
+    const outcome = await toggleSubject(key, on)
+    if (outcome === 'full') {
+      setEventStatus((s) => ({ ...s, subs: prevSubs }))
+      Taro.showToast({ title: `最多订阅 ${SUB_MAX} 个对象，请先取消一个`, icon: 'none' })
+      return
+    }
+    if (outcome === 'failed') {
+      setEventStatus((s) => ({ ...s, subs: prevSubs }))
+      Taro.showToast({ title: '操作失败，请重试', icon: 'none' })
+      return
+    }
+    track('event_subscribe', { subject: key, on })
+  }
+
   const load = useCallback(async () => {
     setPage(1)
     setStatus('loading')
@@ -391,6 +435,10 @@ export default function EventTimeline() {
   const badge = newnessLabel(newness)
   const read = !!eventStatus.reads[event.key]
   const following = !!eventStatus.follows[event.key]
+  /* 订阅的对象 = 这条事件围绕的那个「谁 / 什么词」（objectKey），为空时回落到第一个标签。
+     两者都为空 ⇒ 这条事件没有可订阅的对象：**不渲染**订阅按钮（不给一个点了没用的按钮）。 */
+  const subLabel = event.objectKey || event.labels[0] || ''
+  const subscribed = !!findSubjectSub(eventStatus, subLabel)
 
   return (
     <View className='page-event glow-page safe-bottom'>
@@ -430,7 +478,32 @@ export default function EventTimeline() {
           >
             {following ? '★ 已跟进' : '☆ 跟进'}
           </Text>
+          {subLabel ? (
+            <Text
+              className={`page-event__action${subscribed ? ' page-event__action--on' : ''}`}
+              onClick={() => void toggleSubjectSub(subLabel)}
+            >
+              {subscribed ? '🔔 已订阅' : '🔕 订阅'}
+            </Text>
+          ) : null}
         </View>
+
+        {/* 「跟进」= 订阅（E1，2026-10-16）：点了会发生什么必须说清楚，否则它看起来只是个书签 ——
+            云端日报会按同一判据提醒一次，角标也不会被舆情页的「全部已读」清掉。
+            刻意不写死「一定推送」：一次性订阅要有**在位**授权才发得出去（见 utils/notify.ts 文件头）。 */}
+        {following && (
+          <Text className='page-event__follow-note'>
+            已跟进：这件事有新报道时会提醒一次（需已开启更新提醒），角标不会被「全部已读」清掉。
+          </Text>
+        )}
+
+        {/* 订阅（E1-②）：说清「订阅的是对象、落点在站内」，否则它看起来跟上面的「跟进」是一回事。
+            刻意点明「不发推送」—— 推送随 N-1 冻结，说成「有动静就通知你」就是空头承诺。 */}
+        {subscribed && (
+          <Text className='page-event__follow-note'>
+            已订阅「{subLabel}」：这个对象之后的新事件会出现在预警页的「订阅的对象」里（站内查看，不发推送）。
+          </Text>
+        )}
       </View>
 
       <View className='card page-event__timeline'>

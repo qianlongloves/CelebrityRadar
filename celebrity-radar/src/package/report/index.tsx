@@ -57,7 +57,7 @@ import {
 } from '@/utils/keyword-alert'
 import { alertNotifyConfigured, requestAlertNotify } from '@/utils/notify'
 import { track } from '@/utils/events'
-import { addHistory } from '@/utils/history'
+import { addHistory, markReportViewed } from '@/utils/history'
 import { decodeParam } from '@/utils/route'
 import { ensurePortrait, readPortraits } from '@/utils/portrait'
 import {
@@ -781,10 +781,36 @@ export default function ReportPage() {
     [personKey, focus, keywordParam]
   )
 
+  /**
+   * 浏览历史的写入（「我查过这个人」）。把这次写入的 Promise 留着，见下面那个 effect ——
+   * 版本指纹是写进**这一行**的，必须先有行才能改行。
+   */
+  const historyWriteRef = useRef<Promise<void> | null>(null)
+
   useEffect(() => {
+    historyWriteRef.current = addHistory(personKey, name)
     void load(false)
-    void addHistory(personKey, name)
   }, [load])
+
+  /**
+   * 「我看到了这一版」（N-2 回访的判据，2026-10-16）。
+   *
+   * 记的是**当前版的 `generatedAt`**，写进这条浏览记录的 `viewed_generated_at`（见
+   * utils/revisit.ts 的文件头：判据为什么不能拿访问时间顶替）。只在实际渲染出正文
+   * （`phase === 'ready'`）时写：报告还在生成、生成失败、或用户没等到就退出，都**不算看到**——
+   * 那种情况下写入的指纹会把「没看过的东西」记成「看过这一版」，回访理由就成了编的。
+   *
+   * ⚠ 与 addHistory 的顺序：两者并发发起、谁先落库不确定，而指纹是 `update` 而不是 `insert`
+   * （写口只有 addHistory 一个，见 history.ts#markReportViewed）。所以这里**等**那次写入的
+   * Promise 再更新 —— 用结构保证「先有行、再改行」，而不是靠延时或重试去赌时序。
+   * addHistory 失败时 Promise 照样 resolve，这一步查不到行就自己返回（这次没指纹，
+   * 下次再看一次就补上），不会连累页面。
+   */
+  useEffect(() => {
+    if (state.phase !== 'ready') return
+    const version = state.report.generatedAt
+    void (historyWriteRef.current ?? Promise.resolve()).then(() => markReportViewed(personKey, version))
+  }, [state])
 
   /** 供 `load` 判断「这次 force 能不能不清屏」（见 hasReportRef 的注释） */
   useEffect(() => {

@@ -232,10 +232,17 @@ export interface OpinionEventRow {
 /**
  * opinion_event_status：用户对舆情事件的**个人状态**（P4，2026-10-13；`_id = openid`，端上读写自己那一行）。
  *
- * 只保留两项（产品明确锁定，不做备注、不做不感兴趣）：**已读标记**与**跟进状态（含时间）**。
- * 每个用户一行、两个 map（键是 event_key），行权限「仅创建者可读写」⇒ 端上写不到别人的行，
- * 写也只动这一行的这两个 map，**绝不触碰 users 文档的任何字段**。
- * map 有条数上限与裁剪策略（见 utils/opinion-store.ts#MAX_STATUS_ENTRIES），不会无界增长。
+ * 三个 map，都是「我这边的事实」，**没有一个是内容编辑**（产品锁定：不做备注、不做不感兴趣）：
+ *   · `reads`   已读标记（event_key → 时刻）；
+ *   · `follows` 跟进（event_key → 时刻），E1-①；
+ *   · `subs`    **订阅对象**（对象标签 → 订阅时刻），E1-②（2026-10-16）。
+ *
+ * ⚠ `subs` 的键**不是 event_key**，而是「订阅的那个对象」（人名 / 关键词）的标签文本 ——
+ * 它回答的是「这个对象的后续事件我要看」，粒度比单条事件大一层（口径见 utils/event-subscribe.ts）。
+ * 正因为粒度与键空间都不同，它的条数上限与裁剪**独立于** reads/follows（`SUB_MAX`，不占那 300 的额度）：
+ * 否则用户多读几百条事件就会把订阅**静默挤掉**，而订阅是显式动作，掉了必须是他自己取消的。
+ * 每个用户一行，行权限「仅创建者可读写」⇒ 端上写不到别人的行，写也只动这一行的 map，
+ * **绝不触碰 users 文档的任何字段**。
  */
 export interface OpinionEventStatusRow {
   /** = openid */
@@ -244,5 +251,7 @@ export interface OpinionEventStatusRow {
   reads: Record<string, string>
   /** event_key → 跟进时刻（ISO）。缺省 = 未跟进 */
   follows: Record<string, string>
+  /** 订阅对象标签 → 订阅时刻（ISO）。缺省 = 没订阅过任何对象（E1-②） */
+  subs?: Record<string, string>
   updated_at: string
 }

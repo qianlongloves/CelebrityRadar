@@ -30,6 +30,8 @@ import type { EventStatus } from './opinion-store'
  *   · 关注动态：每个人的 `followed_at`（复用 utils/watch 的 `hasNew`，关注那一刻就是基线）；
  *   · 关键词预警：每个词的 `keyword_watches.seen_at`（复用 utils/keyword-alert 的 `isNewItem`）；
  *   · 舆情事件：`opinion_event_status.reads`（复用 opinion-store，已读且无新进展 → 不算新）；
+ *     **已跟进**的事件另有一个计数（`countFollowUpdates`）——它不进角标，回答的是
+ *     「我盯的事里有几件值得现在看」（E1，2026-10-16）；
  *   · 风险信号：**没有天然基线**，故在本机 storage 记一份 `inbox:seen.risk`（本文件）。
  *     它只在这里出现一次、只服务于风险信号，不与上面三套既有状态冲突。
  *
@@ -113,6 +115,37 @@ export function countNewEvents(
   for (let i = 0; i < cap; i++) {
     const ev = events[i]
     if (!ev || typeof ev.key !== 'string' || !ev.key) continue
+    if (eventNewness({ event_key: ev.key, last_at: String(ev.at ?? '') }, status) !== 'seen') n++
+  }
+  return n
+}
+
+/**
+ * 「我盯的（已跟进）事件里有新进展」的条数（E1，2026-10-16）。
+ *
+ * 判据与 `countNewEvents` **同源**（同一个 `eventNewness`），差别只在范围：这里只数
+ * `status.follows` 里有键的那些。语义上它回答的不是「页面上还有几条是新的」，而是
+ * **「我明确盯上的那几件事里有几件值得现在看」** —— 所以同一件事既会算进角标（`reads` 口径），
+ * 也会算进这里，两个数各自成立、不互相替代：
+ *   · 角标 = 全部未读（点开就消）；
+ *   · 这个数 = 我盯的其中几件有动静（跟进 = 订阅，云端也会按同一判据提醒一次）。
+ *
+ * ⛔ 不要拿它当角标用（那会让「跟进了但已经读完」的事看起来永远没读完）。纯函数，对脏数据不抛。
+ */
+export function countFollowUpdates(
+  events: Array<{ key?: string | null; at?: string | null }> | null | undefined,
+  status: EventStatus | null | undefined,
+  limit = 0
+): number {
+  if (!Array.isArray(events)) return 0
+  const follows = status && status.follows && typeof status.follows === 'object' ? status.follows : null
+  if (!follows) return 0
+  const cap = limit > 0 ? Math.min(events.length, limit) : events.length
+  let n = 0
+  for (let i = 0; i < cap; i++) {
+    const ev = events[i]
+    if (!ev || typeof ev.key !== 'string' || !ev.key) continue
+    if (!follows[ev.key]) continue
     if (eventNewness({ event_key: ev.key, last_at: String(ev.at ?? '') }, status) !== 'seen') n++
   }
   return n

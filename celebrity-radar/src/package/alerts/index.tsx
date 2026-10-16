@@ -29,12 +29,16 @@ import {
   unmonitorPerson
 } from '@/utils/risk-watch'
 import { loadScanLogs, latestLogByKey, SCAN_STATUS_LABEL } from '@/utils/scan-log'
+import { emptyStatus, loadEventStatus, loadStoredEvents, toDisplayEvents } from '@/utils/opinion-store'
+import { buildSubjectHits, hasSubjectSubs, toggleSubject } from '@/utils/event-subscribe'
 import { alertNotifyConfigured, requestAlertNotify, requestRiskNotify, riskNotifyConfigured } from '@/utils/notify'
 import { openSourceLink } from '@/utils/source-link'
 import { formatMoment8, fromNow } from '@/utils/time'
 import { decodeParam } from '@/utils/route'
 import { track } from '@/utils/events'
 import type { RiskScanRow, RiskSignalRow, ScanLogRow } from '@/types/db'
+import type { EventStatus } from '@/utils/opinion-store'
+import type { SubjectHit } from '@/utils/event-subscribe'
 import EmptyState from '@/components/empty-state'
 import './index.scss'
 
@@ -43,6 +47,9 @@ import './index.scss'
  * 免得改了一边漏另一边 —— 那种漏改不报错，表现只是「点了通知没滚过去」。
  */
 const FOCUS_GROUP_CLASS = 'page-alerts__group--focus'
+
+/** 每个订阅对象最多列几条事件：这张卡是「有没有动静」，不是事件列表（全量去事件列表页看） */
+const SUB_EVENT_MAX = 3
 
 /** 用户从推送落地时，那个词的四种处境（S1-3）：文案与埋点共用一套取值 */
 type FocusKind = 'group' | 'watching' | 'gone' | 'guest'
@@ -123,6 +130,20 @@ export default function Alerts() {
   const [keywordLogs, setKeywordLogs] = useState<ScanLogRow[]>([])
   /** 名人执行日志（scan_logs，kind=person） */
   const [personLogs, setPersonLogs] = useState<ScanLogRow[]>([])
+  /**
+   * 我订阅的**事件对象**（人 / 关键词）及各自的动向（E1-②）。
+   * ⚠ 空数组同时表示「一个都没订阅」与「订阅了但都没动向」—— 卡片只在**有订阅**时渲染，
+   * 所以「有没有订阅」必须由 `loadEventStatus` 回答，不能拿这个数组的长度当判据。
+   */
+  const [subHits, setSubHits] = useState<SubjectHit[]>([])
+  /**
+   * 我的事件个人状态（已读 / 跟进 / 订阅对象）。
+   *
+   * ⚠ 必须**存进 state**，不能只在 refresh 里用局部变量判：渲染时那句 `hasSubjectSubs(status)`
+   * 要回答「这张卡画不画」，而局部变量在重渲染时早已不在作用域里 —— 那时它会落到同名全局
+   * （`window.status`，一个字符串）上，判据变成永远为假：订阅了也不显示（类型系统会挡，但别指望它）。
+   */
+  const [status, setStatus] = useState<EventStatus>(() => emptyStatus())
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(true)
   /** 提交中：防止连点造成两个并发的 addWatch（后一个会撞主键） */
@@ -134,10 +155,20 @@ export default function Alerts() {
       setPersons([])
       setGroups([])
       setRiskGroups([])
+      setSubHits([])
+      setStatus(emptyStatus())
       setLoading(false)
       return
     }
-    const [rows, res, member] = await Promise.all([listWatches(), loadAlerts(), readMemberState()])
+    /* `loadEventStatus` 一起并进来：订阅栏要不要读事件表，得先看这一行有没有订阅（见下方注释） */
+    const [rows, res, member, evStatus] = await Promise.all([
+      listWatches(),
+      loadAlerts(),
+      readMemberState(),
+      loadEventStatus()
+    ])
+    /* 读出来的状态立刻升到 state：下方「订阅的对象」那张卡的渲染判据用的就是它 */
+    setStatus(evStatus)
     /* 同一张表混着两类行，必须拆开：关键词订阅归上方「关键词监测」，监控行归下方风险信号板块。
        直接用整表长度会让「已监测 N/上限」把监控中的人算进关键词额度（见 keyword-alert.ts#splitWatches） */
     const { keywords, persons: personRows } = splitWatches(rows)
@@ -174,6 +205,20 @@ export default function Alerts() {
 
     /* 标记已看必须在读之后：反了会把本次刚读出的条目直接算成已读 */
     if (res.groups.length) void markAllSeen(res.groups.map((g) => g.keyword))
+
+    /*
+     * 订阅的事件对象（E1-②）：先用个人状态判「有没有订阅」，**没订阅就不读事件表**
+     * —— 为一个必然是空的列表去读两百行，不值（同 utils/revisit.ts#loadRevisits 的短路口径）。
+     * 数据源刻意用**落库事件**（`opinion_events`）：本页整页都是「云端每天扫一轮」的结果视图
+     * （上方预警分组、下方风险信号同源）；这里若回落到本端聚类，同一件事会在这张卡和事件列表页
+     * 各说一个版本，而这张卡就压在上方那份云端结果下面，对不上最扎眼。
+     */
+    if (!hasSubjectSubs(evStatus)) {
+      setSubHits([])
+    } else {
+      const eventRows = await loadStoredEvents()
+      setSubHits(buildSubjectHits(toDisplayEvents(eventRows ?? [], { keywords: kwKeys, watchNames: keys }), evStatus))
+    }
   }, [userId])
 
   useDidShow(() => {
@@ -197,6 +242,45 @@ export default function Alerts() {
       return
     }
     Taro.showToast({ title: res.message, icon: 'none' })
+  }
+
+  /**
+   * 从「订阅的对象」点进事件详情（E1-②）。
+   *
+   * ⚠ 只跳转，**不在这里标记已读**：本页不构成「我看过这条事件」的证据（用户可能只扫一眼标题就返回），
+   * 已读基线归事件详情页自己推进 —— 两处都推会让角标在用户没读正文时就被消掉。
+   */
+  const openSubjectEvent = (key: string, title: string) => {
+    /* 带上 title：事件页加载期间先有标题可显示，不至于白屏（口径同 package/workbench 的 goEvent） */
+    void Taro.navigateTo({
+      url: `/package/event/index?eventKey=${encodeURIComponent(key)}&title=${encodeURIComponent(title)}`
+    })
+  }
+
+  /** 「还有 N 条」的出口：订阅栏只列前几条，全量在事件列表页（不在本页做二级列表） */
+  const openEventList = () => void Taro.navigateTo({ url: '/package/events/index' })
+
+  /**
+   * 取消订阅一个对象（E1-②）。乐观移除 + 失败重拉 —— 订阅关系正是这一页在展示的东西，
+   * 点了没反应会被当成没点成功（与事件详情页 toggleSubjectSub 同一套乐观更新口径）。
+   * 埋点与订阅共用 `event_subscribe`（`on: false` 表示取消），见 utils/events.ts 的说明。
+   */
+  const unsubscribeSubject = async (label: string) => {
+    setSubHits((hits) => hits.filter((h) => h.label !== label))
+    const outcome = await toggleSubject(label, false)
+    if (outcome === 'failed') {
+      Taro.showToast({ title: '取消订阅失败，请重试', icon: 'none' })
+      void refresh()
+      return
+    }
+    /* 同步把 state 里的订阅键也删掉：本卡的渲染判据是 hasSubjectSubs(status)，
+       若只改 subHits，取消**最后一个**订阅后这张卡会留在原地、变成一个空壳 */
+    setStatus((s) => {
+      const subs = { ...(s.subs ?? {}) }
+      delete subs[label]
+      return { ...s, subs }
+    })
+    track('event_subscribe', { subject: label, on: false })
   }
 
   /**
@@ -603,6 +687,88 @@ export default function Alerts() {
             </View>
           ))}
         </>
+      )}
+
+      {/*
+        订阅的对象（E1-②，2026-10-16）：订阅的单位是「人 / 关键词」这个**对象**，
+        回答的是「这个对象之后有没有我要看的新事件」。
+        与上下两段的分工（同页并列，必须各说各的，否则用户看到同一个人出现三遍）：
+          · 关键词监测 —— 盯「这个词的公开报道」（云端检索，词面命中就收）；
+          · 监控中的名人 —— 盯「这个人的风险信号」（命中司法/税务这类词才收）；
+          · 本段 —— 盯「这个对象在**舆情事件**里有没有动」（看事件聚类的结果）。
+        入口在**事件详情页**的「订阅」按钮，本页只呈现与取消（不在本页新增：新增要知道对象是谁，
+        而那个对象只有事件页/报告页拿得到）。
+        ⚠ 渲染判据是 `hasSubjectSubs(status)`、**不是** `subHits.length`：订阅了但都没动向时
+        subHits 里依然有元素（length 不为 0），而「一个都没订阅」与「订阅了都没动向」必须分开 ——
+        拿 length 判会让「没订阅」也长出一张「暂无动向」的空卡。
+      */}
+      {userId && hasSubjectSubs(status) && (
+        <View className='card'>
+          <View className='card-title'>订阅的对象</View>
+          <Text className='page-alerts__intro'>
+            在事件详情页点「订阅」，这个对象（人 / 关键词）之后的新事件就会收在这里。
+            站内查看、不发推送；云端每天上午更新一次。
+          </Text>
+          <View className='page-alerts__chips'>
+            {subHits.map((h) => (
+              <View
+                key={h.label}
+                className='page-alerts__chip'
+                hoverClass='page-alerts__chip--tap'
+                onClick={() => void unsubscribeSubject(h.label)}
+              >
+                <Text>{h.label}</Text>
+                {/* 取消没有二次确认（与关键词 chip 的二次确认不同）：订阅随时可重订，代价是零 */}
+                <Text className='page-alerts__chip-x'>×</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* 只列**有未读动向**的对象：没动向的对象就是那一排 chip，不必再占一段 */}
+          {subHits
+            .filter((h) => h.fresh.length > 0)
+            .map((h) => (
+              <View key={`ev-${h.label}`} className='page-alerts__item'>
+                <View className='page-alerts__item-head'>
+                  <Text className='page-alerts__group-keyword'>{h.label}</Text>
+                  <Text className='page-alerts__group-count'>{`${h.fresh.length} 条新动向`}</Text>
+                </View>
+                {h.fresh.slice(0, SUB_EVENT_MAX).map((ev) => (
+                  <View
+                    key={ev.key}
+                    className='page-alerts__item'
+                    hoverClass='page-alerts__item--tap'
+                    onClick={() => openSubjectEvent(ev.key, ev.title)}
+                  >
+                    <View className='page-alerts__item-head'>
+                      <Text className='page-alerts__new'>新</Text>
+                      <Text className='page-alerts__item-title'>{ev.title}</Text>
+                    </View>
+                    <Text className='page-alerts__item-meta'>
+                      {[`${ev.memberTotal} 条来源`, ev.date ? formatMoment8(ev.date) : '']
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
+                ))}
+                {/* 不静默截断：这张卡只列前 3 条，多的**如实报数**并给出口（同 S3-3 预览的行数口径） */}
+                {h.fresh.length > SUB_EVENT_MAX && (
+                  <Text className='page-alerts__topic' onClick={openEventList}>
+                    <Text>{`还有 ${h.fresh.length - SUB_EVENT_MAX} 条，去事件列表看全部 ›`}</Text>
+                  </Text>
+                )}
+              </View>
+            ))}
+
+          {/* 有订阅、但一个对象都没动向时，上面整块为空 —— 必须给一句话，否则这张卡看起来像加载失败。
+              两种情况在这里合并成一句是**可以**的：对用户而言「还没事件」与「都看过了」的行动一致
+              （都是等新的），而「有没有订阅」已经由 chip 那一排回答了。 */}
+          {subHits.every((h) => h.fresh.length === 0) && (
+            <Text className='page-alerts__intro'>
+              订阅的对象暂无新动向：已收录的相关事件都看过了，或有新事件时会出现在这里。
+            </Text>
+          )}
+        </View>
       )}
 
       {/*

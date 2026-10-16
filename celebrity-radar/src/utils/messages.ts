@@ -4,6 +4,7 @@ import { listFollows } from './follows'
 import { loadFollowWatches, FollowWatch, WATCH_LIMIT } from './watch'
 import { readWeeklyCache } from './weekly'
 import { currentWeekKey, currentWeekStart, fromNow } from './time'
+import { loadRevisits, REVISIT_MAX, revisitDescText, revisitOverflowText } from './revisit'
 
 /**
  * 消息中心（首页右上角铃铛）。
@@ -26,10 +27,19 @@ import { currentWeekKey, currentWeekStart, fromNow } from './time'
  * 不落云、不动关注与周报。它与已读共用同一套「id + 事件时间」记录（见 TimeMark）。
  *
  * 成本：读消息 = 1 次 follows 查询 + 关注数×2 次缓存读（watch 带 60s 内存 TTL，与关注流页
- * 共享同一份缓存，从关注流切回发现页时基本全部命中）。
+ * 共享同一份缓存，从关注流切回发现页时基本全部命中）+ 报告更新（N-2）的 2 次查询
+ * （1 次浏览历史 + 1 次 report_cache 轻字段批量读；浏览历史里一行版本指纹都没有时连这 2 次都省掉，
+ * 见 utils/revisit.ts 的文件头「代价」）。
  */
 
-export type MessageKind = 'follow' | 'weekly' | 'system'
+/**
+ * `report` = 报告更新（N-2 回访，2026-10-16）：**你看过的**某个人，报告又生成过一版。
+ * 判据是「我看过哪一版」（history.viewed_generated_at）× 「当前版生成时间」
+ * （report_cache.generated_at）—— 两张表都是既有的，云端一行都没改（见 utils/revisit.ts）。
+ * 与 `follow` 是两件事：关注类问「我盯的人有新信号吗」，这一类问「我看过的人的结论变了吗」——
+ * 前者要求用户先建立关注关系，后者只要求他看过（大多数用户只查不关注）。
+ */
+export type MessageKind = 'follow' | 'weekly' | 'report' | 'system'
 
 export interface MessageItem {
   id: string
@@ -41,6 +51,8 @@ export interface MessageItem {
   /** 落地页；平台公告没有跳转目标 */
   url?: string
   unread: boolean
+  /** 涉及的名人（只有 `report` 类有）：埋点要能按人聚合「回访点击」 */
+  personKey?: string
 }
 
 export interface MessageFeed {
@@ -49,6 +61,14 @@ export interface MessageFeed {
   unread: number
   /** 关注数超过探测上限：说明关注更新只覆盖了前 WATCH_LIMIT 位 */
   truncated: boolean
+  /**
+   * 命中「报告更新」的总人数（**含被 REVISIT_MAX 折叠掉的那些**）。
+   *
+   * 为什么单独给一个数而不是让页面自己数列表：折叠之后列表里数不出来，而 R 类验证要的正是
+   * 「有多少次打开消息中心是带着回访理由的」（分母是 messages_open）。页面据此上报
+   * `revisit_ready`，条件为 > 0 —— 一律上报会让这个数的含义变成「打开次数」，与分母重复。
+   */
+  revisitTotal: number
 }
 
 /** 旧版已读基线键位（存「上次打开消息中心的时间」）：只读不写，作为迁移兜底 */
@@ -332,6 +352,47 @@ export async function loadMessages(opts: { force?: boolean } = {}): Promise<Mess
     }
   }
 
+  /*
+   * 报告更新（N-2 回访）：只对**真的看过**且**报告确实又生成过**的人说这句话。
+   * 判据、代价与三条不许越过的线全在 utils/revisit.ts 的文件头 —— 尤其是「没有版本指纹就不算」：
+   * 缺了这条，任何三天前查过的人都会在三天后被告知「他有变化」，而那是编出来的。
+   *
+   * id 复用 `report_update#<personKey>` + 事件时间取当前版的生成时间：这一版之后再重生一版时
+   * 同一个 id 上事件时间变新，于是**自动重新变未读**（与 follow 类同一套 TimeMark 口径）。
+   */
+  const revisits = await loadRevisits()
+  for (const it of revisits.slice(0, REVISIT_MAX)) {
+    const id = `report_update#${it.personKey}`
+    items.push({
+      id,
+      kind: 'report',
+      title: `${it.name} 的报告更新了`,
+      desc: revisitDescText(it),
+      at: it.currentVersion,
+      personKey: it.personKey,
+      /* 落在**报告历史页**：那里正是「改了什么」的答案（N-9 差异视图已能给出条数与条目差异），
+         而报告页只显示当前版，说不出「跟你看过的那一版比改了什么」 */
+      url: `/package/report-history/index?personKey=${encodeURIComponent(it.personKey)}&name=${encodeURIComponent(it.name)}`,
+      unread: isUnread(id, it.currentVersion)
+    })
+  }
+  /* 折叠掉的那些如实报数（同 S3-3「不许静默截断」）：这一条只报数、不带人，
+     点它去浏览历史（没被列出的那几位都在那份完整名单里） */
+  const hidden = revisits.length - REVISIT_MAX
+  if (hidden > 0) {
+    const tail = revisits[REVISIT_MAX]
+    const id = 'report_update#more'
+    items.push({
+      id,
+      kind: 'report',
+      title: revisitOverflowText(hidden),
+      desc: `消息中心只列最近 ${REVISIT_MAX} 位，其余可以在浏览历史里找到`,
+      at: tail.currentVersion,
+      url: '/package/history/index',
+      unread: isUnread(id, tail.currentVersion)
+    })
+  }
+
   for (const n of NOTICES) {
     const at = noticeAt(n.date)
     const id = `notice#${n.id}`
@@ -355,6 +416,9 @@ export async function loadMessages(opts: { force?: boolean } = {}): Promise<Mess
   return {
     items: visible,
     unread: visible.filter((i) => i.unread).length,
-    truncated: follows.length > WATCH_LIMIT
+    truncated: follows.length > WATCH_LIMIT,
+    /* 用「判定出来的总人数」而不是 visible 里的条数：被本机删掉的那几位不该从分母里消失
+       （页面据此上报 revisit_ready，它回答的是「这次打开有没有回访理由」） */
+    revisitTotal: revisits.length
   }
 }

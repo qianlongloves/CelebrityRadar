@@ -519,11 +519,14 @@ export default function Mine() {
         微信一次性订阅的规则是「授权一次只够推一条」，所以文案写「提醒一次」
         而不是做成常亮开关 —— 开关会让人以为打开后就一直有推送。
         未配置模板 ID 时点击只给指引，见 utils/notify.ts 的 notifyConfigured。
+
+        标题不再只写「关注」：同一位授权同时覆盖「我盯（跟进）的事件有新进展」（E1），
+        只写关注会让人以为盯的事不在提醒范围内 —— 而「盯事」正是这个产品的主线动词。
       */
       icon: '🔔',
       iconBg: 'brand',
-      title: '关注更新提醒',
-      note: notifyConfigured() ? '授权一次 · 提醒一次' : '未配置订阅模板',
+      title: '更新提醒',
+      note: notifyConfigured() ? '关注的人 / 我盯的事 · 授权一次一条' : '未配置订阅模板',
       onTap: () => void onSubscribeTap()
     },
     {

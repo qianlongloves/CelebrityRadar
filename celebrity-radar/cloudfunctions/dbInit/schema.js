@@ -77,6 +77,13 @@ const collections = [
          微信一次性订阅按**模板**消耗授权，两个定时任务共用一个布尔位就会出现
          「先跑的吃掉授权，后跑的必得 43101」。 */
       f('risk_ok', 'boolean', { def: false }),
+      /* 跟进事件的推送水位（E1，2026-10-16）：event_key → 上一次为它发过提醒的时刻（ISO）。
+         写者是云函数 notifyFollowUpdates（唯一的写者），端上**不读也不写** ——
+         端上的「跟进」状态在 opinion_event_status.follows，这一列只回答「这件事我提醒过没有」。
+         为什么必须存在：端上打开事件详情页刻意**不自动标已读**，用户看完不会推进 reads，
+         没有水位就会天天为同一件事打扰他（详见该云函数文件头「E1」一节）。
+         条数由云函数裁剪（EVENT_NOTIFIED_MAX，按时刻留最近），故这里不设上限校验。 */
+      f('event_notified', 'object', { def: {} }),
       f('membership', 'object?', { def: null })
       /* ⚠ 上面这条是**镜像**：云端的会员判定（aiProxy 的档位闸门与配额闸门、quotaGuard 的
          免计费复核）一律读下面的 memberships。理由：users 的权限是「仅创建者可读写」，
@@ -329,14 +336,22 @@ const collections = [
   },
   {
     name: 'history',
-    purpose: '浏览历史（保留最近 50 条）',
+    purpose: '浏览历史（保留最近 50 条；含「我看到的是哪一版」的版本指纹，N-2 回访判据）',
     acl: ACL.creator,
     fields: [
       f('_id', 'string', { system: true, required: true }),
       f('openid', 'string', { required: true }),
       f('person_key', 'string', { required: true }),
       f('name', 'string', { required: true }),
-      f('ts', 'string', { required: true })
+      f('ts', 'string', { required: true }),
+      /*
+       * 「我看到了这一版」：打开报告页、真的渲染出正文时写入那一版的 `report.generatedAt`。
+       * 判据侧（utils/revisit.ts）拿它与当前版的 `report_cache.generated_at` 比较。
+       * ⚠ 必须**可空且无 def**：存量行、以及报告没读出来就退出的那几次访问都没有这个值，
+       * 而判定侧把「没有它」当成没有证据 —— 给个默认值（哪怕是空串）都会让「没证据」与
+       * 「看过某个版本」分不开，那是回访理由被编出来的根源。
+       */
+      f('viewed_generated_at', 'string?', { def: null })
     ],
     indexes: [ix('idx_openid_ts', [['openid', 'asc'], ['ts', 'desc']], { supports: 'listHistory() / pruneHistory()（含 range(50,149) 裁剪）' })]
   },
@@ -347,7 +362,7 @@ const collections = [
     fields: [
       f('_id', 'string', { system: true, required: true }),
       f('openid', 'string?', { required: true }),
-      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open'] }),
+      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'revisit_ready', 'revisit_open', 'event_subscribe'] }),
       f('person_key', 'string?', { required: true }),
       f('props', 'object?', { required: true }),
       f('created_at', 'string', { required: true })
@@ -594,7 +609,7 @@ const collections = [
   {
     name: 'opinion_event_status',
     purpose:
-      '用户对舆情事件的个人状态（_id = openid，端上读写自己那一行）：只放**已读标记**与**跟进状态（含时间）**两项，map 有条数上限与裁剪（见 utils/opinion-store.ts）',
+      '用户对舆情事件的个人状态（_id = openid，端上读写自己那一行）：**已读标记**（按事件）、**跟进**（按事件，E1-①）、**订阅对象**（按人/关键词标签，E1-②）三项，各自有条数上限与裁剪（见 utils/opinion-store.ts、utils/event-subscribe.ts）',
     acl: ACL.creator,
     fields: [
       f('_id', 'string', { system: true, required: true }),
@@ -602,6 +617,10 @@ const collections = [
       f('reads', 'object', { def: {} }),
       /* event_key → 跟进时刻（ISO）。缺省 = 未跟进 */
       f('follows', 'object', { def: {} }),
+      /* 订阅对象标签（人 / 关键词）→ 订阅时刻（ISO），E1-②。缺省 = 没订阅过任何对象。
+         ⚠ 键**不是 event_key**，是对象标签文本；因此与 reads/follows 是两套键空间，
+         条数上限独立（utils/event-subscribe.ts#SUB_MAX），也**不占** MAX_STATUS_ENTRIES 的额度。 */
+      f('subs', 'object?', { def: null }),
       f('updated_at', 'string', { def: null })
     ],
     indexes: []
