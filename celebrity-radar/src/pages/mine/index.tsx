@@ -408,19 +408,33 @@ export default function Mine() {
       note: '隐私清单 · 免责文案',
       onTap: () => Taro.navigateTo({ url: '/package/agreement/index' })
     },
-    /* 撤回同意：PIPL 第 15 条的独立入口。仅已同意时展示 —— 只能撤回已给出的同意 */
-    ...(consented
-      ? [
-          {
-            icon: '↩️',
-            iconBg: 'danger' as const,
-            title: '撤回同意',
-            note: '停止处理并删除个人数据',
-            danger: true,
-            onTap: () => void withdrawConsent()
-          }
-        ]
-      : []),
+    {
+      /*
+        撤回同意（PIPL 第 15 条）：**常驻展示**，不再按 `consented` 决定是否渲染。
+
+        此前是条件渲染，前提是「已同意」，而那个前提有好几条可能失效的路径（政策版本号
+        随文案更新而变、storage 被系统回收、冷启动时 store 初值早于 storage 就绪）——
+        任何一条失效，入口就**静默消失**。用户看到的现象是「我从来没见过撤回同意」，
+        于是「便捷的撤回方式」变成了一句承诺不到的文案（2026-10-17 线上反馈）。
+
+        改为常驻后：已同意 ⇒ 红色危险项、点了走 withdrawConsent；未同意 ⇒ 蓝色中性项、
+        note 如实说「当前未同意，无需撤回」，点了只解释不动作。状态永远看得见，
+        而不是「因为状态判断失败所以按钮不存在」。
+      */
+      icon: '↩️',
+      iconBg: consented ? 'danger' : 'blue',
+      title: '撤回同意',
+      note: consented ? '停止处理并删除个人数据' : '当前未同意，无需撤回',
+      danger: consented,
+      onTap: () => {
+        if (!consented) {
+          /* 未同意时无同意可撤：说清原因，而不是静默无响应 */
+          Taro.showToast({ title: '当前未同意隐私政策，无需撤回', icon: 'none' })
+          return
+        }
+        void withdrawConsent()
+      }
+    },
     {
       /*
         系统设置（2026-10-17）：更新提醒 / 导出个人数据 / 清空数据 / 注销账号四项收进去，

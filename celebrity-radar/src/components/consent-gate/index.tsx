@@ -34,7 +34,14 @@ export default function ConsentGate({ onAgree }: { onAgree: () => void }) {
    * 这样「读全文」入口真正可达，同意闭环才成立。
    */
   const router = useRouter()
-  const onPolicyPage = (router?.path || '').indexOf('pages/agreement') >= 0
+  /*
+   * ⚠ 路径判断必须同时认分包路径：政策页 2026-10-14 起在 `package/agreement/index`
+   * （原来是主包 `pages/agreement`）。只写旧路径的话这个判断**永远为假** ——
+   * 表现为「点了『查看全文』，网关依然盖在正文上」，用户读不到政策，也就无从同意。
+   * 保留旧路径判断是为了兼容仍在跑老包 / 老分享链接的用户。
+   */
+  const policyPath = router?.path || ''
+  const onPolicyPage = policyPath.indexOf('package/agreement') >= 0 || policyPath.indexOf('pages/agreement') >= 0
   /* 年龄 / 监护人同意确认（PIPL 第 31 条）：必须勾选才放行 */
   const [ageOk, setAgeOk] = useState(false)
 

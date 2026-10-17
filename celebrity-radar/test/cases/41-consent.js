@@ -139,6 +139,12 @@ describe('首次知情同意：components/consent-gate 形态', () => {
   it('停留在政策页时让出整屏（否则会盖住正文、读不到全文，闭环不成立）', () => {
     ok(tsx.includes('useRouter'), '应读取当前路由')
     ok(/pages\/agreement/.test(tsx), '应识别政策页路径')
+    /*
+     * 分包路径必须也认：政策页 2026-10-14 起在 `package/agreement/index`。
+     * 只写旧路径（'pages/agreement'）时判断恒为假 —— 网关会一直盖在正文上，
+     * 「查看全文」打不开，用户读不到政策自然也无从同意。
+     */
+    ok(tsx.includes("indexOf('package/agreement')"), '让位判断必须认分包路径 package/agreement')
     ok(/if \(onPolicyPage\) return null/.test(tsx), '政策页上应 return null 让出整屏')
   })
 })
@@ -170,6 +176,27 @@ describe('首次知情同意：撤回同意独立入口（PIPL 第 15 条）', (
     ok(tsx.includes("title: '撤回同意'"), '应有「撤回同意」菜单项')
     ok(tsx.includes('withdrawConsent'), '应接线到撤回处理函数')
     ok(/useConsent\.getState\(\)\.withdraw\(\)/.test(tsx), '撤回应走 store.withdraw（即时重现网关）')
+  })
+
+  it('入口**常驻**，不许再按 consented 条件渲染（否则状态判定一失效，入口就静默消失）', () => {
+    /*
+     * 2026-10-17 线上反馈「从来没看到过撤回同意」：此前是
+     * `...(consented ? [{ title: '撤回同意' }] : [])` —— 版本号更新 / storage 被回收 /
+     * store 初值早于 storage 就绪，任一条都会让这一行凭空消失，而用户只会认为功能不存在。
+     * PIPL 第 15 条要的是「便捷的撤回方式」，一个可能不存在的入口不叫便捷。
+     */
+    notOk(
+      /\.\.\.\(consented\s*[\r\n\s]*\?/.test(tsx),
+      '撤回同意不该再用 consented 做条件渲染（列表展开语法）'
+    )
+    ok(
+      /title: '撤回同意'[\s\S]{0,400}?当前未同意，无需撤回/.test(tsx),
+      '未同意态要如实写在 note 里，而不是把这一行藏掉'
+    )
+    ok(
+      /if \(!consented\)[\s\S]{0,200}?无需撤回/.test(tsx),
+      '未同意时点按要解释原因，不能静默无响应'
+    )
   })
 
   it('撤回是独立处理函数：删云端 → 退出登录 → 撤销同意（与清空/注销分开）', () => {
