@@ -2,6 +2,7 @@ import Taro from '@tarojs/taro'
 import { View, Text } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { useConsent } from '@/stores/consent'
+import { hasConsented } from '@/utils/consent'
 import { notifyConfigured, requestNotify } from '@/utils/notify'
 import { clearAllMyData, deleteAccount } from '@/utils/data-deletion'
 import { deleteCloudFile } from '@/utils/cloud'
@@ -16,16 +17,17 @@ import { clearQaUsage } from '@/utils/qa'
 import './index.scss'
 
 /**
- * 系统设置（2026-10-17）：提醒授权 / 导出个人数据 / 清空数据 / 注销账号 收到一页。
+ * 系统设置（2026-10-17）：提醒授权 / 导出个人数据 / 清空数据 / 撤回同意 / 注销账号 收到一页。
  *
  * 为什么从「我的」页搬出来：「我的」首屏本来就被用量卡、模型选择、菜单列表三层内容叠满，
  * 而这一组动作**使用频率极低、后果却极重**，夹在「关注的名人 / 我的收藏 / 浏览历史」中间时，
  * 既容易被误触，也让人在翻菜单时反复看见几个不可恢复的红色入口。搬进独立页之后：
  *   · 「我的」页只留一个中性的「系统设置」入口，视线干净；
- *   · 破坏性操作在这里**并排且分级**（清空 / 注销各自说清删什么），要误点必须先进这一页。
+ *   · 破坏性操作在这里**并排且分级**（清空 / 撤回 / 注销各自说清删什么），要误点必须先进这一页。
  *
- * 本页**没有**「撤回同意」：它绑定「已同意」这一状态（只能撤回已给出的同意），
- * 留在「我的」页与隐私与免责相邻更合适。三者的区别见下方清空数据 / 注销的注释。
+ * 「撤回同意」（PIPL 第 15 条）2026-10-17 也迁进来了：此前留在「我的」页，理由是「离授权说明
+ * 越近越好」；但它与清空 / 注销是**同一组重后果动作**，分散在两页反而让人只找到其中一个。
+ * 三者的区别见下方各自注释与页脚那一行。
  *
  * ⚠ 页内每一项的动作函数**整体迁自 pages/mine**，口径未改；改动时请连注释一起看，
  * 尤其是注销的善后（必须用 clearLocalSettingsCache，不能用 clearLocalSettings）。
@@ -167,6 +169,64 @@ export default function Settings() {
     Taro.navigateBack().catch(() => void Taro.switchTab({ url: '/pages/mine/index' }))
   }
 
+  /**
+   * 撤回同意（PIPL 第 15 条：个人有权撤回同意，处理者应提供**便捷**的撤回方式）。
+   *
+   * 与「清空数据」「注销账号」的区别：
+   *   · 清空数据：只删内容，账号与同意**都保留**；
+   *   · 撤回同意：撤销授权 → **停止处理**（删云端个人数据 + 退出登录 + 清本机）→ 回到「未同意」态；
+   *   · 注销账号：在撤回的基础上，连账号行本身一并删除。
+   *
+   * 撤回即失去处理依据，故基于该同意收集的数据（关注 / 收藏 / 历史 / 监控 / 埋点）**一并删除**；
+   * 订单按法定留存要求不在此动作内（走注销的去标识化路径）。撤回经 store（`withdraw`），
+   * 使 app.tsx 即时重现同意网关 —— 撤回后不会出现「没同意却还能用 / 还能再登录」的漏洞。
+   */
+  const withdrawConsent = async () => {
+    const res = await Taro.showModal({
+      title: '撤回同意',
+      content:
+        '撤回后将停止处理你的个人信息并退出登录，云端与本机的关注、收藏、历史、监控与行为计数一并删除，不可恢复；如需继续使用可重新同意。',
+      confirmText: '撤回',
+      confirmColor: '#EF4444'
+    })
+    if (!res.confirm) return
+
+    Taro.showLoading({ title: '处理中', mask: true })
+    /* 先删云端个人数据（要用到登录态，故在清登录之前）；删除属于「停止处理」，即便失败也继续退出 */
+    const ok = await clearAllMyData()
+    Taro.hideLoading()
+
+    if (avatarUrl && avatarUrl.indexOf('cloud://') === 0) void deleteCloudFile(avatarUrl)
+    useAuth.getState().clearLogin()
+    clearLocalSettingsCache()
+    clearPromoDismiss()
+    clearWeeklyCache()
+    clearMessageState()
+    clearInboxSeen()
+    clearPickDismiss()
+    clearQaUsage()
+    /* 撤销同意（走 store）：app.tsx 订阅到变化 → 同意网关即时重现 */
+    useConsent.getState().withdraw()
+    Taro.showToast({ title: ok ? '已撤回同意' : '已退出登录，云端删除失败请稍后重试', icon: 'none' })
+    /*
+     * 撤回成功后同意网关会立刻盖住整屏（app.tsx 订阅 store），本页已无意义：
+     * 和注销一样回「我的」—— 那里正显示未登录态，用户也能就近看到同意弹窗。
+     * 栈底进不来时（分享 / 旧链接）navigateBack 会失败，兜底切回 tab。
+     */
+    Taro.navigateBack().catch(() => void Taro.switchTab({ url: '/pages/mine/index' }))
+  }
+
+  /**
+   * 是否「有同意可撤」：**本机记录 / 内存态 / 登录态，三者任一成立即可**。
+   *
+   * 只认一条会误伤：store 的内存态是模块加载那一刻读出来的，早于存储就绪时会把「已同意」
+   * 钉成 false（见 stores/consent 的 sync 注释）；反过来写库失败时内存态却是 true。
+   * 而登录只会在同意之后发起（app.tsx 的 onAgree / useLaunch 都以 hasConsented 为前提），
+   * 所以 `userId` 存在本身就是「走过同意流程」的证据。
+   * 2026-10-17 反馈「点撤回只提示当前未同意」正是只认内存态造成的。
+   */
+  const canWithdraw = hasConsented() || consented || !!userId
+
   const menus: MenuItem[] = [
     {
       /*
@@ -199,6 +259,27 @@ export default function Settings() {
       note: '删除云端关注 / 收藏 / 历史（账号保留）',
       danger: true,
       onTap: () => void clearMyData()
+    },
+    {
+      /*
+        撤回同意（PIPL 第 15 条）：**常驻展示**，不按 consented 条件渲染。
+        条件渲染时「已同意」这个前提一失效（版本号更新 / storage 被回收 / 内存态读错），
+        整行就静默消失，用户只会认为功能不存在（2026-10-17 线上反馈）。
+        现在改为常驻：能撤 ⇒ 红色危险项 + 真撤回；没有可撤的 ⇒ 中性色 + 如实说明。
+      */
+      icon: '↩️',
+      iconBg: canWithdraw ? 'danger' : 'blue',
+      title: '撤回同意',
+      note: canWithdraw ? '停止处理并删除个人数据' : '当前没有有效的同意记录',
+      danger: canWithdraw,
+      onTap: () => {
+        if (!canWithdraw) {
+          /* 无同意可撤：说清原因，而不是静默无响应 */
+          Taro.showToast({ title: '当前没有有效的同意记录，无需撤回', icon: 'none' })
+          return
+        }
+        void withdrawConsent()
+      }
     },
     /* 注销账号：隐私政策承诺的入口（P0）。仅登录后展示 —— 未登录没有账号可注销 */
     ...(userId
@@ -239,8 +320,8 @@ export default function Settings() {
         并排放在一页里最容易被当成同一件事。这里给的是**区别**，不是免责声明。
       */}
       <Text className='page-settings__foot'>
-        清空数据只删内容，账号与授权都保留；注销账号会连账号一并删除，不可恢复
-        {consented ? '；想撤回隐私授权请到「我的 → 撤回同意」' : ''}。
+        清空数据只删内容，账号与授权都保留；撤回同意会停止处理并退出登录；注销账号会连账号一并删除，
+        三者都不可恢复。
       </Text>
     </View>
   )

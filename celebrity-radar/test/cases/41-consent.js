@@ -170,15 +170,18 @@ describe('首次知情同意：版本号单一真源（config/legal）', () => {
 /* ───────────────────── 5. 撤回同意独立入口 ───────────────────── */
 
 describe('首次知情同意：撤回同意独立入口（PIPL 第 15 条）', () => {
-  const tsx = read('pages/mine/index.tsx')
+  const tsx = read('package/settings/index.tsx')
+  const mine = read('pages/mine/index.tsx')
 
-  it('「我的」页有「撤回同意」菜单项，且经 store.withdraw 撤销', () => {
+  it('「系统设置」页有「撤回同意」菜单项，且经 store.withdraw 撤销', () => {
     ok(tsx.includes("title: '撤回同意'"), '应有「撤回同意」菜单项')
     ok(tsx.includes('withdrawConsent'), '应接线到撤回处理函数')
     ok(/useConsent\.getState\(\)\.withdraw\(\)/.test(tsx), '撤回应走 store.withdraw（即时重现网关）')
+    /* 2026-10-17 起与清空 / 注销同页：PIPL 第 15 条的入口不能留在另一个页面上让人只找到一半 */
+    notOk(mine.includes("title: '撤回同意'"), '「我的」页不该再有撤回同意（已迁入系统设置）')
   })
 
-  it('入口**常驻**，不许再按 consented 条件渲染（否则状态判定一失效，入口就静默消失）', () => {
+  it('入口**常驻**，不许按 consented 条件渲染（否则状态判定一失效，入口就静默消失）', () => {
     /*
      * 2026-10-17 线上反馈「从来没看到过撤回同意」：此前是
      * `...(consented ? [{ title: '撤回同意' }] : [])` —— 版本号更新 / storage 被回收 /
@@ -190,13 +193,20 @@ describe('首次知情同意：撤回同意独立入口（PIPL 第 15 条）', (
       '撤回同意不该再用 consented 做条件渲染（列表展开语法）'
     )
     ok(
-      /title: '撤回同意'[\s\S]{0,400}?当前未同意，无需撤回/.test(tsx),
-      '未同意态要如实写在 note 里，而不是把这一行藏掉'
+      /title: '撤回同意'[\s\S]{0,500}?当前没有有效的同意记录/.test(tsx),
+      '没有可撤记录时要如实写在 note 里，而不是把这一行藏掉'
     )
     ok(
-      /if \(!consented\)[\s\S]{0,200}?无需撤回/.test(tsx),
-      '未同意时点按要解释原因，不能静默无响应'
+      /if \(!canWithdraw\)[\s\S]{0,200}?无需撤回/.test(tsx),
+      '没有可撤记录时点按要解释原因，不能静默无响应'
     )
+    /*
+     * 判据不能只认内存态：store 的 consented 是模块加载那一刻读出来的，
+     * 早于存储就绪时会被钉成 false —— 那样用户点了撤回只会收到一句「当前未同意」
+     * （2026-10-17 实测）。三条证据任一成立即可撤：本机记录 / 内存态 / 登录态。
+     */
+    ok(/hasConsented\(\)/.test(tsx), '判据要实时读本机同意记录')
+    ok(/canWithdraw\s*=\s*hasConsented\(\)\s*\|\|\s*consented\s*\|\|\s*!!userId/.test(tsx), '三条证据任一成立即可撤回')
   })
 
   it('撤回是独立处理函数：删云端 → 退出登录 → 撤销同意（与清空/注销分开）', () => {

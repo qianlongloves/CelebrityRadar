@@ -411,14 +411,14 @@ describe('舆情页接线（pages/opinion/index.tsx）', () => {
 
 describe('本机标记的清理（我的页 + 系统设置页）', () => {
   /*
-   * 2026-10-17：清空数据 / 注销账号搬到「我的 → 系统设置」（package/settings），
-   * 撤回同意仍在「我的」。契约不变 —— **三条链路都要清**，所以两页的调用点数一起数，
-   * 拆开后必须正好还是 3（任一侧漏一处都会留下一个用户看不见的决定）。
+   * 2026-10-17：清空数据 / 撤回同意 / 注销账号都搬到「我的 → 系统设置」（package/settings）。
+   * 契约不变 —— **三条链路都要清**，所以调用点数一起数，拆开后必须正好还是 3
+   * （任一侧漏一处都会留下一个用户看不见的决定）。
    */
   const mine = read('pages/mine/index.tsx')
   const settings = read('package/settings/index.tsx')
 
-  it('清空全部数据 / 注销账号 / 撤回同意 三处都清（与 messages / inbox / weekly 同一处理）', () => {
+  it('清空全部数据 / 撤回同意 / 注销账号 三处都清（与 messages / inbox / weekly 同一处理）', () => {
     eq(
       (mine.match(/clearPickDismiss\(\)/g) || []).length +
         (settings.match(/clearPickDismiss\(\)/g) || []).length,
@@ -430,8 +430,9 @@ describe('本机标记的清理（我的页 + 系统设置页）', () => {
       3,
       '（对照：同类的 inbox 标记本来就是三处）'
     )
-    ok(mine.includes("import { clearPickDismiss } from '@/utils/opinion-pick'"))
     ok(settings.includes("import { clearPickDismiss } from '@/utils/opinion-pick'"))
+    /* 反向：三条链路都在系统设置页了，「我的」页不该再残留这条清理（残留 = 还有第四个入口） */
+    notOk(mine.includes('clearPickDismiss'), '撤回同意迁走后，「我的」页不再需要 clearPickDismiss')
   })
 })
 

@@ -403,7 +403,8 @@ describe('站内触达收口：页面接入（静态约束）', () => {
   })
 
   it('「清空我的数据」会一并清掉本机 inbox 基线', () => {
-    const page = read('pages/mine/index.tsx')
+    /* 2026-10-17：清空 / 撤回 / 注销三处都迁到 package/settings，清理入口随之搬过去 */
+    const page = read('package/settings/index.tsx')
     ok(page.includes("from '@/utils/inbox'") && page.includes('clearInboxSeen()'), '缺少 clearInboxSeen')
   })
 })

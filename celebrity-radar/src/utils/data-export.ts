@@ -86,7 +86,7 @@ export async function buildMyDataBundle(): Promise<MyDataBundle | null> {
       basis: '依据《中华人民共和国个人信息保护法》第 45 条（查阅、复制权）导出',
       scope: '仅含你本人的数据，不含他人信息与全局缓存内容',
       rights:
-        '删除：我的 → 系统设置 → 清空数据；撤回同意：我的 → 撤回同意；注销：我的 → 系统设置 → 注销账号'
+        '删除：我的 → 系统设置 → 清空数据；撤回同意：我的 → 系统设置 → 撤回同意；注销：我的 → 系统设置 → 注销账号'
     },
     exported_at: new Date().toISOString(),
     account: { user_id: userId, nickname: nickname ?? null },

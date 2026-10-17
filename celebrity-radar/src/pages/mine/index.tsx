@@ -5,7 +5,6 @@ import { useAuth } from '@/stores/auth'
 import { ensureLogin, updateProfile } from '@/utils/auth'
 import { openMemberPage } from '@/utils/member-entry'
 import {
-  clearLocalSettingsCache,
   getPreferredTier,
   setPreferredTier,
   getPreferredProvider,
@@ -15,9 +14,6 @@ import { resolveChatSelection, listReadyVendors } from '@/utils/llm'
 import type { ChatSelection, ReadyVendor } from '@/utils/llm'
 import { publicConfig } from '@/config/public'
 import type { LlmVendor, LlmQuality } from '@/config/public'
-import { clearAllMyData } from '@/utils/data-deletion'
-import { deleteCloudFile } from '@/utils/cloud'
-import { useConsent } from '@/stores/consent'
 import { listFollows } from '@/utils/follows'
 import { listFavorites } from '@/utils/favorites'
 import { listHistory, HISTORY_LIMIT } from '@/utils/history'
@@ -26,15 +22,9 @@ import {
   FREE_FEATURES_NOTE,
   MEMBER_BENEFIT_POINTS,
   MEMBER_DAILY_ASK_LIMIT,
-  MEMBER_DAILY_GENERATE_LIMIT,
-  clearPromoDismiss
+  MEMBER_DAILY_GENERATE_LIMIT
 } from '@/utils/member'
-import { clearWeeklyCache } from '@/utils/weekly'
-import { clearMessageState } from '@/utils/messages'
-import { clearInboxSeen } from '@/utils/inbox'
-/* 舆情页冷启动推荐的「已关闭」标记也是本机偏好：清数据 / 注销 / 撤回同意时一并清掉 */
-import { clearPickDismiss } from '@/utils/opinion-pick'
-import { clearQaUsage, qaUsageToday, refreshQaUsage } from '@/utils/qa'
+import { qaUsageToday, refreshQaUsage } from '@/utils/qa'
 import type { QaUsage } from '@/utils/qa'
 import { useTabBarSync } from '@/utils/tabbar'
 import { dayKey8 } from '@/utils/time'
@@ -58,11 +48,6 @@ function formatDay(iso: string): string {
 export default function Mine() {
   useTabBarSync()
   const { userId, nickname, avatarUrl, error } = useAuth()
-  /**
-   * 是否已同意当前版本隐私政策（PIPL 第 15 条）：决定「撤回同意」入口是否展示 ——
-   * 只能撤回已给出的同意。撤回后本值变 false，app.tsx 会即时重现同意网关。
-   */
-  const consented = useConsent((s) => s.consented)
   /** 昵称编辑态：点昵称/「编辑」展开内联编辑行 */
   const [editingNick, setEditingNick] = useState(false)
   const [nickDraft, setNickDraft] = useState('')
@@ -252,54 +237,12 @@ export default function Mine() {
   }
 
   /*
-   * 清空数据 / 注销账号（2026-10-17 迁到 package/settings）：这两个不可恢复的动作连同
-   * 「更新提醒」「导出个人数据」一起，从本页菜单移进了「我的 → 系统设置」。
+   * 清空数据 / 撤回同意 / 注销账号（2026-10-17 迁到 package/settings）：这三个不可恢复的动作
+   * 连同「更新提醒」「导出个人数据」一起，从本页菜单移进了「我的 → 系统设置」。
    * 理由见 package/settings/index.tsx 文件头：本页的首屏被用量卡与模型选择占满，
    * 而这一组低频、重后果的入口夹在「关注的人 / 我的收藏 / 浏览历史」中间既容易误触，
    * 也让每次翻菜单都要看见几个红色项。**这里只留中性的「系统设置」一行入口。**
-   * ⚠ 撤回同意仍在本页（见下方 withdrawConsent）：它绑定「已同意」状态，入口离授权说明越近越好。
    */
-
-  /**
-   * 撤回同意（PIPL 第 15 条：个人有权撤回同意，处理者应提供便捷的撤回方式）。
-   *
-   * 与「清空数据」「注销账号」的区别：
-   *   · 清空数据：只删内容，账号与同意**都保留**；
-   *   · 撤回同意：撤销授权 → **停止处理**（退出登录 + 删云端个人数据 + 清本机）→ 回到「未同意」态；
-   *   · 注销账号：在撤回的基础上，连账号行本身一并删除。
-   *
-   * 撤回即失去处理依据，故基于该同意收集的数据（关注 / 收藏 / 历史 / 监控 / 埋点）**一并删除**；
-   * 订单按法定留存要求不在此动作内（走注销的去标识化路径）。撤回经 store（`withdraw`），
-   * 使 app.tsx 即时重现同意网关 —— 撤回后不会出现「没同意却还能用 / 还能再登录」的漏洞。
-   */
-  const withdrawConsent = async () => {
-    const res = await Taro.showModal({
-      title: '撤回同意',
-      content: '撤回后将停止处理你的个人信息并退出登录，云端与本机的关注、收藏、历史、监控与行为计数一并删除，不可恢复；如需继续使用可重新同意。',
-      confirmText: '撤回',
-      confirmColor: '#EF4444'
-    })
-    if (!res.confirm) return
-
-    Taro.showLoading({ title: '处理中', mask: true })
-    /* 先删云端个人数据（要用到登录态，故在清登录之前）；删除属于「停止处理」，即便失败也继续退出 */
-    const ok = await clearAllMyData()
-    Taro.hideLoading()
-
-    if (avatarUrl && avatarUrl.indexOf('cloud://') === 0) void deleteCloudFile(avatarUrl)
-    useAuth.getState().clearLogin()
-    clearLocalSettingsCache()
-    clearPromoDismiss()
-    clearWeeklyCache()
-    clearMessageState()
-    clearInboxSeen()
-    clearPickDismiss()
-    clearQaUsage()
-    /* 撤销同意（走 store）：app.tsx 订阅到变化 → 同意网关即时重现 */
-    useConsent.getState().withdraw()
-    void loadCounts()
-    Taro.showToast({ title: ok ? '已撤回同意' : '已退出登录，云端删除失败请稍后重试', icon: 'none' })
-  }
 
   /**
    * 保存资料：昵称与头像共用一个出口（都是 users 行的 patch）。
@@ -410,44 +353,18 @@ export default function Mine() {
     },
     {
       /*
-        撤回同意（PIPL 第 15 条）：**常驻展示**，不再按 `consented` 决定是否渲染。
-
-        此前是条件渲染，前提是「已同意」，而那个前提有好几条可能失效的路径（政策版本号
-        随文案更新而变、storage 被系统回收、冷启动时 store 初值早于 storage 就绪）——
-        任何一条失效，入口就**静默消失**。用户看到的现象是「我从来没见过撤回同意」，
-        于是「便捷的撤回方式」变成了一句承诺不到的文案（2026-10-17 线上反馈）。
-
-        改为常驻后：已同意 ⇒ 红色危险项、点了走 withdrawConsent；未同意 ⇒ 蓝色中性项、
-        note 如实说「当前未同意，无需撤回」，点了只解释不动作。状态永远看得见，
-        而不是「因为状态判断失败所以按钮不存在」。
-      */
-      icon: '↩️',
-      iconBg: consented ? 'danger' : 'blue',
-      title: '撤回同意',
-      note: consented ? '停止处理并删除个人数据' : '当前未同意，无需撤回',
-      danger: consented,
-      onTap: () => {
-        if (!consented) {
-          /* 未同意时无同意可撤：说清原因，而不是静默无响应 */
-          Taro.showToast({ title: '当前未同意隐私政策，无需撤回', icon: 'none' })
-          return
-        }
-        void withdrawConsent()
-      }
-    },
-    {
-      /*
-        系统设置（2026-10-17）：更新提醒 / 导出个人数据 / 清空数据 / 注销账号四项收进去，
-        本页只留这一行中性入口（理由见文件上方那段注释与 package/settings 文件头）。
+        系统设置（2026-10-17）：更新提醒 / 导出个人数据 / 清空数据 / 撤回同意 / 注销账号
+        五项收进去，本页只留这一行中性入口（理由见文件上方那段注释与 package/settings 文件头）。
 
         ⚠ note 必须点出那几件事：光写「系统设置」四个字，没人会想到注销账号在里面 ——
         而注销是隐私政策明确承诺的入口，藏在名字看不出内容的入口后面，等于承诺落空。
+        「撤回」两字同理：PIPL 第 15 条的入口不能藏在一个猜不到的名字后面。
         这一行也因此**始终展示**（不随登录态隐藏）：未登录的用户同样要找更新提醒与导出。
       */
       icon: '⚙️',
       iconBg: 'blue',
       title: '系统设置',
-      note: '更新提醒 · 导出 / 清空数据 · 注销',
+      note: '更新提醒 · 导出 / 清空 / 撤回 / 注销',
       onTap: () => Taro.navigateTo({ url: '/package/settings/index' })
     }
   ]

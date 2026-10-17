@@ -1,4 +1,4 @@
-import { PropsWithChildren, useCallback } from 'react'
+import { PropsWithChildren, useCallback, useEffect } from 'react'
 import { useLaunch } from '@tarojs/taro'
 import { ensureLogin } from './utils/auth'
 import { hasConsented } from './utils/consent'
@@ -21,12 +21,26 @@ import './app.scss'
  *   · 已同意 ⇒ 照旧静默登录；
  *   · 未同意 ⇒ 不发起任何登录，先由 ConsentGate 全屏征求同意，同意后再登录。
  *
- * 同意态放在 stores/consent（而非本组件 useState）：这样「我的 → 撤回同意」撤销后
+ * 同意态放在 stores/consent（而非本组件 useState）：这样「我的 → 系统设置 → 撤回同意」撤销后
  * 本组件能订阅到变化、**即时重现网关**，不必重启小程序（见 stores/consent 的文件头）。
  */
 function App({ children }: PropsWithChildren) {
   const consented = useConsent((s) => s.consented)
   const agree = useConsent((s) => s.agree)
+  const syncConsent = useConsent((s) => s.sync)
+
+  /*
+   * 启动后按本机记录校准一次内存态（只跑一次）。
+   *
+   * store 的初值在**模块加载时**求值，早于页面挂载与存储就绪；那一次读空就会把
+   * 「已同意」钉死成 false，此后内存态与本机记录永久背离 —— 表现为用户明明在用，
+   * 点「撤回同意」却只得到「当前未同意」（见 stores/consent 的 sync 注释）。
+   * 这里补一次校准，让内存态以本机记录为准。放在 useEffect 而不是 useLaunch：
+   * 不需要等小程序生命周期，页面渲染时即可纠正。
+   */
+  useEffect(() => {
+    syncConsent()
+  }, [syncConsent])
 
   useLaunch(() => {
     if (hasConsented()) void ensureLogin()
