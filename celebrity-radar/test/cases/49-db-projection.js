@@ -187,4 +187,49 @@ describe('数据层：db 列投影（select 的参数不再被忽略）', () => 
       '同 last_at 时按 _id 升序：说明稳定次级键真的下发了（不是靠库的偶然顺序）'
     )
   })
+
+  /* ── 嵌套投影（`report.heat`）：2026-10-17 给热门榜 / 会员示例收紧取数时补 ──
+     这两处原先都是 `select('*')`：一次扫 20~40 份**完整报告**（18 节），实际只用得上
+     其中一两个正文片段。改成按列投影的前提是「点号路径真的能取到东西」——
+     写成扁平的 `{'report.heat': true}` 时云开发找不到该字段、**不报错只返回空**，
+     于是榜面会静默全空。下面的断言就是拦这个的。 */
+  it('嵌套投影：select("id,report.heat") 只给主键与热度，其余正文一个字都不下来', async () => {
+    const { db, load } = fresh()
+    const { table } = load('utils/db')
+    db.__seed('report_cache', [
+      {
+        _id: '张三#tech',
+        state: 'ready',
+        generated_at: '2026-10-01T00:00:00.000Z',
+        report: {
+          name: '张三',
+          heat: 87,
+          intro: '简介首句',
+          dynamics: [{ title: '首条动态', summary: '不该被取到' }],
+          facts: [{ text: '长正文' }]
+        }
+      }
+    ])
+
+    const { data } = await table('report_cache').select('id, report.heat').eq('id', '张三#tech')
+
+    eq(data[0].id, '张三#tech', 'id 由 _id 映回')
+    eq(data[0].report && data[0].report.heat, 87, '点号路径必须真的取到嵌套字段（取不到会静默为空）')
+    eq(data[0].report.name, undefined, '未列出的子字段不得返回')
+    eq(data[0].report.intro, undefined)
+    eq(data[0].report.facts, undefined, '未列出的整节不得返回 —— 这就是「不再拉整份报告」的证据')
+  })
+
+  it('嵌套投影：父字段已在投影里时以父字段为准（宽覆盖窄）', async () => {
+    const { db, load } = fresh()
+    const { table } = load('utils/db')
+    db.__seed('report_cache', [
+      { _id: 'k#tech', report: { heat: 50, intro: '首句' } }
+    ])
+
+    const { data } = await table('report_cache').select('id, report, report.heat').eq('id', 'k#tech')
+
+    eq(data[0].report.heat, 50)
+    eq(data[0].report.intro, '首句', '写了父字段就是整块给出，不该被后面的 report.heat 缩成一个子字段')
+  })
 })

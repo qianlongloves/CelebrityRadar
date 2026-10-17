@@ -93,8 +93,13 @@ export async function resolvePersonKey(name: string, domain: string): Promise<st
 
   const task = (async (): Promise<string> => {
     try {
+      /*
+       * 只取主键：这里做的是「名字 → personKey」的解析，正文一个字都用不到。
+       * `select('*')` 每次都会把整份报告（18 节，含会员段）拉下来再扔掉 —— 一次名字回退
+       * 就要拖几十 KB，而这条路径恰恰是「用户刚输入一个新名字」时最常走的那条。
+       */
       const { data, error } = await table('report_cache')
-        .select('*')
+        .select('id')
         .eq('report.name', name)
         .eq('state', 'ready')
         .order('generated_at', { ascending: false })

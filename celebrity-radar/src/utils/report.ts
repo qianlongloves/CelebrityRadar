@@ -541,6 +541,19 @@ export interface Report {
    */
   affiliations?: Affiliation[]
   /**
+   * 会员段旗标（P2 方案 A **阶段 2**，2026-10-17）：这份报告**确实有**会员段，
+   * 内容存在客户端读不到的 `report_member` 副本表里，要按 `op:'member'` 取。
+   *
+   * 值是那几段的**字段名**（`MEMBER_FIELD_KEYS` 的子集），不是一个 bool ——
+   * 报告页的促销条要能点名「已含对比视角 / 风险提示 / 信源分歧」，
+   * 说不出是哪几段就成了一句当场兑现不了的承诺（见 utils/member.ts#reportMemberPromo）。
+   *
+   * ⚠ **阶段 2 上线时没有任何报告带这个键**：写口要等阶段 3 把主行的四段剥掉时才写。
+   *   端上只在「旗标有值 + 正文里没有四段」时才发 `op:'member'`（见 utils/member-sections.ts），
+   *   所以缺省 = 免费档产物 = 连一次云函数调用都不发。
+   */
+  memberSections?: string[]
+  /**
    * 第二批（免费可见）：结构化人物档案 —— 一眼看清 who 的锚点，替代把身份信息全塞在
    * intro 那段散文里。每条都带 basis（媒体名），故每条都能回到一篇素材去核对。
    * 可选 —— 改动前落库的老报告没有这个键，UI 整卡不出。

@@ -232,6 +232,52 @@ const collections = [
     ]
   },
   {
+    name: 'report_member',
+    /* 会员专属段落的独立存放（P2 方案 A，2026-10-17）。
+     *
+     * 要解决的问题：`report_cache` / `report_versions` 是「所有人可读」的，而它们存的报告正文里
+     * **包含会员段**（`memberNotes` / `conflicts` / `peers` / `affiliations`）—— 端上渲染前才用
+     * `stripMemberSections` 摘掉，那只是「不让 UI 显示」，改包 / 抓包直接读库即可拿到全文。
+     * 现在把这四段搬进**客户端完全不可读**的本表，写口与读口都只在云函数里：
+     *   · 写：`aiProxy` 的 `action:'report'`（`op:'save'` 落库成功后顺手写一行，best-effort）；
+     *   · 读：`aiProxy` 的 `action:'report'` + `op:'member'`（先判会员，再返回这四段）。
+     *
+     * ⚠ **两行不是原子的**，所以判据写成「时间戳相等才认」：读者手里那一版主行的
+     *   `generated_at` 必须与本行的 `generated_at` **逐字相等**，否则一律当作「没有会员段」
+     *   （宁可少给，也不能把上一版的会员段配到这一版的免费段上）。
+     *
+     * ⚠ ACL 不会由 `dbInit` 自动 apply（它只把 ACL 列进 `permissions_manual` 供人工设）
+     *   —— 建表后必须在控制台确认本表是「客户端不可读写」，否则这个方案等于没做。
+     *
+     * ⚠ 行内**不含任何用户标识**：与 `report_cache` / `report_versions` 同定位（全站共享事实），
+     *   注销时无需按用户删。用例 18 的「注销删表清单」白名单同样适用。
+     */
+    purpose: '会员专属段落（四段正文）：客户端完全不可读，只有云函数 aiProxy(action:report) 能读写',
+    acl: ACL.cloudOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('person_key', 'string', { required: true }),
+      /* 'current' = 当前版（`_id` = personKey）；'version' = 被覆盖掉的历史版
+         （`_id` = `<personKey>#<那一版的生成时间>`，与 `report_versions` 的主键**逐字相同**） */
+      f('kind', 'string', { required: true, enumHint: ['current', 'version'] }),
+      /* 与主行 / 历史版本行的时间戳；读者据此判断「这一份会员段是不是配这一版正文的」 */
+      f('generated_at', 'string', { required: true }),
+      /* 四段原文，键名与 report 上的一致（memberNotes / conflicts / peers / affiliations）。
+         写成 object 而不是四个独立列：它们总是整体读、整体写，拆列只会让「哪些段算会员段」
+         这件事散在两处（口径在 report-store.js#MEMBER_FIELDS） */
+      f('sections', 'object', { required: true }),
+      f('schemaVersion', 'number?')
+    ],
+    /* 只为「按人物取会员段」建一条索引（当前版是主键点查，用不到它；历史版要按 person_key 列）。
+       排序键仍走 `_id`（同 report_versions 的理由：`_id` 自带索引，裁剪不依赖自建索引）。 */
+    indexes: [
+      ix('idx_person_key', [['person_key', 'asc']], {
+        optional: true,
+        supports: '按人物取历史版的会员段（当前版走主键点查）'
+      })
+    ]
+  },
+  {
     name: 'hot_board',
     purpose: '热门名人榜（AI 每日生产，_id 固定 latest 覆盖写；端上只读）',
     acl: ACL.publicReadOnly,
@@ -372,7 +418,7 @@ const collections = [
        * ⚠ 它只是**登记**：dbInit 目前并不消费 enumHint（不校验、不告警），别把它当成生效中的白名单 ——
        * 它保证的仅仅是「埋点名单有唯一真源可对」，而不是「写错会被拦住」。
        */
-      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'report_kept_member', 'report_knowledge_fallback', 'report_generate_shortfall', 'report_generate_retry', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'report_qa_ask', 'topic_open', 'watch_add', 'watch_remove', 'alert_focus', 'watch_share_arrive', 'monitor_add', 'monitor_remove', 'report_open', 'report_export', 'report_exported', 'workbench_compare', 'workbench_export', 'report_history_view', 'report_version_open', 'report_version_diff', 'revisit_ready', 'revisit_open', 'opinion_pick', 'event_subscribe', 'report_lock_see', 'member_entry'] }),
+      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'report_kept_member', 'report_knowledge_fallback', 'report_generate_shortfall', 'report_generate_retry', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'report_qa_ask', 'topic_open', 'watch_add', 'watch_remove', 'alert_focus', 'watch_share_arrive', 'monitor_add', 'monitor_remove', 'report_open', 'report_export', 'report_exported', 'workbench_compare', 'workbench_export', 'report_history_view', 'report_version_open', 'report_version_diff', 'revisit_ready', 'revisit_open', 'opinion_pick', 'event_subscribe', 'report_lock_see', 'member_entry', 'member_sections'] }),
       f('person_key', 'string?', { required: true }),
       f('props', 'object?', { required: true }),
       f('created_at', 'string', { required: true })

@@ -174,10 +174,20 @@ function sortByGeneratedAtDesc(rows: any[]): any[] {
   return rows.slice().sort((a, b) => at(b) - at(a))
 }
 
+/**
+ * 榜面只用到三个正文片段：热度（排序）、首条动态标题 / 简介首句（`pickBrief` 的那句速览）。
+ * 故按列投影取，不拉整份报告 —— 这里一次扫 `CLOUD_SCAN` 份，`select('*')` 等于把
+ * 40 份全文（18 节 × 每节若干条）整块拖到端上再全部丢弃，也是本页首屏最重的一次传输。
+ *
+ * ⚠ `dynamics` 只能整段取（云开发不支持「数组元素的子字段」投影），它每份也只有几条，
+ * 与整份报告不是一个量级；`generated_at` 是兜底路径端上补排序用的（见下面回退分支）。
+ */
+const BOARD_COLUMNS = 'id, generated_at, report.heat, report.intro, report.dynamics'
+
 /** 读 report_cache 的 ready 行；失败返回空数组，由调用方走种子兜底 */
 async function queryRows(): Promise<any[]> {
   const ordered = await table('report_cache')
-    .select('*')
+    .select(BOARD_COLUMNS)
     .eq('state', 'ready')
     .order('generated_at', { ascending: false })
     .limit(CLOUD_SCAN)
@@ -187,7 +197,7 @@ async function queryRows(): Promise<any[]> {
      无排序的取数本身是**无顺序保证**的（还会跨页，见 db.ts#fetchAll），所以这里在端上补排序：
      数据量小时与有序路径等价，量大时也不至于让兜底榜取到一批陈年报告 */
   diagLog('warn', 'db', `热门榜按时间读取失败，回退无排序 + 端上排序：${ordered.error.message ?? ordered.error}`)
-  const plain = await table('report_cache').select('*').eq('state', 'ready').limit(CLOUD_SCAN)
+  const plain = await table('report_cache').select(BOARD_COLUMNS).eq('state', 'ready').limit(CLOUD_SCAN)
   if (plain.error) {
     diagLog('warn', 'db', `热门榜读取失败，回落静态种子：${plain.error.message ?? plain.error}`)
     return []
@@ -222,6 +232,14 @@ async function build(): Promise<HotPerson[]> {
   const board = merge(cloud)
   if (cloud.length > 0) {
     diagLog('info', 'db', `热门榜回落真实热度：${cloud.length} 位来自真实报告，共 ${board.length} 位上榜`)
+  } else if (rows.length > 0) {
+    /* 取到行却一个候选都解析不出来：要么列投影没生效（云开发对取不到的字段**不报错、只返回空**），
+       要么这批数据整体脏。两种情况都会静默降级成静态种子榜 —— 不给一行日志就永远查不出来。 */
+    diagLog(
+      'warn',
+      'db',
+      `热门榜：取到 ${rows.length} 份就绪报告却无一条可用候选，已回落静态种子（先查列投影是否生效）`
+    )
   }
   memo = { at: Date.now(), board }
   return board

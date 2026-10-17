@@ -27,6 +27,7 @@ const SENSITIVE_KEYWORDS: string[] = [
  */
 const SENSITIVE_NAMES: string[] = [
   // TODO(运营): 发版前按最新合规要求补充在世政治/军事人物名单
+  '习近平', '李克强', '胡锦涛', '温家宝', '贾庆林'
 ]
 
 /*

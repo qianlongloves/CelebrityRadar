@@ -17,6 +17,27 @@
 
 ### 安全
 
+- **会员专属段落搬去独立集合的第一步（P2 阶段 1，需用 `dbInit` 建 `report_member` + 收紧权限 + 重新部署 `aiProxy`）**：
+  `report_cache` / `report_versions` 是「所有人可读」的，而报告正文里带着四段会员内容
+  （`memberNotes` / `conflicts` / `peers` / `affiliations`）—— 端上只是**渲染前**用 `stripMemberSections` 摘掉，
+  改包或抓包直接读库即可拿到全文。现在新增集合 **`report_member`**（客户端**完全不可读**）：
+  `aiProxy` 落库成功后顺手写一份副本（`_id` = personKey；历史版 = `<personKey>#<生成时间>`），
+  会员取用只走新增的 `action:'report'` + **`op:'member'`**（云函数先判会员，再按 `generated_at`
+  逐字相等配对，最后返回四段）。
+  ⚠ **本阶段是「双写」，线上行为一个字都没变**：主行此刻仍带四段，端上也还没用读口。
+  顺序是硬约束 —— 先备副本（阶段 1）→ 端上会用读口并跑够覆盖率（阶段 2）→ 才在写口把主行的四段剥掉
+  （阶段 3）。颠倒等于让**未更新的旧包**打开报告少四段。
+  **升级须知**：① 用 `dbInit` 建 `report_member`；② 把它的权限设为「客户端不可读写」
+  （`tcb api tcb ModifyDatabaseACL --body '{"EnvId":"…","CollectionName":"report_member","AclTag":"ADMINONLY"}'`
+  —— 语义与控制台里那条自定义规则 `{"read": false, "write": false}` 相同，但自定义规则档 API 设不了，
+  只能进控制台点；`dbInit` 也不会 apply ACL，只把权限列进人工清单）；③ 重新部署 `aiProxy`。
+  漏掉 ② 则副本仍可被客户端直接读，这一步等于没做。
+  **本版同时带上阶段 2 的端上读口**（`utils/member-sections.ts`）：报告页/历史版本在「报告上有
+  `memberSections` 旗标、正文里却没有四段」时，按 `generated_at` 逐字相等向 `op:'member'` 取回四段；
+  非会员、没有旗标、批量列表页**一次调用都不发**，所有失败静默退化成免费态。
+  ⚠ 现在**没有任何报告带这个旗标**（写口要等阶段 3 剥段时才写），所以本版行为与上一版完全一致。
+  ⚠ **阶段 3 的硬契约**：剥段时必须同时写 `report.memberSections = ['memberNotes', …]`（存在的那几段），
+  漏写 = 会员静默看不到四段（不报错），只能靠埋点 `member_sections` 的 `empty` 占比发现。
 - **会员权威数据搬到 `memberships`（A2，需部署 `payCallback` / `quotaGuard` / `aiProxy` + 控制台手工收紧权限）**：
   会员权益原先存在 `users.membership`，而 `users` 的权限是「仅创建者可读写」—— 端上能改自己那一行，
   等于把「我是不是会员」交给客户端自证：解包改这一行即可白用最贵档位的模型、并在生成时拿免计费。

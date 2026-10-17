@@ -297,8 +297,18 @@ export function askQuotaExhaustedMessage(member: boolean, limit: number): string
 /** 会员专享段落名：顺序即报告页卡片里的渲染顺序，也是促销条措辞的唯一来源 */
 export const MEMBER_SECTIONS = ['对比视角', '风险提示', '信源分歧'] as const
 
+/**
+ * 会员段落在报告对象上的**字段名**清单（端上唯一真源，2026-10-17）。
+ *
+ * 两份消费方：①`utils/member-sections.ts` 按它过滤云端交回的 `sections`
+ * （云函数多给一个键不该污染报告对象）；②本文件的判定口径（hasMemberContent / stripMemberSections）。
+ * 云端 `aiProxy/report-store.js#MEMBER_FIELDS` 是同一份名单的**手抄副本**（云函数打包读不到 src）
+ * —— 用例 81 逐字比对两边，避免「云端写了一路、端上认另一路」这种静默分叉。
+ */
+export const MEMBER_FIELD_KEYS = ['memberNotes', 'conflicts', 'peers', 'affiliations'] as const
+
 /** 报告里可能出现会员专属字段的最小结构（presentSections / hasMemberContent / strip 共用） */
-interface MemberFielded {
+export interface MemberFielded {
   memberNotes?: { compare?: string; risk?: string }
   conflicts?: Array<{ topic?: string }>
   /**

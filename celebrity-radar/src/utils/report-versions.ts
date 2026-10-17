@@ -216,7 +216,12 @@ export async function loadVersionReport(id: string, knownMember?: boolean): Prom
   if (!key) return null
   const { data, error } = await table('report_versions').select('id,report').eq('id', key).maybeSingle()
   if (error || !data?.report) return null
-  return (await exposeReport(data.report as Report, knownMember)).report
+  /*
+   * `{ version: true }`：告诉 exposeReport「这是历史版」。P2 阶段 2（2026-10-17）之后
+   * 旧版的会员段也在副本表里（副本行 `_id` = `<personKey>#<那一版的生成时间>`，与本行主键逐字相同），
+   * 用 current 口径去要会点查到**当前版**、把当前版的四段配到旧版正文上 —— 那是「用新结论冒充旧结论」。
+   */
+  return (await exposeReport(data.report as Report, knownMember, { version: true })).report
 }
 
 /**

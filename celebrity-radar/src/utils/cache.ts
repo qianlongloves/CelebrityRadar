@@ -42,6 +42,7 @@ import {
   FREE_REFRESH_COOLDOWN_HOURS
 } from './member'
 import { incrQuotaViaCloud } from './quota-guard'
+import { hasStrippedMember, patchMemberSections } from './member-sections'
 import {
   acquireLockViaCloud,
   releaseLockViaCloud,
@@ -361,10 +362,34 @@ export function shouldKeepMemberVersion(
  */
 export async function exposeReport(
   report: Report,
-  knownMember?: boolean
+  knownMember?: boolean,
+  opts: { version?: boolean } = {}
 ): Promise<{ report: Report; locked: string[] }> {
   const locked = presentSections(report)
-  if (locked.length === 0) return { report, locked }
+  if (locked.length === 0) {
+    /*
+     * 主行没有会员段（P2 阶段 2，2026-10-17）。**绝大多数报告走这条快路径**：
+     * 免费档产物本来就没有会员段，这里连身份都不读（一次 users 往返都不该白付）。
+     *
+     * 只有「旗标说有、正文里却没有」才值得往下走 —— 那是阶段 3 把主行剥段之后的形态：
+     * 先确认读者是会员，再向云函数要副本（`report_member` 客户端读不到，这正是方案的意义）。
+     * 旗标缺省时 `hasStrippedMember` 直接返回 false ⇒ 阶段 2 上线**零行为变化、零额外调用**。
+     */
+    if (!hasStrippedMember(report)) return { report, locked }
+    const reader = knownMember ?? (await readMemberState()).member
+    if (!reader) {
+      /*
+       * ⚠ 阶段 3 待办：非会员这里 `locked` 仍是空数组，而报告页的促销条靠它点名段落。
+       * 到那时要改成「locked 从旗标推导」（`report.memberSections` 里就是那几个字段名）。
+       * 现在不写，是因为阶段 2 还没有任何报告带旗标，写了也只是死代码。
+       */
+      return { report, locked }
+    }
+    const patched = await patchMemberSections(report, opts.version ? 'version' : 'current')
+    /* 补不上就**原样交回**，不报错、不降级提示：免费态本来就是完整可用的界面。
+       这是整个方案敢分四阶段的前提 —— 最坏情况只是会员这一眼看不到四段。 */
+    return { report: patched ?? report, locked }
+  }
   const member = knownMember ?? (await readMemberState()).member
   /* 会员手里没有被锁住的段落 —— 交回空数组而不是「这份报告有哪些专享段」：
      字段名说的是「被藏起来的」，别让它对会员也非空，否则以后有人拿它当身份判断就会读反。 */

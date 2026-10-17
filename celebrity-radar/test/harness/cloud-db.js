@@ -143,6 +143,23 @@ function applyField(doc, key, value) {
   setStrict(doc, key, value)
 }
 
+/**
+ * 投影对象 → 点路径列表：`{report: {heat: true}}` → `['report.heat']`。
+ *
+ * 云开发的 `field()` 收的是**嵌套对象**（端上 `select('report.heat')` 由 db.ts 展开成这个形状），
+ * 所以 mock 侧必须按路径读写，不能只认顶层键。
+ * 宽覆盖窄：祖先路径已在列表里时丢弃后代（父字段整块给出，再细化反而会把父字段缩成一个子字段）。
+ */
+function projectionPaths(projection, prefix = '') {
+  const out = []
+  for (const [k, v] of Object.entries(projection)) {
+    const key = prefix ? `${prefix}.${k}` : k
+    if (v && typeof v === 'object' && !Array.isArray(v)) out.push(...projectionPaths(v, key))
+    else if (v) out.push(key)
+  }
+  return out
+}
+
 function applyUpdate(doc, data) {
   for (const [k, v] of Object.entries(data)) {
     if (isCmd(v) && v.op === 'inc') {
@@ -262,7 +279,11 @@ function createDb(opts = {}) {
     /* 投影（`.field({a:true})`）。原先写成 `field() { return this }` —— 参数被丢掉，
        于是「端上 `select('id')` 只取主键」这件事在测试里**永远测不出来**（mock 总回整行），
        投影是否真的生效只有真机才知道。现在真裁剪：传了列名却去读别的字段的调用点，
-       会在测试里立刻暴露（这正是本次给 db.ts#select 补实现时要防的回归）。 */
+       会在测试里立刻暴露（这正是本次给 db.ts#select 补实现时要防的回归）。
+
+       嵌套投影（`{report: {heat: true}}`，端上 `select('report.heat')` 的展开形）同样要支持：
+      db.ts 会把点号路径展开成嵌套对象下发，若 mock 只认顶层键，`report.heat` 这类投影
+      在测试里会**静默退化**成整块丢字段（调用了却读不到），那测的就是另一回事了。 */
     field(projection) { return this._next({ _field: projection || null }) }
 
     async get() {
@@ -281,9 +302,13 @@ function createDb(opts = {}) {
       const take = Math.min(this._limit, PLATFORM_PAGE_MAX)
       rows = rows.slice(this._skip, this._skip + take)
       if (this._field) {
+        const paths = projectionPaths(this._field)
         rows = rows.map((d) => {
           const o = {}
-          for (const [k, v] of Object.entries(this._field)) if (v && k in d) o[k] = d[k]
+          for (const p of paths) {
+            const v = readPath(d, p)
+            if (v !== undefined) setPath(o, p, v)
+          }
           /* 云开发**始终返回 _id**（没写进投影也给）—— 照做，否则 db.ts#toRow 映射不出 id */
           if ('_id' in d) o._id = d._id
           return o

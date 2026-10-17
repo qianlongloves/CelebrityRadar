@@ -110,6 +110,33 @@ type Cond = { col: string; op: string; val: unknown }
 /** PostgREST 口径的 id ↔ CloudBase 的 _id */
 const toDbField = (col: string): string => (col === 'id' ? '_id' : col)
 
+/**
+ * 列投影 → 云开发 `field()` 要的对象。
+ *
+ * 顶层字段就是 `{a: true}`；带点号的（`report.heat`）要**展开成嵌套对象**
+ * `{report: {heat: true}}` —— 云开发的 field 按对象结构下发，写成扁平的
+ * `{'report.heat': true}` 时它找不到名为 `report.heat` 的字段，于是什么也不返回
+ * （查询不报错、结果却少一整块，这种空结果比报错更难查）。
+ *
+ * 「宽覆盖窄」：同时写了 `report` 与 `report.heat` 时保留 `true`（父字段整块给出，
+ * 再细化反而会把它缩成一个子字段）。
+ */
+function buildProjection(fields: string[]): Record<string, any> {
+  const out: Record<string, any> = {}
+  for (const raw of fields) {
+    const parts = toDbField(raw).split('.').filter(Boolean)
+    let cur: Record<string, any> = out
+    for (let i = 0; i < parts.length; i++) {
+      const k = parts[i]
+      if (cur[k] === true) break
+      if (i === parts.length - 1) { cur[k] = true; break }
+      if (!cur[k] || typeof cur[k] !== 'object') cur[k] = {}
+      cur = cur[k]
+    }
+  }
+  return out
+}
+
 /** 出参统一把 _id 映回 id，调用点保持 PostgREST 口径 */
 function toRow(doc: any): any {
   if (!doc || typeof doc !== 'object') return doc
@@ -274,9 +301,7 @@ class Builder implements PromiseLike<DbResult<any>> {
       if (this.fields) {
         /* 投影要**跟着每一页**下发：云开发的 field() 是查询级链式调用，
            只写在第一页上会让后续页白白拉回整行（省流量就白省了） */
-        const projection: Record<string, true> = {}
-        for (const f of this.fields) projection[toDbField(f)] = true
-        q = q.field(projection)
+        q = q.field(buildProjection(this.fields))
       }
       const res = await q.skip(offset).limit(take).get()
       const batch: any[] = res?.data ?? []

@@ -318,6 +318,22 @@ export type TrackEvent =
    * 按 from 聚合才看得出「哪种呈现真的推动了转化」—— 那是 R-2 唯一的效果判据。
    */
   | 'member_entry'
+  /**
+   * 端上向云函数要「会员段副本」的一次尝试（P2 阶段 2，2026-10-17）。
+   *
+   * props.result = `ok` / `empty` / `mismatch` / `auth` / `abuse` / `failed`（见 utils/member-sections.ts）；
+   * props.version = 是否取的历史版。
+   *
+   * 为什么必须埋：阶段 3 把主行剥段之后，**这条链就是会员看到四段的唯一通路**，
+   * 而它刻意设计成「失败静默退化成免费态」—— 没有这个数，一条一直 `mismatch` 的坏链
+   * 在页面上看起来与「这份报告本来就没有会员段」一模一样（少了四段，没人报错）。
+   *   · `empty` 占比高 = 旗标与副本不一致（写口删了副本却没清旗标），要回去看阶段 3 的写口；
+   *   · `mismatch` 有任何量 = 时间戳配不上，说明两行写入的先后被打破了（那是数据正确性问题）；
+   *   · `auth` = 端上判会员与云端判会员不一致（端上镜像过期），属正常但值得看比例。
+   * ⚠ 只在**真的发起了调用**时上报（结论命中本地缓存不报）：这条要的是调用量与失败分布，
+   * 拿它当「会员读了几次报告」会与 report_open 重复计。
+   */
+  | 'member_sections'
 
 /** 非阻塞埋点：失败静默（埋点不允许影响业务路径） */
 export function track(event: TrackEvent, props: { personKey?: string; [k: string]: unknown } = {}): void {

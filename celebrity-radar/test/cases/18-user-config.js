@@ -596,6 +596,10 @@ describe('注销账号 · userInit/deleteAccount（P1-4）', () => {
     /* 报告历史版本（S3-1 ③，2026-10-16）：_id = `<personKey>#<旧版生成时间>`，
        与 report_cache 同样是「全站共享事实的一段历史」（谁覆盖的与读者无关），行内不写 openid */
     'report_versions',
+    /* 会员段副本（P2 方案 A，2026-10-17）：_id = personKey（当前版）或 `<personKey>#<生成时间>`
+       （历史版），行内同样不写 openid —— 它与 report_cache / report_versions 是同一份数据的另一半，
+       定位是「全站共享事实」而不是「我的那一行」，注销时无从按用户删。 */
+    'report_member',
     'feed_cache',
     'hot_board',
     'keywords',

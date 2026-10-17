@@ -120,17 +120,25 @@ function sortByGeneratedAtDesc(rows: any[]): any[] {
   return rows.slice().sort((a, b) => at(b) - at(a))
 }
 
+/**
+ * 示例卡只摆四段（`buildBlocks` 认的那几段）与来源信息，其余 14 节一律不看。
+ * 故按列投影取：一次扫 `SCAN` 份，`select('*')` 是把 20 份完整报告拖下来挑四段。
+ * 这里要的正是会员段本身，所以它省不掉 —— 省掉的是「与示例无关的那部分正文」。
+ */
+const SAMPLE_COLUMNS =
+  'id, generated_at, report.name, report.generatedAt, report.memberNotes, report.conflicts, report.affiliations'
+
 /** 读最近的就绪报告；排序依赖 generated_at 索引，索引未建时退化为不排序扫描（端上补排序） */
 async function queryRows(): Promise<any[]> {
   const ordered = await table('report_cache')
-    .select('*')
+    .select(SAMPLE_COLUMNS)
     .eq('state', 'ready')
     .order('generated_at', { ascending: false })
     .limit(SCAN)
   if (!ordered.error) return (ordered.data as any[]) ?? []
 
   diagLog('warn', 'db', `会员示例按时间读取失败，回退无排序 + 端上排序：${ordered.error.message ?? ordered.error}`)
-  const plain = await table('report_cache').select('*').eq('state', 'ready').limit(SCAN)
+  const plain = await table('report_cache').select(SAMPLE_COLUMNS).eq('state', 'ready').limit(SCAN)
   if (plain.error) {
     diagLog('warn', 'db', `会员示例读取失败，本次不出示例卡：${plain.error.message ?? plain.error}`)
     return []

@@ -206,6 +206,13 @@ module.exports = function createReportStore(deps) {
    * 计数走**独立键**（`openid#日期#store`），不挤占 chat / search 那条 ABUSE_LIMITS。
    */
   const STORE_ABUSE_LIMIT = 400
+  /**
+   * 会员段读口限速（`op:'member'`）。比写口宽得多，因为它是**读**：一份报告打开最多一次，
+   * 而且内容本来就是这位会员有权看的 —— 要防的只是「拿它当免费接口反复刷」。
+   * 2000 次/日 ≈ 正常重度用户（30 份报告 × 每天翻十几遍）的两个数量级以上。
+   * 计数走独立键（`openid#日期#member`），不挤占写口那 400 次。
+   */
+  const MEMBER_READ_ABUSE_LIMIT = 2000
   /** 主键长度上限：超长先在门口挡住，别把库当网盘 */
   const MAX_KEY_LEN = 120
   /**
@@ -218,6 +225,25 @@ module.exports = function createReportStore(deps) {
   const REPORT_VERSION_KEEP = 5
   /** 历史版本表名（写口写、端上只读；行内不含用户标识，见 dbInit/schema.js 与用例 18） */
   const VERSION_COLLECTION = 'report_versions'
+  /**
+   * 会员段落的独立存放表（P2 方案 A，2026-10-17）。
+   *
+   * `report_cache` / `report_versions` 是「所有人可读」的，而报告正文里带着四段会员专属内容 ——
+   * 端上的 `stripMemberSections` 只做到「UI 不画」，改包直接读库就能拿到全文。
+   * 本表 `acl: cloudOnly`（客户端连读都读不到），写入在 `storeSave` 落库之后顺手做，
+   * 读取只走 `op:'member'`（先判会员，再给四段）。
+   *
+   * ⚠ 阶段 1 是**双写**：主行照旧带会员段、这里也存一份 ⇒ 线上行为一个字都没变。
+   *   等端上会用 `op:'member'` 补齐（阶段 2）并跑够覆盖率，才在写口把主行的四段剥掉（阶段 3）
+   *   —— 顺序颠倒等于给还没更新的人「打开报告少四段」，那是白屏级别的事故。
+   */
+  const MEMBER_COLLECTION = 'report_member'
+  /**
+   * 「哪些字段算会员段」—— 与 `hasMemberPayload` / 端上 `stripMemberSections` **同一个口径**。
+   * 四处（端上两处 + 云端两处）必须同源：多摘一段 = 会员看不到自己买的内容；
+   * 少摘一段 = 免费读者拿到的对象里仍带着付费内容。
+   */
+  const MEMBER_FIELDS = ['memberNotes', 'conflicts', 'peers', 'affiliations']
 
   const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : '')
   const bad = (error) => ({ ok: false, kind: 'badrequest', error })
@@ -254,6 +280,56 @@ module.exports = function createReportStore(deps) {
     if (Array.isArray(pr) && pr.length > 0) return true
     const af = report && report.affiliations
     return Array.isArray(af) && af.length > 0
+  }
+
+  /** 从产物里摘出会员段（只取存在的键：写出 `undefined` 会被数据库拒绝） */
+  function memberSectionsOf(report) {
+    const out = {}
+    if (!report || typeof report !== 'object') return out
+    for (const k of MEMBER_FIELDS) if (report[k] !== undefined) out[k] = report[k]
+    return out
+  }
+
+  /**
+   * 把一份报告里的会员段写进 `report_member`（P2 方案 A，2026-10-17）。
+   *
+   * **best-effort**：写失败只打日志，绝不把 `ok` 改成失败 —— 与 `recordVersion` 同一个取舍：
+   * 主行已经落库成功、报告已经生成出来了，因为「会员段的副本没写上」报一个写库失败，
+   * 端上会当成整份失败（甚至重试一次烧一遍 token），代价远大于收益。
+   * 副本缺失的后果是**阶段 3 之前**的会员少看到四段（阶段 1 主行仍带着四段，故实际上无感）。
+   *
+   * **没有会员段时删行而不是写空对象**：否则读者会拿到「上一版的会员段 + 这一版的时间戳」——
+   * `generated_at` 相等守卫拦不住这种（时间戳是这一版的）。删掉才是「这份报告确实没有会员段」
+   * 的正确表达（用例 80 钉住）。
+   *
+   * `_id` 约定：当前版 = `personKey`；历史版 = `<personKey>#<那一版的生成时间>` ——
+   * 与 `report_versions` 的主键**逐字相同**，于是裁剪历史时两张表用的是同一个 id（见 trimVersions）。
+   */
+  async function saveMemberRow(personKey, report, generatedAt, kind, schemaVersion) {
+    if (!personKey || !generatedAt) return
+    const id = kind === 'version' ? `${personKey}#${generatedAt}` : personKey
+    const sections = memberSectionsOf(report)
+    try {
+      if (Object.keys(sections).length === 0) {
+        /* 行不存在时 remove 是空操作（CloudBase 返回 removed:0，不抛错） */
+        await db.collection(MEMBER_COLLECTION).doc(id).remove()
+        return
+      }
+      await db
+        .collection(MEMBER_COLLECTION)
+        .doc(id)
+        .set({
+          data: {
+            person_key: personKey,
+            kind,
+            generated_at: generatedAt,
+            sections,
+            ...(typeof schemaVersion === 'number' ? { schemaVersion } : {})
+          }
+        })
+    } catch (err) {
+      console.warn('[report-store] 会员段副本写入失败（不影响本次落库）:', failDetail(err))
+    }
   }
 
   /**
@@ -309,6 +385,8 @@ module.exports = function createReportStore(deps) {
             ...(typeof row.schemaVersion === 'number' ? { schemaVersion: row.schemaVersion } : {})
           }
         })
+      /* 旧版的会员段也搬进副本表（主键与上面这一行逐字相同）：历史版本页要能按版本取回四段 */
+      await saveMemberRow(personKey, old, generatedAt, 'version', row.schemaVersion)
       await trimVersions(personKey)
     } catch (err) {
       console.warn('[report-store] 记录历史版本失败（不影响本次落库）:', failDetail(err))
@@ -337,7 +415,19 @@ module.exports = function createReportStore(deps) {
         .get()
       const rows = (res && res.data) || []
       for (const r of rows.slice(REPORT_VERSION_KEEP)) {
-        if (r && r._id) await db.collection(VERSION_COLLECTION).doc(r._id).remove()
+        if (!r || !r._id) continue
+        await db.collection(VERSION_COLLECTION).doc(r._id).remove()
+        /*
+         * 会员段副本跟着一起删（`_id` 与版本行逐字相同，见 saveMemberRow）。
+         * 漏掉这一步的后果不是「多占一点空间」：本表是**客户端不可读**的，
+         * 没人会读到一个孤儿行然后发现它脏 —— 它会静默长下去，且规律与版本表不同步
+         * （版本表只留 5 条，副本表无限长）。运维看见的会是「一张查不出用途的表在变大」。
+         */
+        try {
+          await db.collection(MEMBER_COLLECTION).doc(r._id).remove()
+        } catch (err) {
+          /* 副本删除失败不影响版本裁剪本身：下次覆盖会再裁一次，届时重试 */
+        }
       }
     } catch (err) {
       console.warn('[report-store] 裁剪历史版本失败（下次覆盖会再试）:', failDetail(err))
@@ -356,6 +446,15 @@ module.exports = function createReportStore(deps) {
     const count = await bumpAbuseCount(`${openid}#${todayKey()}#store`, openid)
     if (!quotaGuardDisabled() && count !== null && count > STORE_ABUSE_LIMIT) {
       return { ok: false, kind: 'abuse', error: `今日缓存写入调用次数已达上限（${STORE_ABUSE_LIMIT} 次），明日 0 点恢复` }
+    }
+    return null
+  }
+
+  /** 会员段读口的限速（与写口分开计数：读不该吃掉「今天还能写几次」的预算） */
+  async function memberGate(openid) {
+    const count = await bumpAbuseCount(`${openid}#${todayKey()}#member`, openid)
+    if (!quotaGuardDisabled() && count !== null && count > MEMBER_READ_ABUSE_LIMIT) {
+      return { ok: false, kind: 'abuse', error: `今日会员内容读取次数已达上限（${MEMBER_READ_ABUSE_LIMIT} 次），明日 0 点恢复` }
     }
     return null
   }
@@ -506,6 +605,8 @@ module.exports = function createReportStore(deps) {
     }
 
     const newsCount = typeof event.newsCount === 'number' && event.newsCount >= 0 ? event.newsCount : 0
+    /* 提前算好：主行与会员段副本必须写**同一个**时间戳，它是跨两行的唯一配对依据 */
+    const generatedAt = str(report.generatedAt) || new Date().toISOString()
     try {
       /* doc(id).set = 整篇替换（与端上 upsert 同义）：对 report / search_meta 的初值没有要求，
          绕开「往 null 上写子字段被数据库拒绝」那类差异（见端上 cache.ts#saveReady） */
@@ -516,7 +617,7 @@ module.exports = function createReportStore(deps) {
           data: {
             report,
             state: 'ready',
-            generated_at: str(report.generatedAt) || new Date().toISOString(),
+            generated_at: generatedAt,
             builder: null,
             search_meta: { news_count: newsCount },
             /* 成品落库，中间结果随之作废（顺带兜住「set 若是合并语义」的极端情况） */
@@ -529,6 +630,12 @@ module.exports = function createReportStore(deps) {
        * 此刻 `row.report` 仍指向**旧版** —— 它是本函数开头读出来的那一份，不受上面的 set 影响。
        */
       await recordVersion(row, personKey, new Date().toISOString())
+      /*
+       * 会员段副本（P2 方案 A 阶段 1，2026-10-17）：主行此刻**仍然**带着四段 ——
+       * 这是有意的双写，端上一个字都不用改。副本先备好，等端上会用 `op:'member'` 补齐
+       * （阶段 2）并跑够覆盖率，阶段 3 才从主行剥掉四段。顺序颠倒 = 未更新的端上打开报告少四段。
+       */
+      await saveMemberRow(personKey, report, generatedAt, 'current', event.schemaVersion)
       return { ok: true, result: 'saved' }
     } catch (err) {
       return { ok: false, kind: 'upstream', error: `报告落库失败：${failDetail(err)}` }
@@ -616,20 +723,74 @@ module.exports = function createReportStore(deps) {
   }
 
   /**
-   * 写口分发。返回约定与 handleChat / handleSearch 一致（`{ ok, kind?, error?, result? }`）。
+   * 会员段读口（`op:'member'`，P2 方案 A 阶段 1，2026-10-17）。
+   *
+   * 为什么读也要过云函数：`report_member` 是 `acl: cloudOnly`（客户端连读都读不到）——
+   * 这正是本方案的全部意义。既然是云函数，**会员判定就必须在这里做**（读 `memberships` 权威表，
+   * 不认端上报上来的身份）。
+   *
+   * **配对判据是时间戳相等**（两行不是原子写的）：
+   *   · 当前版：端上把它手里主行的 `generated_at` 传上来（`generatedAt`），与副本行的比；
+   *   · 历史版：端上传那一版的生成时间（`version`），副本行的 `_id` 就是 `personKey#version`。
+   * 不相等时**返回 `mismatch` 而不是报错**：端上要能区分「这份报告没有会员段」（empty）、
+   * 「时间戳对不上、宁可不给」（mismatch）与「你今天读太多了」（abuse）三种情况，
+   * 前两种都该安静地退化成免费态，只有落到 `ok:false` 才会被当成故障记进诊断日志。
+   *
+   * 返回的 `sections` 只含**存在的**那几段：端上按需 `Object.assign(report, sections)` 即可，
+   * 不需要先知道这份报告有没有会员段。
+   */
+  async function storeMember(event, openid) {
+    const personKey = str(event.personKey)
+    if (!personKey) return bad('缺少 personKey')
+    if (personKey.length > MAX_KEY_LEN) return bad('personKey 过长')
+
+    const gate = await memberGate(openid)
+    if (gate) return gate
+
+    if (!(await isActiveMember(openid))) {
+      return { ok: false, kind: 'auth', error: '会员专属段落只对有效会员开放' }
+    }
+
+    const version = str(event.version)
+    const id = version ? `${personKey}#${version}` : personKey
+    const row = await readRow(MEMBER_COLLECTION, id)
+    if (!row) return { ok: true, result: 'empty' }
+
+    /* 当前版要拿端上主行的时间戳来配对；历史版以 version 为准（它本身就是配对键） */
+    const expect = version || str(event.generatedAt)
+    if (expect && str(row.generated_at) !== expect) {
+      return { ok: true, result: 'mismatch', generated_at: str(row.generated_at) }
+    }
+    const sections = row.sections && typeof row.sections === 'object' ? row.sections : {}
+    if (Object.keys(sections).length === 0) return { ok: true, result: 'empty' }
+    return { ok: true, result: 'ok', generated_at: str(row.generated_at), sections }
+  }
+
+  /**
+   * 写口 / 会员段读口分发。返回约定与 handleChat / handleSearch 一致（`{ ok, kind?, error?, result? }`）。
    *
    * ⚠ 与别处的**关键差别**：端上对 `ok:false` 必须区分两种情形 ——
    *   · 通道不可用（函数未部署 / 网络 / upstream）⇒ **回退端上直写**（老路径，功能不变）；
    *   · 明确拒绝（auth / badrequest / lock）⇒ **不回退**，否则等于绕过写口的校验去直写。
    *   （端上 quota-guard.ts 的「一律回退」在这里不成立：那边回退没有安全含义。）
+   *
+   * `op:'member'` 是这组里唯一的**读**（P2 方案 A，2026-10-17）：它在 `storeGate` 之前分流，
+   * 走自己的 `memberGate`；且它的 `ok:false` 只有 auth / abuse 两种，端上一律静默退化成免费态。
    */
   return async function handleReportStore(event) {
     const { OPENID } = cloud.getWXContext()
     if (!OPENID) return { ok: false, kind: 'auth', error: '缓存写口需要登录身份（未取到 openid）' }
 
     const op = event.op
-    if (op !== 'acquire' && op !== 'release' && op !== 'save' && op !== 'saveParts' && op !== 'saveFeed') {
-      return bad(`未知 op：${op}（支持 acquire / release / save / saveParts / saveFeed）`)
+    if (
+      op !== 'acquire' &&
+      op !== 'release' &&
+      op !== 'save' &&
+      op !== 'saveParts' &&
+      op !== 'saveFeed' &&
+      op !== 'member'
+    ) {
+      return bad(`未知 op：${op}（支持 acquire / release / save / saveParts / saveFeed / member）`)
     }
 
     /*
@@ -640,6 +801,9 @@ module.exports = function createReportStore(deps) {
     const personKey = str(event.personKey)
     if (!personKey) return bad('缺少 personKey')
     if (personKey.length > MAX_KEY_LEN) return bad('personKey 过长')
+
+    /* 读口在写口限速**之前**分流：它有自己的读限速（memberGate），不该吃掉写口那 400 次预算 */
+    if (op === 'member') return storeMember(event, OPENID)
 
     const gate = await storeGate(OPENID)
     if (gate) return gate
