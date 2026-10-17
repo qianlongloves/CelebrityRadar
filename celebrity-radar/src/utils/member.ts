@@ -321,6 +321,36 @@ export interface MemberFielded {
    * 促销条列不下（18 字预算），但判定口径（hasMemberContent / stripMemberSections）必须算上它。
    */
   affiliations?: Array<{ name?: string }>
+  /**
+   * 会员段旗标（P2 阶段 3，2026-10-17）：**这一版有会员段，正文里没有，去副本表取**。
+   * 取值是 `MEMBER_FLAGS` 里的 token。缺省 = 免费档产物。
+   */
+  memberSections?: string[]
+}
+
+/**
+ * 旗标里的**取值 token**（端上唯一真源，P2 阶段 3，2026-10-17）。
+ *
+ * 为什么不是简单的字段名数组：促销条要点名「已含哪几段」，而 `memberNotes` 一个字段装着
+ * 两段独立文字（compare / risk）—— 只写字段名，端上就分不出「只有对比视角」还是「两段都有」，
+ * 促销条于是会承诺一段这份报告里根本不存在的内容。token 精确到段，承诺才可兑现。
+ *
+ * 云端 `aiProxy/report-store.js#memberFlagsOf` 按同一套 token 生成（云函数打包读不到 src，
+ * 那份是手抄副本，用例 81 逐字比对）。增删 token 必须两边同步。
+ */
+export const MEMBER_FLAGS = [
+  'memberNotes.compare',
+  'memberNotes.risk',
+  'conflicts',
+  'peers',
+  'affiliations'
+] as const
+
+/** 旗标 token → 促销条里的段落名（只有写得进单行促销条的三段；peers / affiliations 不列） */
+const FLAG_SECTION: Record<string, string> = {
+  'memberNotes.compare': MEMBER_SECTIONS[0],
+  'memberNotes.risk': MEMBER_SECTIONS[1],
+  conflicts: MEMBER_SECTIONS[2]
 }
 
 /** 报告里**实际**存在的专享段落（顺序固定，缺的跳过；空串按不存在处理） */
@@ -329,7 +359,24 @@ export function presentSections(report: MemberFielded | null | undefined): strin
   if (report?.memberNotes?.compare) present.push(MEMBER_SECTIONS[0])
   if (report?.memberNotes?.risk) present.push(MEMBER_SECTIONS[1])
   if (report?.conflicts && report.conflicts.length > 0) present.push(MEMBER_SECTIONS[2])
-  return present
+  if (present.length > 0) return present
+  /*
+   * 正文里一段都没有 —— 两种可能，必须分开对待：
+   *   ①这份报告本来就是免费档产物（`memberSections` 缺省）⇒ 返回空，促销条改讲会员生成会多什么；
+   *   ②阶段 3 之后主行被剥了段，四段在客户端读不到的副本表里（旗标有值）⇒ 用旗标还原段落名。
+   * 第二种若也返回空，报告页促销条会**静默消失**（只是转化率下降、不报错，所以尤其要在这里挡住）。
+   */
+  return sectionsFromFlag(report?.memberSections)
+}
+
+function sectionsFromFlag(flag: unknown): string[] {
+  if (!Array.isArray(flag)) return []
+  const out: string[] = []
+  for (const token of flag) {
+    const label = typeof token === 'string' ? FLAG_SECTION[token] : ''
+    if (label && !out.includes(label)) out.push(label)
+  }
+  return out
 }
 
 /**
@@ -346,9 +393,32 @@ export function presentSections(report: MemberFielded | null | undefined): strin
  * （免费读者拿到的对象里本不该有会员生成的字段）。
  */
 export function hasMemberContent(report: MemberFielded | null | undefined): boolean {
-  if (presentSections(report).length > 0) return true
+  /* 刻意不用 presentSections：它现在会在「正文没有」时回退到旗标（见其注释），
+     而本函数的口径是「**正文里真有**会员内容」—— 两者混用会让 stripMemberSections
+     对一份剥了段的报告也判成「要摘」，白白产生拷贝。 */
+  const mn = report?.memberNotes
+  if (mn && (mn.compare || mn.risk)) return true
+  if (Array.isArray(report?.conflicts) && report.conflicts.length > 0) return true
   if (Array.isArray(report?.peers) && report.peers.length > 0) return true
   return Array.isArray(report?.affiliations) && report.affiliations.length > 0
+}
+
+/** 这一版**声称**有会员段（旗标有值）—— 与「正文里真有」是两件事，别混用 */
+export function hasMemberFlag(report: MemberFielded | null | undefined): boolean {
+  return Array.isArray(report?.memberSections) && report.memberSections.length > 0
+}
+
+/**
+ * 这一版是**会员版**（P2 阶段 3，2026-10-17）：正文带四段，**或**旗标说四段在副本表里。
+ *
+ * 与 `hasMemberContent` 的分工 —— 后者阶段 3 之后对主行恒为假（四段被剥走了）：
+ *   · 「只升不降」守卫、「会员补齐免计费复核」问的是「**这一版是不是会员版**」，
+ *     答错的方向很贵：判成免费版 ⇒ 会员版能被免费产物覆盖掉、同一个人能反复白拿免计费；
+ *   · 而「要不要把对象里的四段摘掉」问的是「**正文里有没有东西要删**」。
+ * 两件事混成一个函数，就是上面那两种事故的来源。
+ */
+export function isMemberVersion(report: MemberFielded | null | undefined): boolean {
+  return hasMemberContent(report) || hasMemberFlag(report)
 }
 
 /**

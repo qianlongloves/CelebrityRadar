@@ -35,6 +35,7 @@ import {
   quotaExhaustedMessage,
   presentSections,
   hasMemberContent,
+  isMemberVersion,
   readMemberState,
   stripMemberSections,
   DAILY_REFRESH_LIMIT,
@@ -298,19 +299,20 @@ export function reportSchemaVersion(row: ReportCacheRow | null): number {
 }
 
 /**
- * 这份报告是否带着**会员专属内容**（对比视角 / 风险提示 / 信源分歧 / 同领域坐标 / 企业关联）。
+ * 这份报告是不是**会员版**（对比视角 / 风险提示 / 信源分歧 / 同领域坐标 / 企业关联）。
  *
  * 判据只能落在字段上，不能落在「谁生成的」：报告是全局共享缓存，两种产物混在
  * 同一张表、同一把键（personKey）上，谁先来谁的版本就在那儿。
  * 这些字段都只在会员提示词里请求，故「有其一」即算会员版。
+ *
+ * ⚠ P2 阶段 3（2026-10-17）之后主行**不再带四段**，会员版靠旗标（`report.memberSections`）
+ * 表达 —— 所以这里判的是 `utils/member.ts#isMemberVersion`（正文 **或** 旗标），
+ * 不是 `hasMemberContent`（只看正文）。判错的方向很贵：把剥了段的会员版判成免费版，
+ * 「只升不降」就形同虚设、免计费复核也会放行。口径须与云端两处
+ * （`report-store.js` 的只升不降 / `quotaGuard` 的免计费复核）一致，用例 08 / 04 钉住。
  */
 export function hasMemberBlocks(report: Report | null | undefined): boolean {
-  /* 直接复用会员权益层的判定（utils/member.ts#hasMemberContent）：
-     它把空串与空数组都按「不存在」处理，正是我们这里要的口径 ——
-     有字段但一段内容都没有，不算会员版（那种报告覆盖掉它也不损失什么）。
-     口径必须与剥除（stripMemberSections）和云端两处（report-store / quotaGuard）一致，
-     否则会出现「UI 说没有、守卫说有」的分歧。 */
-  return hasMemberContent(report)
+  return isMemberVersion(report)
 }
 
 /**
@@ -365,26 +367,23 @@ export async function exposeReport(
   knownMember?: boolean,
   opts: { version?: boolean } = {}
 ): Promise<{ report: Report; locked: string[] }> {
+  /* 促销条要的段落名：正文里有就用正文（最准），正文被剥了就由旗标还原（见 presentSections）。
+     ⚠ 它**不能**当「正文里有没有四段」来用 —— 阶段 3 之后它对剥段报告也非空。 */
   const locked = presentSections(report)
-  if (locked.length === 0) {
+  if (!hasMemberContent(report)) {
     /*
-     * 主行没有会员段（P2 阶段 2，2026-10-17）。**绝大多数报告走这条快路径**：
+     * 正文里没有会员段（P2 阶段 2/3，2026-10-17）。**绝大多数报告走这条快路径**：
      * 免费档产物本来就没有会员段，这里连身份都不读（一次 users 往返都不该白付）。
      *
      * 只有「旗标说有、正文里却没有」才值得往下走 —— 那是阶段 3 把主行剥段之后的形态：
      * 先确认读者是会员，再向云函数要副本（`report_member` 客户端读不到，这正是方案的意义）。
-     * 旗标缺省时 `hasStrippedMember` 直接返回 false ⇒ 阶段 2 上线**零行为变化、零额外调用**。
+     * 旗标缺省时 `hasStrippedMember` 直接返回 false ⇒ 对免费档产物**零额外调用**。
      */
     if (!hasStrippedMember(report)) return { report, locked }
     const reader = knownMember ?? (await readMemberState()).member
-    if (!reader) {
-      /*
-       * ⚠ 阶段 3 待办：非会员这里 `locked` 仍是空数组，而报告页的促销条靠它点名段落。
-       * 到那时要改成「locked 从旗标推导」（`report.memberSections` 里就是那几个字段名）。
-       * 现在不写，是因为阶段 2 还没有任何报告带旗标，写了也只是死代码。
-       */
-      return { report, locked }
-    }
+    /* 非会员：正文里本来就没有，也不需要剥离；`locked` 已经由旗标还原出段落名，
+       报告页的促销条照常能点名「已含对比视角 / 风险提示 / 信源分歧」。 */
+    if (!reader) return { report, locked }
     const patched = await patchMemberSections(report, opts.version ? 'version' : 'current')
     /* 补不上就**原样交回**，不报错、不降级提示：免费态本来就是完整可用的界面。
        这是整个方案敢分四阶段的前提 —— 最坏情况只是会员这一眼看不到四段。 */
@@ -621,6 +620,15 @@ async function saveReady(
     return 'failed'
   }
 
+  /*
+   * ⚠ P2 阶段 3（2026-10-17）在这里**刻意不剥段**：把四段从主行搬去 `report_member` 是云端
+   * 写口的职责，端上写不了那张表（客户端不可读写）——
+   *   · 端上剥了段却写不成副本 ⇒ 得到「旗标说有、副本里没有」的主行，会员永久少四段；
+   *   · 不剥（现状）⇒ 最坏情况是主行又带上四段，回到阶段 3 之前的样子：信息是多的，不是少的。
+   * 而这条直写分支本来就不该成功：`report_cache` 的客户端写权限已收紧（P0-2），写口不可用时
+   * 这里必然失败、随后 release 掉自己的锁。留它是为了「写口短暂抽风」时别把刚花掉 token 生成的
+   * 报告整个丢掉；代价是这份报告要等下一位读者重新生成才会进缓存（与收紧前一致）。
+   */
   const { error } = await table('report_cache').upsert({
     id: personKey,
     report,

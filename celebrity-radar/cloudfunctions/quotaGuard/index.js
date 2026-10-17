@@ -154,11 +154,16 @@ function isMembershipActive(m) {
 }
 
 /**
- * 与端上同源：utils/cache.ts#hasMemberBlocks → utils/member.ts#hasMemberContent。
- * 口径是「**实际存在**的会员专属内容」：memberNotes 的两段文字任一非空，
- * 或 conflicts 非空数组，或 peers（同领域坐标，2026-10-12）非空数组，
- * 或 affiliations（企业关联，2026-10-12）非空数组。
- * 空壳（字段在但内容全空）不算 —— 端上把这个口径同时用于「是否算会员版」与 UI 展示。
+ * 与端上同源：utils/cache.ts#hasMemberBlocks → utils/member.ts#isMemberVersion。
+ *
+ * 判的是「**这一版是不是会员版**」：memberNotes 的两段文字任一非空，或 conflicts /
+ * peers（同领域坐标，2026-10-12）/ affiliations（企业关联，2026-10-12）非空数组，
+ * **或旗标说四段在副本表里**（P2 阶段 3，2026-10-17）。空壳（字段在但内容全空）不算。
+ *
+ * ⚠ 旗标这一支是阶段 3 的必需项，不是保险：剥段之后主行正文恒为「没有四段」，
+ * 只看正文会把每一份会员版都判成免费版 —— 而本函数的唯一用途是**免计费复核**
+ * （「这一行原本不含会员内容」才允许把这次生成算成免费的第一次补齐）。
+ * 判错的方向是白送额度：同一个人可以把每次重新生成都申请成「补齐」。
  */
 function hasMemberBlocks(report) {
   if (!report) return false
@@ -166,7 +171,8 @@ function hasMemberBlocks(report) {
   if (notes && (notes.compare || notes.risk)) return true
   if (Array.isArray(report.conflicts) && report.conflicts.length > 0) return true
   if (Array.isArray(report.peers) && report.peers.length > 0) return true
-  return Array.isArray(report.affiliations) && report.affiliations.length > 0
+  if (Array.isArray(report.affiliations) && report.affiliations.length > 0) return true
+  return Array.isArray(report.memberSections) && report.memberSections.length > 0
 }
 
 /**

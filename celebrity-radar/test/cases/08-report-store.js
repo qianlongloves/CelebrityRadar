@@ -15,7 +15,7 @@ const fs = require('fs')
 const path = require('path')
 const Module = require('module')
 const env = require('../harness/env')
-const { describe, it, ok, notOk, eq } = require('../harness/t')
+const { describe, it, ok, notOk, eq, deepEq } = require('../harness/t')
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const CLOUD = path.join(ROOT, 'cloudfunctions')
@@ -258,7 +258,7 @@ describe('P0-2 写口：落库校验', () => {
     eq(res.kind, 'auth')
   })
 
-  it('会员写会员段：放行', async () => {
+  it('会员写会员段：放行，但四段**不进主行**（P2 阶段 3 剥段 + 旗标）', async () => {
     const fn = loadProxy()
     env.db.__seed('memberships', [memberRow()])
     env.db.__seed('report_cache', [lockRow()])
@@ -275,8 +275,13 @@ describe('P0-2 写口：落库校验', () => {
     eq(row.state, 'ready')
     eq(row.builder, null, '落库即放锁')
     eq(row.search_meta.news_count, 9)
-    eq(row.report.memberNotes.compare, 'C')
     eq(row.schemaVersion, 2)
+    /* 阶段 3 的核心：所有人可读的 report_cache 里不再有付费内容 */
+    eq(row.report.memberNotes, undefined, '主行不再带四段')
+    deepEq(row.report.memberSections, ['memberNotes.compare'], '主行用旗标说「四段在副本里」')
+    const copy = env.db.__dump('report_member')[0]
+    eq(copy.sections.memberNotes.compare, 'C', '四段进副本表（客户端不可读）')
+    eq(copy.generated_at, row.generated_at, '两行写同一个时间戳，它是唯一的配对依据')
   })
 
   /* ── P1-9（2026-10-09 复审）：只升不降，写在权威侧 ── */
@@ -294,6 +299,27 @@ describe('P0-2 写口：落库校验', () => {
     const row = env.db.__dump('report_cache')[0]
     eq(row.report.memberNotes.compare, '上一版的会员段', '全站共享的那一份会员段落必须原样留住')
     eq(row.state, 'building', '被拒就不落库，锁照旧交还')
+  })
+
+  it('P1-9 对「剥段形态」的既有版本仍然生效：只看旗标也必须拦', async () => {
+    const fn = loadProxy()
+    env.db.__seed('report_cache', [
+      lockRow({ report: report({ memberSections: ['memberNotes.compare'] }) })
+    ])
+
+    const res = await callStore(fn, { op: 'save', personKey: 'A#tech', report: report() })
+
+    eq(res.kind, 'stale', '剥段后正文没有四段，只认正文这条守卫就形同虚设')
+    eq(env.db.__dump('report_cache')[0].state, 'building', '被拒就不落库')
+  })
+
+  it('剥段的前提是副本写成功：源码里必须「先写副本、再决定剥不剥」', () => {
+    /* 静态断言而不是行为断言：让副本写失败在内存 DB 里不好造，而这条顺序一旦写反，
+       后果是「旗标说有、副本里没有」——会员永久少四段，而且不报错、页面看不出异常。 */
+    const copyAt = storeSrc.indexOf("const copied = await saveMemberRow(personKey, report, generatedAt, 'current'")
+    const stripAt = storeSrc.indexOf('if (memberFlags.length > 0 && copied) stored = stripForRow')
+    ok(copyAt > 0, '应能定位到前置写副本那一行')
+    ok(stripAt > copyAt, '剥段必须发生在副本写成功之后，不能反过来')
   })
 
   it('P1-9 是单向的：既有版本本就不含会员段，免费档照旧可覆盖', async () => {

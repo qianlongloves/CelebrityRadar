@@ -28,7 +28,8 @@ const readSrc = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8')
 const PERSON = '张三#tech'
 const GEN = '2026-10-17T08:00:00.000Z'
 const OTHER_GEN = '2026-10-18T08:00:00.000Z'
-const FLAG = ['memberNotes', 'conflicts', 'peers', 'affiliations']
+/** 旗标 token（精确到段：memberNotes 装两段独立文字，只写字段名分不出 compare / risk） */
+const FLAG = ['memberNotes.compare', 'memberNotes.risk', 'conflicts', 'peers', 'affiliations']
 
 const SECTIONS = {
   memberNotes: { compare: '与同领域三人相比曝光更集中', risk: '三条素材指向同一争议' },
@@ -92,6 +93,16 @@ describe('口径一致：端上与云端的会员段字段名单', () => {
     /* 云侧那份是手抄的（云函数打包读不到 src）：多了少了都会让「副本存了什么」与
        「端上认什么」分家，而后果只是某些会员段静默缺失，不会报错 */
     deepEq([...MEMBER_FIELD_KEYS], names)
+  })
+
+  it('MEMBER_FLAGS 与云端 memberFlagsOf 用的 token 逐字相同', () => {
+    fresh()
+    const { MEMBER_FLAGS } = env.load('utils/member')
+    const cloud = fs.readFileSync(path.join(ROOT, 'cloudfunctions', 'aiProxy', 'report-store.js'), 'utf8')
+    const m = cloud.match(/const MEMBER_FLAGS = \[([^\]]*)\]/)
+    ok(m, '云端应能定位到 MEMBER_FLAGS')
+    const names = m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean)
+    deepEq([...MEMBER_FLAGS], names, 'token 对不上 ⇒ 非会员看到的是「已含对比视角」，实际取回来是另一段')
   })
 })
 
@@ -309,6 +320,17 @@ describe('接线：exposeReport 是唯一收口，批量读口不补', () => {
     eq(calls.length, 0)
     eq(shown.locked.length, 0)
     deepEq(shown.report.memberNotes, SECTIONS.memberNotes)
+  })
+
+  it('非会员看剥段报告：促销条靠旗标点名段落（不能静默消失）', async () => {
+    const { load } = fresh()
+    const calls = stubProxy(OK)
+    const { exposeReport } = load('utils/cache')
+    const shown = await exposeReport(stripped(), false)
+    eq(calls.length, 0, '非会员不发请求')
+    notOk('memberNotes' in shown.report)
+    /* 正文里一段都没有时，`locked` 由旗标还原 —— 否则促销条一句话都说不出来，静默消失 */
+    deepEq(shown.locked, ['对比视角', '风险提示', '信源分歧'])
   })
 
   it('批量读口 getCachedReports 不为会员段发请求（列表页不渲染四段）', async () => {

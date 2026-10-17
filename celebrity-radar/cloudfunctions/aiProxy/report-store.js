@@ -244,6 +244,15 @@ module.exports = function createReportStore(deps) {
    * 少摘一段 = 免费读者拿到的对象里仍带着付费内容。
    */
   const MEMBER_FIELDS = ['memberNotes', 'conflicts', 'peers', 'affiliations']
+  /**
+   * 旗标（主行 `report.memberSections`）里的取值 token（P2 阶段 3，2026-10-17）——
+   * 与端上 `utils/member.ts#MEMBER_FLAGS` **逐字相同**（手抄副本，用例 81 比对）。
+   *
+   * 精确到**段**而不是字段：`memberNotes` 一个字段装两段独立文字（compare / risk），
+   * 只写字段名的话端上分不出「只有对比视角」还是「两段都有」，促销条就会承诺一段
+   * 这份报告里根本不存在的内容。
+   */
+  const MEMBER_FLAGS = ['memberNotes.compare', 'memberNotes.risk', 'conflicts', 'peers', 'affiliations']
 
   const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : '')
   const bad = (error) => ({ ok: false, kind: 'badrequest', error })
@@ -291,12 +300,64 @@ module.exports = function createReportStore(deps) {
   }
 
   /**
-   * 把一份报告里的会员段写进 `report_member`（P2 方案 A，2026-10-17）。
+   * 这一版**有哪些**会员段（token 形式，写进主行旗标）。
+   * 只认**实际存在**的段，与 `hasMemberPayload` 同一道真值判定 —— 一份
+   * `memberNotes: { compare: '' }` 的报告不该在旗标里声称「有对比视角」。
+   */
+  function memberFlagsOf(report) {
+    const out = []
+    if (!report || typeof report !== 'object') return out
+    const mn = report.memberNotes
+    if (mn && typeof mn === 'object') {
+      if (mn.compare) out.push('memberNotes.compare')
+      if (mn.risk) out.push('memberNotes.risk')
+    }
+    if (Array.isArray(report.conflicts) && report.conflicts.length > 0) out.push('conflicts')
+    if (Array.isArray(report.peers) && report.peers.length > 0) out.push('peers')
+    if (Array.isArray(report.affiliations) && report.affiliations.length > 0) out.push('affiliations')
+    return out
+  }
+
+  /**
+   * 主行形态（P2 阶段 3）：抹掉四段，换成旗标。
    *
-   * **best-effort**：写失败只打日志，绝不把 `ok` 改成失败 —— 与 `recordVersion` 同一个取舍：
-   * 主行已经落库成功、报告已经生成出来了，因为「会员段的副本没写上」报一个写库失败，
-   * 端上会当成整份失败（甚至重试一次烧一遍 token），代价远大于收益。
-   * 副本缺失的后果是**阶段 3 之前**的会员少看到四段（阶段 1 主行仍带着四段，故实际上无感）。
+   * `report_member` 是客户端不可读的集合，而 `report_cache` 是所有人可读的 —— 阶段 1 的双写
+   * 只做到「四段有两份」，阶段 3 这一步才真正把四段从公开表里拿出去。**返回新对象**：
+   * 手上的 `report` 还要交给 `saveMemberRow` 写全量，绝不能就地删。
+   */
+  function stripForRow(report, flags) {
+    const out = { ...report }
+    for (const k of MEMBER_FIELDS) delete out[k]
+    out.memberSections = flags
+    return out
+  }
+
+  /**
+   * 这一版是不是**会员版**：正文有四段，**或**旗标说四段在副本表里。
+   *
+   * 与 `hasMemberPayload`（只看正文）分工 —— 阶段 3 之后主行的正文恒为「没有四段」，
+   * 拿它判「会员版」会得到全站都是免费版：只升不降失效（会员版能被免费产物覆盖）、
+   * 免计费复核放行（同一个人能反复白拿）。与端上 `utils/member.ts#isMemberVersion` 同源。
+   */
+  function isMemberVersion(report) {
+    if (hasMemberPayload(report)) return true
+    return !!(report && Array.isArray(report.memberSections) && report.memberSections.length > 0)
+  }
+
+  /**
+   * 把一份报告里的会员段写进 `report_member`（P2 方案 A，2026-10-17；阶段 3 起它成了
+   * 「主行能不能剥段」的前置条件）。
+   *
+   * **返回是否写成功** —— 两个调用方对它的态度不同：
+   *   · `storeSave`：**先写副本、成功了才剥主行的段**。返回值就是「能不能剥」的开关，
+   *     失败时退回「不剥」（主行照旧带四段，会员照旧看得到）。反过来做（先剥再写副本）
+   *     一旦副本失败，就得到一份「旗标说有、副本里没有」的主行 —— 会员永久少四段，
+   *     而且不报错、页面看上去与「这份报告本来没有会员段」完全一样。
+   *   · `recordVersion`：best-effort，失败只打日志（历史版本是辅助能力，不能因为它的写失败
+   *     把一次**已经成功**的生成说成写库失败）。
+   *
+   * 写失败绝不把 `ok` 改成失败：主行已经落库成功、报告已经生成出来了，因为「副本没写上」
+   * 报一个写库失败，端上会当成整份失败（甚至重试一次烧一遍 token），代价远大于收益。
    *
    * **没有会员段时删行而不是写空对象**：否则读者会拿到「上一版的会员段 + 这一版的时间戳」——
    * `generated_at` 相等守卫拦不住这种（时间戳是这一版的）。删掉才是「这份报告确实没有会员段」
@@ -306,14 +367,14 @@ module.exports = function createReportStore(deps) {
    * 与 `report_versions` 的主键**逐字相同**，于是裁剪历史时两张表用的是同一个 id（见 trimVersions）。
    */
   async function saveMemberRow(personKey, report, generatedAt, kind, schemaVersion) {
-    if (!personKey || !generatedAt) return
+    if (!personKey || !generatedAt) return false
     const id = kind === 'version' ? `${personKey}#${generatedAt}` : personKey
     const sections = memberSectionsOf(report)
     try {
       if (Object.keys(sections).length === 0) {
         /* 行不存在时 remove 是空操作（CloudBase 返回 removed:0，不抛错） */
         await db.collection(MEMBER_COLLECTION).doc(id).remove()
-        return
+        return true
       }
       await db
         .collection(MEMBER_COLLECTION)
@@ -327,8 +388,10 @@ module.exports = function createReportStore(deps) {
             ...(typeof schemaVersion === 'number' ? { schemaVersion } : {})
           }
         })
+      return true
     } catch (err) {
-      console.warn('[report-store] 会员段副本写入失败（不影响本次落库）:', failDetail(err))
+      console.warn('[report-store] 会员段副本写入失败:', failDetail(err))
+      return false
     }
   }
 
@@ -385,8 +448,16 @@ module.exports = function createReportStore(deps) {
             ...(typeof row.schemaVersion === 'number' ? { schemaVersion: row.schemaVersion } : {})
           }
         })
-      /* 旧版的会员段也搬进副本表（主键与上面这一行逐字相同）：历史版本页要能按版本取回四段 */
-      await saveMemberRow(personKey, old, generatedAt, 'version', row.schemaVersion)
+      /*
+       * 旧版的会员段也搬进副本表（主键与上面这一行逐字相同）：历史版本页要能按版本取回四段。
+       *
+       * ⚠ 只在**旧版正文里真有四段**时才搬。阶段 3 之后旧版自己就是剥段形态 —— 四段早在
+       * 它落库时就写进副本了（同一个 `_id`）。这时候再调一次 `saveMemberRow`，会因为它摘不出
+       * 四段而走「删行」分支，把上一版**唯一**的四段副本删掉，历史版本页从此少四段。
+       */
+      if (hasMemberPayload(old)) {
+        await saveMemberRow(personKey, old, generatedAt, 'version', row.schemaVersion)
+      }
       await trimVersions(personKey)
     } catch (err) {
       console.warn('[report-store] 记录历史版本失败（不影响本次落库）:', failDetail(err))
@@ -597,16 +668,38 @@ module.exports = function createReportStore(deps) {
      * 一个人改包 Force 一次，所有人（含已付费会员）看到的那份会员段落就没了。
      *
      * 端上 cache.ts#saveReady 的 shouldKeepMemberVersion 已判过一次，但端上判定可被改包绕过，
-     * 写口才是权威。判据与端上一致：既有版本带会员段、而新产物不带 ⇒ 拒绝（kind='stale'）。
+     * 写口才是权威。判据与端上一致：既有版本是会员版、而新产物不是 ⇒ 拒绝（kind='stale'）。
      * 「会员版 → 免费版」这种合法降级在端上本来就被守卫拦住，不会走到这里；改包者走到这里即被拒。
+     *
+     * ⚠ 阶段 3 起既有主行**不带四段**（只剩旗标），所以这里必须用 `isMemberVersion`
+     * 而不是 `hasMemberPayload` —— 后者对剥过段的行恒为假，守卫会形同虚设。
      */
-    if (hasMemberPayload(row.report) && !hasMemberPayload(report)) {
+    if (isMemberVersion(row.report) && !hasMemberPayload(report)) {
       return { ok: false, kind: 'stale', error: '既有版本含会员专属段落，拒绝用不含会员段的版本覆盖' }
     }
 
     const newsCount = typeof event.newsCount === 'number' && event.newsCount >= 0 ? event.newsCount : 0
     /* 提前算好：主行与会员段副本必须写**同一个**时间戳，它是跨两行的唯一配对依据 */
     const generatedAt = str(report.generatedAt) || new Date().toISOString()
+    /*
+     * 会员段搬去副本表、主行剥段（P2 方案 A **阶段 3**，2026-10-17）。
+     *
+     * **顺序是硬约束：先写副本，成功了才剥。** 反过来的话副本写失败就得到一份
+     * 「旗标说有、副本里没有」的主行 —— 会员永久少四段，而且不报错、页面看上去与
+     * 「这份报告本来没有会员段」一模一样，只能靠端上埋点 `member_sections` 的 empty 占比发现。
+     * 副本写失败时退回「不剥」：主行照旧带四段，就是阶段 3 之前的行为，会员照旧看得到。
+     *
+     * 这一步之后，`report_cache` / `report_versions`（所有人可读）里不再有付费内容，
+     * 端上要靠 `op:'member'` 取 —— 语义上的变化全部在这一次剥段里，其余校验（会员一致性、
+     * 只升不降、体积闸门）都还按**入参的完整报告**判，不受影响。
+     */
+    const memberFlags = memberFlagsOf(report)
+    let stored = report
+    /* 副本先写（免费版则在这里**删**掉上一版残留的副本）：它同时是「能不能剥段」的开关。
+       免费版也走一次，是为了不留「旧四段 + 新时间戳」——那种组合在 storeMember 里
+       只差一个时间戳巧合就能凑成一次错配。 */
+    const copied = await saveMemberRow(personKey, report, generatedAt, 'current', event.schemaVersion)
+    if (memberFlags.length > 0 && copied) stored = stripForRow(report, memberFlags)
     try {
       /* doc(id).set = 整篇替换（与端上 upsert 同义）：对 report / search_meta 的初值没有要求，
          绕开「往 null 上写子字段被数据库拒绝」那类差异（见端上 cache.ts#saveReady） */
@@ -615,7 +708,7 @@ module.exports = function createReportStore(deps) {
         .doc(personKey)
         .set({
           data: {
-            report,
+            report: stored,
             state: 'ready',
             generated_at: generatedAt,
             builder: null,
@@ -630,12 +723,6 @@ module.exports = function createReportStore(deps) {
        * 此刻 `row.report` 仍指向**旧版** —— 它是本函数开头读出来的那一份，不受上面的 set 影响。
        */
       await recordVersion(row, personKey, new Date().toISOString())
-      /*
-       * 会员段副本（P2 方案 A 阶段 1，2026-10-17）：主行此刻**仍然**带着四段 ——
-       * 这是有意的双写，端上一个字都不用改。副本先备好，等端上会用 `op:'member'` 补齐
-       * （阶段 2）并跑够覆盖率，阶段 3 才从主行剥掉四段。顺序颠倒 = 未更新的端上打开报告少四段。
-       */
-      await saveMemberRow(personKey, report, generatedAt, 'current', event.schemaVersion)
       return { ok: true, result: 'saved' }
     } catch (err) {
       return { ok: false, kind: 'upstream', error: `报告落库失败：${failDetail(err)}` }

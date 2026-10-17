@@ -114,6 +114,15 @@ describe('会员段落判定 utils/cache#hasMemberBlocks', () => {
       hasMemberBlocks(mkReport({ affiliations: [] })),
       '空数组不算（与 memberNotes / conflicts / peers 同口径）'
     )
+    /*
+     * 阶段 3（2026-10-17）之后，主行正文里**没有四段**，只有旗标说它们在副本表里。
+     * 两个问题从此必须分开回答，混成一问就是两类事故：
+     *   · 「这一版是不是会员版」（只升不降 / 免计费复核）⇒ 认旗标；
+     *   · 「对象里有没有东西要摘」（stripMemberSections）⇒ 只看正文。
+     */
+    const stripped = mkReport({ memberSections: ['memberNotes.compare'] })
+    ok(hasMemberBlocks(stripped), '旗标说有 = 会员版：不然会员版能被免费产物覆盖、免计费也能反复白拿')
+    notOk(hasMemberContent(stripped), '但正文里确实什么都没有可摘')
   })
 })
 
@@ -307,6 +316,15 @@ describe('会员补齐免计费：云端复核（源码钉住）', () => {
        以它为准等于让端上自证会员（自授会员即可白拿这次免计费）。 */
     ok(guard.includes("db.collection('memberships').doc(openid).get()"), '读服务端权威表 memberships')
     ok(guard.includes('isMembershipActive(auth)'), '口径仍是「未过期的 expires_at」')
+  })
+
+  it('「那行确实缺会员段」必须认旗标（阶段 3 起主行正文里没有四段）', () => {
+    /* 剥段之后 `hasMemberBlocks` 只看正文会对每一份会员版都返回 false ⇒ 条件 3 恒成立，
+       于是每次重新生成都能申请成「会员补齐」、一次都不扣额度。这是白送额度，不是小问题。 */
+    ok(
+      guard.includes('Array.isArray(report.memberSections)'),
+      'quotaGuard 的 hasMemberBlocks 必须把旗标算进来（与端上 hasMemberBlocks 同源）'
+    )
   })
 
   it('端上那个标记不可信：复核不过就照常自增（waived 回落 false）', () => {
@@ -533,12 +551,16 @@ describe('档位隔离已接进读取路径（源码钉住，防「写了剥离�
 
   it('exposeReport 的快路径排在读身份**之前**（没有东西可藏就不问读者是谁）', () => {
     const body = src.slice(src.indexOf('async function exposeReport'))
-    const fast = body.indexOf('locked.length === 0')
+    const fast = body.indexOf('if (!hasMemberContent(report))')
+    const flag = body.indexOf('hasStrippedMember(report)')
     const who = body.indexOf('readMemberState')
 
-    ok(fast > 0, '必须保留无会员段的快路径')
-    ok(who > 0)
-    ok(fast < who, '先算「有没有东西可藏」，再决定要不要读一次身份')
+    ok(fast > 0, '必须保留「正文里没有会员段」的快路径')
+    ok(flag > fast, '快路径里第一件事是看旗标：没有旗标就直接返回，连身份都不读')
+    ok(who > flag, '先算「有没有东西可藏」，再决定要不要读一次身份')
+    /* 判据不能用 presentSections：阶段 3 起它会对剥段报告回退到旗标（于是永远非空），
+       拿它当门就等于这条快路径彻底走不到 —— 会员再也拿不到那四段，而且不报错。 */
+    notOk(body.slice(fast, who).includes('presentSections('), '「正文有没有四段」只能用 hasMemberContent 判')
   })
 
   it('每个交回口都带上了 memberLocked（漏一处 = 一处静默的越权，或一处静默的文案退化）', () => {

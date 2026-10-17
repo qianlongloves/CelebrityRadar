@@ -11,15 +11,17 @@
  *   · 历史版本裁剪时副本要跟着删（否则它会静默长成一张没人查得出用途的表）；
  *   · 读口 `op:'member'` 先判会员，且**非会员拿不到任何一段**。
  *
- * ⚠ 阶段 1 是**双写**：主行此刻仍带着四段，线上行为一个字都没变。所以这里的断言不能写成
- *   「主行不含 memberNotes」—— 那要到阶段 3 才成立，写在这里会让阶段 1 与阶段 3 的用例互相打架。
+ * ⚠ 阶段 1 是**双写**（主行照旧带四段，副本在旁边攒）；**阶段 3（2026-10-17）起主行剥段**：
+ *   四段只留在副本里，主行只剩旗标 `memberSections`。因此线上会**长期并存两种形态** ——
+ *   阶段 3 之前落库的主行仍带四段（阶段 4 才迁移），之后的只剩旗标。读口必须两种都认，
+ *   本文件断言的是「写口新写的这一行一定是剥段形态」。
  */
 
 const fs = require('fs');
 const path = require('path');
 const Module = require('module');
 const env = require('../harness/env');
-const { describe, it, ok, notOk, eq } = require('../harness/t');
+const { describe, it, ok, notOk, eq, deepEq } = require('../harness/t');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const AI_PROXY = path.join(ROOT, 'cloudfunctions', 'aiProxy', 'index.js');
@@ -92,7 +94,7 @@ describe('P2 会员段边界：库结构', () => {
 /* ============== ② 双写：主行照旧、副本另存 ============== */
 
 describe('P2 会员段边界：落库双写', () => {
-  it('会员落库后，四段同时进了 report_member（时间戳与主行逐字相等）', async () => {
+  it('会员落库后：四段只进 report_member，主行只剩旗标', async () => {
     const fn = loadProxy();
     env.db.__seed('memberships', [memberRow()]);
     env.db.__seed('report_cache', [lockRow()]);
@@ -117,8 +119,17 @@ describe('P2 会员段边界：落库双写', () => {
     eq(rows[0].sections.peers.length, 1);
     eq(rows[0].sections.affiliations.length, 1);
 
-    /* 阶段 1 是双写：主行**仍然**带着四段（阶段 3 才剥） */
-    eq(env.db.__dump('report_cache')[0].report.memberNotes.compare, 'C', '阶段 1 主行不该被改动');
+    /* 阶段 3：主行（所有人可读）里**不再有**付费内容，只留一句旗标 */
+    const main = env.db.__dump('report_cache')[0].report;
+    eq(main.memberNotes, undefined, '主行不再带四段 —— 剥段是阶段 3 的全部意义');
+    eq(main.conflicts, undefined);
+    eq(main.peers, undefined);
+    eq(main.affiliations, undefined);
+    deepEq(
+      main.memberSections,
+      ['memberNotes.compare', 'memberNotes.risk', 'conflicts', 'peers', 'affiliations'],
+      '旗标精确到段：促销条要能点名「已含哪几段」，写字段名就分不出 compare / risk'
+    );
   });
 
   it('免费版落库：不写副本，并把旧副本删掉（免得旧会员段配新正文）', async () => {
@@ -132,7 +143,7 @@ describe('P2 会员段边界：落库双写', () => {
     eq(memberDocs('current').length, 0, '没有会员段就不该留副本：否则是「旧内容 + 新时间戳」');
   });
 
-  it('副本写失败不影响落库（best-effort：报告已经生成出来了）', async () => {
+  it('副本写失败不影响落库，且**不剥段**（宁可主行带四段，不能让会员永久少四段）', async () => {
     const fn = loadProxy();
     env.db.__seed('memberships', [memberRow()]);
     env.db.__seed('report_cache', [lockRow()]);
@@ -142,14 +153,46 @@ describe('P2 会员段边界：落库双写', () => {
       personKey: 'A#tech',
       report: report({ memberNotes: { compare: 'C' } })
     });
-    eq(res.ok, true, '副本只是辅助：不能因为它失败就把已生成的报告判成写库失败');
-    eq(env.db.__dump('report_cache')[0].state, 'ready');
+    eq(res.ok, true, '不能因为副本失败就把已生成的报告判成写库失败');
+    const row = env.db.__dump('report_cache')[0];
+    eq(row.state, 'ready');
+    /* 这是整个阶段 3 最贵的那个方向：剥了段却写不成副本 = 会员永久少四段、且不报错 */
+    eq(row.report.memberNotes.compare, 'C', '副本没写上就退回「不剥」，主行照旧带四段');
+    eq(row.report.memberSections, undefined, '不剥就不该写旗标（旗标说有而副本里没有 = 静默丢内容）');
   });
 });
 
 /* ============== ③ 历史版本：副本跟着写、跟着裁 ============== */
 
 describe('P2 会员段边界：历史版本', () => {
+  it('再见一版时旧版副本**不能**被删（阶段 3 起旧版正文没有四段，搬运会走「删行」分支）', async () => {
+    const fn = loadProxy();
+    env.db.__seed('memberships', [memberRow()]);
+    /* 旧版主行是阶段 3 的形态：正文里没有四段，只有旗标（generated_at 与本行副本的 _id 对应） */
+    env.db.__seed('report_cache', [lockRow({ report: report({ memberSections: ['memberNotes.compare'] }) })]);
+    /* 旧版四段副本：上一版落库时就写好了，_id 与历史版本行逐字相同 */
+    env.db.__seed('report_member', [
+      {
+        _id: 'A#tech#2026-01-01T00:00:00.000Z',
+        person_key: 'A#tech',
+        kind: 'version',
+        generated_at: '2026-01-01T00:00:00.000Z',
+        sections: { memberNotes: { compare: '旧版四段' } }
+      }
+    ]);
+
+    const res = await callStore(fn, {
+      op: 'save',
+      personKey: 'A#tech',
+      report: report({ generatedAt: '2026-02-01T00:00:00.000Z', memberNotes: { compare: '新版四段' } })
+    });
+    eq(res.ok, true);
+
+    const kept = memberDocs('version').filter((r) => r._id === 'A#tech#2026-01-01T00:00:00.000Z');
+    eq(kept.length, 1, '历史版本页要靠它取回四段 —— 被删掉就永远少四段，而且不报错');
+    eq(kept[0].sections.memberNotes.compare, '旧版四段');
+  });
+
   it('被覆盖掉的那一版，四段也进副本（_id 与版本行逐字相同）', async () => {
     const fn = loadProxy();
     env.db.__seed('memberships', [memberRow()]);
