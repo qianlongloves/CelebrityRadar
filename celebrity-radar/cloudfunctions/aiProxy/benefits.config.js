@@ -83,6 +83,10 @@ module.exports = {
   "REPORT_FIELD_LIMITS": {
     "analysisPointChars": 80,
     "analysisPointMax": 4,
+    "stanceNoteChars": 60,
+    "verdictChars": 60,
+    "reputationChars": 60,
+    "consistencyChars": 40,
     "memberNoteChars": 240,
     "quoteNoteChars": 120,
     "conflictTopicChars": 24,
@@ -102,6 +106,7 @@ module.exports = {
     "affiliationNoteChars": 40,
     "timelineMax": 8,
     "timelineDateChars": 10,
+    "dynamicsDateChars": 20,
     "timelineEventChars": 60,
     "endorseMax": 3,
     "endorseBrandChars": 20,

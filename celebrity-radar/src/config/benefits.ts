@@ -313,6 +313,18 @@ export const REPORT_FIELD_LIMITS = {
   /** 点评条数（与提示词第 6 条要求的条数对应） */
   analysisPointMax: 4,
 
+  /**
+   * 判断类段落的**兜底裁剪线**（P2，2026-10-17 补）：stance.note / verdict 两段 /
+   * reputation 两侧 / consistency 三段此前都是 utils/report.ts 里的裸数字（60、60、60、40），
+   * 与「数值只在 config/benefits.ts 写一次」的约定不符 —— 改提示词的人与调裁剪线的人
+   * 看不到彼此，同一档长度会被改成两个数。**数值一个没动，只是搬了家**；
+   * 条数上限那边 stance 用 REPORT_QUOTAS.stanceMax（此前也是裸的 4）。
+   */
+  stanceNoteChars: 60,
+  verdictChars: 60,
+  reputationChars: 60,
+  consistencyChars: 40,
+
   /** 会员专属段落（对比视角 / 风险提示）：是 2~3 句的完整判断，装不上 60 字那档 */
   memberNoteChars: 240,
   /** 名言背景 / 注解：1~2 句的完整背景；名言卡本身已很密，这是它的上限 */
@@ -368,8 +380,15 @@ export const REPORT_FIELD_LIMITS = {
    */
   timelineMax: 8,
   /** 日期：只该是 YYYY-MM-DD / YYYY-MM 这类刻度（10 字已满格）。它与 timelineMax 同值于
-   *  REPORT_QUOTAS.timelineMax 的「条数上限」—— 提示词里给的是目标条数，这里是裁剪线 */
+   *  REPORT_QUOTAS.timelineMax 的「条数上限」—— 提示词里给的是目标条数，这里是裁剪线。
+   * ⚠ 10 字只是**认不出年月日时**的兜底裁剪线：能认出的一律先归一成 ISO 再落库
+   *   （见 utils/report.ts#normalizeTimelineDate），否则 `2026年10月11日` 会被裁成
+   *   `2026年10月11`、`2026年10月1日` 与 `2026年11月1日` 甚至裁出同一个错日期 */
   timelineDateChars: 10,
+  /** 动态的日期（P2，2026-10-17 补）：与 timelineDateChars 同类刻度，但动态允许带时分
+   *  （`2026-10-11 09:30`），10 字会把时间挤掉，故给 20。此前 dynamics.date 是 sanitize
+   *  里**唯一**原样落库（连 cleanText 都没过）的字段，零宽字符会让「同一天」的排序抖动 */
+  dynamicsDateChars: 20,
   /** 事件：一句话说清「什么时候发生了什么」，与 endorse.note 同档 */
   timelineEventChars: 60,
 

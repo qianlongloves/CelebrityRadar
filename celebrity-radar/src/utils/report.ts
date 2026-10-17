@@ -691,7 +691,7 @@ const REPORT_RULES_REALTIME = [
    */
   `6. analysisPoints：${REPORT_QUOTAS.analysisPointsMin}~${REPORT_FIELD_LIMITS.analysisPointMax} 条**各自独立、就具体事件或说法给出的判断**，每条字段：point(一句完整的判断，40 字内，以句号结尾)、basis(这条判断依据的素材 url，原样复制；素材里找不到出处的写「据公开资料」)。判断必须具体到人、事、时间或具体说法，禁止「风格独特」「备受关注」「引发讨论」这类换个人名也成立的套话；各条之间不要互相重复。**整体结论不写在这里**——那是 verdict.summary 的职责（见第 16 条），这里的每一条都是「某件事怎么看」，不是「TA 这个人整体怎么样」。`,
   `7. stance：${REPORT_QUOTAS.stanceMin}~${REPORT_QUOTAS.stanceMax} 个近期热点话题上的舆论态度，每条字段：topic(话题名，12 字内)、attitude(只能是 positive/neutral/negative/mixed)、note(一句话依据，须出自素材)；素材里确实没有任何可判断的舆论态度才留空数组。`,
-  `8. timeline：素材中可确认的**已经发生**的关键事件(date + event)，给 ${REPORT_QUOTAS.timelineMin}~${REPORT_QUOTAS.timelineMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.timelineTarget} 条），同一件事只写一条；素材里确实没有可确认的事件才留空数组。**尚未发生**的未来节点（已公布的档期一类）不写在这里。`,
+  `8. timeline：素材中可确认的**已经发生**的关键事件(date + event)，给 ${REPORT_QUOTAS.timelineMin}~${REPORT_QUOTAS.timelineMax} 条（素材充足时尽量给到 ${REPORT_QUOTAS.timelineTarget} 条），同一件事只写一条；**date 一律写 YYYY-MM-DD，只知道年月就写 YYYY-MM（不要写「2026年10月」这类中文日期，也不要带时分）**；素材里确实没有可确认的事件才留空数组。**尚未发生**的未来节点（已公布的档期一类）不写在这里。`,
   /*
    * profile 的 label 收敛成「优先选常用字段」：此前完全自由发挥，于是同一个人的档案里
    * 出现「简介」「特点」「影响力」这类无信息量的字段名，且不同人物的档案彼此不可比
@@ -1224,30 +1224,29 @@ export async function buildKnowledgeFallback(
 
   /* chatJSON 的返回被推断成宽类型，这里收敛一次（字段只有一个，不必为它再引一层类型别名） */
   const { intro: rawIntro } = result.data as { intro?: string }
-  const intro = (rawIntro ?? '').trim()
-  /* 空串 = 模型对这个人物确实没把握：这次兜底没有价值，交回上层走空态 */
-  if (!intro) return { ok: false, error: '模型对该人物没有可用的既有资料', retryable: false }
+  /* 空串 = 模型对这个人物确实没把握：这次兜底没有价值，交回上层走空态。
+     判空用 cleanText 而不是 trim：只剩零宽 / 控制符的 intro 同样不可用，且这个判据
+     必须与落库口径同一把尺子（下面就走 sanitizeReport） */
+  if (cleanText(rawIntro) === '') {
+    return { ok: false, error: '模型对该人物没有可用的既有资料', retryable: false }
+  }
 
+  /*
+   * 兜底报告**也过一遍 R1（sanitizeReport）**（P1，2026-10-17）：此前这个函数自己拼一份
+   * Report，于是 R1 里那一整套 knowledgeOnly 让渡（出处收敛成「据公开资料」、不因指不出素材
+   * 而整条剔除、空数组不落键）写着却**从来没被走到过** —— 参数在、分支在、注释写着「只在这
+   * 一次兜底里让渡」，却没有任何调用点传它进来，等于一段不可达的兜底逻辑。
+   * 现在统一从 R1 的出口落地：文本卫生、字段形状、兜底标记只有一处口径，将来给兜底加净化
+   * （intro 的控制符、条数上限）也不会漏。
+   *
+   * 传空素材（news 传 []）是刻意的：兜底的前提就是「所有源与档位都没抓到内容」，
+   * 于是 heat 恒为 0、coverage 全零（页面据此显示「本次未检索到素材」而不是「检索失败」）。
+   */
   return {
     ok: true,
-    data: {
-      personKey,
-      name,
-      mode: 'realtime',
-      generatedAt: new Date().toISOString(),
-      heat: 0,
-      intro,
-      dynamics: [],
-      quotes: [],
-      analysis: '',
-      timeline: [],
-      sources: [],
-      disclaimer: DISCLAIMER,
-      focus,
-      knowledgeOnly: true,
-      /* 素材一条都没有：画像给全零，页面据此显示「本次未检索到素材」（而不是「检索失败」） */
-      coverage: buildCoverage([])
-    }
+    data: sanitizeReport(personKey, name, { intro: rawIntro ?? '' }, [], focus, {
+      knowledgeOnly: true
+    })
   }
 }
 
@@ -1263,9 +1262,20 @@ const MAX_USER_CHARS_MEMBER = REPORT_BUDGET.maxUserCharsMember
 
 const MEMBER_NOTE_CHARS = REPORT_FIELD_LIMITS.memberNoteChars
 const QUOTE_NOTE_CHARS = REPORT_FIELD_LIMITS.quoteNoteChars
+/* 动态的日期刻度（P2，2026-10-17）：它允许带时分，与 timeline 的 10 字不同档 */
+const DYNAMICS_DATE_CHARS = REPORT_FIELD_LIMITS.dynamicsDateChars
 
 const ANALYSIS_POINT_CHARS = REPORT_FIELD_LIMITS.analysisPointChars
 const ANALYSIS_POINT_MAX = REPORT_FIELD_LIMITS.analysisPointMax
+
+/* 判断类段落的裁剪线（P2，2026-10-17 从裸数字搬进真源）：stance.note / verdict 两段 /
+   reputation 两侧 / consistency 三段，与 analysisPoints 同一套「一句话判断」的克制。
+   此前它们是 report.ts 里的 60 / 60 / 60 / 40，改提示词的人调不到这条线。 */
+const STANCE_MAX = REPORT_QUOTAS.stanceMax
+const STANCE_NOTE_CHARS = REPORT_FIELD_LIMITS.stanceNoteChars
+const VERDICT_CHARS = REPORT_FIELD_LIMITS.verdictChars
+const REPUTATION_CHARS = REPORT_FIELD_LIMITS.reputationChars
+const CONSISTENCY_CHARS = REPORT_FIELD_LIMITS.consistencyChars
 
 const CONFLICT_TOPIC_CHARS = REPORT_FIELD_LIMITS.conflictTopicChars
 const CONFLICT_SIDE_CHARS = REPORT_FIELD_LIMITS.conflictSideChars
@@ -2056,6 +2066,36 @@ function strictSourceOf(
 }
 
 /**
+ * 时间线的日期刻度归一（P1，2026-10-17）：把模型的各种写法收敛成 `YYYY-MM-DD` / `YYYY-MM`。
+ *
+ * 为什么必须在**落库前**做：`date` 会进端上的年份分块（timelineGroups 按前 4 位切年份）
+ * 与时间线排序（`localeCompare`）—— 那是**字符串比较**，`2026-03-01` 排在 `2026年3月` 之前；
+ * ISO 与中文写法一混，整条时间线就按「格式」而不是按「时间」排。落库前归一一处，
+ * 报告页 / 长图 / 导出 / 差异视图就都对了。
+ *
+ * 为什么认得出年月日时要**重新拼**而不是照旧 clipText：`2026年10月11日` 有 11 簇，
+ * 按 timelineDateChars(10) 一裁就是 `2026年10月11`（丢掉「日」）；`2026年10月1日` 恰好 10 簇
+ * 却完整 —— 同一段文字里两种裁法并存，读者无从判断哪个是原文。认不出的（「去年」「上映后」
+ * 这类）才退回 clipText 兜底：它们本不该进时间线（提示词要求可确认的事件），但日期只是刻度，
+ * 为它把整条事件剔掉等于丢一条事实。
+ */
+function normalizeTimelineDate(raw: string | undefined): string {
+  const text = cleanText(raw)
+  if (text === '') return ''
+  /*
+   * 只认「年 + 月 + 可选日」这一种结构：分隔符允许 `-` `.` `/` `年` `月`，中间允许空格，
+   * 日的后面允许跟「日」。刻意**不用 Date.parse 反解**：V8 对 `2026-10-9 10:00` 宽容、
+   * 对中文日期严苛（`2026年10月11日` 直接 NaN），而这里只需要分子段，正则比日期解析可靠。
+   */
+  const m = /^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*(?:[-/.月]\s*(\d{1,2})\s*日?)?/.exec(text)
+  if (!m) return clipText(text, TIMELINE_DATE_CHARS)
+  const year = m[1] ?? ''
+  const month = (m[2] ?? '').padStart(2, '0')
+  if (!m[3]) return `${year}-${month}`
+  return `${year}-${month}-${m[3].padStart(2, '0')}`
+}
+
+/**
  * 代码层强制校验（附录 B，不信任提示词）：
  * 1. dynamics 的 url 必须 ∈ 素材 url 集合，否则剔除；sources 干脆不由模型给 ——
  *    它是端上从报告里真引用到的素材派生的（见「来源清单」那段），端上派的，自然条条对得上
@@ -2135,7 +2175,8 @@ export function sanitizeReport(
   /*
    * 动态：出处必须能对上素材（这是「动态」这个体裁的底线 —— 点不回原文就不是动态）。
    * 但比对走 srcIndex 而不是逐字符全等，且**落库用素材里的原始 URL**：模型抄来的链接
-   * 差一个字符就 404，而点回去核对正是这条出处存在的意义。标题 / 媒体名缺失时用素材的。
+   * 差一个字符就 404，而点回去核对正是这条出处存在的意义。标题缺失时用素材的；
+   * 媒体名命中时也一律用素材的（出处与链接必须同源，见下面 source 处）。
    */
   const dynamics: Report['dynamics'] = []
   for (const d of llm.dynamics ?? []) {
@@ -2144,11 +2185,17 @@ export function sanitizeReport(
     if (!hit && !knowledgeOnly) continue
     if (hit) citedUrl.add(hit.url)
     dynamics.push({
-      date: d.date ?? '',
+      /* date 此前是 sanitize 里**唯一**原样落库的字段（连 cleanText 都没过，2026-10-17 修）：
+         它直接渲染在动态那一条上，还参与 byDateDesc 的**字符串**排序 —— 夹一个零宽字符，
+         「同一天」的先后就会抖动。上限走 dynamicsDateChars（20，允许带时分） */
+      date: clipText(d.date, DYNAMICS_DATE_CHARS),
       /* title / summary 是段落级文本（提示词只要一句摘要，但字段本身无上限），故只净化不截断 */
       title: cleanText(d.title) || (hit ? cleanText(hit.title) : ''),
       summary: cleanText(d.summary),
-      source: cleanText(d.source) || (hit ? cleanText(hit.source) : '据公开资料'),
+      /* 命中素材时**一律用素材的媒体名**（2026-10-17 改）：url 已强制取素材原串，若 source
+         还听模型的，就会出现「出处写新浪、点开是网易」—— 读者点回去核对时反被这条出处误导。
+         无素材兜底时没有可对的素材，才退回模型自述（再兜「据公开资料」） */
+      source: (hit ? cleanText(hit.source) : '') || cleanText(d.source) || '据公开资料',
       /* 无素材兜底时无命中素材，url 置空（不可点开），出处只体现在 source 上 */
       url: hit ? hit.url : '',
       sentiment: normSentiment(d.sentiment)
@@ -2181,15 +2228,17 @@ export function sanitizeReport(
    *   · date 会进端上的年份分块（timelineGroups 按前 4 位切年份）：夹进一个零宽或控制符，
    *     「这条属于哪一年」就会判错，时间线上多出一段无标题的乱序块；
    *   · event 无上限：模型偶发写成整段综述时，一行能把整屏撑满。
-   * 口径与其余各段对齐：date 有明确长度上限（走 clipText），event 是段落级文本（同样 clipText，
-   * 上限给到「一句话」），去空后截到 timelineMax 条。**不重排**：时间线是模型按素材给的，
-   * 端上重排会打乱「同年内先后」这个模型唯一把握得住的信息。
+   * 口径与其余各段对齐：date 先**归一成 ISO**（normalizeTimelineDate）、认不出才走 clipText，
+   * event 是段落级文本（同样 clipText，上限给到「一句话」），去空后截到 timelineMax 条。
+   * **不重排**：时间线是模型按素材给的，端上重排会打乱「同年内先后」这个模型唯一把握得住的信息
+   * —— 但排序**依赖 date 的写法**（端上按字符串比），这正是必须在落库前归一的理由。
    * ⚠ 去空是行为收紧（原实现会把 event 为空的条目落库成一行空白）；端上本来就按条目渲染，
    *   空行没有任何信息，只会让横幅多一截。
    */
   const timeline = (llm.timeline ?? [])
     .map((t) => ({
-      date: clipText(t.date, TIMELINE_DATE_CHARS),
+      /* 认不出年月日才退回 clipText：直接裁中文日期会裁出错日期（见 normalizeTimelineDate） */
+      date: normalizeTimelineDate(t.date),
       event: clipText(t.event, TIMELINE_EVENT_CHARS)
     }))
     .filter((t) => t.date !== '' && t.event !== '')
@@ -2205,10 +2254,12 @@ export function sanitizeReport(
     .map((s) => ({
       topic: cleanText(s.topic),
       attitude: normStance(s.attitude),
-      note: clipText(s.note, 60)
+      /* 一句话依据：裁剪线走真源（此前是裸的 60，与提示词第 7 条各写一份） */
+      note: clipText(s.note, STANCE_NOTE_CHARS)
     }))
     .filter((s) => s.topic !== '')
-    .slice(0, 4)
+    /* 条数上限 = 提示词里的 stanceMax（此前端上是裸的 4：改提示词那侧调不到这条线） */
+    .slice(0, STANCE_MAX)
 
   /* 这里的「剔除」只数**模型给的条数 − 落库条数**：sources 不在其中 —— 它已由端上派生
      （见上面的来源清单），模型没给过它，也就无所谓剔除 */
@@ -2383,8 +2434,9 @@ export function sanitizeReport(
    * 与 memberNotes 同一口径 —— 「没给评价」与「给了空评价」在呈现上无差别，都该不出卡）。
    */
   const verdictRaw = llm.verdict
-  const verdictSummary = clipText(verdictRaw?.summary, 60)
-  const verdictPositioning = clipText(verdictRaw?.positioning, 60)
+  /* 两段各一句（裁剪线走真源，此前是裸的 60） */
+  const verdictSummary = clipText(verdictRaw?.summary, VERDICT_CHARS)
+  const verdictPositioning = clipText(verdictRaw?.positioning, VERDICT_CHARS)
   const verdict =
     verdictSummary !== '' || verdictPositioning !== ''
       ? { summary: verdictSummary, positioning: verdictPositioning }
@@ -2393,28 +2445,34 @@ export function sanitizeReport(
   /* 口碑两极 / 言行一致度（批 2）：与 verdict 同一套「评价类、不带出处、去空 + 收敛长度」。
      口碑两极：两侧都空则整段不落库；言行一致度：claim/act/gap 三者都空则不落库。 */
   const reputationRaw = llm.reputation
-  const reputationPositive = clipText(reputationRaw?.positive, 60)
-  const reputationNegative = clipText(reputationRaw?.negative, 60)
+  /* 两侧各一句（裁剪线走真源，此前是裸的 60） */
+  const reputationPositive = clipText(reputationRaw?.positive, REPUTATION_CHARS)
+  const reputationNegative = clipText(reputationRaw?.negative, REPUTATION_CHARS)
   const reputation =
     reputationPositive !== '' || reputationNegative !== ''
       ? { positive: reputationPositive, negative: reputationNegative }
       : undefined
 
   const consistencyRaw = llm.consistency
-  const consistencyClaim = clipText(consistencyRaw?.claim, 40)
-  const consistencyAct = clipText(consistencyRaw?.act, 40)
-  const consistencyGap = clipText(consistencyRaw?.gap, 40)
+  /* 三段各一句（裁剪线走真源，此前是裸的 40） */
+  const consistencyClaim = clipText(consistencyRaw?.claim, CONSISTENCY_CHARS)
+  const consistencyAct = clipText(consistencyRaw?.act, CONSISTENCY_CHARS)
+  const consistencyGap = clipText(consistencyRaw?.gap, CONSISTENCY_CHARS)
   const consistency =
     consistencyClaim !== '' || consistencyAct !== '' || consistencyGap !== ''
       ? { claim: consistencyClaim, act: consistencyAct, gap: consistencyGap }
       : undefined
 
   /* 事实字段被剔除的条数单独记一笔：它是「不做推断」这道闸门在真实生成里生效的证据 */
+  /* affiliations 是 2026-10-12 加的会员段，当时这里漏了它（P2，2026-10-17 补）：
+     它和 relations / endorsements 走同一道 factSourceOf 闸门，剔除却不计数 ——
+     会员档的那条 warn 会少报，而这条日志正是「闸门在真实生成里生效」的证据。 */
   const factDropped =
     (llm.profile?.length ?? 0) -
     profile.length +
     ((llm.relations?.length ?? 0) - relations.length) +
     ((llm.endorsements?.length ?? 0) - endorsements.length) +
+    ((llm.affiliations?.length ?? 0) - affiliations.length) +
     ((llm.controversies?.length ?? 0) - controversies.length)
   if (factDropped > 0) {
     diagLog('warn', 'db', `事实字段无有效出处，剔除 ${factDropped} 条（${personKey}）`)
@@ -2488,16 +2546,20 @@ export function sanitizeReport(
      * 故改为一律落库：UI 用「键在不在」区分老报告（整卡降级，维持原约定不变），
      * 用「数组空不空」区分本次确实没有（出卡 + 写明原因）。
      */
-    profile,
-    relations,
-    endorsements,
-    glossary,
-    controversies,
+    /*
+     * 无素材兜底（knowledgeOnly）时这五段**不落键**：它们的空数组语义是「本次确认素材里没有」
+     * （见上面 2026-10-08 那段），而兜底压根没检索到素材 —— 落成空数组会让页面多出五张
+     * 「本次确实没有」的卡，与「这份报告没要过这段」是两件事。
+     */
+    ...(knowledgeOnly ? {} : { profile, relations, endorsements, glossary, controversies }),
     ...(verdict ? { verdict } : {}),
     ...(reputation ? { reputation } : {}),
     ...(consistency ? { consistency } : {}),
     disclaimer: DISCLAIMER,
     focus,
+    /* 兜底标记跟着出口走（P1，2026-10-17）：buildKnowledgeFallback 现在也过这个函数，
+       这里若不落它，shortfallVerdict 的「未经核实」专门文案与页面口径会一起丢掉 */
+    ...(knowledgeOnly ? { knowledgeOnly: true as const } : {}),
     coverage: buildCoverage(news)
   }
 }
