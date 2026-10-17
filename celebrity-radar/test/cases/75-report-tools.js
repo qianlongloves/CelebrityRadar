@@ -144,9 +144,14 @@ describe('首屏工具卡：五个动作收拢到一处', () => {
     ok(countOf('onClick={() => void toggleReportFav()}') === 1, '收藏')
     ok(countOf('onClick={onExportCard}') === 1, '导出长图')
     ok(countOf('onClick={onExportData}') === 1, '导出数据')
-    // 刷新有第二个入口：报告时间行（点时间也刷新）。那不是工具卡的一部分，刻意保留。
-    ok(countOf('onClick={() => void requestRefresh()}') === 2, '刷新（卡内 1 + 时间行 1）')
+    /*
+     * 刷新只剩一个入口：首屏工具卡（2026-10-17 用户反馈「查看最新」与「刷新」功能重复）。
+     * 此前时间行整行可点、行尾还挂一个「查看最新」，与卡里这颗是同一个动作的两个入口；
+     * 现在时间行只报时间，**不许再把热区加回去** —— 方向反过来了，多一处就算回退。
+     */
+    ok(countOf('onClick={() => void requestRefresh()}') === 1, '刷新（只许工具卡这一处）')
     ok(PAGE.lastIndexOf('onClick={() => void requestRefresh()}') > toolsAt, '卡里那颗刷新不见了')
+    notOk(PAGE.includes("className='page-report__refresh-link'"), '「查看最新」内联链接不许回来')
   })
 
   it('四个工具的 onClick 都排在卡之后（不是留在页脚的旧块里凑数）', () => {

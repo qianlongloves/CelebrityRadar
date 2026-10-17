@@ -501,7 +501,7 @@ export default function ReportPage() {
   /**
    * 「刷新在途」锁（2026-10-10 新增）。
    *
-   * 为什么需要：`load(true)` 有**两个**入口（顶部侧重条的「重新生成为…」与页脚「刷新最新」），
+   * 为什么需要：`load(true)` 有**两个**入口（顶部侧重条的「重新生成为…」与首屏工具卡的「刷新」），
    * 而 force 路径此前没有任何在途判断 —— 上一次还没回来时再点一次，就是一次真实的生成请求
    * （免费版一天只有 3 次）。用户点第二次的原因恰恰是「第一次没反馈」，所以这把锁与顶部那条
    * 刷新提示是同一件事的两半：**先让他看见在跑，再让重复点击无效**。
@@ -1067,10 +1067,13 @@ export default function ReportPage() {
   }, [member, state])
 
   /**
-   * 页面上所有「重新生成」入口的唯一出口（顶部状态行 + 底部「刷新最新」）。
+   * 页面上「重新生成」的唯一出口（首屏工具卡的「刷新」；侧重条的「重新生成为…」也走这里）。
    *
-   * 合并成一个函数是为了让两处**不可能再各说各话** —— 此前正是两处判据不一致，
-   * 才出现「顶上没热区、底下按钮变灰」这种同一动作两个答案的局面。
+   * 2026-10-17 起入口只剩工具卡一处：横幅状态行原来整行可点、行尾还有「查看最新」，
+   * 与工具卡的「刷新」是同一个动作的两个入口（用户反馈重复）。收成一处之后，
+   * 「同一动作不能说两套话」不再靠两处对齐来保证 —— 因为只剩一套。
+   * 但仍保留这个函数：侧重条那条路径与工具卡共用同一套确认弹窗与忙碌态，
+   * 两处若各写一份，「消耗几次 / 能不能点」迟早再次分叉。
    */
   const requestRefresh = useCallback(async () => {
     if (refreshing) return
@@ -1972,23 +1975,22 @@ export default function ReportPage() {
             </View>
           </View>
 
-          {/* 状态行（全幅）：刚生成 → 这一版引用了多少实时素材（报告自证）；已有更新版本 → 刷新入口。
-              这一行现在**永远可点**（2026-10-10）：原先 showFresh 时这里撤掉热区、底部按钮同时变灰
-              「已是最新」，而免费档即使点得动，12 小时内也会被冷却静默拦下、交回旧版本 ——
-              同一个动作在页面上有三个答案，用户只能学会怀疑按钮。
-              现在把门开在明处：点下去先确认代价（消耗 1 次生成次数 + 今日剩余，见 confirmRefresh），
-              由用户自己决定花不花；防滥用交给云函数日限，不再由前端替用户做决定。
-              时间也归到这一行 —— 原先名字行里的「3 小时前」与这里的「33 天前生成」是同一件事，
-              一行写完既省高度也不再自相矛盾（O-14 要的是「N 天前生成 · 建议刷新」这个完整因果）。 */}
-          <View className='page-report__meta' onClick={() => void requestRefresh()}>
+          {/* 状态行（全幅）：刚生成 → 这一版引用了多少实时素材（报告自证）；否则 → 这份报告有多旧。
+              **它只报事实，不再是入口**（2026-10-17 用户反馈：「查看最新」与工具卡的「刷新」重复）。
+              此前这一行整行可点、行尾还挂一个带下划线的「查看最新」，而首屏工具卡里已有一颗「刷新」
+              —— 同一个动作两个入口，措辞（查看最新 / 刷新）又像两件轻重不同的事。
+              现在刷新只留工具卡一处，这一行退回纯文本。
+              历史（2026-10-10）：这一行曾在 showFresh 时撤掉热区、页脚按钮同时变灰「已是最新」，
+              同一动作三个答案，用户只能学会怀疑按钮；后来把门开在明处（确认弹窗写清代价：
+              消耗 1 次生成次数 + 今日剩余，见 confirmRefresh）。入口收成一处后，
+              「前后不能说两套话」自然成立 —— 因为只剩一套。
+              O-14 要的「N 天前生成」仍写在这里：年龄是判断依据，建议怎么做的动作交给工具卡。 */}
+          <View className='page-report__meta'>
             {showFresh ? (
               <Text className='page-report__meta-text'>{`刚刚生成 · ${sourceNote}`}</Text>
             ) : (
               <Text className='page-report__meta-text'>
-                {staleReport
-                  ? `${ageDays} 天前生成 · 建议刷新 `
-                  : `${fromNow(report.generatedAt)}生成 · `}
-                <Text className='page-report__refresh-link'>查看最新</Text>
+                {staleReport ? `${ageDays} 天前生成` : `${fromNow(report.generatedAt)}生成`}
               </Text>
             )}
           </View>
@@ -2189,7 +2191,7 @@ export default function ReportPage() {
             <Text className='page-report__diff-body'>
               生成时有 {report.missingGroups.length} 组段落没能成功产出（
               {report.missingGroups.map((g) => MISSING_GROUP_LABELS[g] ?? g).join(' / ')}
-              ），下面相应卡片可能缺失 —— 不是显示问题。点右上角「查看最新」重新生成，通常可以补全。
+              ），下面相应卡片可能缺失 —— 不是显示问题。点上方工具卡的「刷新」重新生成，通常可以补全。
             </Text>
           </View>
           <NoticeClose onClose={() => closeNotice('missingGroups')} />
@@ -2410,7 +2412,7 @@ export default function ReportPage() {
             <View id='sec-overview' className='card'>
               <View className='card-title'>人物速览</View>
               <Text className='page-report__empty'>
-                这份报告没有记录素材覆盖范围（多为较早生成的缓存报告），收录的动态也都没有可用日期，故算不出报道热度与覆盖区间。点右上角「查看最新」重新生成即可补上。
+                这份报告没有记录素材覆盖范围（多为较早生成的缓存报告），收录的动态也都没有可用日期，故算不出报道热度与覆盖区间。点上方工具卡的「刷新」重新生成即可补上。
               </Text>
               {gistRow}
             </View>
@@ -2918,7 +2920,7 @@ export default function ReportPage() {
               {!report.controversies && (
                 <Text className='page-report__empty'>
                   这份报告里没有这一段：它生成于「争议与回应」上线之前（或那一版未包含它）。
-                  这一段缺数据与「确认没有争议」不是一回事 —— 点上方「刷新最新」可补齐。
+                  这一段缺数据与「确认没有争议」不是一回事 —— 点上方工具卡的「刷新」可补齐。
                 </Text>
               )}
               {report.controversies?.length === 0 && (
@@ -3076,7 +3078,7 @@ export default function ReportPage() {
                   故改为「这些段落」并一并说明「有几段展示几段」。 */}
               {!report.memberNotes && !report.conflicts && (
                 <Text className='page-report__empty'>
-                  这份报告生成时没有包含会员段落（可能是免费生成、或较早的缓存）。点上方「查看最新」用会员档重新生成，
+                  这份报告生成时没有包含会员段落（可能是免费生成、或较早的缓存）。点上方工具卡的「刷新」，以会员档重新生成，
                   即可得到 {MEMBER_SECTIONS.join('、')} 这些段落 —— 这次补齐不消耗你的每日生成次数。
                   具体给到几段取决于素材：有几段就展示几段，不凑数。
                 </Text>

@@ -1820,15 +1820,44 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
     ok(scss.slice(gAt, gAt + 200).includes('margin-right: -12rpx'), '负右外边距要跟着组容器')
   })
 
-  it('P2-18（2026-10-10 改）：两个刷新入口都走唯一出口 requestRefresh，按钮不再按 showFresh 禁用', () => {
+  it('P2-18（2026-10-17 再改）：刷新只剩工具卡一个入口，且确认弹窗仍在', () => {
     notOk(/disabled=\{showFresh\}/.test(src), '按钮不再变灰 —— 用户要的是「重新生成随时可用」')
     notOk(/showFresh \? '已是最新' : '刷新最新'/.test(src), '文案不再随状态变化（代价改由确认弹窗说明）')
-    ok(src.includes('const requestRefresh = useCallback'), '统一出口必须存在，两处入口不许再各判一次')
+    ok(src.includes('const requestRefresh = useCallback'), '统一出口必须存在')
+    /*
+     * 2026-10-10 这条断言要求「两个入口都走唯一出口」（横幅状态行 + 工具卡）。
+     * 2026-10-17 用户反馈两者功能重复、措辞还像两件轻重不同的事 ⇒ 入口收成一个。
+     * 断言方向随之反转：以前是「至少两处」，现在是**恰好一处**（多一处就是回退），
+     * 且被删掉的那个内联链接不许回来。
+     */
     const hits = src.split('onClick={() => void requestRefresh()}').length - 1
-    ok(hits >= 2, `顶部状态行与底部按钮都该走唯一出口，实际 ${hits} 处`)
+    eq(hits, 1, `刷新入口只该有工具卡这一处，实际 ${hits} 处`)
+    notOk(src.includes('page-report__refresh-link'), '「查看最新」内联链接已随重复入口一起删掉，不许回来')
     ok(src.includes('confirmRefresh'), '点刷新前必须先确认代价')
     ok(src.includes('将消耗 1 次生成次数'), '确认弹窗要说清消耗几次')
     ok(src.includes('生成失败或内容不完整时不计数'), '确认弹窗要给出「不达标不计数」的承诺')
+  })
+
+  it('锁态卡：描边显式 2rpx 淡紫、「会员」标签浅底深字（2026-10-17 用户反馈后钉住）', () => {
+    /*
+     * 用户反馈两条：免费档看会员节时「边框太鲜艳」「会员二字与底色相近看不清」。
+     * 成因是两个叠在一起：① `.card` 基类**没有 border**，LockedCard 只写了 border-style
+     * 与 border-color，宽度落到默认 medium（≈6rpx）—— 画出来是一圈粗亮紫虚线；
+     * ② 「会员」标签是 $brand-soft(#8764ff) 底 + $brand(#5f33e1) 字，明度太近。
+     * 一条卡在一屏里出现两三次，两处叠加就成了「一排刺眼的警示框」。
+     */
+    const css = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'package', 'report', 'index.scss'), 'utf8')
+    const at = css.indexOf('&__locked {')
+    ok(at > 0, '找不到 &__locked 规则')
+    const body = css.slice(at, at + 220)
+    ok(/border:\s*2rpx\s+dashed/.test(body), '描边必须显式给宽度：只写 style/color 时落到默认 medium，就是那圈粗紫虚线')
+    ok(/rgba\(95,\s*51,\s*225,\s*0\.28\)/.test(body), '描边用品牌紫 28% 透明，不用 $brand-soft 实色')
+    const tagAt = css.indexOf('&__locked-tag {')
+    ok(tagAt > 0, '找不到 &__locked-tag 规则')
+    const tagBody = css.slice(tagAt, tagAt + 240)
+    ok(/background:\s*\$brand-weak/.test(tagBody), '「会员」标签底色改浅紫（$brand-weak），与工具卡 __tool-vip 同一套')
+    ok(/color:\s*\$brand;/.test(tagBody), '「会员」标签字色用深品牌紫')
+    notOk(/background:\s*\$brand-soft/.test(tagBody), '不许回到亮紫底压深紫字（18rpx 上会糊成一块色块）')
   })
 
   it('P2-19：waiting 态有轮询（5s 一次、上限取锁的 BUILDING_TIMEOUT_MS 后转 error），兑现「无需刷新自动展示」的承诺', () => {
