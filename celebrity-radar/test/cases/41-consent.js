@@ -195,13 +195,21 @@ describe('首次知情同意：撤回同意独立入口（PIPL 第 15 条）', (
  * 云端「删哪些表 / 订单去标识化」由 test/cases/18-user-config.js 的用例钉住（同属 P1-4）。
  */
 describe('注销账号：独立入口 + 善后只清本机（PIPL 第 47 条）', () => {
-  const tsx = read('pages/mine/index.tsx')
+  /*
+   * 2026-10-17：注销入口从「我的」页迁到「我的 → 系统设置」（package/settings）。
+   * 政策文案已同步改成同一路径（「二、你的权利 · 注销账号」），否则承诺的入口与实际路径对不上。
+   */
+  const tsx = read('package/settings/index.tsx')
   const body = (tsx.match(/const cancelAccount = async \(\) => \{[\s\S]*?\n  \}/) || [''])[0]
 
-  it('「我的」页有「注销账号」入口，且接线到独立处理函数', () => {
-    ok(body.length > 0, 'pages/mine 里应有 cancelAccount 处理函数')
+  it('「系统设置」页有「注销账号」入口，且接线到独立处理函数', () => {
+    ok(body.length > 0, 'package/settings 里应有 cancelAccount 处理函数')
     ok(tsx.includes("title: '注销账号'"), '应有「注销账号」菜单项（政策承诺的入口）')
     ok(tsx.includes('onTap: () => void cancelAccount()'), '菜单项应接线到 cancelAccount')
+    /* 反向：入口只许有一处 —— 「我的」页必须通向系统设置，而不是自己再挂一个注销 */
+    const mine = read('pages/mine/index.tsx')
+    ok(mine.includes("'/package/settings/index'"), '「我的」页应有「系统设置」入口')
+    ok(!mine.includes('cancelAccount'), '「我的」页不该再直接调 cancelAccount（两处入口会让人退错地方）')
   })
 
   it('不可逆动作二次确认：连弹两道确认框', () => {

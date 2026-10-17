@@ -203,9 +203,10 @@ describe('42 个人信息副本导出（PIPL 第 45 条）', () => {
   })
 
   it('入口接在页面上：菜单项 + 处理函数（静态读源码）', () => {
-    const tsx = read('pages/mine/index.tsx')
+    /* 2026-10-17 起在「我的 → 系统设置」（package/settings），我的页只留通向它的那一行 */
+    const tsx = read('package/settings/index.tsx')
 
-    ok(tsx.includes("title: '导出个人数据'"), '「我的」页应有导出入口')
+    ok(tsx.includes("title: '导出个人数据'"), '「系统设置」页应有导出入口')
     ok(tsx.includes('onTap: () => void exportMyData()'), '菜单项应指向 exportMyData')
     ok(tsx.includes('const exportMyData = async () => {'), 'exportMyData 应是个处理函数（不是裸名字引用）')
     ok(tsx.includes('exportMyDataToClipboard'), '处理函数应调用 utils/data-export 的导出口')
@@ -213,7 +214,7 @@ describe('42 个人信息副本导出（PIPL 第 45 条）', () => {
   })
 
   it('未登录时菜单项给出「登录后可用」而不是静默失败', () => {
-    const tsx = read('pages/mine/index.tsx')
+    const tsx = read('package/settings/index.tsx')
     ok(tsx.includes("note: userId ? '复制 JSON 副本到剪贴板' : '登录后可用'"))
   })
 

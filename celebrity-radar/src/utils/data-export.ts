@@ -12,7 +12,7 @@ import { getPreferredProvider, getPreferredTier } from './settings'
  *
  * 「查阅」在页面里已经有了（关注 / 收藏 / 历史 / 预警各自成页），但第 45 条还给到
  * 「复制」：用户应当能把属于自己的那份数据**带走**，而不是只能一页一页截图。
- * 本模块把散在各页的数据拢成一份 JSON，由「我的 → 导出个人数据」复制到剪贴板。
+ * 本模块把散在各页的数据拢成一份 JSON，由「我的 → 系统设置 → 导出个人数据」复制到剪贴板。
  *
  * 四条口径：
  *   · **只导出本人数据**：这几个 list 口本来就按 openid 过滤（对应集合权限亦为「仅创建者可读写」）；
@@ -85,7 +85,8 @@ export async function buildMyDataBundle(): Promise<MyDataBundle | null> {
       title: '名人雷达 · 个人数据副本',
       basis: '依据《中华人民共和国个人信息保护法》第 45 条（查阅、复制权）导出',
       scope: '仅含你本人的数据，不含他人信息与全局缓存内容',
-      rights: '删除：我的 → 清空数据；撤回同意：我的 → 撤回同意；注销：我的 → 注销账号'
+      rights:
+        '删除：我的 → 系统设置 → 清空数据；撤回同意：我的 → 撤回同意；注销：我的 → 系统设置 → 注销账号'
     },
     exported_at: new Date().toISOString(),
     account: { user_id: userId, nickname: nickname ?? null },

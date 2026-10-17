@@ -68,7 +68,9 @@ export default defineAppConfig({
         /* 监测工作台（预警页 / 舆情页进入：把监控对象横着排成台账，勾选批量对比 + 导出简报，见 package/workbench + utils/workbench） */
         'workbench/index',
         /* 报告历史版本（报告页进入：列出被刷新覆盖掉的旧版，免费看列表、会员看正文，见 package/report-history + utils/report-versions） */
-        'report-history/index'
+        'report-history/index',
+        /* 系统设置（「我的」菜单底部进入：更新提醒 / 导出个人数据 / 清空数据 / 注销账号，见 package/settings） */
+        'settings/index'
       ]
     }
   ],

@@ -370,12 +370,14 @@ describe('报告页会员促销条 utils/member（O-21 立起 / O-25 收敛 / O-
      */
     const fs = require('fs')
     const path = require('path')
-    const mine = fs.readFileSync(
-      path.resolve(__dirname, '..', '..', 'src', 'pages', 'mine', 'index.tsx'),
+    /* 2026-10-17 起「清空数据」在「我的 → 系统设置」页（package/settings），调用点随页面迁移 */
+    const clearPage = fs.readFileSync(
+      path.resolve(__dirname, '..', '..', 'src', 'package', 'settings', 'index.tsx'),
       'utf8'
     )
-    ok(mine.includes('clearLocalSettings()'), '「清空我的数据」没有调用 clearLocalSettings')
-    ok(mine.includes('clearPromoDismiss()'), '「清空我的数据」没有调用 clearPromoDismiss')
+    ok(clearPage.includes('clearLocalSettings()'), '「清空我的数据」没有调用 clearLocalSettings')
+    ok(clearPage.includes('clearPromoDismiss()'), '「清空我的数据」没有调用 clearPromoDismiss')
+    /* 注销那条链的「不许用 clearLocalSettings」由 41-consent 钉住（本文件只管清空这条链） */
   })
 })
 

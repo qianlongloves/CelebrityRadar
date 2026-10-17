@@ -5,7 +5,6 @@ import { useAuth } from '@/stores/auth'
 import { ensureLogin, updateProfile } from '@/utils/auth'
 import { openMemberPage } from '@/utils/member-entry'
 import {
-  clearLocalSettings,
   clearLocalSettingsCache,
   getPreferredTier,
   setPreferredTier,
@@ -16,14 +15,12 @@ import { resolveChatSelection, listReadyVendors } from '@/utils/llm'
 import type { ChatSelection, ReadyVendor } from '@/utils/llm'
 import { publicConfig } from '@/config/public'
 import type { LlmVendor, LlmQuality } from '@/config/public'
-import { notifyConfigured, requestNotify } from '@/utils/notify'
-import { clearAllMyData, deleteAccount } from '@/utils/data-deletion'
+import { clearAllMyData } from '@/utils/data-deletion'
 import { deleteCloudFile } from '@/utils/cloud'
 import { useConsent } from '@/stores/consent'
 import { listFollows } from '@/utils/follows'
 import { listFavorites } from '@/utils/favorites'
 import { listHistory, HISTORY_LIMIT } from '@/utils/history'
-import { exportMyDataToClipboard } from '@/utils/data-export'
 import { peekGenerateQuota, GenerateQuotaSummary } from '@/utils/quota'
 import {
   FREE_FEATURES_NOTE,
@@ -254,86 +251,14 @@ export default function Mine() {
     }
   }
 
-  /** 清空我的数据：本地设置 + 云端（follows / favorites / history / keyword_watches / events，§六.6） */
-  const clearMyData = async () => {
-    const res = await Taro.showModal({
-      title: '清空我的数据',
-      content: '将清除本地偏好设置与缓存，并删除云端的关注、收藏、历史、监控与行为计数，不可恢复。',
-      confirmText: '清除',
-      confirmColor: '#EF4444'
-    })
-    if (!res.confirm) return
-    const ok = await clearAllMyData()
-    /* 清理本机设置（历史遗留密钥 + 模型偏好；云端那份偏好也一并复位）
-       ⚠ 促销条关闭记忆不在这条链里（它属 member.ts 的展示策略，在那边清会成环依赖），故单独清 */
-    clearLocalSettings()
-    clearPromoDismiss()
-    /* 供应商 / 档位偏好刚被清掉，界面同步回落到默认那家与免费档 */
-    setSelection(resolveChatSelection(isMember))
-    clearWeeklyCache()
-    /* 消息已读基线也是本机数据：留着会让「清空后」的首页铃铛按旧基线判定未读 */
-    clearMessageState()
-    /* 风险信号的「上次查看」基线同属本机数据：一并清掉，清空后按「从未看过」重新计（见 utils/inbox） */
-    clearInboxSeen()
-    /* 舆情页冷启动推荐的「不用了」同属本机偏好：清掉后新的一轮仍会给出引导（避免留下一个看不见的决定） */
-    clearPickDismiss()
-    /* 问答用量同理：清掉本机镜像与连点时间。⚠ 云端 `ask_quota` 不清 ——
-       额度挂在账号上，清本机数据不会重置今日提问次数（与生成配额同一口径） */
-    clearQaUsage()
-    void loadCounts()
-    Taro.showToast({ title: ok ? '已清空全部数据' : '本地已清空，云端删除失败请稍后重试', icon: 'none' })
-  }
-
-  /**
-   * 注销账号（P0 合规项）：删除云端**全部个人信息**并解除登录态，是隐私政策 §2.4
-   * 「通过『我的 → 注销账号』可注销账号」承诺的实际入口（此前该入口缺失，政策承诺落空）。
-   *
-   * 不可逆，故**两次确认**；云端删除集中在云函数 `userInit(action:'deleteAccount')`，
-   * 端上只负责确认、发起与善后。
-   *
-   * ⚠ 善后必须用 `clearLocalSettingsCache`（只清本机）而**不是** `clearLocalSettings`：
-   * 后者会把默认配置推回 `userInit.set`，其内部 `ensure()` 会把刚删掉的 users 行**重建回来**，
-   * 等于注销没生效。此处也不能再调用任何会写 `users` 的接口。
+  /*
+   * 清空数据 / 注销账号（2026-10-17 迁到 package/settings）：这两个不可恢复的动作连同
+   * 「更新提醒」「导出个人数据」一起，从本页菜单移进了「我的 → 系统设置」。
+   * 理由见 package/settings/index.tsx 文件头：本页的首屏被用量卡与模型选择占满，
+   * 而这一组低频、重后果的入口夹在「关注的人 / 我的收藏 / 浏览历史」中间既容易误触，
+   * 也让每次翻菜单都要看见几个红色项。**这里只留中性的「系统设置」一行入口。**
+   * ⚠ 撤回同意仍在本页（见下方 withdrawConsent）：它绑定「已同意」状态，入口离授权说明越近越好。
    */
-  const cancelAccount = async () => {
-    const first = await Taro.showModal({
-      title: '注销账号',
-      content: '注销后将删除你的关注、收藏、历史、监控与全部个人信息，订单按法律规定去标识化留存。此操作不可恢复。',
-      confirmText: '继续',
-      confirmColor: '#EF4444'
-    })
-    if (!first.confirm) return
-    const second = await Taro.showModal({
-      title: '确认注销？',
-      content: '再次确认：账号注销后不可恢复，将立即退出登录。',
-      confirmText: '确认注销',
-      confirmColor: '#EF4444'
-    })
-    if (!second.confirm) return
-
-    Taro.showLoading({ title: '注销中', mask: true })
-    const res = await deleteAccount()
-    Taro.hideLoading()
-    if (!res.ok) {
-      Taro.showToast({ title: res.message ?? '注销失败，请稍后重试', icon: 'none' })
-      return
-    }
-
-    /* 云端已删：头像云文件不在云函数的删除清单里，这里顺手删掉，避免个人信息残留 */
-    if (avatarUrl && avatarUrl.indexOf('cloud://') === 0) void deleteCloudFile(avatarUrl)
-    useAuth.getState().clearLogin()
-    clearLocalSettingsCache()
-    /* 注销 = 彻底解除关系：同意记录一并撤销（走 store，撤后 app 会即时重现同意网关） */
-    useConsent.getState().withdraw()
-    clearPromoDismiss()
-    clearWeeklyCache()
-    clearMessageState()
-    clearInboxSeen()
-    clearPickDismiss()
-    clearQaUsage()
-    void loadCounts()
-    Taro.showToast({ title: '账号已注销', icon: 'none' })
-  }
 
   /**
    * 撤回同意（PIPL 第 15 条：个人有权撤回同意，处理者应提供便捷的撤回方式）。
@@ -429,33 +354,7 @@ export default function Mine() {
     if (await saveProfile({ nickname: next }, '昵称已更新')) setEditingNick(false)
   }
 
-  /**
-   * 订阅提醒授权入口。
-   * 必须由点击直接触发：requestNotify 在第一个 await 之前就调用了
-   * requestSubscribeMessage（微信要求授权请求出现在用户手势的同步调用栈里）。
-   */
-  const onSubscribeTap = async () => {
-    const res = await requestNotify()
-    Taro.showToast({ title: res.message, icon: 'none', duration: 2500 })
-  }
-
-  /**
-   * 导出个人信息副本（PIPL 第 45 条「复制」）。
-   *
-   * 只读动作：把本人的关注 / 收藏 / 历史 / 监控与偏好拼成一份 JSON，复制到剪贴板。
-   * 刻意不做「保存成文件」：小程序沙箱里要 saveFile + openDocument 两步，用户还得再去找文件；
-   * 剪贴板可以直接粘进备忘录或聊天，零权限、够用。
-   */
-  const exportMyData = async () => {
-    Taro.showLoading({ title: '整理中', mask: true })
-    const res = await exportMyDataToClipboard()
-    Taro.hideLoading()
-    await Taro.showModal({
-      title: res.ok ? '已复制到剪贴板' : '导出失败',
-      content: res.message,
-      showCancel: false
-    })
-  }
+  /* 「更新提醒」授权与「导出个人数据」也随之迁到 package/settings（实现与文案原样搬过去） */
 
   /** 菜单项类型：danger 为破坏性操作，走警示色分级 */
   type MenuItem = {
@@ -503,43 +402,11 @@ export default function Mine() {
       onTap: () => Taro.navigateTo({ url: '/package/history/index' })
     },
     {
-      /*
-        微信一次性订阅的规则是「授权一次只够推一条」，所以文案写「提醒一次」
-        而不是做成常亮开关 —— 开关会让人以为打开后就一直有推送。
-        未配置模板 ID 时点击只给指引，见 utils/notify.ts 的 notifyConfigured。
-
-        标题不再只写「关注」：同一位授权同时覆盖「我盯（跟进）的事件有新进展」（E1），
-        只写关注会让人以为盯的事不在提醒范围内 —— 而「盯事」正是这个产品的主线动词。
-      */
-      icon: '🔔',
-      iconBg: 'brand',
-      title: '更新提醒',
-      note: notifyConfigured() ? '关注的人 / 我盯的事 · 授权一次一条' : '未配置订阅模板',
-      onTap: () => void onSubscribeTap()
-    },
-    {
       icon: '🛡',
       iconBg: 'orange',
       title: '隐私与免责',
       note: '隐私清单 · 免责文案',
       onTap: () => Taro.navigateTo({ url: '/package/agreement/index' })
-    },
-    {
-      /* PIPL 第 45 条「查阅、复制」：查阅已有各页，这里补齐「把副本带走」 */
-      icon: '📤',
-      iconBg: 'brand',
-      title: '导出个人数据',
-      note: userId ? '复制 JSON 副本到剪贴板' : '登录后可用',
-      onTap: () => void exportMyData()
-    },
-    {
-      /* §四 合规阻塞项：声明页承诺「可删除云端数据」，此处提供实际入口 */
-      icon: '🗑',
-      iconBg: 'danger',
-      title: '清空数据',
-      note: '删除云端关注 / 收藏 / 历史',
-      danger: true,
-      onTap: () => void clearMyData()
     },
     /* 撤回同意：PIPL 第 15 条的独立入口。仅已同意时展示 —— 只能撤回已给出的同意 */
     ...(consented
@@ -554,19 +421,21 @@ export default function Mine() {
           }
         ]
       : []),
-    /* 注销账号：隐私政策 §2.4 承诺的入口（P0）。仅登录后展示 —— 未登录没有账号可注销 */
-    ...(userId
-      ? [
-          {
-            icon: '⚠️',
-            iconBg: 'danger' as const,
-            title: '注销账号',
-            note: '删除全部个人信息并退出登录',
-            danger: true,
-            onTap: () => void cancelAccount()
-          }
-        ]
-      : [])
+    {
+      /*
+        系统设置（2026-10-17）：更新提醒 / 导出个人数据 / 清空数据 / 注销账号四项收进去，
+        本页只留这一行中性入口（理由见文件上方那段注释与 package/settings 文件头）。
+
+        ⚠ note 必须点出那几件事：光写「系统设置」四个字，没人会想到注销账号在里面 ——
+        而注销是隐私政策明确承诺的入口，藏在名字看不出内容的入口后面，等于承诺落空。
+        这一行也因此**始终展示**（不随登录态隐藏）：未登录的用户同样要找更新提醒与导出。
+      */
+      icon: '⚙️',
+      iconBg: 'blue',
+      title: '系统设置',
+      note: '更新提醒 · 导出 / 清空数据 · 注销',
+      onTap: () => Taro.navigateTo({ url: '/package/settings/index' })
+    }
   ]
 
   return (

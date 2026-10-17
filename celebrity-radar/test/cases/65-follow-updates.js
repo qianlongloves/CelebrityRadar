@@ -375,8 +375,9 @@ describe('实现约束：角标口径单一、水位有上限、会员读权威�
       /&__follow-note\s*\{/.test(codeOf('src/package/event/index.scss')),
       '分包页样式必须真的定义（漏了不报错，只是文案挤在按钮行里）'
     )
-    const mine = codeOf('src/pages/mine/index.tsx')
-    ok(mine.includes('我盯的事'), '提醒入口的文案要覆盖两类候选（只写「关注的人」用户就不敢指望跟进会被提醒）')
+    /* 提醒入口 2026-10-17 迁到「我的 → 系统设置」（package/settings），文案随之搬过去 */
+    const settings = codeOf('src/package/settings/index.tsx')
+    ok(settings.includes('我盯的事'), '提醒入口的文案要覆盖两类候选（只写「关注的人」用户就不敢指望跟进会被提醒）')
   })
 
   it('端上：角标口径与跟进计数分两处，且都复用同一个 eventNewness', () => {

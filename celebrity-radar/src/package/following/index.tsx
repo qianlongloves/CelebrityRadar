@@ -194,7 +194,7 @@ export default function Following() {
               变化概览仅展示最近关注的 {WATCH_LIMIT} 位（每人要多读两次缓存，不做无上限拉取）
             </View>
           )}
-          <View className='disclaimer'>关注列表仅自己可见；「我的 → 清空我的数据」会一并删除</View>
+          <View className='disclaimer'>关注列表仅自己可见；「我的 → 系统设置 → 清空数据」会一并删除</View>
         </View>
       )}
     </View>

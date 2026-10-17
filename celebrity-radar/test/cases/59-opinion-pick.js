@@ -409,17 +409,29 @@ describe('舆情页接线（pages/opinion/index.tsx）', () => {
 
 /* ═══════════════════ 七、「清空本机痕迹」的三条链路都要清这个标记 ═══════════════════ */
 
-describe('本机标记的清理（pages/mine/index.tsx）', () => {
+describe('本机标记的清理（我的页 + 系统设置页）', () => {
+  /*
+   * 2026-10-17：清空数据 / 注销账号搬到「我的 → 系统设置」（package/settings），
+   * 撤回同意仍在「我的」。契约不变 —— **三条链路都要清**，所以两页的调用点数一起数，
+   * 拆开后必须正好还是 3（任一侧漏一处都会留下一个用户看不见的决定）。
+   */
   const mine = read('pages/mine/index.tsx')
+  const settings = read('package/settings/index.tsx')
 
   it('清空全部数据 / 注销账号 / 撤回同意 三处都清（与 messages / inbox / weekly 同一处理）', () => {
     eq(
-      (mine.match(/clearPickDismiss\(\)/g) || []).length,
+      (mine.match(/clearPickDismiss\(\)/g) || []).length +
+        (settings.match(/clearPickDismiss\(\)/g) || []).length,
       3,
       '三条链路的契约都是「本机痕迹全清」：漏一处就会留下一个用户看不见的决定'
     )
-    eq((mine.match(/clearInboxSeen\(\)/g) || []).length, 3, '（对照：同类的 inbox 标记本来就是三处）')
+    eq(
+      (mine.match(/clearInboxSeen\(\)/g) || []).length + (settings.match(/clearInboxSeen\(\)/g) || []).length,
+      3,
+      '（对照：同类的 inbox 标记本来就是三处）'
+    )
     ok(mine.includes("import { clearPickDismiss } from '@/utils/opinion-pick'"))
+    ok(settings.includes("import { clearPickDismiss } from '@/utils/opinion-pick'"))
   })
 })
 

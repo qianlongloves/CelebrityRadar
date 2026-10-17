@@ -1,0 +1,84 @@
+@import '../../styles/variables.scss';
+
+/* 系统设置页（2026-10-17，入口在「我的」菜单底部）：
+   一页只有一张菜单卡 + 一行脚注 —— 这一页的全部价值是「把这些动作从常用路径上挪开」，
+   所以不做标题区、不做分组卡、不再塞别的东西。 */
+.page-settings {
+  min-height: 100vh;
+  padding: 24rpx 32rpx;
+  /* 底部安全区：分包页没有 tabBar，但仍有手势条 */
+  padding-bottom: calc(32rpx + env(safe-area-inset-bottom));
+}
+
+/* ===== 菜单列表（圆底图标 + 箭头）：与「我的」页同一套视觉 ===== */
+.page-settings__menus {
+  padding: 8rpx 0;
+}
+
+.page-settings__menu {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding: 24rpx 28rpx;
+
+  & + .page-settings__menu {
+    border-top: 1rpx solid $line;
+  }
+}
+
+.page-settings__menu-icon {
+  flex-shrink: 0;
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 24rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32rpx;
+
+  &--brand { background: $brand-weak; }
+  &--blue { background: $accent-blue-bg; }
+  &--orange { background: $accent-orange-bg; }
+  &--danger { background: $danger-weak; }
+}
+
+.page-settings__menu-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+}
+
+.page-settings__menu-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.page-settings__menu-note {
+  font-size: 22rpx;
+  color: $text-3;
+}
+
+/* 破坏性操作：标题用警示色，与常规入口拉开视觉分级（颜色是最后一道提醒） */
+.page-settings__menu--danger .page-settings__menu-title {
+  color: $danger;
+}
+
+.page-settings__menu-arrow {
+  flex-shrink: 0;
+  color: $text-3;
+  font-size: 40rpx;
+  line-height: 1;
+}
+
+/* 脚注：讲清「清空 / 注销」的区别，不是免责声明 —— 所以用正文色而不是最浅一档 */
+.page-settings__foot {
+  display: block;
+  margin-top: 20rpx;
+  padding: 0 12rpx;
+  font-size: 22rpx;
+  line-height: 1.7;
+  color: $text-3;
+}
