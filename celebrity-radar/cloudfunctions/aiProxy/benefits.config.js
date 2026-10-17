@@ -185,6 +185,7 @@ module.exports = {
   },
   "REPORT_BUILD": {
     "batchCount": 4,
+    "batchConcurrency": 4,
     "batchAttempts": 3,
     "generateAttempts": 2,
     "chatDeadlineMs": 45000,

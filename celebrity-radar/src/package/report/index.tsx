@@ -567,6 +567,14 @@ export default function ReportPage() {
    */
   const [keptMember, setKeptMember] = useState(false)
   /**
+   * 这次带了补充关键词，但读的是**已有报告**，关键词没参与生成（P6，2026-10-17）。
+   *
+   * 关键词不是缓存键的一部分（同一个人只有一份报告），所以只要命中缓存它就没生效 ——
+   * 此前页面一声不吭，用户会把它读成「这个人和关键词没关系」，而事实是「这次没按关键词查」。
+   * 值是关键词原文（判据见 utils/cache.ts#ReportOutcome.keywordUnused），只用于这句说明。
+   */
+  const [keywordUnused, setKeywordUnused] = useState<string | null>(null)
+  /**
    * 本次产物没达到最低交付要求（2026-10-10，判定见 utils/report.ts#reportShortfall）。
    *
    * 与 keptMember / refreshError 共用同一个提示位（同一套外观、同一个位置）—— 三者都是
@@ -605,6 +613,7 @@ export default function ReportPage() {
     | 'error'
     | 'diff'
     | 'keptMember'
+    | 'keywordUnused'
     | 'shortfall'
     | 'firstBuild'
     | 'degraded'
@@ -710,6 +719,7 @@ export default function ReportPage() {
       setProgress(null)
       setPrevReport(null)
       setKeptMember(false)
+      setKeywordUnused(null)
       setShortfall(null)
       setShortfallRetryable(false)
       setFirstBuild(false)
@@ -750,6 +760,8 @@ export default function ReportPage() {
           /* 交回的是失败时的既有版本（refreshFailed）时不算「变化对比」，否则会拿同一份跟自己比 */
           setPrevReport(outcome.refreshFailed ? null : (outcome.prev ?? null))
           setKeptMember(outcome.keptMember === true)
+          /* 关键词没生效（P6）：只在「命中了已有报告」时有值，重新生成成功后自然为空 */
+          setKeywordUnused(outcome.keywordUnused ?? null)
           setShortfall(outcome.shortfall ?? null)
           setShortfallRetryable(outcome.shortfallRetryable === true)
           setFirstBuild(outcome.firstBuild === true)
@@ -2114,6 +2126,26 @@ export default function ReportPage() {
             </Text>
           </View>
           <NoticeClose onClose={() => closeNotice('diff')} />
+        </View>
+      )}
+
+      {/*
+        带了补充关键词、读的却是已有报告（P6，2026-10-17）。
+        关键词刻意不进 personKey / 缓存键（同一个人只有一份报告），所以只要命中缓存它就没生效。
+        此前没有这句，用户会把「关键词没带来变化」读成「这个人和关键词没什么关系」——
+        前者是我们的机制，后者是对人物的错误陈述，代价完全不对等。
+        与其余刷新结果条同一套外观，各关各的（见 closedNotices 注释）。
+      */}
+      {keywordUnused && !closedNotices.keywordUnused && (
+        <View className='page-report__diff'>
+          <View className='page-report__diff-main'>
+            <Text className='page-report__diff-head'>这次读的是已有报告</Text>
+            <Text className='page-report__diff-body'>
+              你填的补充关键词「{keywordUnused}」只在重新生成时才会用到 —— 这份报告是之前生成的，并没有按它去查。
+              想让关键词生效，点下方工具的「刷新」并确认重新生成（会消耗一次生成次数）。
+            </Text>
+          </View>
+          <NoticeClose onClose={() => closeNotice('keywordUnused')} />
         </View>
       )}
 

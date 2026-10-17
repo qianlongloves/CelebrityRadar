@@ -841,6 +841,12 @@ describe('只升不降 · 端到端（非会员 force 刷新不得吃掉会员�
 
   it('分批生成：每批成功都把中间结果写进 building 行的 parts，成品落库后作废', async () => {
     const { load } = fresh()
+    /*
+     * 本用例钉的是**串行**落库语义（第 N 个请求到达时，行上恰有 N-1 批）。
+     * P5 起默认四批并发，四个请求几乎同时到达，`before` 快照里都还没有 parts ——
+     * 并发下的落库顺序与内容由 79-parallel-batches.js 钉，这里把并发度钉成 1。
+     */
+    load('config/benefits').REPORT_BUILD.batchConcurrency = 1
     const cache = load('utils/cache')
     /* 每次模型调用**前**先看一眼行上的 parts —— 它就是「上一批」的落库结果 */
     const before = []

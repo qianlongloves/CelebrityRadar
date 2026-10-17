@@ -2017,6 +2017,7 @@ describe('报告页渲染条件（P2-12 / P2-13 / P2-18 / P2-19 / 刷新浮层�
       'error',
       'firstBuild',
       'keptMember',
+      'keywordUnused',
       'missingGroups',
       'shortfall'
     ])

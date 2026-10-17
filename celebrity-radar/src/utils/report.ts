@@ -9,6 +9,7 @@ import { RESTRICTED_SEARCH_ALLOWED } from './debug'
 import { cleanText, clipText } from './text'
 import {
   REPORT_BUDGET,
+  REPORT_BUILD,
   REPORT_FIELD_LIMITS,
   REPORT_OUTPUT_BUDGET,
   REPORT_QUOTAS,
@@ -324,15 +325,53 @@ const REPORT_FIELDS = {
 const llmContract = (fields: Record<string, z.ZodTypeAny>) =>
   z.union([z.object({ refused: z.literal(true) }), z.object({ refused: z.unknown().optional(), ...fields })])
 
-/** 按字段名挑出这批要的键；字段名写错就抛（见 pickFields 注释） */
-function pickFields(fields: string[]): Record<string, z.ZodTypeAny> {
+/**
+ * 取字段 schema 的「严格版」（P10，2026-10-17）：REPORT_FIELDS 里每一项都带 `.catch(...)`，
+ * 那是**宽容兜底**——坏值被静默换成 `[]` / `''`，事后再看结果就分不清「模型没写」与
+ * 「写了但形状不对」。`ZodCatch.unwrap()` 能取回内层 schema，拿它单独判一次即可。
+ *
+ * 取不到（zod 升级后 API 变了）就返回 null，调用方退回原 schema —— 诊断能力退化，
+ * 但绝不因为一个诊断开关把解析搞坏。
+ */
+const strictOf = (schema: z.ZodTypeAny): z.ZodTypeAny | null => {
+  const s = schema as unknown as { unwrap?: () => z.ZodTypeAny }
+  return typeof s.unwrap === 'function' ? s.unwrap() : null
+}
+
+/**
+ * 按字段名挑出这批要的键；字段名写错就抛（见 pickFields 注释）。
+ *
+ * `onDrop`（P10，可选）：某字段「模型写了但校验失败」时回调一次。不传则完全保持原样
+ * （用例与预算校验等只关心契约形状的调用方走这条）。传了也只是**多一次 safeParse**，
+ * 返回给运行时的那份值与不包时逐字相同 —— 诊断不能顺手改变解析结果。
+ *
+ * ⚠ 回调只往**本次调用**的局部数组里 push（见 buildReport），不用模块级变量：
+ * 批已改成可并发（P5），共享可变状态会让四个批次互相记错对方的字段。
+ */
+function pickFields(
+  fields: string[],
+  onDrop?: (field: string) => void
+): Record<string, z.ZodTypeAny> {
   const picked: Record<string, z.ZodTypeAny> = {}
   for (const field of fields) {
     const one = (REPORT_FIELDS as Record<string, z.ZodTypeAny>)[field]
     /* 抛而不是跳过：字段名写错（比如 analysisPoints 写成 analysisPoint）只会让那一批
        悄悄不产出该字段，页面上表现为「卡片消失」，很难追到是分批清单写错了 */
     if (!one) throw new Error(`报告分批出现未知字段：${field}（见 REPORT_FIELDS）`)
-    picked[field] = one
+    const strict = onDrop ? strictOf(one) : null
+    if (!onDrop || !strict) {
+      picked[field] = one
+      continue
+    }
+    picked[field] = z.any().transform((value: unknown) => {
+      /*
+       * 「字段缺失」不算丢弃：模型少写一个键是常态，宽容兜底本来就该给空值。
+       * 只有**值存在且过不了严格校验**才是「写了但没读懂」，那才是这一节悄悄变空的真凶。
+       */
+      if (value !== undefined && !strict.safeParse(value).success) onDrop(field)
+      const lenient = one.safeParse(value)
+      return lenient.success ? lenient.data : undefined
+    })
   }
   return picked
 }
@@ -569,6 +608,18 @@ export interface Report {
    * 不在这里记录。
    */
   missingGroups?: string[]
+  /**
+   * 本次生成里**写了但校验失败、被兜底丢空**的字段（P10，2026-10-17），形如 `facts.dynamics`。
+   *
+   * 与 `missingGroups` 的区别是本字段存在的理由：那个记「整批失败」（三批成功一批没回），
+   * 这个记「这一批回来了、但其中某个字段的形状不对」。后者此前**完全不可见** ——
+   * REPORT_FIELDS 每个字段都带 `.catch()`，坏值被静默换成 `[]` / `''`，页面只能说
+   * 「本次确实为空」。两种空对读者的意义不同（一个是「人家没有」，一个是「我们没读懂」）。
+   *
+   * 只用于诊断与排查（`diagLog` + 落库留痕），**不改变页面文案**：把「解析失败」直接说给
+   * 用户听，既不准确（模型可能只是写成了对象）也没有可执行动作。全部批都解析干净时不落这个键。
+   */
+  droppedFields?: string[]
 }
 
 /**
@@ -859,8 +910,12 @@ export function batchFields(batch: ReportBatch, member: boolean): string[] {
  * memberNotes / conflicts 会被 zod 的非严格对象静默丢弃（见 REPORT_FIELDS 注释）——
  * 「提示词要了却落不了库」正是这张字段表存在的意义。
  */
-export function batchSchema(batch: ReportBatch, member: boolean): z.ZodTypeAny {
-  return llmContract(pickFields(batchFields(batch, member)))
+export function batchSchema(
+  batch: ReportBatch,
+  member: boolean,
+  onDrop?: (field: string) => void
+): z.ZodTypeAny {
+  return llmContract(pickFields(batchFields(batch, member), onDrop))
 }
 
 /**
@@ -1799,6 +1854,13 @@ export async function buildReport(
     background?: NewsItem[]
     onPart?: (parts: ReportPart[]) => void | Promise<void>
     /**
+     * 每完成一批（成功且非拒答）回调一次已完成批数（P5，2026-10-17）。
+     *
+     * 与 `onPart` 分开是因为批已可并发：并发时 `parts` 只能在**合并阶段**按批序补齐，
+     * 拿它来播报进度会让进度条一直停在 0/4、最后一跳到底。这里只报数字，同步、不许抛。
+     */
+    onBatchDone?: (done: number) => void
+    /**
      * 补跑模式（P8，2026-10-17）：只重新生成这几组，其余组由 `seed` 提供。
      *
      * 为什么需要它：不达标自动重跑此前是**整份 4 批重来**（cache.ts 的 shortfall 分支），
@@ -1838,9 +1900,21 @@ export async function buildReport(
   const seeded = opts.seed ?? []
   const merged: LlmReportFields = {}
   for (const part of seeded) Object.assign(merged as Record<string, unknown>, part.data)
-  const parts: ReportPart[] = seeded.slice()
+  /*
+   * 已完成批次按 `key` 存放，`onPart` 每次按**批序**重新拼一份快照（见 settle）。
+   * 为什么不直接用「完成的先后」拼：并发下谁先回来是随机的，而落库顺序要稳定，
+   * 否则 building 行的 parts 与补跑的 seed 会随上游返回顺序抖动。
+   */
+  const partsByKey = new Map<ReportPartKey, ReportPart>()
+  for (const part of seeded) partsByKey.set(part.key, part)
   /* 记录失败批（「缺组可感知」：落库后页面据此提示「部分段落缺失，可刷新重试」） */
   const missing: ReportPartKey[] = []
+  /*
+   * 字段级丢弃（P10，2026-10-17）：形如 `facts.dynamics` —— 该批回来了，但这个字段的形状
+   * 过不了严格校验、被宽容兜底换成了空值。此前它只表现为「这一节凭空是空的」，
+   * 与「素材里确实没有」无法区分。局部数组（不是模块级）：批可并发，见 pickFields 的 ⚠。
+   */
+  const dropped: string[] = []
   let done = 0
   /* 记住最后一次失败，供「四批全败」时把原因如实交回上层（而不是只说「降级也失败了」） */
   let lastFail: { error: string; retryable?: boolean; kind?: string } | null = null
@@ -1857,8 +1931,20 @@ export async function buildReport(
     return { ok: false, error: '补跑批次不存在', retryable: false }
   }
 
-  for (const batch of batches) {
-    const fields = batchFields(batch, member)
+  /*
+   * 并发取结果（P5，2026-10-17）。四批互不依赖：字段不重叠、提示词各建各的、会话也是各自的，
+   * 串行时那 40~100s 里大半是在等上游。并发度由 `REPORT_BUILD.batchConcurrency` 决定
+   * （1 = 退回串行，灰度时用；4 = 全部同时发）。
+   *
+   * ⚠ 并发放大限流：四个请求同时到达，遇 429 时 `chatJSON` **不重试**（rate 不在
+   *   RETRYABLE_KINDS），该批直接判失败。兜底是 P8 的「只补失败批」—— 缺的那批单独重跑，
+   *   而不是整份 4 批重来。两者必须一起存在：单独开并发会把「偶发限流」放大成「缺组」。
+   *
+   * ⚠ 合并仍然**按批序**做（见下面的循环）：拒答短路、missing 顺序、onPart 累计快照
+   *   都依赖批序语义。并发只改变「谁先拿到结果」，不改变「怎么合并」。
+   */
+  const droppedByBatch = new Map<string, string[]>()
+  const runOne = (batch: ReportBatch) => {
     const system = buildReportSystem(batch, focus, member)
     const user = buildUserMessage(name, news, focus, member, batch.background ? background : [])
     /*
@@ -1867,7 +1953,117 @@ export async function buildReport(
      * 网络抖动」多给一次机会，能把「缺组」概率从 2 连败降到 3 连败（量级掉一档）；truncated / quota 类失败
      * 本来就不重试（chatJSON 内部已分流），多这一次只烧在「最该多试」的抖动上。
      */
-    const result = await chatJSON(system, user, batchSchema(batch, member), { retries: 2 })
+    return chatJSON(
+      system,
+      user,
+      batchSchema(batch, member, (field) => {
+        /* 按批分开记（见 droppedByBatch 的注释）：并发下全局 push 的顺序是不确定的 */
+        const list = droppedByBatch.get(batch.key) ?? []
+        list.push(field)
+        droppedByBatch.set(batch.key, list)
+      }),
+      { retries: 2 }
+    )
+  }
+  /*
+   * onPart 串行化（P5）：并发时多批几乎同时完成，若并行 await 落库，写库先后不可控 ——
+   * 「少一批的旧快照」可能盖掉「多一批的新快照」（saveReportParts 写的是整字段，不是按批 upsert）。
+   */
+  let partChain: Promise<void> = Promise.resolve()
+  const emitPart = (snapshot: ReportPart[]): Promise<void> => {
+    if (!opts.onPart) return partChain
+    const onPart = opts.onPart
+    partChain = partChain.then(async () => {
+      try {
+        await onPart(snapshot)
+      } catch (err) {
+        /* 中间结果存不上不该让整次生成失败（最终 save 才是关键路径） */
+        diagLog('warn', 'db', `报告中间结果落库失败：${err instanceof Error ? err.message : String(err)}`)
+      }
+    })
+    return partChain
+  }
+  /**
+   * 一批真的拿到了内容（成功且非拒答）：「完成」计数 + 搬字段 + **立刻**落一次中间结果。
+   *
+   * 落库为什么也在这里、不留给合并阶段：合并要等所有批回来，若落库拖到那时，
+   * 「第 4 批卡住 / 进程被杀」会让前三批的 token 一起作废 —— 那是分批生成存在的全部理由。
+   * 快照按批序从 `partsByKey` 取，所以并发时的落库顺序与串行时一致。
+   */
+  const settle = async (index: number): Promise<void> => {
+    const r = results[index]
+    if (!r.ok) return
+    const data = r.data as Record<string, unknown>
+    /* 拒答要走整份拒绝（见合并循环），不算「完成」也不落中间结果 */
+    if (isRefusedResult(data)) return
+
+    const batch = batches[index]
+    /* 逐字段搬进 merged：各批字段互不重叠（模板分组天然切分），且只搬本批契约声明的键
+       —— data 里可能混有 refused 等非字段键，整体 Object.assign 会把它们也带进报告 */
+    const part: LlmReportFields = {}
+    for (const field of batchFields(batch, member)) {
+      const value = data[field]
+      if (value === undefined) continue
+        ; (merged as Record<string, unknown>)[field] = value
+        ; (part as Record<string, unknown>)[field] = value
+    }
+    partsByKey.set(batch.key, { key: batch.key, data: part })
+
+    done++
+    if (opts.onBatchDone) {
+      try {
+        opts.onBatchDone(done)
+      } catch {
+        /* 进度播报失败不该影响生成（与 onPart 同一口径） */
+      }
+    }
+    if (opts.onPart) {
+      /*
+       * 快照按**模板批序**取，且从 `partsByKey` 全量取 —— 不能只遍历 `batches`：
+       * 补跑时 `batches` 只含要跑的那几组，而 `partsByKey` 里还有 seed 带来的其余组，
+       * 只按 `batches` 拼会把 seed 从落库内容里抹掉（`saveReportParts` 是整字段覆盖）。
+       */
+      const snapshot = REPORT_BATCHES.map((b) => partsByKey.get(b.key)).filter(
+        (p): p is ReportPart => p !== undefined
+      )
+      await emitPart(snapshot)
+    }
+  }
+  const results: ChatJSONResult<unknown>[] = new Array(batches.length)
+  const concurrency = Math.max(1, Math.min(REPORT_BUILD.batchConcurrency, batches.length))
+  if (concurrency === 1) {
+    for (let i = 0; i < batches.length; i++) {
+      results[i] = await runOne(batches[i])
+      /* await：串行档要求「上一批的中间结果落完库」再发下一批（04-member-cache 的判据） */
+      await settle(i)
+    }
+  } else {
+    /*
+     * 保序批池：cursor 自增取下一批，结果按**原下标**落位，因此上游完成顺序不影响合并顺序。
+     * 不用 Promise.all(batches.map(...)) 直接并发全部：并发度要可配（灰度先 2 后 4），
+     * 而且真出问题时把 batchConcurrency 调成 1 就是完整回退，不用改代码。
+     */
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = cursor++
+        if (index >= batches.length) return
+        results[index] = await runOne(batches[index])
+        await settle(index)
+      }
+    }
+    await Promise.all(Array.from({ length: concurrency }, () => worker()))
+  }
+
+  /* 字段级丢弃也按批序归一：并发时各批的写入顺序不确定，落体后要稳定可比 */
+  for (const batch of batches) {
+    const here = droppedByBatch.get(batch.key)
+    if (here) dropped.push(...here)
+  }
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i]
+    const result = results[i]
 
     if (!result.ok) {
       /*
@@ -1909,27 +2105,10 @@ export async function buildReport(
       return { ok: true, data: { refused: true } }
     }
 
-    /* 逐字段搬进 merged：各批字段互不重叠（模板分组天然切分），且只搬本批契约声明的键
-       —— data 里可能混有 refused 等非字段键，整体 Object.assign 会把它们也带进报告 */
-    const part: LlmReportFields = {}
-    for (const field of fields) {
-      const value = data[field]
-      if (value === undefined) continue
-        ; (merged as Record<string, unknown>)[field] = value
-        ; (part as Record<string, unknown>)[field] = value
-    }
-    done++
-
-    /* 中间结果落库：每批成功即回调 —— 后面几批失败时，前面这几批的 token 不作废。
-       回调异常一律吞掉：中间结果存不上不该让整次生成失败（最终 save 才是关键路径）。 */
-    parts.push({ key: batch.key, data: part })
-    if (opts.onPart) {
-      try {
-        await opts.onPart(parts.slice())
-      } catch (err) {
-        diagLog('warn', 'db', `报告中间结果落库失败（${batch.key}）：${err instanceof Error ? err.message : String(err)}`)
-      }
-    }
+    /*
+     * 这一批的字段已在 settle() 里搬进 merged 并落过中间结果（P5）—— 那条路径在「结果拿到」
+     * 时就跑完了，不依赖合并顺序。这里只剩「按批序判读」：缺组登记、拒答短路。
+     */
   }
 
   if (done === 0) {
@@ -2001,6 +2180,15 @@ export async function buildReport(
    * 而非页面坏了。全部批成功则不落这个键（老报告与完整报告都无此字段，见 Report.missingGroups）。
    */
   if (missing.length > 0) report.missingGroups = missing
+  /*
+   * 字段级丢弃同样落体（P10）：它不是「缺组」，而是「组在、字段没读懂」，
+   * 两者对排查的意义完全不同（一个查上游可用性，一个查提示词与模型输出形状）。
+   * 页面文案保持现状（见 Report.droppedFields），这里只落诊断。
+   */
+  if (dropped.length > 0) {
+    report.droppedFields = dropped
+    diagLog('warn', 'llm', `报告字段级丢弃：${personKey}：${dropped.join(',')}`)
+  }
   return { ok: true, data: report }
 }
 
@@ -2696,6 +2884,13 @@ export function isColdPerson(report: Pick<Report, 'coverage'> | null | undefined
  *
  * degraded 与「缺简介 / 缺点评」两段骨架则**永远可重试**：那是模型少吐了一段，与素材多寡
  * 无关（素材再少，简介也写得出来；结构化输出失败更是纯粹的上游抖动）。
+ *
+ * 无素材兜底（C）的文案为什么要点出「检索通道未就绪」（P12，2026-10-17）：这句的前提是
+ * 「没查到」，而真相有三种 —— 真的没内容（`requestChannel` 返回 `[]`）、通道没就绪（返回
+ * null）、上游失败（抛错）。后两种是**没查成**，不是「这个人没新闻」，而三者目前都走到
+ * 这里、也都不可重试，文案本来无从分辨。不加那一句，读者会把「我们没查成」读成「这个人
+ * 默默无闻」，那是对人物的错误陈述；只在括号里交代可能性，不改判定（通道未就绪要等配置，
+ * 重试仍然没意义）。
  */
 export function shortfallVerdict(
   report: Report,
@@ -2708,7 +2903,11 @@ export function shortfallVerdict(
    * 否则页面会劝用户白等一场（与「素材本身就不够」那类是同一个理由）。
    */
   if (report.knowledgeOnly) {
-    return { reason: '本次未检索到公开素材，以下内容来自模型的已有知识、未经核实', retryable: false }
+    /* P12：三种「没查到」（真没有 / 通道未就绪 / 上游失败）无从分辨，只交代可能性，不改判定 */
+    return {
+      reason: '本次未检索到公开素材（检索通道未就绪时也会这样），以下内容来自模型的已有知识、未经核实',
+      retryable: false
+    }
   }
   if (report.degraded) return { reason: '结构化输出失败，只拿到纯文本简版', retryable: true }
   if (!report.intro.trim()) return { reason: '没有简介正文', retryable: true }

@@ -753,6 +753,17 @@ export const REPORT_PREVIEW = {
 export const REPORT_BUILD = {
   /** 分批数：必须等于 REPORT_BATCHES.length（当前 4 组），用例 77 钉住 */
   batchCount: 4,
+  /**
+   * 同一时刻并行跑几批（P5，2026-10-17）：1 = 串行（改造前的行为），4 = 四批同时发。
+   *
+   * 为什么它和时限参数住一起：它直接决定实际耗时，但**不是失联判定的输入**。
+   * `BUILDING_TIMEOUT_MS` 仍按串行口径算（那是悲观上界），并发只让真实耗时变短、
+   * 不动上界 —— 云端因此不需要懂这个值，改它也不引入抢锁风险。
+   *
+   * 灰度顺序建议 1 → 2 → 4，每档看日志里「报告分批失败」中 429/rate 的占比。
+   * 并发放大限流的代价已由 P8 的「只补失败批」兜住：缺的批单独重跑，不再整份重来。
+   */
+  batchConcurrency: 4,
   /** 每批 chatJSON 最多尝试几次（attempts = 1 + retries，buildReport 传 retries:2） */
   batchAttempts: 3,
   /** 不达标且可重试时最多完整生成几遍（含第一遍，见 cache.ts 的 shortfall 自动重跑） */

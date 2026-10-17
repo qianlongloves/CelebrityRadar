@@ -17,7 +17,8 @@
  *   ① 首轮只有一组失败时，`missingGroups` 如实记下那一组；
  *   ② 补跑**只发一次调用**，不是整份重来；
  *   ③ `seed` 的批次内容原样进最终报告（证明「已付的 token 不作废」，而不是靠再用一次调用补回来）；
- *   ④ 补跑全败时**如实失败**，绝不降级成纯文本简版顶替已有三批。
+ *   ④ 补跑全败时**如实失败**，绝不降级成纯文本简版顶替已有三批；
+ *   ⑤ 补跑的中间快照仍含 seed 的三批且按模板批序（`parts` 是整字段覆盖，少一批就是抹掉一批）。
  *
  * 第 ④ 条是这次改动最容易写错的地方：原代码 `done === 0` 一律降级纯文本，补跑模式下那会
  * 把三批真实素材换成一段「模型已有知识」。
@@ -26,7 +27,7 @@
 const fs = require('fs')
 const path = require('path')
 const env = require('../harness/env')
-const { describe, it, ok, notOk, eq } = require('../harness/t')
+const { describe, it, ok, notOk, eq, deepEq } = require('../harness/t')
 
 const ROOT = path.resolve(__dirname, '..', '..')
 
@@ -59,9 +60,14 @@ function news(n = 3) {
  *
  * 为什么按序号而不是按内容判断：假上游拿到的是提示词，按批内容匹配要抄一遍提示词特征；
  * 序号完全确定 —— 1 = identity，2~4 = facts 的三次尝试（retries:2），5 = judgement，6 = detail。
+ * **前提是串行**：P5 起四批默认并发（`REPORT_BUILD.batchConcurrency = 4`），并发时「第 1 个
+ * 到达的请求」不再必然是 identity，序号与批就脱钩了。所以下面把并发度钉成 1 ——
+ * 本用例测的是补跑语义，并发本身由 `79-parallel-batches.js` 钉（顺带这也覆盖了
+ * 「灰度回退到串行」那条路径，回退时走的正是 concurrency = 1）。
  */
 async function firstRoundWithMissingFacts() {
   const load = fresh()
+  load('config/benefits').REPORT_BUILD.batchConcurrency = 1
   const report = load('utils/report')
   const factsKey = report.REPORT_BATCHES[1].key
   const ctl = { calls: 0, mode: 'seq' }
@@ -109,6 +115,38 @@ describe('报告补跑：只补失败批（P8）', () => {
       refill.data.intro,
       'intro-1',
       'seed 里 identity 批的内容必须保留 —— 否则「只补一批」等于把另外三批丢了'
+    )
+  })
+
+  it('补跑的 onPart 快照仍含 seed 的批次，且按模板批序（P5 后的回归点）', async () => {
+    /*
+     * `saveReportParts` 写的是 building 行 `parts` 的**整字段覆盖**，不是按批 upsert：
+     * 补跑的中间快照若只装「这次跑的那几批」，落库那一下就把首轮已成功的三批抹掉了。
+     * P5 把快照改成从 `partsByKey` 拼（并发时按批序），很容易顺手写成只遍历 `batches`
+     * —— 而补跑时 `batches` 只含要补的组，症状是「补跑一次反而丢了三批」。
+     */
+    const { report, first, collected, factsKey, ctl } = await firstRoundWithMissingFacts()
+    ok(first.ok, '首轮前置条件')
+
+    ctl.mode = 'ok'
+    const snapshots = []
+    const refill = await report.buildReport('甲#tech', '甲', news(), 'all', {
+      only: [factsKey],
+      seed: collected,
+      onPart: (parts) => {
+        snapshots.push(parts.slice())
+      }
+    })
+
+    ok(refill.ok, '补跑应成功')
+    eq(snapshots.length, 1, '只补一批 ⇒ 只落一次中间结果')
+    const keys = snapshots[0].map((p) => p.key)
+    eq(keys.length, collected.length + 1, '快照 = seed 的三批 + 这次补的那一批')
+    for (const part of collected) ok(keys.includes(part.key), `seed 的 ${part.key} 不许从快照里消失`)
+    deepEq(
+      keys,
+      report.REPORT_BATCHES.map((b) => b.key).filter((k) => keys.includes(k)),
+      '快照顺序必须是模板批序（并发下按完成先后拼会让落库内容随上游抖动）'
     )
   })
 

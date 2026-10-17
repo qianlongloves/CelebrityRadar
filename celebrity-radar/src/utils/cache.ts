@@ -200,6 +200,15 @@ export type ReportOutcome =
       /** 失败原因（配合 refreshFailed，页面直接展示） */
       refreshError?: string
       /**
+       * 本次命中了已有报告，而调用方**传了补充关键词**（P6，2026-10-17）—— 关键词没生效。
+       *
+       * `keyword` 刻意不进 personKey / 缓存键（同一个人只有一份报告，理由见 getOrBuildReport
+       * 的入参注释），于是「输入关键词 → 命中缓存」时它**完全没参与**生成，页面此前一声不吭：
+       * 用户以为关键词起了作用、只是这个人恰好没有相关报道。前者是我们的机制，后者是对人物的
+       * 错误陈述。取值是本次关键词原文，页面据此提示「重新生成才生效」并给出 force 入口。
+       */
+      keywordUnused?: string
+      /**
        * 本次生成是**全站第一次**为这个人物建立报告（2026-10-15，公平性可见化）。
        *
        * 为什么要交回页面：报告是全局共享缓存，一份建好之后全站长期复用、任何人再查都
@@ -728,7 +737,9 @@ export async function getOrBuildReport(
       kind: 'report',
       report: shown.report,
       fromCache: true,
-      memberLocked: shown.locked
+      memberLocked: shown.locked,
+      /* 带了关键词却读的是已有报告（P6）：见 ReportOutcome.keywordUnused */
+      ...(opts.keyword ? { keywordUnused: opts.keyword } : {})
     }
   }
 
@@ -757,7 +768,14 @@ export async function getOrBuildReport(
         if (!opts.force) {
           track('report_hit_cache', { personKey })
           const shown = await exposeReport(altRow.report)
-          return { kind: 'report', report: shown.report, fromCache: true, memberLocked: shown.locked }
+          /* 带关键词却读已有报告（P6，同本函数缓存命中分支的说明） */
+          return {
+            kind: 'report',
+            report: shown.report,
+            fromCache: true,
+            memberLocked: shown.locked,
+            ...(opts.keyword ? { keywordUnused: opts.keyword } : {})
+          }
         }
       }
     }
@@ -854,6 +872,22 @@ export async function getOrBuildReport(
   } catch (err) {
     /* 配额服务异常不拦生成：宁可少量超发，不可让所有人无法生成（与冷却的降级哲学一致） */
     diagLog('warn', 'db', `配额检查失败，放行本次生成：${err instanceof Error ? err.message : String(err)}`)
+    /*
+     * 会员身份**别跟着配额一起降级**（P7，2026-10-17）。
+     *
+     * `memberDeep` 原本只有一个来源：`peekGenerateQuota` 的返回值。那条调用失败时它保持
+     * false ⇒ 会员这一次被按免费档生成（检索不加厚、报告不写会员段），而页面完全看不出
+     * 「你是免费」与「系统没认出你是会员」的区别 —— 用户只会觉得会员白买了。
+     * 身份有独立读口（`utils/member.ts#readMemberState`，失败内部吞掉返回非会员），
+     * 补这一次读即可；真读失败时仍降级，但日志里能看出降级是读失败而非判定为免费。
+     */
+    const state = await readMemberState()
+    memberDeep = state.member
+    diagLog(
+      'info',
+      'db',
+      `配额检查失败，会员身份改由 readMemberState 判定：member=${memberDeep}（本次按${memberDeep ? '会员' : '免费'}口径生成）`
+    )
   }
 
   /**
@@ -910,12 +944,25 @@ export async function getOrBuildReport(
     if (report) {
       track('report_hit_cache', { personKey })
       const shown = await exposeReport(report)
-      return { kind: 'report', report: shown.report, fromCache: true, memberLocked: shown.locked }
+      /* 等来的是别人构建的那一份，关键词同样没参与（P6，同缓存命中分支的说明） */
+      return {
+        kind: 'report',
+        report: shown.report,
+        fromCache: true,
+        memberLocked: shown.locked,
+        ...(opts.keyword ? { keywordUnused: opts.keyword } : {})
+      }
     }
     row = await getRow(personKey)
     if (isUsable(row)) {
       const shown = await exposeReport(row.report)
-      return { kind: 'report', report: shown.report, fromCache: true, memberLocked: shown.locked }
+      return {
+        kind: 'report',
+        report: shown.report,
+        fromCache: true,
+        memberLocked: shown.locked,
+        ...(opts.keyword ? { keywordUnused: opts.keyword } : {})
+      }
     }
     return { kind: 'error', message: '报告正在生成中，请稍后查看' }
   }
@@ -1045,9 +1092,14 @@ export async function getOrBuildReport(
        * 并把「已完成几批」交给等待动画。先播报再落库：落库是库往返（几十~几百 ms），
        * 让进度先动起来，观感上不会「明明这一批写完了，界面还停在上一批」。
        */
+      /*
+       * 进度与落库分开（P5，2026-10-17）：批已可并发，`parts` 只能在**合并阶段**按批序补齐，
+       * 拿它播报会让进度条一直停在 0/4、最后一跳到底。`onBatchDone` 报的是真实完成批数。
+       * 「先播报再落库」的观感理由（落库是库往返，几十~几百 ms）现在归 onBatchDone。
+       */
+      onBatchDone: (done) => emitProgress('generate', done),
       onPart: async (parts) => {
         builtParts = parts.slice()
-        emitProgress('generate', parts.length)
         await saveReportParts(personKey, parts, userId)
       }
     })
@@ -1173,13 +1225,16 @@ export async function getOrBuildReport(
             `只补失败批：${refillOnly.join(',')}（保留已成功 ${builtParts.length} 批）`
           )
         }
+        /* 种子的批数（补跑进度要从它接着数，否则 3 批已有结果会显示成 0/4 起步） */
+        const seedCount = refillOnly ? builtParts.length : 0
         const retryRes = await buildReport(personKey, name, news, focus, {
           member: memberDeep,
           background: background ?? [],
           /* 补跑模式：seed 必须一起传 —— 只传 only 会让其余组没有任何人写（见 report.ts 的 ⚠） */
           ...(refillOnly ? { only: refillOnly, seed: builtParts } : {}),
+          /* 进度同样走 onBatchDone（见首轮调用的说明）；补跑时页面已在 ready，进度条只作参照 */
+          onBatchDone: (done) => emitProgress('generate', seedCount + done),
           onPart: async (parts) => {
-            emitProgress('generate', parts.length)
             await saveReportParts(personKey, parts, userId)
           }
         })
