@@ -182,5 +182,13 @@ module.exports = {
       "free": 3,
       "member": null
     }
+  },
+  "REPORT_BUILD": {
+    "batchCount": 4,
+    "batchAttempts": 3,
+    "generateAttempts": 2,
+    "chatDeadlineMs": 45000,
+    "searchBudgetMs": 15000,
+    "slackMs": 30000
   }
 }

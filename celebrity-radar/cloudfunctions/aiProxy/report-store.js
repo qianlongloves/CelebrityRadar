@@ -24,6 +24,17 @@
  * 里已有的那一份，免得同一个函数里出现两套会员判定或两套计数口径。
  */
 
+/*
+ * 构建时限参数（2026-10-17）：从真源副本取，**不许再手抄数字**。
+ *
+ * 这里本来写的是 `const BUILDING_TIMEOUT_MS = 405 * 1000`，注释还写着「须与端上
+ * src/utils/cache.ts#BUILDING_TIMEOUT_MS 同值」—— 而端上随「单批 3 次尝试 + 整份自动重跑」
+ * 已涨到 1125s，云端没人改得动，于是任何真实耗时 > 405s 的构建都会被判失联、被抢锁，
+ * 旧构建者落库又被 storeSave 的 builder 校验拒绝（成果作废，token 白烧）。
+ * 现在两侧都从 `benefits.config.js#REPORT_BUILD` 现算（真源 src/config/benefits.ts）。
+ */
+const { REPORT_BUILD } = require('./benefits.config')
+
 /* ═══════════════════════════════════════════════════════════════════════
  * 风险词典 —— 条目级分级字段（分级字段上游化，P4-B，2026-10-13）
  *
@@ -166,13 +177,22 @@ module.exports = function createReportStore(deps) {
   const _ = db.command
 
   /**
-   * 失联判定，**须与端上 src/utils/cache.ts#BUILDING_TIMEOUT_MS 同值**。
+   * 失联判定：与端上 `src/utils/cache.ts#BUILDING_TIMEOUT_MS` **同一个算式、同一组参数**。
    *
-   * 2026-10-11 随「分批生成」上调（原值 90s 是**单次调用时代**的估算）：构建现在是 4 批顺序调用，
-   * 每批 chatJSON 内部最多 2 次尝试，单次调用时限 45s（本目录 index.js#CHAT_DEADLINE_MS），
-   * 再加重合检索与余量。原值短于真实构建 ⇒ 正常构建跑到一半就被他人判为失联并抢锁。
+   * 2026-10-17 之前这里是手写的 `405 * 1000`（= 4 批 × 2 次 × 45s + 45s，单批 2 次尝试、
+   * 无整份重跑时代的旧口径）。端上后来把「每批 3 次尝试」与「整份自动重跑一次」都加上了，
+   * 上界涨到 1125s，而这里没人跟着改 —— 注释写着「须与端上同值」，但两侧各写一个数字时，
+   * 这句话没有任何东西在保证。现在参数在 `benefits.config.js#REPORT_BUILD`（真源
+   * `src/config/benefits.ts`），两侧各自现算，用例 77 钉住「批数 = REPORT_BATCHES.length」
+   * 与「本文件不许再出现手写上界」。
    */
-  const BUILDING_TIMEOUT_MS = 405 * 1000
+  const BUILDING_TIMEOUT_MS =
+    REPORT_BUILD.batchCount *
+      REPORT_BUILD.batchAttempts *
+      REPORT_BUILD.generateAttempts *
+      REPORT_BUILD.chatDeadlineMs +
+    REPORT_BUILD.searchBudgetMs +
+    REPORT_BUILD.slackMs
   /** 单份报告上限（字节）。callFunction 官方建议请求体 ≤ 100KB，贴着它取 */
   const REPORT_MAX_BYTES = 100 * 1024
   /** 中间结果上限（P0-B，saveParts）：一批几千字节，四批封顶，给到 80KB 足够且仍在 callFunction 建议值内 */

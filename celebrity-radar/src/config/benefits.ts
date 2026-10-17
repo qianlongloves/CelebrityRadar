@@ -724,3 +724,43 @@ export const REPORT_PREVIEW = {
    */
   sectionRows: { free: 3, member: null }
 } as const
+
+/**
+ * 报告构建时限的参数集（2026-10-17 收进真源）。
+ *
+ * ## 为什么在「权益真源」里放一组运维数值
+ *
+ * 这不是权益，是一条**两端必须同值**的判据：端上用 `BUILDING_TIMEOUT_MS` 决定「等多久放弃」，
+ * 云端用它判「构建者是不是失联了、这一行能不能被抢」。两者一旦不等，短的那一侧会把**还活着的
+ * 构建**判成失联（抢锁 → 两边各白烧一遍 token → 后落库的一方因 builder 不符被写口拒绝）。
+ *
+ * 此前正是这样：端上随「单批 3 次尝试 + 整份自动重跑」涨到 1125s，云端还停在 405s
+ * （4 批 × 2 次 × 45s + 45s 的旧口径），注释写着「须与端上同值」却没人能同时改两处。
+ * 云端拿不到端上的 TS，唯一能共读的数值通道就是这份文件 + `npm run config:sync` 的副本，
+ * 所以把**参数**放这里，两侧各自现算（真源只放数据，不做计算 —— 铁律 2）。
+ *
+ * ## 批数为什么要在这里再写一次
+ *
+ * `batchCount` 的真源是 `utils/report.ts#REPORT_BATCHES`（18 节分 4 组），云端拿不到它；
+ * 而云端不重新算这个上界就没法判失联。重复是刻意的，由用例
+ * `test/cases/77-build-timeout.js` 钉住「batchCount === REPORT_BATCHES.length」——
+ * 改模板组数时它会红，而不是让云端静默落后。
+ *
+ * ⚠ 改这里的任何一项都意味着**构建上界变了**，两侧同时生效（端上随发版、云端随部署）。
+ *   若要缩短用户等待，该动的是「每批尝试次数 / 批数」，不是把这个上界凭空调小 ——
+ *   那等于重新引入抢锁（`cache.ts` 的注释写过同一句话）。
+ */
+export const REPORT_BUILD = {
+  /** 分批数：必须等于 REPORT_BATCHES.length（当前 4 组），用例 77 钉住 */
+  batchCount: 4,
+  /** 每批 chatJSON 最多尝试几次（attempts = 1 + retries，buildReport 传 retries:2） */
+  batchAttempts: 3,
+  /** 不达标且可重试时最多完整生成几遍（含第一遍，见 cache.ts 的 shortfall 自动重跑） */
+  generateAttempts: 2,
+  /** 单次调用被掐的上限（端上 chatJSON deadline / 云端 aiProxy CHAT_DEADLINE_MS 同为 45s） */
+  chatDeadlineMs: 45000,
+  /** 检索预算（与 utils/search.ts 的 SEARCH_BUDGET 同口径） */
+  searchBudgetMs: 15000,
+  /** 余量：网络往返、写库、进度播报 */
+  slackMs: 30000
+} as const

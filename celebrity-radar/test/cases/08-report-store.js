@@ -162,12 +162,18 @@ describe('P0-2 写口：抢锁 / 放锁', () => {
   it('构建者失联超时：锁可被抢占（否则一次崩溃会永久卡住该人物）', async () => {
     const fn = loadProxy()
     /*
-     * 必须**明显大于** report-store.js#BUILDING_TIMEOUT_MS（分批生成后 ≈ 6.75 分钟，值随
-     * 「4 批 × 每批 2 次尝试 × 单次 45s + 检索 + 余量」推导，见 src/utils/cache.ts 注释）。
-     * 原值 91s 是单次调用时代的口径，分批改造后它已落在锁的有效期内 —— 那样这条用例测的
-     * 就不再是「失联可抢占」，而是「他人持锁未失联」（上一条用例）。
+     * 必须**明显大于** BUILDING_TIMEOUT_MS，而这个值不在用例里写死（2026-10-17）：
+     * 它来自真源 `benefits.config.js#REPORT_BUILD`（当前 4 批 × 3 次 × 2 遍 × 45s + 45s = 1125s），
+     * 端上与云端同源（用例 77 钉住）。此前这里写「8 分钟」，是按云端当时手写的 405s 估的；
+     * 上界涨到 1125s 后，8 分钟已落在锁的有效期内 —— 那样这条用例测的就不再是
+     * 「失联可抢占」，而是上一条「他人持锁未失联」。现在从真源推导，参数变、用例自动跟随。
      */
-    const stale = new Date(Date.now() - 8 * 60 * 1000).toISOString()
+    const RB = require(path.join(CLOUD, 'aiProxy', 'benefits.config.js')).REPORT_BUILD
+    const timeoutMs =
+      RB.batchCount * RB.batchAttempts * RB.generateAttempts * RB.chatDeadlineMs +
+      RB.searchBudgetMs +
+      RB.slackMs
+    const stale = new Date(Date.now() - (timeoutMs + 60 * 1000)).toISOString()
     env.db.__seed('report_cache', [lockRow({ builder: 'u-other', generated_at: stale })])
     const res = await callStore(fn, { op: 'acquire', personKey: 'A#tech' })
     eq(res.result, 'acquired')

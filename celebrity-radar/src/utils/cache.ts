@@ -11,6 +11,7 @@ import {
   REPORT_BATCHES
 } from './report'
 import { FocusCode } from '@/config/filters'
+import { REPORT_BUILD } from '@/config/benefits'
 import {
   fetchNews,
   fetchBackground,
@@ -83,22 +84,20 @@ const POLL_INTERVAL_MS = 2000
  * 取舍：宁可让「构建者进程被杀」留下的 building 脏行多留几分钟（只在异常时发生），
  * 也不能让正常的长构建中途被抢。若这个上界在时延上不可接受，该动的是**每批的重试次数或批次数**
  * （减少真实耗时），而**不是**把这个值调回小于构建时长 —— 那等于重新引入抢锁。
+ *
+ * ⚠ 上面这些数字（批数 / 尝试次数 / 遍数 / 单次时限 / 检索 / 余量）**不在本文件写死**，
+ *   全部来自 `config/benefits.ts#REPORT_BUILD`（2026-10-17）。这不是为了好看：云端
+ *   `aiProxy/report-store.js` 要用**同一组数**判「构建者是否失联」，而它读不到端上的 TS，
+ *   只能读 `config:sync` 生成的副本。此前两侧各写一个数字，云端停在 405s、端上已到 1125s，
+ *   长构建会被云端判失联并抢锁（后果见上一条）。改参数请改真源，两侧一起生效。
  */
-const CHAT_SINGLE_DEADLINE_MS = 45 * 1000
-/* 每批 chatJSON 内部最多 3 次尝试（attempts = 1 + retries(2)，retries 由 buildReport 显式传 2） */
-const REPORT_BATCH_ATTEMPTS = 3
-/* 不达标且可重试时最多完整生成几次（含第一次；见 getOrBuildReport 的 shortfall 自动重跑） */
-const REPORT_GENERATE_ATTEMPTS = 2
-const SEARCH_BUDGET_MS = 15 * 1000
-const BUILD_SLACK_MS = 30 * 1000
-
 export const BUILDING_TIMEOUT_MS =
-  REPORT_BATCHES.length *
-    REPORT_BATCH_ATTEMPTS *
-    REPORT_GENERATE_ATTEMPTS *
-    CHAT_SINGLE_DEADLINE_MS +
-  SEARCH_BUDGET_MS +
-  BUILD_SLACK_MS
+  REPORT_BUILD.batchCount *
+    REPORT_BUILD.batchAttempts *
+    REPORT_BUILD.generateAttempts *
+    REPORT_BUILD.chatDeadlineMs +
+  REPORT_BUILD.searchBudgetMs +
+  REPORT_BUILD.slackMs
 
 /**
  * 等待方轮询上限（P0，2026-10-11）：**取与构建上界同值**。
@@ -109,6 +108,21 @@ export const BUILDING_TIMEOUT_MS =
  * 注意这只是**上限**而非预期等待 —— 正常构建约 40~100s，超时只在对方真卡住时才会走到。
  */
 const WAIT_TIMEOUT_MS = BUILDING_TIMEOUT_MS
+
+/**
+ * 在途占位（`utils/quota.ts#beginGenerateInflight`）的 TTL：**180s，刻意短于锁上界**（2026-10-17）。
+ *
+ * 为什么不再与锁同值：占位干的事只有一件 —— 让「同一个用户在生成窗口里再点一次」看到剩余次数
+ * 少一格，从而挡住「两个不同人物并发把额度突破一次」。它该覆盖的是**一次正常生成的窗口**
+ * （40~100s，留一倍余量），而不是「构建可能还在正常跑」的史上界（1125s，那是给抢锁判据的悲观值）。
+ * 照抄锁上界的代价很具体：生成失败 / 用户中途退出时占位不计数也不撤销（`quota.ts` 只靠「计费推进」
+ * 或「过期」两条路剪枝），于是**一次失败就把名额冻结近 19 分钟** —— 当天只剩 1 次的用户会被
+ * 「今日次数已用完」挡住，而 `used` 根本没变。
+ *
+ * 代价（如实记）:占位过期后、那次生成若仍活着并最终落库，额度会被计一次，而期间同用户再发起
+ * 一次的 peek 不会看到它。方向与 `quota.ts` 的既定取舍一致：**宁可少占，不可误挡**。
+ */
+const INFLIGHT_TTL_MS = 180 * 1000
 /*
  * 每日刷新次数上限（10）不再写在这里：它是会员页要展示给用户的数字，唯一来源是
  * utils/member.ts#MEMBER_BENEFITS.refreshPerDay（免费与会员同额）。本文件此前自带一份
@@ -809,10 +823,11 @@ export async function getOrBuildReport(
      * 两次 peek 会看到同一个 used 而双双放行 —— 免费额度被一次性突破，而抢锁拦不住它
      * （抢锁按 personKey，两个不同人物本来就是两把锁）。
      * 撤销不在这里：占位自身会失效（计费推进即失效 / 过期即失效），见 utils/quota.ts
-     * 的「在途占位」一节。TTL 与锁同值，故直接用 BUILDING_TIMEOUT_MS。
+     * 的「在途占位」一节。TTL 用 INFLIGHT_TTL_MS（180s），**不再与锁同值** ——
+     * 理由见该常量的注释：照抄锁上界会让一次失败冻结名额近 19 分钟。
      * ⚠ 配额服务异常（下面的 catch）不记占位：那条路径本就按「宁可少量超发」放行。
      */
-    beginGenerateInflight(userId, personKey, BUILDING_TIMEOUT_MS, quota.used)
+    beginGenerateInflight(userId, personKey, INFLIGHT_TTL_MS, quota.used)
   } catch (err) {
     /* 配额服务异常不拦生成：宁可少量超发，不可让所有人无法生成（与冷却的降级哲学一致） */
     diagLog('warn', 'db', `配额检查失败，放行本次生成：${err instanceof Error ? err.message : String(err)}`)
