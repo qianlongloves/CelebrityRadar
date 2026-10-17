@@ -41,35 +41,89 @@
     color: $brand;
   }
 
-  /* 三个入口按钮（关注动态 / 本周周报 / 监控）：页首导航区，纯入口、不加载数据。
-     横排三等分，白卡 + 浅阴影，与下方内容卡区分开（导航 vs 数据）。 */
+  /* 四个入口（关注动态 / 本周周报 / 监控 / 监测工作台）：页首导航区，纯入口、不加载数据。
+     2026-10-17 由「三等分横排」改为 2×2 网格 —— 四格横排在 375pt 屏上每格只剩约 80pt，
+     「监测工作台」必折行；2×2 还留得下一行说明（四个名字彼此看不出区别）。 */
   &__nav {
+    /* 用 flex-wrap 而不是 grid：全项目样式都是 flex，grid 在 WXSS 上的支持面也不如 flex 明确 */
     display: flex;
+    flex-wrap: wrap;
     gap: 16rpx;
     padding: 16rpx 32rpx 0;
   }
 
+  /* 卡片内：上面一行「图标 + 名字 + 角标 + ›」，下面一行说明。左对齐而不是居中 ——
+     说明长短不一，居中的话两格的文字基线会错开。 */
   &__nav-item {
-    flex: 1;
+    /* 两列：扣掉中间那道 gap（16rpx）后各占一半 */
+    width: calc(50% - 8rpx);
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 10rpx;
-    padding: 24rpx 0 20rpx;
+    gap: 8rpx;
+    padding: 22rpx 20rpx 20rpx;
     background: rgba(255, 255, 255, 0.86);
     border-radius: $radius-lg;
     box-shadow: $shadow-card;
   }
 
+  &__nav-top {
+    display: flex;
+    align-items: center;
+    gap: 10rpx;
+    min-width: 0;
+  }
+
   &__nav-icon {
-    font-size: 44rpx;
+    flex-shrink: 0;
+    font-size: 34rpx;
     line-height: 1;
   }
 
   &__nav-label {
-    font-size: 24rpx;
-    font-weight: 500;
-    color: $text-2;
+    flex: 1;
+    min-width: 0;
+    font-size: 26rpx;
+    font-weight: 600;
+    color: $text-1;
+
+    /* 名字超长时不折行（否则两格的标题高度不一，网格会歪） */
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* 未读角标：与卡头的 count-badge 同一套视觉（小、实底、不抢标题） */
+  &__nav-badge {
+    flex-shrink: 0;
+    min-width: 32rpx;
+    padding: 0 8rpx;
+    border-radius: 999rpx;
+    background: $danger;
+    color: #fff;
+    font-size: 20rpx;
+    line-height: 32rpx;
+    text-align: center;
+  }
+
+  /* 右侧「›」：只做方向暗示，别做成按钮的样子（整格都可点） */
+  &__nav-go {
+    flex-shrink: 0;
+    font-size: 28rpx;
+    line-height: 1;
+    color: $text-3;
+  }
+
+  &__nav-hint {
+    font-size: 22rpx;
+    line-height: 1.4;
+    color: $text-3;
+
+    /* 说明最多两行，超了裁掉 —— 它只是帮用户区分四个入口，不该自己长成一段话 */
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
   /* 区块头：标题 + 右侧「查看全部 ›」 */

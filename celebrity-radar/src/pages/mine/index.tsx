@@ -488,19 +488,6 @@ export default function Mine() {
       onTap: () => Taro.navigateTo({ url: '/package/following/index' })
     },
     {
-      /*
-        监测工作台（S3-2，2026-10-16）：与「关注的名人」相邻 —— 一个是「我关注了谁」（内容订阅），
-        一个是「我盯着谁」（职业台账：横向对比 + 导出），两者都在名单层面，放一起才分得清。
-        ⚠ 这里的 note 刻意不写监控人数：本页的 counts 是关注 / 收藏 / 历史三条既有查询，
-        为一个入口再发一次 keyword_watches 查询不值得（工作台进去就显示人数）。
-      */
-      icon: '📊',
-      iconBg: 'brand',
-      title: '监测工作台',
-      note: userId ? '多人台账 · 勾选对比 · 导出简报' : '登录后查看',
-      onTap: () => Taro.navigateTo({ url: '/package/workbench/index' })
-    },
-    {
       icon: '⭐',
       iconBg: 'brand',
       title: '我的收藏',

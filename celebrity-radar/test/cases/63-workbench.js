@@ -522,9 +522,27 @@ describe('S3-2 监测工作台 · 页面接入', () => {
     ok(/workbench\/index/.test(read('app.config.ts')))
   })
 
-  it('入口：预警页（名单之后）与「我的」页都要能进', () => {
+  it('入口：预警页（名单之后）与舆情页都要能进', () => {
     ok(/package\/workbench\/index/.test(read(path.join('package', 'alerts', 'index.tsx'))))
-    ok(/package\/workbench\/index/.test(read(path.join('pages', 'mine', 'index.tsx'))))
+    /*
+     * 2026-10-17 从「我的」迁到舆情页：工作台回答的是「我盯的几个人里谁在动」（横向），
+     * 与舆情页「我盯的东西怎么样了」同一件事；放在「我的」里被归进了账号设置。
+     * ⚠ 「我的」页那条入口**必须删掉**：同一个功能两处入口，退回来时用户不知道该回哪。
+     */
+    ok(/package\/workbench\/index/.test(read(path.join('pages', 'opinion', 'index.tsx'))))
+    notOk(
+      /package\/workbench\/index/.test(read(path.join('pages', 'mine', 'index.tsx'))),
+      '「我的」页的工作台入口已迁移，不许回流（两处入口会让人不知道该从哪进）'
+    )
+  })
+
+  it('舆情页入口以卡片形态挂在页首导航区（与另外三个入口同一套结构）', () => {
+    const opinion = read(path.join('pages', 'opinion', 'index.tsx'))
+    ok(
+      opinion.includes("className='page-opinion__nav-item' onClick={goWorkbench}"),
+      '必须是页首 nav 的第四格（25/36/39/59 用例钉住这套形态：纯入口、在推荐卡之前）'
+    )
+    ok(/const goWorkbench = \(\) => void Taro\.navigateTo/.test(opinion), '纯跳转，不预读人数')
   })
 })
 

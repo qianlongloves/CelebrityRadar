@@ -481,6 +481,12 @@ export default function Opinion() {
   const inboxTotal = alerts.newTotal + alerts.riskNew + eventNew
 
   /**
+   * 页首「监控」格上的角标：只算预警 + 风险，**不含事件** ——
+   * 事件未读在下方「事件时间线」卡头已经报过一次，同一页里报两遍会让人以为是两件事。
+   */
+  const monitorBadge = alerts.newTotal + alerts.riskNew
+
+  /**
    * **三张概要卡**（事件 / 关注动态 / 关键词预警）都只给**固定预览**
    * （`overviewSlice`，条数 = `EVENT_OVERVIEW_INITIAL` = 3），**都不再页内「加载更多」** ——
    * 用户诉求是「不要在舆情台加载更多，改成点进独立页看」：
@@ -498,6 +504,13 @@ export default function Opinion() {
   const goFeed = () => void Taro.navigateTo({ url: '/package/feed/index' })
   const goWeekly = () => void Taro.navigateTo({ url: '/package/weekly/index' })
   const goAlerts = () => void Taro.navigateTo({ url: '/package/alerts/index' })
+  /**
+   * 监测工作台（2026-10-17 从「我的」迁来）：它回答的是**横向**问题 ——「我盯的几个人里谁在动、
+   * 能不能放一起看」，而舆情页正是「我盯的东西怎么样了」的那一页；放在「我的」里等于把它
+   * 归进了账号设置，用户找它要先想到「这是我的资料」。
+   * ⚠ 纯入口，不预读人数：工作台进去自己读（与另外三格同一规矩，见下方 nav 注释）。
+   */
+  const goWorkbench = () => void Taro.navigateTo({ url: '/package/workbench/index' })
   /**
    * 事件卡**卡头右上角**「查看全部 ›」→ 事件列表页（2026-10-13）：本页只给固定预览，
    * 「看全部事件」挪到独立页分页加载（首屏第一页 + 触底追加），不再在本页越加载越长。
@@ -677,7 +690,7 @@ export default function Opinion() {
       <View className='page-opinion__hero'>
         <Text className='page-opinion__hero-title'>舆情台</Text>
         <View className='page-opinion__hero-row'>
-          <Text className='page-opinion__hero-sub'>关注的人 · 本周周报 · 监控，一处看全</Text>
+          <Text className='page-opinion__hero-sub'>关注 · 周报 · 监控 · 台账，一处看全</Text>
           {/* 站内「全部已读」显式入口（推送没了之后的收口），只在确有未读时出现 */}
           {inboxTotal > 0 && (
             <Text className='page-opinion__read-all' onClick={() => void markAllRead()}>
@@ -687,19 +700,62 @@ export default function Opinion() {
         </View>
       </View>
 
-      {/* ===== 三个入口按钮（关注动态 / 本周周报 / 监控）：纯入口，不加载数据，置于页首 ===== */}
+      {/*
+        ===== 入口区（2026-10-17 重排为 2×2 卡片）=====
+        纯入口、不加载数据（进页面各自去读），仍挂在 `page-opinion__nav` / `page-opinion__nav-item`
+        之下 —— 这两个类名被 25 / 36 / 39 / 59 四条用例钉住形态（页首、纯跳转、在推荐卡之前），
+        重排只改**视觉**，不改这套语义。
+
+        为什么从「三等分横排」改成 2×2：加了「监测工作台」之后是四格，四等分在 375pt 屏上每格
+        只剩约 80pt，「监测工作台」五个字必然折行或缩字号。2×2 每格还有一行说明的位置 ——
+        这四个入口名字（监控 / 监测工作台 / 关注动态 / 本周周报）彼此**看不出区别**，
+        光给名字的话用户得靠点进去试。
+
+        排序不是随手拍：**第一行 = 我盯了谁**（监控是有未读角标的主入口、工作台是它的台账视图），
+        **第二行 = 他们出了什么**（关注动态是流水、本周周报是综述）。之前按「数据流」排，
+        把最常点的「监控」压在了第三格。
+      */}
       <View className='page-opinion__nav'>
-        <View className='page-opinion__nav-item' onClick={goFeed}>
-          <Text className='page-opinion__nav-icon'>📡</Text>
-          <Text className='page-opinion__nav-label'>关注动态</Text>
-        </View>
-        <View className='page-opinion__nav-item' onClick={goWeekly}>
-          <Text className='page-opinion__nav-icon'>📰</Text>
-          <Text className='page-opinion__nav-label'>本周周报</Text>
-        </View>
+        {/*
+          监控：角标 = 关键词预警新 + 风险信号新（口径复用 inboxTotal 的那两项，**不含事件** ——
+          事件未读已经显示在下方「事件时间线」卡头，同一页里报两遍会让人以为是两件事）。
+          这两项都在 state 里，渲染零成本。
+        */}
         <View className='page-opinion__nav-item' onClick={goAlerts}>
-          <Text className='page-opinion__nav-icon'>🔔</Text>
-          <Text className='page-opinion__nav-label'>监控</Text>
+          <View className='page-opinion__nav-top'>
+            <Text className='page-opinion__nav-icon'>🔔</Text>
+            <Text className='page-opinion__nav-label'>监控</Text>
+            {monitorBadge > 0 && <Text className='page-opinion__nav-badge'>{monitorBadge}</Text>}
+            <Text className='page-opinion__nav-go'>›</Text>
+          </View>
+          <Text className='page-opinion__nav-hint'>关键词 · 名人 · 订阅对象</Text>
+        </View>
+
+        <View className='page-opinion__nav-item' onClick={goWorkbench}>
+          <View className='page-opinion__nav-top'>
+            <Text className='page-opinion__nav-icon'>📊</Text>
+            <Text className='page-opinion__nav-label'>监测工作台</Text>
+            <Text className='page-opinion__nav-go'>›</Text>
+          </View>
+          <Text className='page-opinion__nav-hint'>多人台账 · 勾选对比 · 导出</Text>
+        </View>
+
+        <View className='page-opinion__nav-item' onClick={goFeed}>
+          <View className='page-opinion__nav-top'>
+            <Text className='page-opinion__nav-icon'>📡</Text>
+            <Text className='page-opinion__nav-label'>关注动态</Text>
+            <Text className='page-opinion__nav-go'>›</Text>
+          </View>
+          <Text className='page-opinion__nav-hint'>关注的人有什么新东西</Text>
+        </View>
+
+        <View className='page-opinion__nav-item' onClick={goWeekly}>
+          <View className='page-opinion__nav-top'>
+            <Text className='page-opinion__nav-icon'>📰</Text>
+            <Text className='page-opinion__nav-label'>本周周报</Text>
+            <Text className='page-opinion__nav-go'>›</Text>
+          </View>
+          <Text className='page-opinion__nav-hint'>一周综述，本机缓存秒开</Text>
         </View>
       </View>
 
