@@ -49,6 +49,17 @@
   会员段看不到（降级、不白屏，但对新报告是实打实的缺失）。云端目前仍是阶段 1 双写版。
   切换条件与命令见 `doc/报告生成流程问题清单.md` 的「阶段 3 的上线时序」。
   （`quotaGuard` 的旗标感知改动向前兼容，已部署且可保留。）
+- **监控类页面的渲染层收口 + 两个导航 bug**（2026-10-17）：预警页里同一份数据曾渲染多遍
+  （监控状态表 2 份、执行日志 2 份、名单胶囊 3 份），现各留一份实现：新增
+  `components/monitor-table`、`components/scan-log-list`、`components/chip-list`（样式跟着组件走）。
+  「命中 / 结果」与「累计条数」各收到一个算法（`utils/scan-log.ts#monitorResultText` /
+  `#riskSignalTotal`）—— 此前两处对「扫过没命中（0）」与「没扫过」的说法不一致，两张表并排时互相打脸；
+  `signals_total` 兜底判据改为**有限数**（`??` 会让 `NaN` 原样透出，显示成「共 NaN 条」）。
+  顺带修掉两个既有 bug：①预警页 ⇄ 监测工作台两个方向都 `navigateTo`，来回点几次顶到微信 10 层页面栈
+  上限、之后所有跳转静默失败 ⇒ 预警页进工作台带 `?from=alerts`，工作台据此 `navigateBack` 或 `redirectTo`；
+  ②`package/event` 被订阅消息/小程序码/转发卡片直接打开时栈里只有它自己，裸 `navigateBack()` 静默失败
+  ⇒ 新增 `utils/route.ts#goBackOr`。**刻意没合并页面**：词（烧检索额度）/ 人（会员额度）/ 事件对象标签
+  （零成本）三种监控成本模型不同，合成一张表等于把额度混了；**零云侧改动**。用例 `test/cases/83-monitor-consolidate.js`。
 - **会员段落搬家的阶段 4（存量迁移）——代码就绪，未执行**：`dbInit` 新增独立动作
   `{"action":"stripMember"}`，把**此前落库**的主行里的四段搬进 `report_member` 再从主行剥掉
   （`report_cache` 与 `report_versions` 两张公开表都扫）。默认 dry-run，只回候选条数与样例 id；

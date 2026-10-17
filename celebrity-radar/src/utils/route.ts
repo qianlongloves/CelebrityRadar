@@ -1,3 +1,5 @@
+import Taro from '@tarojs/taro'
+
 /**
  * 页面参数的安全解码（2026-10-16）。
  *
@@ -23,3 +25,24 @@ export function decodeParam(value?: string | null): string {
     return ''
   }
 }
+
+/**
+ * 返回上一页；**没有上一页**时改去 fallback（2026-10-17）。
+ *
+ * 为什么需要这个：`Taro.navigateBack()` 在栈底（首个页面）会失败，而失败是**静默**的 ——
+ * 用户点了「返回」却停在原地，看起来像按钮坏了。栈底不是边缘情况：订阅消息、小程序码、
+ * 转发卡片、聊天记录里的旧链接，打开时页面栈里都只有这一页，而事件时间线页（`package/event`）
+ * 恰恰是最常被分享和推送的一页。
+ *
+ * 所以判据取「退不动了就换一条路」，而不是先数栈深：navigateBack 的失败本身就是最准确的
+ * 判断依据，且不依赖 `getCurrentPages()` 在各端的一致性。
+ *
+ * ⚠ 只用于**返回**语义。`redirectTo` 会替换当前页 —— 想「进一页、还能退回来」的场景必须用
+ * `navigateTo`，两页互相有入口时尤其要分清（见 package/workbench 的 goAlerts 注释）。
+ */
+export function goBackOr(fallbackUrl?: string): void {
+  Taro.navigateBack().catch(() => {
+    if (fallbackUrl) void Taro.redirectTo({ url: fallbackUrl })
+  })
+}
+

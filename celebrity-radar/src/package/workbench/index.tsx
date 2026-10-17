@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import Taro, { useDidShow } from '@tarojs/taro'
+import Taro, { useDidShow, useRouter } from '@tarojs/taro'
 import { Text, View } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { splitWatches, listWatches } from '@/utils/keyword-alert'
@@ -51,6 +51,8 @@ import './index.scss'
  */
 export default function Workbench() {
   const { userId } = useAuth()
+  /** 只用来读 `from`：两页互相有入口，回跳方式取决于从哪儿来（见 goAlerts） */
+  const router = useRouter()
 
   /** 面板行（已按最近动静排好序，见 utils/workbench#buildWorkbenchRows） */
   const [rows, setRows] = useState<WorkbenchRow[]>([])
@@ -207,7 +209,26 @@ export default function Workbench() {
   const goReport = (personKey: string) =>
     void Taro.navigateTo({ url: `/package/report/index?personKey=${encodeURIComponent(personKey)}` })
 
-  const goAlerts = () => void Taro.navigateTo({ url: '/package/alerts/index' })
+  /**
+   * 回预警页（2026-10-17 修栈环）：两页互相有入口，若两个方向都 `navigateTo`，
+   * 来回点几次就把页面栈顶到微信 10 层上限 —— 之后**所有**跳转静默失败（表现为「点了没反应」），
+   * 用户唯一能做的就是杀掉小程序重进。
+   *
+   * 判据看 `from=alerts`（预警页进来时带的）：
+   *   · 从预警页来的 ⇒ `navigateBack()`：栈里那一页就是它，退回去既省钱又保住它的滚动位置；
+   *   · 从「我的」或别处进来的 ⇒ `redirectTo`：本页是台账、预警页是明细，两者是同一件事的
+   *     两个视图，用替换语义（栈不增长，导航栏返回退回「我的」，符合从哪儿来回哪儿去）。
+   * ⚠ 不能用 `navigateBack()` 一把梭：从「我的」进来时栈里上一页是「我的」，点「看每人的
+   * 信号明细」却退到「我的」—— 功能跳转被做成了返回，用户找不到预警页。
+   */
+  const fromAlerts = router.params?.from === 'alerts'
+  const goAlerts = () => {
+    if (fromAlerts) {
+      void Taro.navigateBack()
+      return
+    }
+    void Taro.redirectTo({ url: '/package/alerts/index' })
+  }
   const goEvents = () => void Taro.navigateTo({ url: '/package/events/index' })
 
   const goEvent = (ev: OpinionEvent) =>

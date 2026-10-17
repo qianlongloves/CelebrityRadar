@@ -29,7 +29,7 @@
 
 import { domainLabel, parsePersonKey } from '@/config/domains'
 import { isNewSince } from './inbox'
-import { SCAN_STATUS_LABEL } from './scan-log'
+import { riskSignalTotal, SCAN_STATUS_LABEL } from './scan-log'
 import { dayKey8, formatMoment8 } from './time'
 import { metricText, metricValue, metricsOf, WORKBENCH_METRIC_KEYS } from './metrics'
 import type { MetricDef } from './metrics'
@@ -144,7 +144,8 @@ export function buildWorkbenchRows(input: {
 
     const latestSignalAt = String(latest?.first_seen_at ?? '')
     const lastRanAt = String(log?.ran_at ?? scan?.scanned_at ?? '')
-    const total = Number.isFinite(scan?.signals_total) ? (scan?.signals_total as number) : list.length
+    /* 累计条数：与预警页同一口径（快照 signals_total 优先、读到的条数兜底，NaN 也走兜底） */
+    const total = riskSignalTotal(scan, list.length)
 
     return {
       personKey: p.personKey,

@@ -167,40 +167,7 @@
     color: $brand;
   }
 
-  /* 已监测的词：点一下即取消（带二次确认） */
-  &__chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 16rpx;
-    margin-top: 24rpx;
-  }
-
-  &__chip {
-    display: flex;
-    align-items: center;
-    gap: 8rpx;
-    padding: 8rpx 20rpx;
-    border-radius: 999rpx;
-    background: $brand-weak;
-    color: $brand;
-    font-size: 24rpx;
-  }
-
-  &__chip--tap {
-    opacity: 0.7;
-  }
-
-  &__chip-x {
-    font-size: 28rpx;
-    line-height: 1;
-  }
-
-  /* 推送定位命中的那一个词：换成实底品牌色，省得用户在七八个胶囊里再找一遍
-     （其余胶囊是 $brand-weak 底 + 品牌色字，反差足够，不会误认成另一种状态） */
-  &__chip--focus {
-    background: $brand;
-    color: #fff;
-  }
+  /* 已监测的词 / 订阅对象 / 名人名单（2026-10-17 搬到 components/chip-list）：样式跟着组件走 */
 
   /*
     监测工作台入口（S3-2）：一行「说明 + 去 ›」，与下面的「开启风险提醒」区分开 ——
@@ -407,132 +374,10 @@
     color: $text-3;
   }
 
-  /* 监控状态表格：一行一个监控对象（关键词 / 名人），列 = 对象 / 最近执行 / 命中结果 / 状态 */
-  &__table {
-    margin-top: 24rpx;
-    border: 1rpx solid $line;
-    border-radius: $radius-sm;
-    overflow: hidden;
-  }
+  /* 监控状态表格（2026-10-17 搬到 components/monitor-table）：表头 / 列宽 / 状态色跟着组件走，
+     两张表本来就必须长得一模一样 —— 样式留在页面里等于把「一套真相」抄两份 */
 
-  &__tr {
-    display: flex;
-    align-items: center;
-    min-height: 64rpx;
-    padding: 0 16rpx;
-    border-top: 1rpx solid $line;
-
-    &:first-child {
-      border-top: 0;
-    }
-
-    &--head {
-      min-height: 56rpx;
-      background: $bg;
-    }
-  }
-
-  &__td {
-    flex: none;
-    width: 150rpx;
-    font-size: 22rpx;
-    line-height: 1.5;
-    color: $text-2;
-
-    &--obj {
-      flex: 1;
-      min-width: 0;
-      padding-right: 8rpx;
-      color: $text-1;
-      font-size: 26rpx;
-      font-weight: 600;
-    }
-
-    &--status {
-      text-align: right;
-    }
-  }
-
-  /* 表头文字弱化 */
-  &__tr--head &__td {
-    font-size: 20rpx;
-    color: $text-3;
-  }
-
-  /* 定位命中的那一行：一层浅品牌底即可 —— 行内已经有状态色（成功 / 失败），再抢就花了 */
-  &__tr--focus {
-    background: $brand-weak;
-  }
-
-  &__status {
-    &--ok {
-      color: $success;
-    }
-
-    &--skipped {
-      color: $warning;
-    }
-
-    &--error {
-      color: $danger;
-    }
-
-    &--pending {
-      color: $text-3;
-    }
-  }
-
-  /* 执行日志：每张卡片底部，展示每一次扫描的时间 / 对象 / 命中 / 结果 */
-  &__logs {
-    margin-top: 20rpx;
-    border-top: 1rpx dashed $line;
-    padding-top: 16rpx;
-  }
-
-  &__logs-title {
-    display: block;
-    margin-bottom: 8rpx;
-    font-size: 22rpx;
-    color: $text-3;
-  }
-
-  &__log {
-    display: flex;
-    align-items: flex-start;
-    gap: 12rpx;
-    padding: 8rpx 0;
-  }
-
-  &__log-status {
-    flex: none;
-    padding: 0 10rpx;
-    border-radius: 6rpx;
-    font-size: 20rpx;
-    line-height: 1.8;
-
-    &--ok {
-      background: #e7f7f0;
-      color: $success;
-    }
-
-    &--skipped {
-      background: #fef3e2;
-      color: $warning;
-    }
-
-    &--error {
-      background: $danger-weak;
-      color: $danger;
-    }
-  }
-
-  &__log-body {
-    flex: 1;
-    min-width: 0;
-    font-size: 22rpx;
-    line-height: 1.6;
-    color: $text-2;
-  }
+  /* 执行日志（2026-10-17 搬到 components/scan-log-list）：样式跟着组件走，这里不再保留 */
 
   /* 页面最底部的免责声明。全局 .disclaimer 左右仅 48rpx，比卡片内容（卡片 margin 32rpx +
      内边距 28rpx ≈ 60rpx）更贴近屏边，这里局部加大到 64rpx 与屏边保持距离。

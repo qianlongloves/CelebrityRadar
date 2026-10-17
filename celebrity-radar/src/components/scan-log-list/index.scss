@@ -1,0 +1,59 @@
+@import '../../styles/variables.scss';
+
+/*
+ * 执行日志（2026-10-17 从 package/alerts/index.scss 搬来）。
+ *
+ * 类名跟着组件走（`scan-log-list__*`，不再挂在 `.page-alerts` 下）：组件一旦只有页面作用域的
+ * 样式，第二个使用方（例如工作台）就拿不到样式表，只能去 @import 别的页面的 scss ——
+ * 那等于把两个页面重新绑在一起。数值一个没改，只是换了前缀。
+ */
+.scan-log-list {
+  margin-top: 20rpx;
+  border-top: 1rpx dashed $line;
+  padding-top: 16rpx;
+}
+
+.scan-log-list__title {
+  display: block;
+  margin-bottom: 8rpx;
+  font-size: 22rpx;
+  color: $text-3;
+}
+
+.scan-log-list__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12rpx;
+  padding: 8rpx 0;
+}
+
+.scan-log-list__status {
+  flex: none;
+  padding: 0 10rpx;
+  border-radius: 6rpx;
+  font-size: 20rpx;
+  line-height: 1.8;
+
+  &--ok {
+    background: #e7f7f0;
+    color: $success;
+  }
+
+  &--skipped {
+    background: #fef3e2;
+    color: $warning;
+  }
+
+  &--error {
+    background: $danger-weak;
+    color: $danger;
+  }
+}
+
+.scan-log-list__body {
+  flex: 1;
+  min-width: 0;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: $text-2;
+}

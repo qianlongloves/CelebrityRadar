@@ -123,8 +123,17 @@ describe('预警页消费推送落点：点通知进来就该看到那个词（S
   it('三处高亮与定位条都有样式（样式漏了只会「看不出高亮」，最难发现）', () => {
     const scss = fs.readFileSync(path.join(SRC, ALERTS_SCSS), 'utf8')
     /* 判「选择器定义」（带 ` {`）而不是裸名字：裸名字在本文件里到处都是 */
-    for (const sel of ['&__focus {', '&__chip--focus {', '&__tr--focus {', '&__group--focus {']) {
+    for (const sel of ['&__focus {', '&__group--focus {']) {
       ok(scss.includes(sel), `样式缺 ${sel}：类名加上去了却没有对应的定义，页面上什么都不会变`)
     }
+    /*
+     * chip 与表格行的高亮样式（2026-10-17）：胶囊排与监控表抽成了组件、样式跟着组件走 ——
+     * 断言跟着搬到组件 scss。**不能直接删掉这两条**：高亮类名加上去却忘了写样式，
+     * 页面上什么都不变，这是最难发现的一类回归（同本条测试的初衷）。
+     */
+    const chipScss = fs.readFileSync(path.join(SRC, 'components/chip-list/index.scss'), 'utf8')
+    ok(chipScss.includes('.chip-list__chip--focus {'), '胶囊高亮样式必须跟着组件一起存在')
+    const tableScss = fs.readFileSync(path.join(SRC, 'components/monitor-table/index.scss'), 'utf8')
+    ok(tableScss.includes('.monitor-table__tr--focus {'), '监控表行定位高亮样式必须跟着组件一起存在')
   })
 })

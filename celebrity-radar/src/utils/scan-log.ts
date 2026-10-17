@@ -57,3 +57,37 @@ export function latestLogByKey(logs: ScanLogRow[]): Map<string, ScanLogRow> {
   }
   return m
 }
+
+/**
+ * 「命中 / 结果」这一格的唯一算法（2026-10-17 抽出）。
+ *
+ * 此前预警页里写了**两份等价但不同形的表达式**（关键词那路 `log ? 新 x / 共 y : …`，
+ * 名人那路 `log ? … : scan ? … : grp ? … : '—'`），它们对「扫过但没命中」「没扫过」
+ * 「有存量但没执行记录」三种情况的说法不一致 —— 同一块 UI 上并排两张表，两张表的
+ * 「—」含义却不一样，用户没法比。
+ *
+ * 约定（三处统一）：
+ *   · 本轮**有执行记录** ⇒ `新 N / 共 M`（N 可以是 0：那是"扫了没新东西"，不是"没扫过"）；
+ *   · 没有执行记录但有存量 ⇒ `共 M 条`；
+ *   · 两者都没有 ⇒ `—`（**不写「共 0 条」**：那读起来像"扫过了、结果是空的"）。
+ *
+ * @param hit  本轮新命中；`undefined` = 没有执行记录（**0 是有效值**，别写成假值判断）
+ * @param total 累计条数（快照的 signals_total 优先，读到的条数兜底，见 riskSignalTotal）
+ */
+export function monitorResultText(hit?: number | null, total?: number | null): string {
+  const n = typeof total === 'number' && Number.isFinite(total) ? total : 0
+  if (typeof hit === 'number' && Number.isFinite(hit)) return `新 ${hit} / 共 ${n}`
+  return n > 0 ? `共 ${n} 条` : '—'
+}
+
+/**
+ * 累计条数口径：快照里云端写下的 `signals_total` 优先，读到的行数兜底。
+ *
+ * 为什么不用 `??`：`signals_total` 列为空（老数据 / 写入时被截断）时会落到兜底，
+ * 这是对的；但 NaN（上游给了个坏数）用 `??` 会**原样透出**，表格里就会显示「共 NaN 条」。
+ * 所以判据是「是不是有限数」，而不是「是不是 null」。
+ */
+export function riskSignalTotal(scan: { signals_total?: number } | undefined, loaded: number): number {
+  const n = scan?.signals_total
+  return typeof n === 'number' && Number.isFinite(n) ? n : loaded
+}

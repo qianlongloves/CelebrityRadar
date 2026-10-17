@@ -1,0 +1,81 @@
+@import '../../styles/variables.scss';
+
+/*
+ * 监控状态表（2026-10-17 从 package/alerts/index.scss 搬来，数值一个没改）。
+ *
+ * ⚠ 列宽（150rpx）与状态色是**两张表共用的一套真相**：此前它们各写一份，
+ * 改一处另一张就歪。搬进组件后，关键词表与名人表必须长得一模一样。
+ */
+.monitor-table {
+  margin-top: 24rpx;
+  border: 1rpx solid $line;
+  border-radius: $radius-sm;
+  overflow: hidden;
+}
+
+.monitor-table__tr {
+  display: flex;
+  align-items: center;
+  min-height: 64rpx;
+  padding: 0 16rpx;
+  border-top: 1rpx solid $line;
+
+  &:first-child {
+    border-top: 0;
+  }
+
+  &--head {
+    min-height: 56rpx;
+    background: $bg;
+  }
+}
+
+.monitor-table__td {
+  flex: none;
+  width: 150rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: $text-2;
+
+  &--obj {
+    flex: 1;
+    min-width: 0;
+    padding-right: 8rpx;
+    color: $text-1;
+    font-size: 26rpx;
+    font-weight: 600;
+  }
+
+  &--status {
+    text-align: right;
+  }
+}
+
+/* 表头文字弱化 */
+.monitor-table__tr--head .monitor-table__td {
+  font-size: 20rpx;
+  color: $text-3;
+}
+
+/* 定位命中的那一行：一层浅品牌底即可 —— 行内已经有状态色（成功 / 失败），再抢就花了 */
+.monitor-table__tr--focus {
+  background: $brand-weak;
+}
+
+.monitor-table__status {
+  &--ok {
+    color: $success;
+  }
+
+  &--skipped {
+    color: $warning;
+  }
+
+  &--error {
+    color: $danger;
+  }
+
+  &--pending {
+    color: $text-3;
+  }
+}

@@ -1,0 +1,40 @@
+@import '../../styles/variables.scss';
+
+/*
+ * 「名单 + ×」胶囊排（2026-10-17 从 package/alerts/index.scss 搬来，数值一个没改）。
+ * 类名跟着组件走：三处名单共用同一份视觉，样式若还挂在 `.page-alerts` 下，
+ * 第二个使用方（例如工作台的关键词名单）就拿不到。
+ */
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-top: 24rpx;
+}
+
+.chip-list__chip {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  padding: 8rpx 20rpx;
+  border-radius: 999rpx;
+  background: $brand-weak;
+  color: $brand;
+  font-size: 24rpx;
+}
+
+.chip-list__chip--tap {
+  opacity: 0.7;
+}
+
+.chip-list__x {
+  font-size: 28rpx;
+  line-height: 1;
+}
+
+/* 推送定位命中的那一个：换成实底品牌色，省得用户在七八个胶囊里再找一遍
+   （其余胶囊是 $brand-weak 底 + 品牌色字，反差足够，不会误认成另一种状态） */
+.chip-list__chip--focus {
+  background: $brand;
+  color: #fff;
+}

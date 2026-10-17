@@ -27,7 +27,7 @@ import { findSubjectSub, toggleSubject, SUB_MAX } from '@/utils/event-subscribe'
 import { track } from '@/utils/events'
 import { openMemberPage } from '@/utils/member-entry'
 import { formatMoment8 } from '@/utils/time'
-import { decodeParam } from '@/utils/route'
+import { decodeParam, goBackOr } from '@/utils/route'
 import './index.scss'
 
 /**
@@ -373,7 +373,13 @@ export default function EventTimeline() {
     setPage((p) => (p * TIMELINE_PAGE_SIZE < total ? p + 1 : p))
   })
 
-  const goBack = () => void Taro.navigateBack()
+  /*
+   * 返回（2026-10-17）：这页有 4 个入栈来源（事件列表 / 舆情页 / 工作台 / 预警页），
+   * 也有 4 类**没有来源**的入口（订阅消息、小程序码、转发卡片、聊天记录里的旧链接）——
+   * 后者打开时页面栈里只有它自己，`navigateBack()` 会静默失败，用户点了「返回」停在原地。
+   * 退不动就回事件列表：那是这页在功能上的上一级。
+   */
+  const goBack = () => goBackOr('/package/events/index')
   const goMember = () => openMemberPage('event')
 
   /**

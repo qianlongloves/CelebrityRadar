@@ -28,12 +28,12 @@ import {
   seenLabel,
   unmonitorPerson
 } from '@/utils/risk-watch'
-import { loadScanLogs, latestLogByKey, SCAN_STATUS_LABEL } from '@/utils/scan-log'
+import { loadScanLogs, latestLogByKey, monitorResultText, riskSignalTotal } from '@/utils/scan-log'
 import { emptyStatus, loadEventStatus, loadStoredEvents, toDisplayEvents } from '@/utils/opinion-store'
 import { buildSubjectHits, hasSubjectSubs, toggleSubject } from '@/utils/event-subscribe'
 import { alertNotifyConfigured, requestAlertNotify, requestRiskNotify, riskNotifyConfigured } from '@/utils/notify'
 import { openSourceLink } from '@/utils/source-link'
-import { formatMoment8, fromNow } from '@/utils/time'
+import { formatMoment8 } from '@/utils/time'
 import { decodeParam } from '@/utils/route'
 import { track } from '@/utils/events'
 import { openMemberPage } from '@/utils/member-entry'
@@ -41,6 +41,12 @@ import type { RiskScanRow, RiskSignalRow, ScanLogRow } from '@/types/db'
 import type { EventStatus } from '@/utils/opinion-store'
 import type { SubjectHit } from '@/utils/event-subscribe'
 import EmptyState from '@/components/empty-state'
+/* 两路（关键词 / 名人）共用同一份执行日志渲染，此前是两份逐行相同的 JSX */
+import ScanLogList from '@/components/scan-log-list'
+/* 三处「名单 + ×」（关键词 / 订阅对象 / 名人）共用同一份胶囊排 */
+import ChipList from '@/components/chip-list'
+/* 关键词 / 名人两张监控状态表共用同一套表头、列宽与状态色 */
+import MonitorTable, { type MonitorRow } from '@/components/monitor-table'
 import './index.scss'
 
 /**
@@ -407,6 +413,52 @@ export default function Alerts() {
   const focusWatch = focusKeyword ? watches.find((w) => w.keyword === focusKeyword) : undefined
   const focusGroup = focusKeyword ? groupByKey.get(focusKeyword) : undefined
   const showFocus = !!focusKeyword && !focusClosed
+
+  /*
+   * 两张监控状态表的行（2026-10-17）：取数留在这里、摆盘交给 components/monitor-table。
+   * 「命中 / 结果」一格的文字必须走同一个口径（utils/scan-log#monitorResultText）——
+   * 两张表并排出现在同一条滚动流里，对「扫过没命中」和「没扫过」说法不同就会互相打脸。
+   * ⚠ 返回值标 `MonitorRow[]`：`status: log?.status ?? 'pending'` 会被推成 string，
+   * 不标就与组件的 `RowStatus` 对不上（类型一松，'pending' 之外的状态名拼错也不会报错）。
+   */
+  const keywordRows: MonitorRow[] = useMemo(
+    () =>
+      watches.map((w) => {
+        const log = kwLatest.get(w.keyword)
+        const g = groupByKey.get(w.keyword)
+        return {
+          id: w.id,
+          label: w.keyword,
+          lastRan: log?.ran_at || g?.lastFetchedAt || '',
+          result: monitorResultText(log ? log.hit : undefined, g?.items.length ?? log?.total),
+          status: log?.status ?? 'pending',
+          focused: showFocus && w.keyword === focusKeyword
+        }
+      }),
+    [watches, kwLatest, groupByKey, showFocus, focusKeyword]
+  )
+
+  const personRows: MonitorRow[] = useMemo(
+    () =>
+      persons.map((p) => {
+        const key = p.person_key ?? ''
+        const log = personLatest.get(key)
+        const scan = scanByKey.get(key)
+        const grp = riskGroupByKey.get(key)
+        return {
+          id: p.id,
+          label: p.keyword,
+          lastRan: log?.ran_at || scan?.scanned_at || '',
+          /* 累计条数：快照 signals_total 优先，读到的条数兜底（NaN 也走兜底，见 riskSignalTotal） */
+          result: monitorResultText(
+            log ? log.hit : undefined,
+            riskSignalTotal(scan, grp?.signals.length ?? log?.total ?? 0)
+          ),
+          status: log?.status ?? 'pending'
+        }
+      }),
+    [persons, personLatest, scanByKey, riskGroupByKey]
+  )
   /* 处境判定只写一遍：文案（FOCUS_COPY）与埋点（alert_focus）都从它取，不会各说各的 */
   const focusKind: FocusKind = !userId
     ? 'guest'
@@ -518,21 +570,13 @@ export default function Alerts() {
           <Text className='page-alerts__login-tip'>登录后可订阅关键词（去「我的」页一键登录）</Text>
         )}
 
-        {watches.length > 0 && (
-          <View className='page-alerts__chips'>
-            {watches.map((w) => (
-              <View
-                key={w.id}
-                className={`page-alerts__chip${showFocus && w.keyword === focusKeyword ? ' page-alerts__chip--focus' : ''}`}
-                hoverClass='page-alerts__chip--tap'
-                onClick={() => handleRemove(w.keyword)}
-              >
-                <Text>{w.keyword}</Text>
-                <Text className='page-alerts__chip-x'>×</Text>
-              </View>
-            ))}
-          </View>
-        )}
+        <ChipList
+          items={watches}
+          keyOf={(w) => w.id}
+          labelOf={(w) => w.keyword}
+          isFocused={(w) => showFocus && w.keyword === focusKeyword}
+          onTap={(w) => handleRemove(w.keyword)}
+        />
 
         {/*
           推送按钮只在「模板已配置 + 已订阅」时出现：未配置还摆一个按钮，
@@ -552,54 +596,10 @@ export default function Alerts() {
         )}
 
         {/* 监控状态表格：一行一个关键词，展示最近执行 / 命中 / 结果 / 状态，明细见下方预警列表 */}
-        {watches.length > 0 && (
-          <View className='page-alerts__table'>
-            <View className='page-alerts__tr page-alerts__tr--head'>
-              <Text className='page-alerts__td page-alerts__td--obj'>监控对象</Text>
-              <Text className='page-alerts__td'>最近执行</Text>
-              <Text className='page-alerts__td'>命中 / 结果</Text>
-              <Text className='page-alerts__td page-alerts__td--status'>状态</Text>
-            </View>
-            {watches.map((w) => {
-              const log = kwLatest.get(w.keyword)
-              const g = groupByKey.get(w.keyword)
-              const lastRan = log?.ran_at || g?.lastFetchedAt || ''
-              return (
-                <View
-                  key={w.id}
-                  className={`page-alerts__tr${showFocus && w.keyword === focusKeyword ? ' page-alerts__tr--focus' : ''}`}
-                >
-                  <Text className='page-alerts__td page-alerts__td--obj'>{w.keyword}</Text>
-                  <Text className='page-alerts__td'>{lastRan ? fromNow(lastRan) : '待首次扫描'}</Text>
-                  <Text className='page-alerts__td'>
-                    {log ? `新 ${log.hit} / 共 ${g?.items.length ?? log.total}` : g ? `共 ${g.items.length} 条` : '—'}
-                  </Text>
-                  <Text className={`page-alerts__td page-alerts__td--status page-alerts__status--${log?.status ?? 'pending'}`}>
-                    {log ? SCAN_STATUS_LABEL[log.status] : '待扫描'}
-                  </Text>
-                </View>
-              )
-            })}
-          </View>
-        )}
+        <MonitorTable rows={keywordRows} />
 
         {/* 执行日志：关键词这一路每次扫描的时间 / 对象 / 命中数 / 成功与否 */}
-        {keywordLogs.length > 0 && (
-          <View className='page-alerts__logs'>
-            <Text className='page-alerts__logs-title'>执行日志（最近 {keywordLogs.length} 次）</Text>
-            {keywordLogs.slice(0, 20).map((l) => (
-              <View key={l.id} className='page-alerts__log'>
-                <Text className={`page-alerts__log-status page-alerts__log-status--${l.status}`}>
-                  {SCAN_STATUS_LABEL[l.status]}
-                </Text>
-                <Text className='page-alerts__log-body'>
-                  {formatMoment8(l.ran_at)} · 「{l.object_name}」
-                  {l.note ? ` · ${l.note}` : l.hit > 0 ? ` · 命中 ${l.hit} 条` : ''}
-                </Text>
-              </View>
-            ))}
-          </View>
-        )}
+        <ScanLogList logs={keywordLogs} />
       </View>
 
       {/* 预警列表：只在「没有任何监测」时走整块空态；只监控了人、没订阅关键词时
@@ -710,20 +710,13 @@ export default function Alerts() {
             在事件详情页点「订阅」，这个对象（人 / 关键词）之后的新事件就会收在这里。
             站内查看、不发推送；云端每天上午更新一次。
           </Text>
-          <View className='page-alerts__chips'>
-            {subHits.map((h) => (
-              <View
-                key={h.label}
-                className='page-alerts__chip'
-                hoverClass='page-alerts__chip--tap'
-                onClick={() => void unsubscribeSubject(h.label)}
-              >
-                <Text>{h.label}</Text>
-                {/* 取消没有二次确认（与关键词 chip 的二次确认不同）：订阅随时可重订，代价是零 */}
-                <Text className='page-alerts__chip-x'>×</Text>
-              </View>
-            ))}
-          </View>
+          {/* 取消没有二次确认（与关键词 chip 的二次确认不同）：订阅随时可重订，代价是零 */}
+          <ChipList
+            items={subHits}
+            keyOf={(h) => h.label}
+            labelOf={(h) => h.label}
+            onTap={(h) => void unsubscribeSubject(h.label)}
+          />
 
           {/* 只列**有未读动向**的对象：没动向的对象就是那一排 chip，不必再占一段 */}
           {subHits
@@ -788,28 +781,25 @@ export default function Alerts() {
           <Text className='page-alerts__intro'>
             {`盯的是人物风险：只有命中「司法 / 税务 / 合作 / 维权 / 表态」这类词的报道才会进下方信号列表，其余报道不收。想看 TA 的全部报道，用上面的关键词监控。`}
           </Text>
-          <View className='page-alerts__chips'>
-            {persons.map((p) => (
-              <View
-                key={p.id}
-                className='page-alerts__chip'
-                hoverClass='page-alerts__chip--tap'
-                onClick={() => handleUnmonitor(p.person_key ?? '', p.keyword)}
-              >
-                <Text>{p.keyword}</Text>
-                <Text className='page-alerts__chip-x'>×</Text>
-              </View>
-            ))}
-          </View>
+          <ChipList
+            items={persons}
+            keyOf={(p) => p.id}
+            labelOf={(p) => p.keyword}
+            onTap={(p) => handleUnmonitor(p.person_key ?? '', p.keyword)}
+          />
           {/*
             监测工作台入口（S3-2，2026-10-16）：紧跟在「我盯谁」的名单之后 ——
             上面这群人的**明细**就在本页往下看，而他们的**横向台账**（谁在动 / 勾选对比 / 导出简报）
             在另一页。放在名单之后而不是页面顶端：它是本页的下游动作，不是本页的替代品。
+
+            `?from=alerts`（2026-10-17）：两页互相有入口，工作台那边要靠这个参数决定「退回去」
+            还是「替换过去」—— 不带它就只能猜，而猜错的代价是页面栈一层层加深，
+            最终顶到微信 10 层上限、所有跳转静默失败（表现为「点了没反应」）。
           */}
           <View
             className='page-alerts__workbench'
             hoverClass='page-alerts__workbench--tap'
-            onClick={() => void Taro.navigateTo({ url: '/package/workbench/index' })}
+            onClick={() => void Taro.navigateTo({ url: '/package/workbench/index?from=alerts' })}
           >
             <Text className='page-alerts__workbench-text'>把这些人横着排成台账：谁在动 · 勾选对比 · 导出简报</Text>
             <Text className='page-alerts__workbench-go'>监测工作台 ›</Text>
@@ -830,57 +820,10 @@ export default function Alerts() {
           )}
 
           {/* 监控状态表格：一行一位名人，展示最近执行 / 命中 / 结果 / 状态，明细见下方信号列表 */}
-          <View className='page-alerts__table'>
-            <View className='page-alerts__tr page-alerts__tr--head'>
-              <Text className='page-alerts__td page-alerts__td--obj'>监控对象</Text>
-              <Text className='page-alerts__td'>最近执行</Text>
-              <Text className='page-alerts__td'>命中 / 结果</Text>
-              <Text className='page-alerts__td page-alerts__td--status'>状态</Text>
-            </View>
-            {persons.map((p) => {
-              const key = p.person_key ?? ''
-              const log = personLatest.get(key)
-              const scan = scanByKey.get(key)
-              const grp = riskGroupByKey.get(key)
-              const lastRan = log?.ran_at || scan?.scanned_at || ''
-              return (
-                <View key={p.id} className='page-alerts__tr'>
-                  <Text className='page-alerts__td page-alerts__td--obj'>{p.keyword}</Text>
-                  <Text className='page-alerts__td'>{lastRan ? fromNow(lastRan) : '待首次扫描'}</Text>
-                  <Text className='page-alerts__td'>
-                    {log
-                      ? `新 ${log.hit} / 共 ${scan?.signals_total ?? grp?.signals.length ?? log.total}`
-                      : scan
-                        ? `共 ${scan.signals_total} 条`
-                        : grp
-                          ? `共 ${grp.signals.length} 条`
-                          : '—'}
-                  </Text>
-                  <Text className={`page-alerts__td page-alerts__td--status page-alerts__status--${log?.status ?? 'pending'}`}>
-                    {log ? SCAN_STATUS_LABEL[log.status] : '待扫描'}
-                  </Text>
-                </View>
-              )
-            })}
-          </View>
+          <MonitorTable rows={personRows} />
 
           {/* 执行日志：名人这一路每次扫描的时间 / 对象 / 命中数 / 成功与否 */}
-          {personLogs.length > 0 && (
-            <View className='page-alerts__logs'>
-              <Text className='page-alerts__logs-title'>执行日志（最近 {personLogs.length} 次）</Text>
-              {personLogs.slice(0, 20).map((l) => (
-                <View key={l.id} className='page-alerts__log'>
-                  <Text className={`page-alerts__log-status page-alerts__log-status--${l.status}`}>
-                    {SCAN_STATUS_LABEL[l.status]}
-                  </Text>
-                  <Text className='page-alerts__log-body'>
-                    {formatMoment8(l.ran_at)} · 「{l.object_name}」
-                    {l.note ? ` · ${l.note}` : l.hit > 0 ? ` · 命中 ${l.hit} 条` : ''}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          )}
+          <ScanLogList logs={personLogs} />
         </View>
       )}
 
