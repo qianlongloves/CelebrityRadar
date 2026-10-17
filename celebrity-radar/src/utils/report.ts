@@ -1798,6 +1798,24 @@ export async function buildReport(
     member?: boolean
     background?: NewsItem[]
     onPart?: (parts: ReportPart[]) => void | Promise<void>
+    /**
+     * 补跑模式（P8，2026-10-17）：只重新生成这几组，其余组由 `seed` 提供。
+     *
+     * 为什么需要它：不达标自动重跑此前是**整份 4 批重来**（cache.ts 的 shortfall 分支），
+     * 而 shortfall 最常见的成因恰好是「某一批空掉导致 facts 不足」—— 为一批失败把另外三批
+     * 的 token 再烧一遍。补跑模式下调用次数从 4 降到 1（最坏 3 次尝试）。
+     *
+     * ⚠ 与 `seed` 必须成对使用：只传 `only` 会让本次产物缺掉其余组（那些组没有任何人写）。
+     */
+    only?: ReportPartKey[]
+    /**
+     * 补跑模式的既有批次结果：传首轮 `onPart` 收到的**原始批次字段**（未 sanitize）。
+     *
+     * 传原始字段而不是 `Report`：`sanitizeReport` 的输出（出处已校验、日期已归一）与模型的
+     * 输出形状不同，拿它当 seed 会被二次校验当成「无出处」而剔干净。这里合并后再统一
+     * sanitize 一次，补跑批与新批走同一条口径。
+     */
+    seed?: ReportPart[]
   } = {}
 ): Promise<ChatJSONResult<Report | { refused: true }>> {
   const member = opts.member === true
@@ -1809,15 +1827,37 @@ export async function buildReport(
    * （见 batch.background ? background : []）。
    */
   const background = opts.background ?? []
+  /*
+   * 补跑模式的起点（P8）：先把已有批次搬进 merged 与 parts，再只跑 opts.only 指定的组。
+   *
+   * parts 里放种子而不是空数组，是为了让「累计语义」对调用方保持不变 ——
+   * cache.ts 的 onPart 回调把 parts 原样写成 building 行的 `parts` 字段（整字段覆盖，不是
+   * 按批 upsert，见 saveReportParts），补跑时若从空数组开始，已成功的三批会被这一批盖掉。
+   * 进度播报同理：parts.length 从种子长度接着数，进度条不会倒退。
+   */
+  const seeded = opts.seed ?? []
   const merged: LlmReportFields = {}
-  const parts: ReportPart[] = []
+  for (const part of seeded) Object.assign(merged as Record<string, unknown>, part.data)
+  const parts: ReportPart[] = seeded.slice()
   /* 记录失败批（「缺组可感知」：落库后页面据此提示「部分段落缺失，可刷新重试」） */
   const missing: ReportPartKey[] = []
   let done = 0
   /* 记住最后一次失败，供「四批全败」时把原因如实交回上层（而不是只说「降级也失败了」） */
   let lastFail: { error: string; retryable?: boolean; kind?: string } | null = null
 
-  for (const batch of REPORT_BATCHES) {
+  /*
+   * 只跑需要的批：opts.only 为空（正常生成）时就是全部 4 组；补跑时按首轮 missingGroups 收窄。
+   * 过滤后为空说明调用方给的 key 全是脏值（缓存里可能存着旧版本的组名）——
+   * 这时**不能**退化成「跑全部」（那正是补跑要避免的），直接把错误交回上层。
+   */
+  const onlyKeys = opts.only && opts.only.length > 0 ? new Set(opts.only) : null
+  const batches = onlyKeys ? REPORT_BATCHES.filter((b) => onlyKeys.has(b.key)) : REPORT_BATCHES
+  if (batches.length === 0) {
+    diagLog('warn', 'llm', `补跑批次全部无效（${(opts.only ?? []).join(',')}），放弃补跑`)
+    return { ok: false, error: '补跑批次不存在', retryable: false }
+  }
+
+  for (const batch of batches) {
     const fields = batchFields(batch, member)
     const system = buildReportSystem(batch, focus, member)
     const user = buildUserMessage(name, news, focus, member, batch.background ? background : [])
@@ -1893,7 +1933,27 @@ export async function buildReport(
   }
 
   if (done === 0) {
-    /* 四批全败 —— 与原单次路径同款抢救：纯文本简版（§5.4 用例 9），不再套结构化 Schema */
+    /*
+     * 补跑模式全败（P8）：**绝不能**降级成纯文本简版 —— seed 里是首轮已经成功的几批，
+     * 一段「模型已有知识」的简版会顶替掉它们（上层拿到 ok:true 的 degraded 报告，
+     * 既会展示给用户、也会让「补跑失败」伪装成「生成成功」）。把失败如实交回，
+     * 上层保留首轮那份残版即可（它至少有几批真实素材支撑）。冷却照设：上游仍不可用。
+     */
+    if (seeded.length > 0) {
+      if (lastFail && (lastFail.retryable || /频繁|429/.test(lastFail.error))) setCooldown('llm')
+      diagLog(
+        'warn',
+        'auth',
+        `补跑批次全部失败，保留已有 ${seeded.length} 批：${lastFail ? lastFail.error : '无可用批次'}`
+      )
+      return {
+        ok: false,
+        error: lastFail ? lastFail.error : '补跑批次全部失败',
+        retryable: lastFail?.retryable,
+        kind: lastFail?.kind
+      }
+    }
+    /* 四批全败 —— 与原单次路径同样抢救：纯文本简版（§5.4 用例 9），不再套结构化 Schema */
     diagLog('warn', 'auth', `报告分批全部失败，降级纯文本：${lastFail ? lastFail.error : '无可用批次'}`)
     /*
      * 冷却只在整份都失败时设：此时才说明上游整体不可用（网络 / 上游 5xx / 429 限流），

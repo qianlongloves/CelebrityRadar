@@ -2,6 +2,7 @@ import { table } from './db'
 import {
   Report,
   ReportPart,
+  ReportPartKey,
   buildReport,
   buildKnowledgeFallback,
   isRefusedResult,
@@ -640,6 +641,28 @@ async function saveReportParts(
   if (error) diagLog('warn', 'db', `中间结果落库失败：${personKey}：${error.message ?? error}`)
 }
 
+/**
+ * 「只补失败批」该补哪几组（P8，2026-10-17）—— 拿不到明确答案时返回 null（= 整份重跑）。
+ *
+ * 三个条件同时成立才补跑：
+ *   ① 首轮有**部分**批成功（builtParts 非空）—— 一批都没成时没有可保留的内容，那条路径
+ *      在 buildReport 里已经降级成纯文本简版了，走不到这里；
+ *   ② 报告带 `missingGroups`（buildReport 只在**整批失败**时落这个键，字段写坏不算）；
+ *   ③ 缺失组数少于总组数。
+ *
+ * 组名先按 REPORT_BATCHES 白名单过滤：缓存里可能存着模板改版前的旧组名，脏 key 传给
+ * buildReport 会被判成「补跑批次不存在」而整次放弃 —— 宁可当成「不知道缺什么」整份重跑。
+ */
+function refillBatchesOf(report: Report, builtParts: ReportPart[]): ReportPartKey[] | null {
+  if (builtParts.length === 0) return null
+  const missing = (report.missingGroups ?? []).filter((k): k is ReportPartKey =>
+    REPORT_BATCHES.some((b) => b.key === k)
+  )
+  if (missing.length === 0) return null
+  if (missing.length >= REPORT_BATCHES.length) return null
+  return missing
+}
+
 /** 他人 building：轮询等待 ready（≤30s） */
 async function waitForReady(personKey: string): Promise<Report | null> {
   const deadline = Date.now() + WAIT_TIMEOUT_MS
@@ -1008,6 +1031,12 @@ export async function getOrBuildReport(
 
     /* 素材到手、进入分批生成：先把阶段切到「生成 (0/4)」，避免第一批回来前一直停在「检索中」 */
     emitProgress('generate', 0)
+    /*
+     * 已成功批次的**原始字段**（未 sanitize），供不达标自动重跑时「只补失败批」用（P8）。
+     * 必须留原始字段而不是等一下那份 report：sanitizeReport 的输出形状与模型输出不同，
+     * 拿它当 seed 会被二次校验当成「无出处」剔干净（详见 report.ts 的 opts.seed 注释）。
+     */
+    let builtParts: ReportPart[] = []
     const res = await buildReport(personKey, name, news, focus, {
       member: memberDeep,
       background: background ?? [],
@@ -1017,6 +1046,7 @@ export async function getOrBuildReport(
        * 让进度先动起来，观感上不会「明明这一批写完了，界面还停在上一批」。
        */
       onPart: async (parts) => {
+        builtParts = parts.slice()
         emitProgress('generate', parts.length)
         await saveReportParts(personKey, parts, userId)
       }
@@ -1129,9 +1159,25 @@ export async function getOrBuildReport(
       if (retryable) {
         diagLog('info', 'db', `本次产物未达最低要求但可重试，自动重跑一次生成：${shortfall}`)
         track('report_generate_retry', { personKey, reason: shortfall, retryable: true })
+        /*
+         * 只补失败批（P8，2026-10-17）：首轮若只有某一组空掉，就没必要把另外三批再烧一遍 ——
+         * 那正是 shortfall 最常见的成因（某一批空 → facts 不足）。判据全在首轮产物上：
+         * 缺组名单来自 report.missingGroups，已成功批次来自 builtParts；
+         * 任一不满足（例如四批都成功、只是素材本身少）就整份重跑，行为与修复前一致。
+         */
+        const refillOnly = refillBatchesOf(report, builtParts)
+        if (refillOnly) {
+          diagLog(
+            'info',
+            'llm',
+            `只补失败批：${refillOnly.join(',')}（保留已成功 ${builtParts.length} 批）`
+          )
+        }
         const retryRes = await buildReport(personKey, name, news, focus, {
           member: memberDeep,
           background: background ?? [],
+          /* 补跑模式：seed 必须一起传 —— 只传 only 会让其余组没有任何人写（见 report.ts 的 ⚠） */
+          ...(refillOnly ? { only: refillOnly, seed: builtParts } : {}),
           onPart: async (parts) => {
             emitProgress('generate', parts.length)
             await saveReportParts(personKey, parts, userId)
