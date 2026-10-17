@@ -25,6 +25,10 @@
  *   'fields'   字段比对；带 `apply: true` 才回填 `schema.js` 里标了 `def` 的字段
  *   'indexes'  索引计划；带 `apply: true` 才真正调 HTTP API 建立（需 access_token）
  *   'sync'     = init + fields(apply) + indexes(apply)，一步到位
+ *   'stripMember' P2 阶段 4 迁移：把存量主行里的会员四段搬进 `report_member` 再从主行剥掉
+ *              （只留旗标 `report.memberSections`）。**刻意不并进 'sync'**：它改的是正文，
+ *              不能「每次巡检顺手改一次」。默认 dry-run，`apply:true` 才写；
+ *              `only: ['report_cache']` 可只跑一张表。
  *
  * ── 事件参数 ─────────────────────────────────────────────────────────
  *   action          见上；缺省 'report'
@@ -251,6 +255,178 @@ async function purgeDeprecatedFields(def, pending) {
   return results
 }
 
+/* ───────────── P2 阶段 4：存量报告剥段（迁移，2026-10-17） ───────────── */
+
+/**
+ * 会员四段与旗标 token —— 与 `aiProxy/report-store.js`、端上 `utils/member.ts`
+ * **逐字同源**（用例 82 三向比对）。这里之所以是手抄副本、而不是从 aiProxy 里 require：
+ * 两个云函数各自独立部署、目录不互相依赖，跨函数 require 在云端根本不存在。
+ * 于是「同名同值」只能靠用例钉住 —— 少摘一段 = 免费读者拿得到付费内容；
+ * 多摘一段 = 会员看不到自己买的那一段。
+ */
+const MEMBER_COLLECTION = 'report_member'
+const MEMBER_FIELDS = ['memberNotes', 'conflicts', 'peers', 'affiliations']
+const MEMBER_FLAG_TOKENS = ['memberNotes.compare', 'memberNotes.risk', 'conflicts', 'peers', 'affiliations']
+
+/** 单页条数：微信云开发单次 get 的上限就是 100，写大也只是截断 */
+const STRIP_PAGE = 100
+
+/** 从正文里摘出存在的会员段（不写 `undefined`：数据库会拒绝） */
+function memberSectionsOf(report) {
+  const out = {}
+  if (!report || typeof report !== 'object') return out
+  for (const k of MEMBER_FIELDS) if (report[k] !== undefined) out[k] = report[k]
+  return out
+}
+
+/** 这一版**有哪些**会员段（token 形式）—— 与写口、端上同一道真值判定 */
+function memberFlagsOf(report) {
+  const out = []
+  if (!report || typeof report !== 'object') return out
+  const mn = report.memberNotes
+  if (mn && typeof mn === 'object') {
+    if (mn.compare) out.push('memberNotes.compare')
+    if (mn.risk) out.push('memberNotes.risk')
+  }
+  if (Array.isArray(report.conflicts) && report.conflicts.length > 0) out.push('conflicts')
+  if (Array.isArray(report.peers) && report.peers.length > 0) out.push('peers')
+  if (Array.isArray(report.affiliations) && report.affiliations.length > 0) out.push('affiliations')
+  return out
+}
+
+/** 剥段后的主行形态：抹掉四段、换上旗标（**返回新对象**，手上的 report 还要写副本） */
+function stripForRow(report, flags) {
+  const out = Object.assign({}, report)
+  for (const k of MEMBER_FIELDS) delete out[k]
+  out.memberSections = flags
+  return out
+}
+
+/**
+ * 把一张公开可读表里的存量会员段搬进 `report_member`，再从主行剥掉。
+ *
+ * ── 为什么需要这一步 ──────────────────────────────────────────────
+ * 阶段 3 只对**此后新生成**的报告生效；此前落库的主行仍带四段，而 `report_cache` /
+ * `report_versions` 都是「所有人可读」⇒ 漏洞面只是不再扩大，并没有变小。
+ *
+ * ── 三条硬约束（与写口完全一致，别在这里「简化」）──────────────────
+ * 1. **先写副本、成功才剥主行**。副本写失败就**保持原样**并计入 `copy_failed`：
+ *    宁可这次不迁移（下次重跑），也绝不能出现「主行说有四段、副本没有」的静默丢内容。
+ * 2. **幂等**。判据是「正文里还有没有会员段」，已剥过的行（只剩旗标）直接跳过 ——
+ *    重跑一遍 `stripped` 应当为 0，而不是把同一批行再写一遍。
+ * 3. **配对靠时间戳逐字相等**。副本的 `generated_at` 必须取自**这一行**的正文 / 顶层字段，
+ *    不许用 `now()` 顶替：读口按它配对，配不上就当没有会员段（会员会看不到刚迁完的四段）。
+ *
+ * ── 分批 ─────────────────────────────────────────────────────────
+ * 用 `_id` 升序游标分页（不是 `skip`）：边写边扫时 `skip` 会漏行，而 `_id` 游标不会。
+ * 一次调用处理完全表；数据量再大也只是多几页，不需要外部驱动。
+ */
+async function stripMemberTable(name, kind, apply) {
+  const out = {
+    collection: name,
+    kind,
+    /* 这份名单也进返回体：迁移写进旗标的就是这几个 token，运维跑完能当场对一眼 */
+    flag_tokens: MEMBER_FLAG_TOKENS,
+    scanned: 0,
+    candidates: 0,
+    stripped: 0,
+    copy_failed: 0,
+    without_key: 0,
+    failed: 0,
+    sample: []
+  }
+  let lastId = ''
+  for (;;) {
+    const where = lastId ? { _id: _.gt(lastId) } : {}
+    const res = await db.collection(name).where(where).orderBy('_id', 'asc').limit(STRIP_PAGE).get()
+    const rows = (res && res.data) || []
+    for (const row of rows) {
+      if (row && row._id) lastId = String(row._id)
+      out.scanned += 1
+      const report = row && row.report
+      const flags = memberFlagsOf(report)
+      if (flags.length === 0) continue /* 本来就是免费档 / 已经剥过 ⇒ 幂等跳过 */
+      out.candidates += 1
+
+      /* 副本主键与公开行逐字相同：当前版 = personKey，历史版 = `<personKey>#<生成时间>` */
+      const memberId = String(row._id)
+      const personKey = kind === 'version' ? String(row.person_key || '') : memberId
+      const generatedAt = String((report && report.generatedAt) || row.generated_at || '')
+      if (!personKey || !generatedAt || generatedAt === 'undefined') {
+        /* 算不出配对键就不动它：剥了也取不回来，等于直接删内容 */
+        out.without_key += 1
+        continue
+      }
+
+      if (out.sample.length < 5) out.sample.push({ id: memberId, kind, flags })
+
+      if (!apply) continue
+
+      try {
+        await db
+          .collection(MEMBER_COLLECTION)
+          .doc(memberId)
+          .set({
+            data: {
+              person_key: personKey,
+              kind,
+              generated_at: generatedAt,
+              sections: memberSectionsOf(report),
+              ...(typeof row.schemaVersion === 'number' ? { schemaVersion: row.schemaVersion } : {})
+            }
+          })
+      } catch (err) {
+        out.copy_failed += 1
+        console.warn(`[dbInit] 会员段副本写入失败 ${name}/${memberId}：${(err && err.errMsg) || err}`)
+        continue /* 不剥：见上面第 1 条约束 */
+      }
+
+      try {
+        /*
+         * ⚠ 必须 `_.set(...)` 整块替换，**不能**写 `update({ data: { report: {...} } })`：
+         * 平台会把普通对象**展开成点号路径后合并**（`report.memberNotes.compare` 一路展下去），
+         * 于是「删掉四段」这件事根本传达不到库里 —— 迁移会报告 stripped=1，四段却原样还在。
+         * 这正是 2026-10-12 那次线上 P0 的同一条机制（往 null 里建子字段），别在这里重犯。
+         */
+        await db
+          .collection(name)
+          .doc(memberId)
+          .update({ data: { report: _.set(stripForRow(report, flags)) } })
+        out.stripped += 1
+      } catch (err) {
+        /* 副本已经写好了，主行没剥成 —— 重跑会命中同一行并重试；此时数据是「两份都有」，不算坏 */
+        out.failed += 1
+        console.warn(`[dbInit] 主行剥段失败 ${name}/${memberId}：${(err && err.errMsg) || err}`)
+      }
+    }
+    /*
+     * 收尾判据只能是「这一页空了」，**不能**写成 `rows.length < STRIP_PAGE`。
+     * 单次 get 的条数上限跟 SDK 走（客户端 20 / 服务端 100），而我们请求的是 100 ——
+     * 一旦某个运行时只给了 20，`20 < 100` 就会在第一页就退出，扫描静默停在 20 条：
+     * 迁移"成功"、表里却还有一大半带着四段。空页才是唯一可靠的终点。
+     */
+    if (rows.length === 0) break
+  }
+  return out
+}
+
+/**
+ * 迁移入口：`report_cache`（当前版）+ `report_versions`（历史版）两张公开表。
+ *
+ * 默认 dry-run（只统计 `candidates` 与样例 id），确认条数合理后加 `"apply": true`；
+ * 写操作照旧要 `event.token` 等于环境变量 `DB_ADMIN_TOKEN`（见 gateWrites）。
+ */
+async function stripMemberStore(event, apply) {
+  const only = Array.isArray(event.only) && event.only.length ? event.only : null
+  const targets = [
+    { name: 'report_cache', kind: 'current' },
+    { name: 'report_versions', kind: 'version' }
+  ].filter((t) => !only || only.includes(t.name))
+  const out = []
+  for (const t of targets) out.push(await stripMemberTable(t.name, t.kind, apply))
+  return out
+}
+
 /* ─────────────────── 索引：HTTP API（SDK 无此能力） ─────────────────── */
 
 /**
@@ -471,12 +647,35 @@ exports.main = async (event = {}) => {
 /** 巡检主体：正常逻辑都写在这里，异常由上面的入口统一转成返回体 */
 async function runDbInit(event) {
   const action = String(event.action || 'report')
-  if (!['report', 'init', 'fields', 'indexes', 'sync'].includes(action)) {
-    return { ok: false, error: `未知 action：${action}`, allowed: ['report', 'init', 'fields', 'indexes', 'sync'] }
+  if (!['report', 'init', 'fields', 'indexes', 'sync', 'stripMember'].includes(action)) {
+    return {
+      ok: false,
+      error: `未知 action：${action}`,
+      allowed: ['report', 'init', 'fields', 'indexes', 'sync', 'stripMember']
+    }
   }
 
   const denied = gateWrites(action, event)
   if (denied) return { ok: false, action, error: denied, hint: '只读巡检：{"action":"report"}' }
+
+  /*
+   * P2 阶段 4 是**独立迁移**，不与巡检混跑：它要写 `report_cache` / `report_versions`
+   * 两张核心表，混在 sync 里意味着「每次巡检都可能顺手改一次正文」。只能显式点名跑。
+   */
+  if (action === 'stripMember') {
+    const applyStrip = event.apply === true
+    return {
+      ok: true,
+      action,
+      apply: applyStrip,
+      dryRun: !applyStrip,
+      env: currentEnv(event),
+      hint: applyStrip
+        ? '已按 apply=true 迁移；重跑一次 stripped 应为 0（幂等）'
+        : '本次为 dry-run（未写库）；确认 candidates 与 sample 合理后加 "apply": true 重跑',
+      member: await stripMemberStore(event, applyStrip)
+    }
+  }
 
   const { defs, unknown } = selectDefs(event)
   const doCollections = action === 'init' || action === 'sync' || action === 'report'
