@@ -244,7 +244,7 @@ export async function addWatch(raw: string): Promise<{ ok: boolean; message: str
 
   const { keywords: watches } = splitWatches(await listWatches())
   if (watches.some((w) => w.keyword === check.keyword)) {
-    return { ok: false, message: '这个词已经在监测中了' }
+    return { ok: false, message: '这个词已经在监控中了' }
   }
 
   /* 云端权威判定优先（分档上限读 memberships，端上改包绕不过）。null = 云端不可用，走下面的回退。 */

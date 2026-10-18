@@ -196,7 +196,7 @@ describe('事件卡保留固定预览；关注动态 / 周报 / 预警改为页�
     for (const [nav, url, label] of [
       ['goFeed', '/package/feed/index', '关注动态'],
       ['goWeekly', '/package/weekly/index', '本周周报'],
-      ['goAlerts', '/package/alerts/index', '监控']
+      ['goAlerts', '/package/alerts/index', '我的预警']
     ]) {
       ok(page.includes(`className='page-opinion__nav-item' onClick={${nav}}`), `${label}应是页首 nav 入口按钮`)
       ok(page.includes(url), `${label}入口应指向 ${url}`)

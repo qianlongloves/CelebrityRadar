@@ -1,5 +1,5 @@
 /**
- * S3-2：职业用户「监测工作台」的纯逻辑（多人面板 / 勾选批量对比 / 导出简报）。
+ * S3-2：职业用户「监控台账」的纯逻辑（多人面板 / 勾选批量对比 / 导出简报）。
  *
  * **为什么要有独立一页**（而不是把预警页做大）：预警页（package/alerts）回答的是
  * 「我订的这些东西，各自有什么新东西」—— 一行一个订阅对象、块与块并列，读完还得自己在脑子里横着比。
@@ -304,7 +304,7 @@ export function buildCompareTable(items: CompareInput[]): CompareTable {
   return { rows, metrics }
 }
 
-/* ─────────────────────────── ③ 导出监测简报 ─────────────────────────── */
+/* ─────────────────────────── ③ 导出监控简报 ─────────────────────────── */
 
 /**
  * 免费用户点「导出简报」时的那一行（**非弹窗**，与 report-export#reportDataExportNote 同一形态）。
@@ -324,7 +324,7 @@ export interface WorkbenchBrief {
 }
 
 /**
- * 组装可带走的监测简报（Markdown）。
+ * 组装可带走的监控简报（Markdown）。
  *
  * 三条纪律（与 report-export 逐条对齐）：
  *   ① **不编造、不推断**：只搬运面板数字与信号标题 / 来源 / 时间；
@@ -352,7 +352,7 @@ export function buildWorkbenchBrief(input: {
   const keywords = (input.keywords ?? []).map((k) => String(k ?? '').trim()).filter(Boolean)
 
   const lines: string[] = []
-  lines.push('# 名人雷达 · 监测简报')
+  lines.push('# 名人雷达 · 监控简报')
   lines.push('')
   lines.push(`生成时间：${dayKey8(at)} ${formatMoment8(at)}（UTC+8）`)
   lines.push(
@@ -417,10 +417,10 @@ export function buildWorkbenchBrief(input: {
 
   lines.push('---')
   lines.push('')
-  lines.push('本简报由「名人雷达」监控工作台生成；内容来自公开报道的检索结果，仅供参考。')
+  lines.push('本简报由「名人雷达」监控台账生成；内容来自公开报道的检索结果，仅供参考。')
 
   return {
-    fileNameBase: `名人雷达-监测简报-${dayKey8(at).replace(/-/g, '')}`,
+    fileNameBase: `名人雷达-监控简报-${dayKey8(at).replace(/-/g, '')}`,
     markdown: lines.join('\n'),
     personCount: rows.length,
     signalCount

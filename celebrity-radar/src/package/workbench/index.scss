@@ -1,7 +1,7 @@
 @import '../../styles/variables.scss';
 
 /*
-  监测工作台（S3-2）。结构与 page-alerts 同源（撑满一屏的 flex 列 + 卡片 + 末尾 auto 免责），
+  监控台账（S3-2；2026-10-18 由「监控工作台」改名）。结构与 page-alerts 同源（撑满一屏的 flex 列 + 卡片 + 末尾 auto 免责），
   沿用同一套「为什么这么写」的补偿式留白，不新造一套间距规则。
 */
 .page-workbench {

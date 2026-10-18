@@ -436,12 +436,12 @@ describe('S3-2 监测工作台 · 导出简报', () => {
       keywords: ['新剧', '代言'],
       at: new Date('2026-10-16T06:05:00.000Z')
     })
-    ok(/^# 名人雷达 · 监测简报/.test(brief.markdown))
+    ok(/^# 名人雷达 · 监控简报/.test(brief.markdown))
     ok(/2026-10-16/.test(brief.markdown))
     ok(/监控对象：2 人/.test(brief.markdown))
     ok(/监控关键词：新剧、代言/.test(brief.markdown))
     ok(/基于公开信息 AI 整理，仅供参考/.test(brief.markdown))
-    eq(brief.fileNameBase, '名人雷达-监测简报-20261016')
+    eq(brief.fileNameBase, '名人雷达-监控简报-20261016')
     eq(brief.personCount, 2)
   })
 
@@ -518,7 +518,7 @@ describe('S3-2 监测工作台 · 页面接入', () => {
 
   it('分包页硬约束：scss 自带 variables 导入、页面配置有标题、页面注册进 app.config', () => {
     ok(/@import '\.\.\/\.\.\/styles\/variables\.scss';/.test(read(path.join('package', 'workbench', 'index.scss'))))
-    ok(/navigationBarTitleText: '监控工作台'/.test(read(path.join('package', 'workbench', 'index.config.ts'))))
+    ok(/navigationBarTitleText: '监控台账'/.test(read(path.join('package', 'workbench', 'index.config.ts'))))
     ok(/workbench\/index/.test(read('app.config.ts')))
   })
 

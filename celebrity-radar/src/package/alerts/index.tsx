@@ -728,7 +728,7 @@ export default function Alerts() {
       {!userId ? (
         <EmptyState
           title='登录后可用'
-          desc='关键词预警与名人监控按账号保存，登录后即可添加监控'
+          desc='我的预警与名人监控按账号保存，登录后即可添加监控'
         />
       ) : watches.length === 0 && persons.length === 0 ? (
         <EmptyState
@@ -824,7 +824,7 @@ export default function Alerts() {
           <Text className='page-alerts__intro'>
             {`正在监控 ${persons.length}/${personWatchLimit(isMember)} 位，云端每天按人检索一次公开报道。`}
           </Text>
-          {/* 与上方「关键词监测」互为镜像的说明：一个讲「这里收什么」，一个讲「这里不收什么」 */}
+          {/* 与上方「关键词监控」互为镜像的说明：一个讲「这里收什么」，一个讲「这里不收什么」 */}
           <Text className='page-alerts__intro'>
             {`监控的是人物风险：只有命中「司法 / 税务 / 合作 / 维权 / 表态」这类词的报道才会进下方信号列表，其余报道不收。想看 TA 的全部报道，用上面的关键词监控。`}
           </Text>
@@ -835,11 +835,11 @@ export default function Alerts() {
             onTap={(p) => handleUnmonitor(p.person_key ?? '', p.keyword)}
           />
           {/*
-            监测工作台入口（S3-2，2026-10-16）：紧跟在「我盯谁」的名单之后 ——
+            监控台账入口（S3-2，2026-10-16；2026-10-18 由「监控工作台」改名）：紧跟在「我监控谁」的名单之后 ——
             上面这群人的**明细**就在本页往下看，而他们的**横向台账**（谁在动 / 勾选对比 / 导出简报）
             在另一页。放在名单之后而不是页面顶端：它是本页的下游动作，不是本页的替代品。
 
-            `?from=alerts`（2026-10-17）：两页互相有入口，工作台那边要靠这个参数决定「退回去」
+            `?from=alerts`（2026-10-17）：两页互相有入口，台账那边要靠这个参数决定「退回去」
             还是「替换过去」—— 不带它就只能猜，而猜错的代价是页面栈一层层加深，
             最终顶到微信 10 层上限、所有跳转静默失败（表现为「点了没反应」）。
           */}
@@ -849,7 +849,7 @@ export default function Alerts() {
             onClick={() => void Taro.navigateTo({ url: '/package/workbench/index?from=alerts' })}
           >
             <Text className='page-alerts__workbench-text'>把这些人横着排成台账：谁在动 · 勾选对比 · 导出简报</Text>
-            <Text className='page-alerts__workbench-go'>监控工作台 ›</Text>
+            <Text className='page-alerts__workbench-go'>监控台账 ›</Text>
           </View>
           {riskNotifyReady && (
             <View className='page-alerts__notify'>

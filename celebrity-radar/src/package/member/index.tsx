@@ -180,8 +180,8 @@ const BENEFIT_MATRIX: Array<{ name: string; free: string; member: string }> = [
     member: '不限次'
   },
   {
-    /* 关键词监测数同样于 2026-10-13 分档（免费 3 / 会员 10）；数值取自 OPINION_LIMITS */
-    name: '关键词监测',
+    /* 关键词监控数同样于 2026-10-13 分档（免费 3 / 会员 10）；数值取自 OPINION_LIMITS */
+    name: '关键词监控',
     free: `最多 ${OPINION_LIMITS.watchCount.free} 个词`,
     member: `最多 ${OPINION_LIMITS.watchCount.member} 个词`
   },

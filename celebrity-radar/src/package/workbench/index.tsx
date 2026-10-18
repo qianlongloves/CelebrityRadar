@@ -32,7 +32,7 @@ import EmptyState from '@/components/empty-state'
 import './index.scss'
 
 /**
- * 监测工作台（S3-2，2026-10-16）：职业用户的横向台账。
+ * 监控台账（S3-2，2026-10-16；2026-10-18 由「监控工作台」改名）：职业用户的横向台账。
  *
  * 三块，各回答一个问题（与 utils/workbench.ts 文件头同一套口径，这里只讲页面自己的取舍）：
  *   ① 多人面板 —— 「我盯的这几个人，今天谁在动」；
@@ -197,7 +197,7 @@ export default function Workbench() {
       track('workbench_export', { allowed: true, persons: brief.personCount, signals: brief.signalCount })
       await Taro.showModal({
         title: '已复制到剪贴板',
-        content: `监测简报（Markdown）：${brief.personCount} 位监控对象 / ${brief.signalCount} 条带出处信号。可粘贴到备忘录或文档中，每条信号都附了原文链接。`,
+        content: `监控简报（Markdown）：${brief.personCount} 位监控对象 / ${brief.signalCount} 条带出处信号。可粘贴到备忘录或文档中，每条信号都附了原文链接。`,
         showCancel: false,
         confirmText: '知道了'
       })
@@ -242,7 +242,7 @@ export default function Workbench() {
   if (!userId) {
     return (
       <View className='page-workbench'>
-        <EmptyState title='登录后可用' desc='监控工作台按账号保存，登录后即可查看你监控的人' />
+        <EmptyState title='登录后可用' desc='监控台账按账号保存，登录后即可查看你监控的人' />
       </View>
     )
   }
@@ -251,17 +251,17 @@ export default function Workbench() {
     <View className='page-workbench'>
       {loading ? (
         <View className='card page-workbench__hint'>
-          <Text>正在读取监测名单…</Text>
+          <Text>正在读取监控名单…</Text>
         </View>
       ) : rows.length === 0 ? (
         <EmptyState
           title='还没有监控中的人'
-          desc='在某个人的深度报告页点「监控此人」；有风险信号时这里会给出横向台账，并可勾选对比'
+          desc='在某个人的深度报告页点「+ 监控风险」；有风险信号时这里会给出横向台账，并可勾选对比'
         />
       ) : (
         <>
           <View className='card'>
-            <View className='card-title'>监测概览</View>
+            <View className='card-title'>监控概览</View>
             <Text className='page-workbench__intro'>
               {activeCount > 0
                 ? `正在监控 ${rows.length}/${cap} 位，其中 ${activeCount} 位最近有公开信号。`
@@ -427,7 +427,7 @@ export default function Workbench() {
 
           {/* ④ 导出：把台账带走（会员能力，免费只多一行说明） */}
           <View className='card'>
-            <View className='card-title'>导出监测简报</View>
+            <View className='card-title'>导出监控简报</View>
             <Text className='page-workbench__intro'>
               {`把上面的名单与每人最近 ${BRIEF_SIGNAL_MAX} 条带原文链接的信号拼成 Markdown，复制到剪贴板，可进文档与表格逐条核对。`}
             </Text>
@@ -442,7 +442,7 @@ export default function Workbench() {
           </View>
 
           <Text className='disclaimer'>
-            监测与事件均来自公开报道的检索结果，只反映「最近被报道的量」，不代表平台对任何人的评价；
+            监控与事件均来自公开报道的检索结果，只反映「最近被报道的量」，不代表平台对任何人的评价；
             横向对比只搬运已生成报告里的字段。
           </Text>
         </>

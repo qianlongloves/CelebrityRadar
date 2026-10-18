@@ -493,7 +493,7 @@ export default function Opinion() {
   const inboxTotal = alerts.newTotal + alerts.riskNew + eventNew
 
   /**
-   * 页首「预警工作台」格上的角标：只算预警 + 风险，**不含事件** ——
+   * 页首「我的预警」格上的角标：只算预警 + 风险，**不含事件** ——
    * 事件未读在下方「事件时间线」卡头已经报过一次，同一页里报两遍会让人以为是两件事。
    */
   const monitorBadge = alerts.newTotal + alerts.riskNew
@@ -726,21 +726,22 @@ export default function Opinion() {
         之下 —— 这两个类名被 25 / 36 / 39 / 59 四条用例钉住形态（页首、纯跳转、在推荐卡之前），
         重排只改**视觉**，不改这套语义。
 
-        为什么从「三等分横排」改成 2×2：加了「监测工作台」之后是四格，四等分在 375pt 屏上每格
-        只剩约 80pt，「监测工作台」五个字必然折行或缩字号。2×2 每格还有一行说明的位置 ——
-        这四个入口名字（监控 / 监测工作台 / 关注动态 / 本周周报）彼此**看不出区别**，
-        光给名字的话用户得靠点进去试。
+        为什么从「三等分横排」改成 2×2：加了台账入口之后是四格，四等分在 375pt 屏上每格
+        只剩约 80pt，「监控台账」五个字必然折行或缩字号。2×2 每格还有一行说明的位置 ——
+        这四个入口名字（我的预警 / 监控台账 / 关注动态 / 本周周报）彼此**看不出区别**，
+        光给名字的话用户得靠点进去试（所以每格都配了一行 hint）。
 
-        排序不是随手拍：**第一行 = 我盯了谁**（监控是有未读角标的主入口、工作台是它的台账视图），
+        排序不是随手拍：**第一行 = 我监控了谁**（我的预警是有未读角标的主入口、监控台账是它的表格视图），
         **第二行 = 他们出了什么**（关注动态是流水、本周周报是综述）。之前按「数据流」排，
-        把最常点的「监控」压在了第三格。
+        把最常点的入口压在了第三格。
       */}
       <View className='page-opinion__nav'>
         {/*
-          预警工作台（2026-10-18 由「监控」改名）：这一格进去的是 package/alerts，
-          页内三块分别是关键词监测 / 风险信号 / 订阅的对象 —— 全部是「预警」性质，
-          而旧名「监控」既没说清它是什么，又和右边那格「监测工作台」只差一个字。
-          改名后与页内标题「关键词预警」对得上，用户按「预警」找得到。
+          我的预警（2026-10-18 二次改名，曾叫「监控」「预警工作台」）：这一格进去的是 package/alerts，
+          页内三块分别是关键词监控 / 关注的对象 / 名人监控 —— 全部是「预警」性质。
+          叫「预警工作台」时和右边那格「监控工作台」共用「工作台」，差异词又正好是
+          「预警 / 监控」这对同源环节（监控产数据、预警展示数据），等于用同义词区分同义词。
+          现在两格按**视图形态**命名（收件箱 / 表格），不再共用任何词，入口名与系统标题逐字一致。
 
           角标 = 关键词预警新 + 风险信号新（口径复用 inboxTotal 的那两项，**不含事件** ——
           事件未读已经显示在下方「事件时间线」卡头，同一页里报两遍会让人以为是两件事）。
@@ -749,7 +750,7 @@ export default function Opinion() {
         <View className='page-opinion__nav-item' onClick={goAlerts}>
           <View className='page-opinion__nav-top'>
             <Text className='page-opinion__nav-icon'>🔔</Text>
-            <Text className='page-opinion__nav-label'>预警工作台</Text>
+            <Text className='page-opinion__nav-label'>我的预警</Text>
             {monitorBadge > 0 && <Text className='page-opinion__nav-badge'>{monitorBadge}</Text>}
             <Text className='page-opinion__nav-go'>›</Text>
           </View>
@@ -759,7 +760,7 @@ export default function Opinion() {
         <View className='page-opinion__nav-item' onClick={goWorkbench}>
           <View className='page-opinion__nav-top'>
             <Text className='page-opinion__nav-icon'>📊</Text>
-            <Text className='page-opinion__nav-label'>监控工作台</Text>
+            <Text className='page-opinion__nav-label'>监控台账</Text>
             <Text className='page-opinion__nav-go'>›</Text>
           </View>
           <Text className='page-opinion__nav-hint'>多人台账 · 勾选对比 · 导出</Text>

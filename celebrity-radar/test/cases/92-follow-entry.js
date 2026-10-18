@@ -168,4 +168,26 @@ describe('词表收敛：只有 关注 / 跟进 / 监控 三个动词', () => {
       ok(src.includes("'已监控'"), `${name}的完成态要叫「已监控」（「监控中」不像完成态）`)
     }
   })
+
+  it('两个入口按「视图形态」命名，不再共用「工作台」', () => {
+    ok(OPINION_PAGE.includes("page-opinion__nav-label'>我的预警"), '第一格是收件箱，叫「我的预警」')
+    ok(OPINION_PAGE.includes("page-opinion__nav-label'>监控台账"), '第二格是表格，叫「监控台账」')
+    notOk(/工作台/.test(OPINION_PAGE), '「工作台」不许回到导航：两格共用它，用户只能点进去试')
+    eq(
+      /navigationBarTitleText: '我的预警'/.test(read('package/alerts/index.config.ts')),
+      true,
+      '预警页系统标题要与入口同名，进去才不像换了地方'
+    )
+    eq(
+      /navigationBarTitleText: '监控台账'/.test(read('package/workbench/index.config.ts')),
+      true,
+      '台账页系统标题要与入口同名'
+    )
+    ok(ALERTS.includes('监控台账'), '预警页里的下游入口也要叫「监控台账」')
+  })
+
+  it('两个页面的可见文案里不再出现「监测」', () => {
+    notOk(/监测/.test(ALERTS), '预警页还有「监测」—— 动词已收敛为「监控」')
+    notOk(/监测/.test(stripComments(read('package/workbench/index.tsx'))), '台账页还有「监测」—— 简报 / 概览 / 名单都该叫「监控」')
+  })
 })

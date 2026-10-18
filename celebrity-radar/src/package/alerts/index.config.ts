@@ -1,3 +1,3 @@
 export default definePageConfig({
-  navigationBarTitleText: '关键词预警'
+  navigationBarTitleText: '我的预警'
 })
