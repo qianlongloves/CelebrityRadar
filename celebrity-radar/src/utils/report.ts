@@ -702,6 +702,18 @@ const SYSTEM_SHARED_REALTIME = [
   '出处（basis）写法：优先直接复制素材里的 url（整串照抄，不要改写、不要省略）。若那串字符太长、记不准，写该素材的媒体名（如「新华社」）同样算指认出处。两者都必须来自本次素材。',
   '1. 仅基于素材作答，不编造日期与来源。',
   /*
+   * 人物一致性（2026-10-18）：这条是「张强的报告混进李强内容」的直接修复。
+   *
+   * 为什么必须写在**全局硬约束**里：检索回来的素材按 query 的相关性排序，不按「是不是这个人」筛；
+   * 一旦有人名相近 / 同姓 / 同领域的另一位出现，模型此前唯一的身份信息只有 user 消息里的
+   * 「名人：张强」两个字 —— 它没有任何依据判断某条素材不该写成传主本人。
+   * 逐批写不行：四批各自写一份会漂移，且拒答类的全局条已证明「每批都要有」才是有效位置。
+   *
+   * 不编号（不占 2、5 这些已被占用的条号）：条号是 ruleLines 的查找键，重复编号会让
+   * 「见第 N 条」的互相引用错位。
+   */
+  '人物一致性（最高优先级，优先于下面所有写作要求）：只写「名人」这一位。素材中出现的其他人物（同名的另一位、同行、合作方、亲属、对手等）只能作为关系或背景一笔带过，其经历、成就、作品、言论、争议一律不得写成传主本人的。判断一条素材是否属于本人时，以人名、身份与领域是否一致为准；**拿不准的宁可不写**，也不要把别人的事迹安在本人身上。',
+  /*
    * 第 14 条（敏感人物拒答）从下面那份要求池里**提到了这里**：它和 1 一样是全局条，
    * 拆批之后只要有**任何一批**返回 {"refused": true}，整份报告就按拒答处理（见 buildReport），
    * 所以它必须出现在每一批里，不能只挂在某一批上（挂在某一批 = 另外三批会照常写敏感内容）。
@@ -1736,7 +1748,15 @@ function buildUserMessage(
   news: NewsItem[],
   focus: FocusCode,
   member = false,
-  background: NewsItem[] = []
+  background: NewsItem[] = [],
+  /**
+   * 身份锚点（2026-10-18）：领域标签 / 用户关键词 / 候选卡的一句话身份，如「科技 · 小米创始人」。
+   *
+   * 为什么必须写进 user 消息：system 里已有一条「只写名人这一位」的硬约束，但模型拿到的
+   * 身份信息若只有「张强」两个字，它仍然无法判断素材里哪条属于本人。把领域与身份限定摆在
+   * 人名右侧，是让那条硬约束**可执行**的前提。空串时不加这一行（改造前的行为逐字不变）。
+   */
+  identity = ''
 ): string {
   /* 背景段先定稿：它**整体**占位，长度从总预算里扣（见下方 budget），主线才不会把它顶穿通道上限 */
   const bg = buildBackgroundText(background)
@@ -1749,6 +1769,8 @@ function buildUserMessage(
     (member ? MAX_USER_CHARS_MEMBER : MAX_USER_CHARS) - (bg ? bg.length + 1 : 0) - sectionOverhead
   const head = [
     `名人：${name}`,
+    /* 身份限定紧跟在人名后面：它是「谁是本人」的第二锚点，也是同名 / 近名素材的排除依据 */
+    ...(identity.trim() ? [`身份限定：${identity.trim()}`] : []),
     `关注侧重：${focus === 'all' ? '综合（完整报告）' : FOCUS_META[focus].label}`,
     '素材（按用途分组）：'
   ]
@@ -1865,6 +1887,12 @@ export async function buildReport(
   opts: {
     member?: boolean
     background?: NewsItem[]
+    /**
+     * 身份锚点（2026-10-18）：领域标签 / 用户关键词 / 候选一句话身份，写进每条 user 消息的
+     * 「身份限定」行（见 buildUserMessage）。由 utils/cache.ts 从 personKey 的领域与本次检索
+     * 锚点拼出；不传时与改造前逐字一致。
+     */
+    identity?: string
     onPart?: (parts: ReportPart[]) => void | Promise<void>
     /**
      * 每完成一批（成功且非拒答）回调一次已完成批数（P5，2026-10-17）。
@@ -1902,6 +1930,8 @@ export async function buildReport(
    * （见 batch.background ? background : []）。
    */
   const background = opts.background ?? []
+  /* 身份锚点：只做 trim，不做校验 —— 它来自 personKey 派生与本轮检索词，两种来源都已净化过 */
+  const identity = (opts.identity ?? '').trim()
   /*
    * 补跑模式的起点（P8）：先把已有批次搬进 merged 与 parts，再只跑 opts.only 指定的组。
    *
@@ -1959,7 +1989,7 @@ export async function buildReport(
   const droppedByBatch = new Map<string, string[]>()
   const runOne = (batch: ReportBatch) => {
     const system = buildReportSystem(batch, focus, member)
-    const user = buildUserMessage(name, news, focus, member, batch.background ? background : [])
+    const user = buildUserMessage(name, news, focus, member, batch.background ? background : [], identity)
     /*
      * retries=2 ⇒ 单批最多 3 次尝试（attempts = 1 + 2）。默认 retries=1 时单批抖两次就整组丢失，而
      * facts 批握着 dynamics + quotes 两节，一丢就是折线图、情绪走势、语录卡整块消失。把「这一批的上游 /

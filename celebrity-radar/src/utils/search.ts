@@ -343,16 +343,50 @@ function mergeNews(groups: Array<NewsItem[] | null>): NewsItem[] {
  *
  * 去重按**整条 query** 比（`人名 + 两个同义词` 只发一条），空串不进阶梯。
  */
-function queryLadder(name: string, keywords: string, planned?: string[]): string[] {
+function queryLadder(name: string, keywords: string, planned?: string[], anchor = ''): string[] {
   const person = name.trim()
+  /*
+   * 身份锚点（2026-10-18，「张强的报告混进李强内容」修复）：人名本身不是一个能唯一定位的查询词。
+   * 博查按整条 query 的相关性排序，`张强 个人资料 出生地 学历` 完全可能把更有名的同姓 / 近名
+   * 人物的百科排在前面 —— 而素材层此前对「这条是不是在讲本人」零校验，别人的履历就被写成了
+   * 本人的事实。锚点 = 领域标签，或用户关键词 / 候选卡的一句话身份（见 utils/query-split.ts
+   * #buildCandidateKeyword），由调用方拼好传入。
+   *
+   * 位置：紧跟在人名之后、泛词之前。人名在前保住「查谁」的权重，锚点在后把同名者挤下去。
+   * 空锚点（热榜进入且领域未知）时本函数与改造前逐字一致。
+   */
+  const pin = anchor.trim()
   const out: string[] = []
   const push = (words: string) => {
-    const q = `${person} ${words}`.trim()
+    /* 词里已经带了锚点（模型常直接给「小米 发布会」）就不重复，避免 query 里同一串出现两次 */
+    const tail = words && pin && !words.includes(pin) ? `${pin} ${words}` : words || pin
+    const q = `${person} ${tail}`.trim()
     if (q && !out.includes(q)) out.push(q)
   }
   for (const w of planned ?? []) push(w)
   push(keywords)
+  /*
+   * 末档：只留「人名 + 锚点」。有锚点时**不再退到完全无锚定的纯人名** —— 那一档正是同名他人
+   * 被捞回来的入口；锚点为空时才等价于改造前的「只留人名」。
+   */
+  push('')
   return out
+}
+
+/**
+ * 素材相关性：只留「标题或正文里出现过本人姓名」的条目（2026-10-18 串味修复的第二道闸）。
+ *
+ * 检索层已经把 identity 锚进 query，但博查仍会在长尾 query 上返回一批「相关但讲的是别人」的稿子
+ * （同姓、同领域、同一场活动）。这一层按最硬的判据过滤：字面出现人名。
+ *
+ * ⚠ 一条都不含人名时**原样交回**：摘要常以「他 / 本人 / 该导演」指代，按字面筛会误杀整路素材，
+ *   而空素材比串味更糟（模型会凭空作答）。所以它只做「有则筛、无则放过」。
+ */
+function aboutPerson(items: NewsItem[], name: string): NewsItem[] {
+  const key = name.trim()
+  if (!key) return items
+  const hit = items.filter((n) => `${n.title} ${n.content}`.includes(key))
+  return hit.length > 0 ? hit : items
 }
 
 /**
@@ -371,7 +405,25 @@ function queryLadder(name: string, keywords: string, planned?: string[]): string
  */
 export async function fetchNews(
   name: string,
-  opts: { days?: number; maxResults?: number; socialCount?: number; planned?: SearchPlan } = {}
+  opts: {
+    days?: number
+    maxResults?: number
+    socialCount?: number
+    planned?: SearchPlan
+    /**
+     * 身份锚点（2026-10-18）：领域标签或用户关键词 / 候选一句话身份，拼进**每一档** query。
+     * 不传时行为与改造前一致（见 queryLadder 的注释）。
+     */
+    anchor?: string
+    /**
+     * 是否按「标题 / 正文提到本人」过滤（2026-10-18）。
+     *
+     * **只有报告生成该开**（utils/cache.ts#mainOpts）：素材直接决定写出来的事实，别人的稿子就是事故。
+     * 关注流刷新（feed）刻意不开 —— 那边是「有哪些新动静」的展示口径，摘要常用「他 / 本人」指代，
+     * 按字面筛会把条数压掉一半，用户看到的是「这个人最近很安静」，与事实不符。
+     */
+    filterPerson?: boolean
+  } = {}
 ): Promise<NewsItem[] | null> {
   const count = Math.min(opts.maxResults ?? MAIN_COUNT, MAX_RESULTS_CAP)
   const days = opts.days ?? 30
@@ -399,10 +451,8 @@ export async function fetchNews(
    *   最坏 `planWordsPerLane + mainFreshnessLadderDays.length` 次（且只发生在长尾人物上）。
    */
   const ladder = SEARCH_COUNTS.mainFreshnessLadderDays
-  /* 模型词 → 模板句式 → 只留人名（末档才放宽时间窗，见上方 ⚠） */
-  const queries = queryLadder(name, NEWS_LANE.keywords, opts.planned?.news)
-  const personOnly = name.trim()
-  if (personOnly) queries.push(personOnly)
+  /* 模型词 → 模板句式 → 只留「人名 + 锚点」（末档才放宽时间窗，见上方 ⚠） */
+  const queries = queryLadder(name, NEWS_LANE.keywords, opts.planned?.news, opts.anchor)
   let main: NewsItem[] = []
   for (let i = 0; i < queries.length; i++) {
     const pages = await requestChannel({
@@ -416,9 +466,15 @@ export async function fetchNews(
     if (pages.length > 0) break
   }
 
+  /* 汇合点：主线 + 可选的社交支线，按调用方的口径决定要不要过「是不是本人」这道筛 */
+  const finish = (social: NewsItem[] | null): NewsItem[] => {
+    const merged = mergeNews([main, social])
+    return opts.filterPerson ? aboutPerson(merged, name) : merged
+  }
+
   /* 不要支线：只发主线这一路（成本口径见函数头注释） */
   const socialCount = Math.min(opts.socialCount ?? SOCIAL_COUNT, MAX_RESULTS_CAP)
-  if (socialCount <= 0) return mergeNews([main, null])
+  if (socialCount <= 0) return finish(null)
 
   const socialBase: Omit<SearchParams, 'query'> = {
     freshness: laneFreshness(SOCIAL_LANE, days),
@@ -433,7 +489,7 @@ export async function fetchNews(
    * 失败一律吞掉（见函数头注释）：主线才是判据。
    */
   let socialNews: NewsItem[] | null = null
-  for (const query of queryLadder(name, SOCIAL_LANE.keywords, opts.planned?.social)) {
+  for (const query of queryLadder(name, SOCIAL_LANE.keywords, opts.planned?.social, opts.anchor)) {
     socialNews = await requestChannel({ ...socialBase, query }).catch((err) => {
       diagLog('warn', 'http', `社交源定向检索跳过：${err instanceof Error ? err.message : String(err)}`)
       return null
@@ -441,7 +497,7 @@ export async function fetchNews(
     if (socialNews && socialNews.length > 0) break
   }
 
-  return mergeNews([main, socialNews])
+  return finish(socialNews)
 }
 
 /**
@@ -461,7 +517,13 @@ export async function fetchNews(
 export async function fetchBackground(
   name: string,
   count: number,
-  planned?: string[]
+  planned?: string[],
+  /**
+   * 身份锚点（2026-10-18，见 queryLadder）：履历类是「同名不同人」串味最严重的一路 ——
+   * `张强 个人资料 出生地 学历` 很容易命中另一位更知名的近名人物。调用方传领域标签或
+   * 用户关键词；不传时行为与改造前一致。
+   */
+  anchor = ''
 ): Promise<NewsItem[] | null> {
   const want = Math.min(count, MAX_RESULTS_CAP)
   if (want <= 0) return []
@@ -472,7 +534,7 @@ export async function fetchBackground(
    * 成本：最多 `SEARCH_COUNTS.planWordsPerLane + 1` 次；失败语义不变（一律吞掉返回 null）。
    */
   let out: NewsItem[] | null = null
-  for (const query of queryLadder(name, PROFILE_LANE.keywords, planned)) {
+  for (const query of queryLadder(name, PROFILE_LANE.keywords, planned, anchor)) {
     try {
       out = await requestChannel({ query, freshness: laneFreshness(PROFILE_LANE), count: want })
     } catch (err) {
@@ -483,7 +545,8 @@ export async function fetchBackground(
     if (out === null) return null
     if (out.length > 0) break
   }
-  return out
+  /* 背景线串味的后果最重（出生地 / 学历会被当成事实写进档案），故它在返回前也要过一遍相关性 */
+  return out === null ? null : aboutPerson(out, name)
 }
 
 /** 问答联网检索的条数：够补「报告之后发生了什么」即可，不为一次提问付生成级的检索成本 */

@@ -25,7 +25,7 @@ import {
 } from './search'
 /* 检索词规划（2026-10-11）：先问模型「该查什么」，再拿这些词去查（见 utils/search-plan.ts 头注释） */
 import { planSearchQueries } from './search-plan'
-import { parsePersonKey } from '@/config/domains'
+import { parsePersonKey, domainLabel } from '@/config/domains'
 import { useAuth } from '@/stores/auth'
 import { track } from './events'
 import { todayKey } from './time'
@@ -757,6 +757,24 @@ async function waitForReady(personKey: string): Promise<Report | null> {
  * `opts.onProgress`（2026-10-11）：本机真实生成时逐阶段回调（检索 → 分批生成），供等待动画
  * 显示真实进度；命中缓存 / 排队等待等**不产生**进度的路径不会回调（那些路径本就没有「生成」可播报）。
  */
+/**
+ * 「这一次查的是谁」的身份锚点（2026-10-18，「张强查到李强」串味修复的取数口）。
+ *
+ * 优先级：用户关键词 / 候选卡的一句话身份（已由 utils/query-split.ts#buildCandidateKeyword
+ * 拼成「科技 小米创始人」这样的词串）→ 领域标签（personKey 里的领域码，热榜 / 历史进入时
+ * 唯一还能拿到的身份轴）。两者都没有（'other' 领域且无关键词）才返回空串，
+ * 此时检索与提示词退回改造前的行为 —— 宁可少一层限定，也不要塞一个「其他」去污染 query。
+ *
+ * ⚠ 它只影响「这一次查什么」与「这一次的提示词」，**绝不进 personKey / 缓存键**：
+ * 同一个人仍然只有一份报告（见 getOrBuildReport 的入参注释）。
+ */
+function identityAnchorOf(keyword: string | undefined, domain: string): string {
+  const kw = (keyword ?? '').trim()
+  if (kw) return kw
+  const label = domain ? domainLabel(domain) : ''
+  return label === '其他' ? '' : label
+}
+
 export async function getOrBuildReport(
   personKeyParam: string,
   opts: { force?: boolean; focus?: FocusCode; keyword?: string; onProgress?: (p: ReportProgress) => void } = {}
@@ -1098,6 +1116,14 @@ export async function getOrBuildReport(
      * 由调用方经 opts.keyword 透传到这里并入主线检索词。它**不参与 personKey / 缓存键**，
      * 只影响这一次「查什么」；命中缓存时本段根本不会执行，故同一份报告的读者共享它。
      */
+    /*
+     * 身份锚点（2026-10-18）：三条检索路与四条提示词共用同一个锚点 ——
+     * 检索侧用它把同名的另一位挤出结果（见 utils/search.ts#queryLadder），
+     * 提示词侧用它让「只写名人这一位」这条硬约束可执行（见 utils/report.ts#buildUserMessage）。
+     * 两处必须是同一个串，否则「查的是 A、写的是 B」的错位会重新出现。
+     */
+    const identity = identityAnchorOf(opts.keyword, domain)
+
     const plan = await planSearchQueries(name, domain, {
       lanes: memberDeep ? ['news', 'social', 'profile'] : ['news', 'profile'],
       keyword: opts.keyword
@@ -1108,10 +1134,17 @@ export async function getOrBuildReport(
       ? { maxResults: DEEP_MAIN_COUNT, socialCount: DEEP_SOCIAL_COUNT }
       : { socialCount: 0 }
     mainOpts.planned = plan ?? undefined
+    mainOpts.anchor = identity
+    /*
+     * 报告素材要过「是不是本人」这道筛（2026-10-18）：别人的稿子在这里放进去，就会变成
+     * 写出来的一句事实。关注流刷新刻意不开（见 utils/search.ts#fetchNews 的 filterPerson 注释），
+     * 那边是展示条数口径，不能因为摘要用「他」指代就把条数压掉。
+     */
+    mainOpts.filterPerson = true
 
     const [news, background] = await Promise.all([
       fetchNews(name, mainOpts),
-      fetchBackground(name, memberDeep ? DEEP_BG_COUNT : BG_COUNT, plan?.profile)
+      fetchBackground(name, memberDeep ? DEEP_BG_COUNT : BG_COUNT, plan?.profile, identity)
     ])
 
     if (news === null || news.length === 0) {
@@ -1162,6 +1195,8 @@ export async function getOrBuildReport(
     const res = await buildReport(personKey, name, news, focus, {
       member: memberDeep,
       background: background ?? [],
+      /* 与检索同一个锚点：让「只写名人这一位」在提示词里有一条可核对的依据（见 identity 的注释） */
+      identity,
       /*
        * 分批生成：每批成功即落一次中间结果（best-effort，见 saveReportParts 的注释），
        * 并把「已完成几批」交给等待动画。先播报再落库：落库是库往返（几十~几百 ms），
@@ -1305,6 +1340,8 @@ export async function getOrBuildReport(
         const retryRes = await buildReport(personKey, name, news, focus, {
           member: memberDeep,
           background: background ?? [],
+          /* 补跑走同一条提示词口径：锚点必须一起带上，否则补出来的那一批可能又写错人 */
+          identity,
           /* 补跑模式：seed 必须一起传 —— 只传 only 会让其余组没有任何人写（见 report.ts 的 ⚠） */
           ...(refillOnly ? { only: refillOnly, seed: builtParts } : {}),
           /* 进度同样走 onBatchDone（见首轮调用的说明）；补跑时页面已在 ready，进度条只作参照 */
