@@ -953,39 +953,56 @@ export default function Opinion() {
 
       {/* ===== 事件时间线（P3/P5：同一事件的多来源聚合；整卡跳转独立时间线页） ===== */}
       <View className='card page-opinion__events'>
+        {/*
+          卡头重排（2026-10-18）：一行只留「标题 + 一个角标」。
+          原先这里是四件东西挤在同一行 —— 标题、`新 N 条`、`盯的 N 条有新进展 ›`、以及右侧
+          两个文字按钮（`我盯的 ›` / `查看全部 ›`）—— 总宽超过 690rpx 的可排宽度，而
+          `__head-main` 是 nowrap 的 flex，flex 只会**压缩**子元素、不会换行，于是
+          最长的那个角标里的字被压成两行、卡头整体变形（`.count-badge` 还是固定 36rpx 高，
+          两行字会直接溢出圆底）。
+          现在按「一行说是什么、一行说能点什么」重新分层：需要数字的长入口下沉到第二行
+          （见下方 `__head-sub`），宽度充裕后既不用缩字也不会折行。
+        */}
         <View className='page-opinion__head'>
           <View className='page-opinion__head-main'>
             <Text className='page-opinion__head-title'>🧩 事件时间线</Text>
             {/* 「新 N 条」：口径来自 utils/inbox#countNewEvents（复用 opinion_event_status.reads） */}
             {eventNew > 0 && <Text className='count-badge'>新 {eventNew} 条</Text>}
-            {/* 「我盯的 N 条有新进展」：口径来自 utils/inbox#countFollowUpdates（只数已跟进的，
-                它们不会被「全部已读」清掉，见 markAllRead 与 opinion-store 文件头）。
-                2026-10-18 起它同时是**入口**：点它跳事件列表页的「我盯的」聚合视图（带 ?only=follows）。 */}
-            {followNew > 0 && (
-              <Text
-                className='count-badge page-opinion__follow-jump'
-                onClick={goFollowedEvents}
-              >
-                盯的 {followNew} 条有新进展 ›
-              </Text>
-            )}
           </View>
-          {/* 右侧动作组：「我盯的 ›」+「查看全部 ›」 */}
-          <View className='page-opinion__head-actions'>
-            {/* 我盯的事件**全部**的入口（不一定有新进展，见 followedCount 注释）。
-                另起 `page-opinion__mine` 而不复用 `page-opinion__more`：那个类名被 36 / 39 / 59
-                三条用例钉死为「全页只剩事件卡一处」，复用会让形态锁失效。 */}
+          {/* 卡头右上角文字按钮（同类名 `page-opinion__more`），跳独立的事件列表页 pages/events。 */}
+          <Text className='page-opinion__more' onClick={goEvents}>
+            查看全部 ›
+          </Text>
+        </View>
+
+        {/*
+          第二行：可点入口（2026-10-18）。两个都是「带数字的长短语」，与标题同排必然把角标挤变形；
+          下沉一行后仍有 `flex-wrap` 兜底 —— 小屏（iPhone SE 一档）或超大字号下自动折行，
+          而不是把字压扁。
+          · 「我盯的 N」= 我盯的**全部**事件件数（不一定有新进展，见 followedCount 注释），
+            换成图标胶囊：星形是「我盯的」这类收藏关系的通用语汇，比三个字更省宽度；
+          · 「盯的 N 条有新进展」= 口径来自 utils/inbox#countFollowUpdates（只数已跟进的，
+            它们不会被「全部已读」清掉，见 markAllRead 与 opinion-store 文件头）。
+          两者都跳事件列表页的「我盯的」聚合视图（?only=follows），只是后者强调「有动静」。
+          `page-opinion__mine` / `page-opinion__follow-jump` 两个类名保持不变：36 / 38 / 39 / 59
+          几条用例按类名钉住「全页只剩事件卡一处」，改名或复用会让形态锁失效。
+        */}
+        {(followedCount > 0 || followNew > 0) && (
+          <View className='page-opinion__head-sub'>
             {followedCount > 0 && (
               <Text className='page-opinion__mine' onClick={goFollowedEvents}>
-                我盯的 ›
+                <Text className='page-opinion__mine-icon'>★</Text>
+                {`我盯的 ${followedCount}`}
               </Text>
             )}
-            {/* 卡头右上角文字按钮（同类名 `page-opinion__more`），跳独立的事件列表页 pages/events。 */}
-            <Text className='page-opinion__more' onClick={goEvents}>
-              查看全部 ›
-            </Text>
+            {followNew > 0 && (
+              <Text className='page-opinion__follow-jump' onClick={goFollowedEvents}>
+                <Text className='page-opinion__follow-dot'>●</Text>
+                {`盯的 ${followNew} 条有新进展 ›`}
+              </Text>
+            )}
           </View>
-        </View>
+        )}
 
         {events.length === 0 ? (
           <Text className='page-opinion__empty'>

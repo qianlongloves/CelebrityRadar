@@ -46,16 +46,22 @@
   }
 
   /* 范围分段：全部事件 | 我盯的。两段等宽、共用一条底槽，
-     选中态用品牌色 + 底色 —— 与页内其它「不可点角标」在体量上要能一眼分开。 */
+     选中态用品牌色 + 底色 —— 与页内其它「不可点角标」在体量上要能一眼分开。
+     ⚠ 左右必须留 **32rpx**（2026-10-18 用户反馈「tab 过长、跟下面卡片对不齐」）：
+     本段是页面的**直接子元素**，而下面的列表是 `.card`（`margin: 16rpx 32rpx`）——
+     不留边就等于贴满全宽，两段各自比卡片宽 32rpx，右边一对比就露出半格。
+     这个数不能写死在注释里当约定：它与 `.card` 的左右 margin 是**同一个值**，
+     改一边必须改另一边（用例 test/cases/88-events-scope.js 拿 `.card` 的真实值来比）。 */
   &__scope {
     display: flex;
     align-items: center;
     gap: 8rpx;
-    margin: 4rpx 0 16rpx;
+    margin: 4rpx 32rpx 16rpx;
     padding: 6rpx;
     border-radius: 999rpx;
     background: $bg;
     border: 2rpx solid $line;
+    box-sizing: border-box;
   }
 
   &__scope-tab {
@@ -164,17 +170,22 @@
     }
   }
 
-  /* 已读 / 跟进操作行：小文字按钮 + 右侧跳转提示（沿用舆情页交互，不弹窗） */
+  /* 已读 / 跟进操作行：小文字按钮 + 右侧跳转提示（沿用舆情页交互，不弹窗）。
+     与舆情页事件卡同一个加固（2026-10-18）：三个文字按钮满宽时并排，挤不下就折行，
+     而不是把「标记已读」压成两行。 */
   &__actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 24rpx;
+    gap: 12rpx 24rpx;
     margin-top: 10rpx;
   }
 
   &__action {
+    flex-shrink: 0;
     font-size: 22rpx;
     color: $text-3;
+    white-space: nowrap;
 
     &--on {
       color: $brand;
@@ -183,9 +194,11 @@
 
   /* 右对齐的小字提示：整卡可点，进独立的事件时间线页 */
   &__go {
+    flex-shrink: 0;
     margin-left: auto;
     font-size: 22rpx;
     color: $brand;
+    white-space: nowrap;
   }
 
   /* 触底状态行：切片渲染无真实网络加载，故只如实区分「还有 N 条」与到底 */

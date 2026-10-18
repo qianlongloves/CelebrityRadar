@@ -127,10 +127,14 @@
   }
 
   /* 区块头：标题 + 右侧「查看全部 ›」 */
+  /* 卡头第一行：标题 + 一个角标（左）／「查看全部 ›」（右）。
+     只放两件东西是为了**留出宽度**（2026-10-18 重排）：以前四件挤一行，flex 不换行
+     只能压缩子元素，最长的角标被压成两行、卡头变形。 */
   &__head {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 16rpx;
     margin-bottom: 12rpx;
   }
 
@@ -142,28 +146,75 @@
     min-width: 0;
   }
 
+  /* 标题与角标一律不缩、不断行：「事件时间线」五个字不会被压成两行，
+     角标里的「新 12 条」也不会被挤到换行（挤不下时宁可让 flex 把它推到右边）。 */
   &__head-title {
+    flex-shrink: 0;
     font-size: 30rpx;
     font-weight: 600;
     color: $text-1;
+    white-space: nowrap;
   }
 
   &__more {
+    flex-shrink: 0;
     font-size: 24rpx;
+    color: $brand;
+    white-space: nowrap;
+  }
+
+  /* 卡头第二行：可点入口（2026-10-18）。带数字的长短语下沉到这
+     —— 与标题同排时它们加起来就超宽，是卡头变形的直接原因。 */
+  &__head-sub {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12rpx;
+    margin-bottom: 12rpx;
+  }
+
+  /* 我盯的事件入口（2026-10-18）：图标胶囊「★ 我盯的 5」。
+     类名必须独立于 __more —— 那个类名被 36 / 39 / 59 三条用例钉死为「全页只剩事件卡一处」。
+     星形是「我盯的」这类收藏关系的通用语汇，比纯文字省一半宽度。 */
+  &__mine {
+    display: inline-flex;
+    align-items: center;
+    gap: 6rpx;
+    padding: 4rpx 16rpx;
+    border-radius: 999rpx;
+    background: $line;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $text-2;
+    white-space: nowrap;
+  }
+
+  &__mine-icon {
+    font-size: 20rpx;
     color: $brand;
   }
 
-  /* 我盯的事件入口（2026-10-18）：与 __more 同外形，但类名必须独立 ——
-     __more 被 36 / 39 / 59 三条用例钉死为「全页只剩事件卡一处」。 */
-  &__mine {
-    font-size: 24rpx;
-    color: $text-2;
+  /* 可点的计数入口：「● 盯的 N 条有新进展 ›」→ 事件列表页的「我盯的」聚合视图。
+     2026-10-18 起改成**品牌色胶囊**（原先是个带下划线的小角标）：它现在是独立一行里
+     的一个按钮，胶囊底比下划线更像「可点」，也不必再靠 `count-badge` 的固定高度
+     ——那个 36rpx 的定高正是折行时溢出的元凶。 */
+  &__follow-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: 6rpx;
+    padding: 4rpx 16rpx;
+    border-radius: 999rpx;
+    background: $brand-weak;
+    font-size: 22rpx;
+    line-height: 1.6;
+    color: $brand;
+    white-space: nowrap;
   }
 
-  /* 可点的计数角标：「盯的 N 条有新进展 ›」→ 事件列表页的「我盯的」聚合视图。
-     角标原本只是数字，下划线是唯一「这里能点」的提示；配色仍沿用 count-badge。 */
-  &__follow-jump {
-    text-decoration: underline;
+  /* 「有动静」的点：品牌色实心点，比文字先被看见 */
+  &__follow-dot {
+    font-size: 16rpx;
+    color: $brand;
   }
 
   /* ===== 冷启动推荐卡（S1-4 / 决策 D2，2026-10-16）=====
@@ -235,13 +286,9 @@
     }
   }
 
-  /* 卡头右侧动作组（事件卡）：筛选开关 + 「查看全部 ›」并排，不挤左侧标题 */
-  &__head-actions {
-    display: flex;
-    align-items: center;
-    gap: 20rpx;
-    flex-shrink: 0;
-  }
+  /* 卡头右侧动作组（2026-10-18 起事件卡不再使用）：原先用来并排「我盯的 ›」+「查看全部 ›」，
+     两个入口已分别下沉到 __head-sub（图标胶囊）与 __head 右端。留着空类名只会让后来的人
+     以为还有一处用它，故一并删除。 */
 
   /* 空态：一句话说清「为什么没有」以及去哪补 */
   &__empty {
@@ -333,9 +380,11 @@
 
   /* 右对齐的小字提示：整卡可点，进独立的事件时间线页（只作可点提示，不抢标题） */
   &__event-go {
+    flex-shrink: 0;
     margin-left: auto;
     font-size: 22rpx;
     color: $brand;
+    white-space: nowrap;
   }
 
   /* 事件标题行：标题 + 新事件角标（角标靠右，不抢标题） */
@@ -363,16 +412,22 @@
   }
 
   /* 已读 / 跟进操作行：三个小文字按钮平铺（含原有的展开 / 收起提示），克制、不弹窗 */
+  /* 每条事件底部三个动作（标记已读 / 跟进 / 查看完整时间线 ›）：
+     满宽时并排、窄屏或大字号下折行 —— 与卡头同一个病根（文字按钮一挤就被压断字），
+     只是这里折行不会破坏版面，故用 flex-wrap 兜底而不是压缩。 */
   &__event-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 24rpx;
+    gap: 12rpx 24rpx;
     margin-top: 10rpx;
   }
 
   &__action {
+    flex-shrink: 0;
     font-size: 22rpx;
     color: $text-3;
+    white-space: nowrap;
 
     /* 已生效的态（已读 / 已跟进）用品牌色点一下，未生效保持灰调 */
     &--on {

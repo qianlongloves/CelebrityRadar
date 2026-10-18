@@ -126,6 +126,10 @@ page {
 
 /* 计数徽章（标题旁紫色小胶囊，参照样例 "In Progress ⑥"） */
 .count-badge {
+  /* 定高 36rpx + 不断行（2026-10-18）：角标是「一个数字」，被 flex 压窄后换行会直接
+     溢出圆底（舆情页事件卡头就因此变形过）。宁可占宽一点，也不要在角标里折行。 */
+  flex-shrink: 0;
+  white-space: nowrap;
   min-width: 36rpx;
   height: 36rpx;
   padding: 0 10rpx;
