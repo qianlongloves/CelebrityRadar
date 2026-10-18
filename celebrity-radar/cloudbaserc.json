@@ -178,6 +178,17 @@
       }
     },
     {
+      "name": "adminConsole",
+      "timeout": 20,
+      "runtime": "Nodejs16.13",
+      "description": "端上运维中心：超管查用户 / 改会员（代理 payCallback）/ 大模型厂商开关",
+      "installDependency": true,
+      "envVariables": {
+        "ADMIN_OPENIDS": "{{env.ADMIN_OPENIDS}}",
+        "PAY_ADMIN_TOKEN": "{{env.PAY_ADMIN_TOKEN}}"
+      }
+    },
+    {
       "name": "userInit",
       "timeout": 60,
       "runtime": "Nodejs16.13",

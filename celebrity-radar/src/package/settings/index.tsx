@@ -1,4 +1,5 @@
-import Taro from '@tarojs/taro'
+import Taro, { useLoad } from '@tarojs/taro'
+import { useState } from 'react'
 import { View, Text } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { useConsent } from '@/stores/consent'
@@ -14,6 +15,7 @@ import { clearMessageState } from '@/utils/messages'
 import { clearInboxSeen } from '@/utils/inbox'
 import { clearPickDismiss } from '@/utils/opinion-pick'
 import { clearQaUsage } from '@/utils/qa'
+import { adminMe } from '@/utils/admin'
 import './index.scss'
 
 /**
@@ -46,6 +48,20 @@ type MenuItem = {
 export default function Settings() {
   const { userId, avatarUrl } = useAuth()
   const consented = useConsent((s) => s.consented)
+
+  /**
+   * 超管标记（2026-10-18）：只用来决定「运维中心」这一行显不显示。
+   *
+   * 判据在服务端（云函数 adminConsole 的 openid 白名单），这里拿到的只是一个渲染开关 ——
+   * 改包把它强开也没用，云函数会拒。失败一律当作「不是超管」：普通用户看到陌生入口
+   * 比看不到更糟（会点进去，然后看到「无权访问」）。
+   */
+  const [isAdmin, setIsAdmin] = useState(false)
+  useLoad(() => {
+    void adminMe().then((res) => {
+      if (res.ok && res.isAdmin) setIsAdmin(true)
+    })
+  })
 
   /**
    * 订阅提醒授权入口。
@@ -247,6 +263,11 @@ export default function Settings() {
       /* PIPL 第 45 条「查阅、复制」：查阅已有各页，这里补齐「把副本带走」 */
       icon: '📤',
       iconBg: 'brand',
+      /*
+        标题必须与隐私政策里承诺的入口名逐字一致（政策写「我的 → 系统设置 → 导出个人数据」）。
+        改短成「个人数据」读起来更顺，但用户照着政策找不到 —— 承诺与实现各说各话
+        正是 42 / 84 两个用例在钉的东西。
+      */
       title: '导出个人数据',
       note: userId ? '复制 JSON 副本到剪贴板' : '登录后可用',
       onTap: () => void exportMyData()
@@ -291,6 +312,22 @@ export default function Settings() {
             note: '删除全部个人信息并退出登录',
             danger: true,
             onTap: () => void cancelAccount()
+          }
+        ]
+      : []),
+    /*
+      运维中心（2026-10-18）：仅超管可见。
+      放在最后而不是最前：它对 99.9% 的用户不存在，不该占据这一页的视觉起点。
+      「可见」只是体验，真正的闸门在云函数（openid 白名单）—— 这一行被改包强开也没用。
+    */
+    ...(isAdmin
+      ? [
+          {
+            icon: '🛠️',
+            iconBg: 'blue' as const,
+            title: '运维中心',
+            note: '查用户 · 改会员 · 模型厂商开关',
+            onTap: () => void Taro.navigateTo({ url: '/package/admin/index' })
           }
         ]
       : [])

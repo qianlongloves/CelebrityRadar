@@ -1,0 +1,9 @@
+{
+  "name": "adminConsole",
+  "version": "1.0.0",
+  "description": "Super-admin console for the mini program: user search, membership adjust (proxied to payCallback), LLM vendor on/off switches",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

@@ -276,6 +276,13 @@ export interface ReadyVendor {
   label: string
   channel: string
   ready: boolean
+  /**
+   * 运营是否启用（2026-10-18）：某家厂商欠费 / 被风控时，运维在「运维中心」把它停用，
+   * 云端裁决会跳过它。端上据此**不再展示**这家 —— 展示了却必然被回落到别家，
+   * 用户会以为「选了高级版」，实际拿到的却是另一家的基础档。
+   * 旧版云函数没有这个字段 ⇒ 按启用处理（不能因为读不到开关就把厂商全藏掉）。
+   */
+  enabled: boolean
 }
 
 /** 成功缓存清单；拉取失败为 null（调用方据此「失败放行」：展示全部静态厂商） */
@@ -305,7 +312,8 @@ export function listReadyVendors(force = false): Promise<ReadyVendor[] | null> {
           key: String(v.key),
           label: typeof v.label === 'string' && v.label ? v.label : String(v.key),
           channel: typeof v.channel === 'string' ? v.channel : 'cloudai',
-          ready: v.ready !== false
+          ready: v.ready !== false,
+          enabled: v.enabled !== false
         }))
       return readyVendorCache
     } catch (err) {

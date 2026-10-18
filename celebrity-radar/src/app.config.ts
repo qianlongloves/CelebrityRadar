@@ -70,7 +70,9 @@ export default defineAppConfig({
         /* 报告历史版本（报告页进入：列出被刷新覆盖掉的旧版，免费看列表、会员看正文，见 package/report-history + utils/report-versions） */
         'report-history/index',
         /* 系统设置（「我的」菜单底部进入：更新提醒 / 导出个人数据 / 清空数据 / 注销账号，见 package/settings） */
-        'settings/index'
+        'settings/index',
+        /* 运维中心（系统设置页底部进入，**仅超管可见**：用户搜索 / 会员调整 / 模型厂商开关，见 package/admin） */
+        'admin/index'
       ]
     }
   ],

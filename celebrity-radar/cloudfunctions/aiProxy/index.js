@@ -1960,8 +1960,35 @@ const handleReportStore = createReportStore({
  * （http 厂 = 对应 *_API_KEY 是否在环境变量里；cloudbase 恒真）。不触达上游、不回 key 内容、
  * 也不花任何钱，故放在 test 口令分支之前（与 search/chat 同层，但没有任何外部调用）。
  */
-function handleVendors() {
-  return { ok: true, vendors: vendorCatalog() }
+function handleVendors(disabled) {
+  return { ok: true, vendors: vendorCatalog(disabled) }
+}
+
+/**
+ * 运营停用的厂商清单（2026-10-18）：来自 `sys_config/llm_vendors.disabled`。
+ *
+ * 为什么要缓存 60 秒：一次报告生成会打进几十次 aiProxy 调用，每次都读一次库等于几十次
+ * 多余查询；而「某家欠费了要止血」这件事不需要秒级生效，一分钟内全网生效足够。
+ *
+ * 读不到时返回**空数组（全部启用）**而不是抛错：运维开关坏掉不该让全站生成失败 ——
+ * 这一点与「停用是为了防故障」的初衷一致：开关本身不能变成新的故障点。
+ * 失败也缓存（用 now-45s 让下次调用立刻重试，而不是把 60 秒窗口耗满）。
+ */
+let vendorFlagCache = { at: 0, disabled: [] }
+async function loadDisabledVendors() {
+  const now = Date.now()
+  if (now - vendorFlagCache.at < 60000) return vendorFlagCache.disabled
+  try {
+    const res = await db.collection('sys_config').doc('llm_vendors').get()
+    const row = (res && res.data) || null
+    const list = row && Array.isArray(row.disabled) ? row.disabled.filter((k) => typeof k === 'string') : []
+    vendorFlagCache = { at: now, disabled: list }
+    return list
+  } catch (err) {
+    console.warn('[aiProxy] 读取厂商开关失败，按全部启用处理：', (err && err.message) || err)
+    vendorFlagCache = { at: now - 45000, disabled: [] }
+    return []
+  }
 }
 
 exports.main = async (event) => {
@@ -1975,10 +2002,19 @@ exports.main = async (event) => {
   /*
    * chat / generate / aux 三个业务动作都进 handleChat：报告生成叫 'generate'、AI 问答叫 'chat'、
    * 辅助小请求叫 'aux'，路由层见名即知；实际额度池与时限仍按 event.purpose 分档（见 handleChat）。
+   *
+   * 进 handleChat 前注入运营停用清单（一次调用读一次、60 秒缓存）：resolveLlm 保持纯同步，
+   * 只在「发请求之前」按清单裁决 —— 运维停用某家厂商的意义就在这里，要在打上游之前生效。
+   * 注意 `test` 探针**刻意不注入**：探针的用途正是「把被停用的那家也探一遍」，
+   * 用停用清单挡住它，运维就没法确认「欠费补上了没有」。
    */
-  if (action === 'chat' || action === 'generate' || action === 'aux') return handleChat(event || {})
+  if (action === 'chat' || action === 'generate' || action === 'aux') {
+    const e = event || {}
+    e.disabledVendors = await loadDisabledVendors()
+    return handleChat(e)
+  }
   /* 厂商就绪清单：免口令只读（见 handleVendors 的说明），放在 test 口令分支之前 */
-  if (action === 'vendors') return handleVendors()
+  if (action === 'vendors') return handleVendors(await loadDisabledVendors())
   /* 共享缓存写口（P0-2）：不需要口令，但要求登录身份，且 op 会过写口自己的限速 */
   if (action === 'report') return handleReportStore(event || {})
   /* 头像 / 照片（2026-10-12）：从博查图片结果里挑一张存进云存储，写 person_assets 缓存 */

@@ -605,12 +605,56 @@ module.exports = function createAfterSales(deps) {
       plan,
       expires_at: expiresAt,
       last_order_id: lastOrderId,
-      refunded_orders: auth && auth.refunded_orders
+      refunded_orders: auth && auth.refunded_orders,
+      last_admin_op: { op: 'grantMember', at: nowIso(), by: String(event.by || '').slice(-6), days }
     })
     await writeMirror(row._id, openid, { plan, expires_at: expiresAt, last_order_id: lastOrderId })
 
     log(`手动发放会员：openid=${openid} plan=${plan} days=${days} expires_at=${expiresAt}`)
     return { ok: true, openid, plan, days, expires_at: expiresAt }
+  }
+
+  /**
+   * 撤销会员（2026-10-18 运维中心）：把有效期收到此刻，**不删行**。
+   *
+   * 为什么不删 memberships 行：
+   *   · 行上还挂着 `refunded_orders`（已退款订单号）与 `last_order_id` —— 删掉就等于把
+   *     「这几单已经扣过天数」的唯一凭据一起删了，微信重试或对账会把天数再算一遍；
+   *   · 置成过期可逆：想恢复只需重新发放，基数 `max(now, 权威有效期)` 自然从此刻起算。
+   *
+   * 两处都写（权威 + 镜像）：只写权威会让端上继续显示会员 —— 界面与权限不符正是 P0 那一类。
+   * 幂等：本来就没生效的会员不写库，回执用 `revoked:false` 与「真撤销」区分开。
+   */
+  async function adminRevokeMember(event) {
+    const openid = String(event.openid || '').trim()
+    const reason = String(event.reason || '').slice(0, 100)
+    if (!openid) return { ok: false, error: '缺少 openid' }
+
+    const row = await findUserRow(openid)
+    if (!row) return { ok: false, error: `找不到用户行：${openid}（该用户尚未登录过）` }
+
+    const auth = await readMembership(openid)
+    const now = Date.now()
+    const authTs = tsOf(auth && auth.expires_at)
+    if (!(authTs > now)) {
+      return { ok: true, openid, revoked: false, expires_at: (auth && auth.expires_at) || null }
+    }
+
+    const expiresAt = new Date(now).toISOString()
+    const lastOrderId = (auth && auth.last_order_id) || null
+    const plan = (auth && auth.plan) || (row.membership && row.membership.plan) || 'annual'
+
+    await writeMembership(openid, {
+      plan,
+      expires_at: expiresAt,
+      last_order_id: lastOrderId,
+      refunded_orders: auth && auth.refunded_orders,
+      last_admin_op: { op: 'revokeMember', at: expiresAt, by: String(event.by || '').slice(-6), reason }
+    })
+    await writeMirror(row._id, openid, { plan, expires_at: expiresAt, last_order_id: lastOrderId })
+
+    log(`撤销会员：openid=${openid} expires_at=${expiresAt} reason=${reason || '-'}`)
+    return { ok: true, openid, revoked: true, expires_at: expiresAt }
   }
 
   /**
@@ -633,7 +677,8 @@ module.exports = function createAfterSales(deps) {
     if (op === 'refund') return adminRefund(event)
     if (op === 'reconcile') return Object.assign({ manual: true }, await reconcile())
     if (op === 'grantMember') return adminGrantMember(event)
-    return { ok: false, error: `未知 adminOp：${op}（支持 refund / reconcile / grantMember）` }
+    if (op === 'revokeMember') return adminRevokeMember(event)
+    return { ok: false, error: `未知 adminOp：${op}（支持 refund / reconcile / grantMember / revokeMember）` }
   }
 
   return { handleAdminOp, reconcile, settleRefund }

@@ -99,7 +99,7 @@ export default function Mine() {
    */
   const vendors: readonly LlmVendor[] = publicConfig.llm.vendors ?? []
   const visibleVendors = readyVendors
-    ? vendors.filter((v) => readyVendors.some((r) => r.key === v.key && r.ready))
+    ? vendors.filter((v) => readyVendors.some((r) => r.key === v.key && r.ready && r.enabled))
     : vendors
 
   /**
@@ -110,18 +110,19 @@ export default function Mine() {
 
   /**
    * 拉厂商就绪清单（免口令只读，见 utils/llm.ts#listReadyVendors）。
-   * 拉到后若本机存的厂商已不在就绪名单（典型：云端撤了 key），自动切回恒在的腾讯云 ——
-   * 否则选择器里没有当前项、生成又必败，用户只会看到一句配置错误。
+   * 拉到后若本机存的厂商已不可用（云端撤了 key，或运维在运维中心把这家**停用**了），
+   * 自动切回恒在的腾讯云 —— 否则选择器里没有当前项、生成又必败（云端会回落到别家），
+   * 用户只会看到一句「我选的高级版怎么不是高级版」。
    */
   const refreshReadyVendors = async () => {
     const list = await listReadyVendors()
     if (!list) return
     setReadyVendors(list)
     const cur = getPreferredProvider()
-    if (cur && cur !== publicConfig.llm.defaultVendor && !list.some((v) => v.key === cur && v.ready)) {
+    if (cur && cur !== publicConfig.llm.defaultVendor && !list.some((v) => v.key === cur && v.ready && v.enabled)) {
       setPreferredProvider(publicConfig.llm.defaultVendor)
       setSelection(resolveChatSelection(isMember))
-      Taro.showToast({ title: '原选厂商暂未就绪，已切回腾讯云', icon: 'none' })
+      Taro.showToast({ title: '原选厂商暂不可用，已切回腾讯云', icon: 'none' })
     }
   }
 

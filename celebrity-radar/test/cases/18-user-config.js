@@ -608,7 +608,11 @@ describe('注销账号 · userInit/deleteAccount（P1-4）', () => {
     'opinion_events',
     'person_assets',
     'deep_dive_quota',
-    'scan_logs'
+    'scan_logs',
+    /* 运营开关（2026-10-18）：`sys_config/llm_vendors` 存的是「哪几家大模型厂商被停用」，
+       _id 是固定的文档名、行内不写任何用户标识 —— 它是全站运营配置，不是「我的那一行」。
+       注销时删它等于一个用户注销就把全站的模型开关清空。 */
+    'sys_config'
   ]
 
   /** 造一份「本人 + 别人」都有的库：每张归属表两行，才验得出「只删自己的」 */

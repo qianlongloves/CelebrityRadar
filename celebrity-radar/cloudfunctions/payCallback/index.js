@@ -161,6 +161,9 @@ async function writeMembership(openid, m) {
     /* 只有确实有名单时才写这一列：新行本来就没有名单可丢，不必凭空多出一个空数组 */
     if (Array.isArray(ledger)) data.refunded_orders = ledger
   }
+  /* 人工改会员的留痕（2026-10-18 运维中心）：只在调用方显式带时写。
+     自动发货 / 退款不需要它 —— 那些有 orders 账本可查，人工动作才需要「倒推是谁改的」。 */
+  if (m.last_admin_op) data.last_admin_op = m.last_admin_op
   await db.collection('memberships').doc(openid).set({ data })
 }
 

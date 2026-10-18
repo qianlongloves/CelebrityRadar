@@ -122,7 +122,13 @@ const collections = [
          校验完写回当前时间 ⇒ 下一轮排到队尾，N 行数据最多 ⌈N/100⌉ 轮全部轮到。
          它不是会员数据，只是「上次校验时间」；payCallback 发货/退款用的整篇 set 会自然清掉它，
          于是那一行会重新排回队首再校验一次 —— 正是我们想要的。 */
-      f('mirror_checked_at', 'string?', { def: null })
+      f('mirror_checked_at', 'string?', { def: null }),
+      /* 最近一次**人工**改会员的记录（2026-10-18，运维中心）：
+         `{ op: 'grantMember'|'revokeMember', at, by }`，by = 超管 openid 的后 6 位（不存全量，够追溯）。
+         为什么只留一条：会员变更本身以 `orders` / `refunded_orders` 为账本，这一列解决的是
+         「用户说我的会员莫名没了，是系统退款还是谁手动改的」—— 只需要最近一次人工动作。
+         全量审计要落独立表，那是另一件事（本次不做）。 */
+      f('last_admin_op', 'object?', { def: null })
     ],
     /* 主键（_id = openid）满足所有单点取；这里只为对账轮转加一条升序索引，
        让 orderBy('mirror_checked_at').limit(100) 不必全表排序。 */
@@ -132,6 +138,26 @@ const collections = [
         supports: 'payReconcile 镜像对账：按最久未校验升序轮转（缺失字段的行排最前，优先校验新发货的行）'
       })
     ]
+  },
+  {
+    name: 'sys_config',
+    purpose:
+      '运营开关（2026-10-18）：当前只放 `llm_vendors`（哪几家大模型厂商被**临时停用**）。只由云函数 adminConsole 写、aiProxy / hotBoardRefresh 读，端上不可读写',
+    acl: ACL.cloudOnly,
+    fields: [
+      /* 固定两条：`llm_vendors`（模型开关）、`admins`（超管名单，二期开放端上增删）。
+         用 _id 定位而不是查 key，省一次索引。 */
+      f('_id', 'string', { system: true, required: true }),
+      /* 被停用的厂商 key 数组（必须与 llm.config.js 的 VENDORS 键逐字一致）。
+         **空数组 = 全部启用**；停用某家后，云端裁决路由时会跳过它并回落到可用厂商，
+         回执带 vendorFallback，端上诊断可查。停用不移除注册表 —— 恢复只需把这个名字删掉。 */
+      f('disabled', 'array?', { def: [] }),
+      f('updated_at', 'string?', { def: null }),
+      /* 操作者 openid 后 6 位（不存全量：这里只需要「谁干的」可追溯，不需要完整标识） */
+      f('updated_by', 'string?', { def: null }),
+      f('note', 'string?', { def: null })
+    ],
+    indexes: []
   },
   {
     name: 'ai_calls',

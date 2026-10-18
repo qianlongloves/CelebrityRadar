@@ -726,6 +726,29 @@ async function writeBoard(doc) {
   }
 }
 
+/**
+ * 运营停用的厂商清单（2026-10-18）：来自 `sys_config/llm_vendors.disabled`。
+ * 与 aiProxy 同一份开关、同一套缓存口径（60 秒；读不到按全部启用，失败下次立即重试）。
+ *
+ * 热榜生成也走大模型，停用对它同样有效：某家欠费时，系统任务不该继续往那家送请求。
+ */
+let vendorFlagCache = { at: 0, disabled: [] }
+async function loadDisabledVendors() {
+  const now = Date.now()
+  if (now - vendorFlagCache.at < 60000) return vendorFlagCache.disabled
+  try {
+    const res = await db.collection('sys_config').doc('llm_vendors').get()
+    const row = (res && res.data) || null
+    const list = row && Array.isArray(row.disabled) ? row.disabled.filter((k) => typeof k === 'string') : []
+    vendorFlagCache = { at: now, disabled: list }
+    return list
+  } catch (err) {
+    console.warn('[hotBoardRefresh] 读取厂商开关失败，按全部启用处理：', (err && err.message) || err)
+    vendorFlagCache = { at: now - 45000, disabled: [] }
+    return []
+  }
+}
+
 exports.main = async (event) => {
   const action = (event && typeof event.action === 'string' && event.action) || 'run'
 
@@ -756,9 +779,11 @@ exports.main = async (event) => {
    *     把系统任务指到高级档 / 外部厂商，平台按它烧自己的 key（每日幂等闸门挡不住「指定高档」）。
    */
   const systemContext = !((cloud.getWXContext() || {}).OPENID)
+  /* 停用清单对「系统任务」和「端上补跑」一视同仁：欠费时谁都不该往那家送请求 */
+  const disabledVendors = await loadDisabledVendors()
   const routeEvent = systemContext
-    ? { vendor: event && event.vendor, quality: event && event.quality, purpose: 'generate' }
-    : { purpose: 'generate' }
+    ? { vendor: event && event.vendor, quality: event && event.quality, purpose: 'generate', disabledVendors }
+    : { purpose: 'generate', disabledVendors }
   const llm = resolveLlm(routeEvent)
   /*
    * 通道就位检查与 aiProxy#handleChat 同源：http 通道检厂商 key 环境变量，

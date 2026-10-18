@@ -1,0 +1,257 @@
+@import '../../styles/variables.scss';
+
+/* 运维中心（超管）：手机竖屏、单手操作，信息密度要够但触控区不能小 */
+.page-admin {
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 24rpx 24rpx 60rpx;
+  background: $bg;
+}
+
+.page-admin__tip {
+  display: block;
+  margin: 24rpx 8rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: $text-3;
+}
+
+/* ── 权限不足 ─────────────────────────────────────────── */
+.page-admin__denied {
+  padding: 40rpx 32rpx;
+}
+
+.page-admin__denied-title {
+  display: block;
+  font-size: 34rpx;
+  font-weight: 600;
+  color: $danger;
+}
+
+.page-admin__denied-note {
+  display: block;
+  margin-top: 16rpx;
+  font-size: 26rpx;
+  line-height: 1.7;
+  color: $text-2;
+}
+
+.page-admin__denied-id {
+  display: block;
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: $text-1;
+  word-break: break-all;
+  background: $brand-weak;
+  border-radius: $radius-sm;
+}
+
+/* ── 顶部两个 tab ─────────────────────────────────────── */
+.page-admin__tabs {
+  display: flex;
+  margin-bottom: 24rpx;
+  padding: 8rpx;
+  background: #fff;
+  border-radius: $radius-md;
+  box-shadow: $shadow-card;
+}
+
+.page-admin__tab {
+  flex: 1;
+  padding: 18rpx 0;
+  font-size: 28rpx;
+  color: $text-2;
+  text-align: center;
+  border-radius: $radius-sm;
+}
+
+.page-admin__tab--on {
+  font-weight: 600;
+  color: #fff;
+  background: $brand;
+}
+
+/* ── 搜索 ─────────────────────────────────────────────── */
+.page-admin__search {
+  display: flex;
+  align-items: center;
+  padding: 12rpx 12rpx 12rpx 24rpx;
+  background: #fff;
+  border-radius: $radius-md;
+  box-shadow: $shadow-card;
+}
+
+.page-admin__input {
+  flex: 1;
+  height: 64rpx;
+  font-size: 27rpx;
+  color: $text-1;
+}
+
+.page-admin__search-btn {
+  padding: 16rpx 32rpx;
+  font-size: 27rpx;
+  color: #fff;
+  background: $brand;
+  border-radius: $radius-sm;
+}
+
+.page-admin__meta {
+  display: block;
+  margin: 20rpx 8rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: $text-3;
+}
+
+/* ── 用户卡 ───────────────────────────────────────────── */
+.page-admin__user {
+  margin-bottom: 20rpx;
+  padding: 24rpx;
+}
+
+.page-admin__user-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.page-admin__user-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.page-admin__user-name {
+  display: block;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-admin__user-id {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  color: $text-3;
+  letter-spacing: 0.5rpx;
+}
+
+.page-admin__user-meta {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: $text-2;
+}
+
+.page-admin__user-arrow {
+  padding-left: 16rpx;
+  font-size: 28rpx;
+  color: $text-3;
+}
+
+.page-admin__badge {
+  margin-left: 12rpx;
+  padding: 4rpx 12rpx;
+  font-size: 20rpx;
+  font-weight: 400;
+  color: $brand;
+  background: $brand-weak;
+  border-radius: 999rpx;
+}
+
+.page-admin__badge--warn {
+  color: $knowledge-warn-text;
+  background: $knowledge-warn-bg;
+}
+
+/* 三个操作按钮并排：每个至少 88rpx 高，避免误触相邻项 */
+.page-admin__user-actions {
+  display: flex;
+  margin-top: 20rpx;
+  border-top: 1rpx solid $line;
+  padding-top: 20rpx;
+}
+
+.page-admin__act {
+  flex: 1;
+  margin-right: 16rpx;
+  padding: 20rpx 0;
+  font-size: 26rpx;
+  color: $brand;
+  text-align: center;
+  background: $brand-weak;
+  border-radius: $radius-sm;
+
+  &:last-child {
+    margin-right: 0;
+  }
+}
+
+.page-admin__act--danger {
+  color: $danger;
+  background: $danger-weak;
+}
+
+.page-admin__detail {
+  margin-top: 20rpx;
+  padding: 20rpx;
+  background: $bg;
+  border-radius: $radius-sm;
+}
+
+.page-admin__detail-line {
+  display: block;
+  margin-bottom: 10rpx;
+  font-size: 23rpx;
+  line-height: 1.7;
+  color: $text-2;
+  word-break: break-all;
+}
+
+.page-admin__detail-note {
+  font-size: 24rpx;
+  color: $text-3;
+}
+
+.page-admin__more {
+  margin: 10rpx 0 30rpx;
+  padding: 24rpx 0;
+  font-size: 26rpx;
+  color: $text-2;
+  text-align: center;
+  background: #fff;
+  border-radius: $radius-md;
+}
+
+/* ── 厂商开关 ─────────────────────────────────────────── */
+.page-admin__vendor {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+  padding: 24rpx;
+}
+
+.page-admin__vendor-info {
+  flex: 1;
+  min-width: 0;
+  padding-right: 20rpx;
+}
+
+.page-admin__vendor-name {
+  display: block;
+  font-size: 29rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-admin__vendor-meta {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 23rpx;
+  line-height: 1.6;
+  color: $text-3;
+}

@@ -298,8 +298,28 @@ function vendorReady(key, conf) {
   return !!readEnv(conf.keyEnv)
 }
 
-/** 供 action='vendors' 只读接口用：注册表公开信息 + 就绪状态（不含 key、不打上游） */
-function vendorCatalog() {
+/**
+ * 挑一家可用的备用厂商（2026-10-18，运营停用某家后回落用）。
+ *
+ * 优先级：默认厂商 → 其余按注册表顺序；**在可用的里优先挑已配 key 的** ——
+ * 回落到一家没配 key 的厂只是把「欠费」换成「401」，换个失败方式而已。
+ * 全部停用时返回 null，由调用方给出「所有厂商均已停用」的明确结论。
+ */
+function pickUsableVendor(isOff) {
+  const order = [DEFAULT_VENDOR].concat(Object.keys(VENDORS).filter((k) => k !== DEFAULT_VENDOR))
+  const usable = order.filter((k) => !isOff(k))
+  return usable.filter((k) => vendorReady(k, VENDORS[k]))[0] || usable[0] || null
+}
+
+/**
+ * 供 action='vendors' 只读接口用：注册表公开信息 + 就绪状态（不含 key、不打上游）。
+ *
+ * `disabled` 是运营停用清单（来自 sys_config / sys_config 的 llm_vendors）：端上选择器据此
+ * **灰掉并隐藏**停用的厂商。传 undefined（老调用方）时按「全部启用」处理 —— 读不到开关
+ * 不该等于把厂商全藏起来（那会让用户以为产品坏了）。
+ */
+function vendorCatalog(disabled) {
+  const off = Array.isArray(disabled) ? disabled : []
   return Object.keys(VENDORS).map((key) => {
     const conf = VENDORS[key]
     return {
@@ -307,6 +327,7 @@ function vendorCatalog() {
       label: conf.label,
       channel: conf.channel,
       ready: vendorReady(key, conf),
+      enabled: off.indexOf(key) < 0,
       qualities: QUALITIES.map((q) => ({
         key: q.key,
         structured: !!(conf.tiers[q.key] && conf.tiers[q.key].structured),
@@ -333,11 +354,32 @@ function resolveLlm(event) {
   const askedVendor =
     (typeof ev.vendor === 'string' && ev.vendor.trim()) || readEnv('LLM_VENDOR') || DEFAULT_VENDOR
   const vendorConf = VENDORS[askedVendor] || null
-  const vendorKey = vendorConf ? askedVendor : DEFAULT_VENDOR
-  const vendor = vendorConf || VENDORS[DEFAULT_VENDOR]
+  const askedKey = vendorConf ? askedVendor : DEFAULT_VENDOR
+
+  /*
+   * ①-b 运营停用（2026-10-18）：**被停用的厂商一律不调用**，回落到可用的一家。
+   *
+   * 用途是「某家欠费 / 被风控时先止血」—— 停用必须发生在发请求之前，而不是等上游回 402 再换。
+   * 停用清单来自 sys_config 的 llm_vendors（云函数入口读一次后随 event 传进来），
+   * 本函数保持**纯同步**：不读库、不发请求，只按传入的清单裁决。
+   *
+   * 三处刻意：
+   *   · 回执带 `vendorFallback` / `fallbackFrom`：静默换厂会让「会员说切了高级版」的投诉无从解释，
+   *     端上至少能在诊断日志里看到「这次被停用逼着换了家」；
+   *   · 全部停用时**不假装成功**：configError 给明确结论，让调用方回一句人话（而不是 401）；
+   *   · 未注册的厂商名仍按原来的 vendorError 处理 —— 那是写错了名字，不该被「停用回落」掩盖。
+   */
+  const disabled = Array.isArray(ev.disabledVendors) ? ev.disabledVendors : []
+  const isOff = (key) => disabled.indexOf(key) >= 0
+  const fallbackFrom = isOff(askedKey) ? askedKey : null
+  const vendorKey = fallbackFrom ? pickUsableVendor(isOff) || fallbackFrom : askedKey
+  const vendor = VENDORS[vendorKey] || VENDORS[DEFAULT_VENDOR]
   const vendorError = vendorConf
     ? null
     : `厂商「${askedVendor}」未在 llm.config.js 的 VENDORS 注册，请检查端上厂商名或环境变量 LLM_VENDOR`
+  const disabledError = isOff(vendorKey)
+    ? '所有大模型厂商都已被运营停用（系统设置 → 模型开关），请先在运维中心恢复至少一家'
+    : null
 
   /* ② 用途与能力槽（未知 purpose 按报告处理：宁可走结构化，不把报告发给纯推理模型） */
   const purpose = typeof ev.purpose === 'string' && PURPOSE_CAPABILITY[ev.purpose] ? ev.purpose : 'generate'
@@ -380,12 +422,15 @@ function resolveLlm(event) {
         capability === 'structured' ? '结构化输出' : '推理'
       }模型槽，请在 llm.config.js 的 VENDORS.${vendorKey}.tiers 补 ${capability} 槽，或设对应 LLM_MODEL_${vendorKey.toUpperCase()}_<质量档>_${capability.toUpperCase()}`
 
-  const configError = vendorError || slotError
+  const configError = vendorError || disabledError || slotError
 
   const base = {
     channel: vendor.channel,
     vendor: vendorKey,
     vendorLabel: vendor.label,
+    /* 本次是否因「原厂商被停用」而换了家：端上诊断据此记一笔（调用本身照常进行） */
+    vendorFallback: !!fallbackFrom,
+    fallbackFrom,
     quality,
     qualityRequested,
     qualityDowngraded,
