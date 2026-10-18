@@ -32,7 +32,7 @@ import './index.scss'
  *   争议解决」**（适用法律 + 争议解决），补齐免责声明的法律边界与救济条款。
  */
 
-interface Clause {
+interface Clause { 
   title: string
   desc: string
 }
