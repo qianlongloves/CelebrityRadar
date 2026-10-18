@@ -4,10 +4,14 @@
   min-height: 100vh;
 
   /* ===== 第一层：工具行。搜索 与 筛选 并排 —— 在用户心里它们是同一个动作 ===== */
+  /* 工具行：筛选 | 搜索 | 抓取，三件同一行（2026-10-18）。
+     三块高度统一 68rpx、gap 收到 12rpx —— 搜索框是唯一 flex:1 的弹性块，
+     两侧都是不收缩的胶囊；宽度不够时先压搜索框（min-width:0 + 占位文案可截断），
+     不能把「筛选」或「抓取」挤成半截字（那两个是整行唯一的入口）。 */
   &__toolbar {
     display: flex;
     align-items: center;
-    gap: 16rpx;
+    gap: 12rpx;
   }
 
   &__search {
@@ -16,8 +20,8 @@
     display: flex;
     align-items: center;
     gap: 10rpx;
-    height: 76rpx;
-    padding: 0 24rpx;
+    height: 68rpx;
+    padding: 0 20rpx;
     border-radius: 999rpx;
     background: $bg;
     border: 2rpx solid $line;
@@ -58,9 +62,9 @@
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 8rpx;
-    height: 76rpx;
-    padding: 0 28rpx;
+    gap: 6rpx;
+    height: 68rpx;
+    padding: 0 22rpx;
     border-radius: 999rpx;
     background: $bg;
     border: 2rpx solid $line;
@@ -167,19 +171,21 @@
     color: $brand;
   }
 
-  /* 抓取动作：全页唯一花配额的动作，但它是低频的 —— 从旧版独占一行的大按钮
-     降级为摘要行右侧的小胶囊，让首屏的主视觉留给内容本身。下拉刷新仍是同一条路径。 */
+  /* 抓取动作：全页唯一花配额的动作，原先缩在摘要行右端（要往下扫才找得到），
+     2026-10-18 挪到工具行最右 —— 与「筛选 / 搜索」同属「我要整理这份列表」。
+     高 68rpx 与两侧对齐；字号 22rpx + 不换行，保证「抓取中…」也不会把搜索框挤歪。 */
   &__fetch {
     flex-shrink: 0;
-    height: 56rpx;
+    height: 68rpx;
     display: flex;
     align-items: center;
-    padding: 0 26rpx;
+    padding: 0 20rpx;
     border-radius: 999rpx;
     background: $brand;
     color: #fff;
-    font-size: 24rpx;
+    font-size: 22rpx;
     font-weight: 600;
+    white-space: nowrap;
 
     &--busy {
       background: $brand-soft;

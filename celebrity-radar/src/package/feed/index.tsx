@@ -77,12 +77,17 @@ let snapshot: FeedSnapshot | null = null
  * 2026-10-15 重设计——「搜索 ∧ 筛选」合成一个动作、列表按时间分组：
  *   旧版把搜索框、统计双列、人物下拉、领域下拉、抓取按钮、新鲜度脚注六块一起塞进顶卡，
  *   彼此没有主次；用户要先用眼睛扫一遍才知道哪个控件管什么。现在一屏只剩三层：
- *   **工具行（搜索 + 筛选）→ 条件回显 chips → 分组列表**，低频的「抓取动态」从独占一行的
- *   大按钮降级为摘要行右侧的小动作（下拉刷新仍是同一条路径）。
+ *   **工具行（筛选 + 搜索 + 抓取）→ 条件回显 chips → 分组列表**。
  *
  *   搜索与筛选之所以要合并到同一行：在用户心里它们本就是**同一个问题** ——「怎样让我想看的
  *   那几条浮上来」。分散两处时，输完关键词才发现还得去另一边选人，就得在两个控件之间来回试；
  *   合并之后已生效的条件以 chips 回显在同一行，「现在生效了什么」和「还能加什么」都在一处完成。
+ *
+ *   2026-10-18 顺序定为 **筛选 | 搜索 | 抓取**（用户要求）：「抓取动态」原先缩在摘要行右端，
+ *   要更新列表得先往下扫一眼才找得到；它和搜/筛是同一类「我要整理这份列表」的动作，并到一行
+ *   才是同一个动作组。左起筛选、中间搜索，也贴合「先定条件、再输关键词」的手势顺序；
+ *   抓取放在行尾（右手拇指自然落点、且是全行唯一的花配额动作，仍要显眼但别挡在搜索前面）。
+ *   摘要行只留「关注 N 人 · 共 M 条 / 符合 X 条」，新鲜度脚注不动（下拉刷新仍是同一条抓取路径）。
  */
 export default function Feed() {
   /* 初值直接取会话快照（见 snapshot 注释）：重进本页时首帧就是上次的内容，不再白一屏 */
@@ -390,6 +395,15 @@ export default function Feed() {
       {!loading && (
         <View className='card page-feed__panel'>
           <View className='page-feed__toolbar'>
+            <View
+              className={`page-feed__filter${chipCount > 0 ? ' page-feed__filter--on' : ''}`}
+              hoverClass='page-feed__filter--tap'
+              onClick={() => setPanelOpen(true)}
+            >
+              <Text className='page-feed__filter-text'>筛选</Text>
+              {/* 角标 = 生效条件个数，筛选按钮与 chips 行永远对得上 */}
+              {chipCount > 0 && <Text className='page-feed__filter-badge'>{chipCount}</Text>}
+            </View>
             <View className='page-feed__search'>
               <Text className='page-feed__search-icon'>🔍</Text>
               <Input
@@ -415,14 +429,17 @@ export default function Feed() {
                 </Text>
               )}
             </View>
+            {/*
+              抓取动作从摘要行挪到这里（2026-10-18）：它虽然是低频动作，但「搜/筛/抓」是同一类
+              「我要更新这份列表」的操作，拆成两行反而要多扫一次眼。「先筛再搜再抓」也符合
+              操作因果：条件定好了，抓回来的就是自己想要的那批。
+            */}
             <View
-              className={`page-feed__filter${chipCount > 0 ? ' page-feed__filter--on' : ''}`}
-              hoverClass='page-feed__filter--tap'
-              onClick={() => setPanelOpen(true)}
+              className={`page-feed__fetch${fetching ? ' page-feed__fetch--busy' : ''}`}
+              hoverClass='page-feed__fetch--tap'
+              onClick={() => void onFetch()}
             >
-              <Text className='page-feed__filter-text'>筛选</Text>
-              {/* 角标 = 生效条件个数，筛选按钮与 chips 行永远对得上 */}
-              {chipCount > 0 && <Text className='page-feed__filter-badge'>{chipCount}</Text>}
+              {fetching ? '抓取中…' : '抓取动态'}
             </View>
           </View>
 
@@ -447,19 +464,12 @@ export default function Feed() {
             </View>
           )}
 
-          {/* ── 规模 / 新鲜度 / 抓取动作：抓取是低频动作，从独占一行的大按钮降级到这里 ── */}
+          {/* ── 规模 / 新鲜度：抓取动作已上移到工具行，这里只留「这批数据有多大」 ── */}
           <View className='page-feed__summary'>
             <Text className='page-feed__summary-text'>
               关注 {follows.length} 人 · 共 {entries.length} 条
             </Text>
             {chipCount > 0 && <Text className='page-feed__summary-match'>符合 {visible.length} 条</Text>}
-            <View
-              className={`page-feed__fetch${fetching ? ' page-feed__fetch--busy' : ''}`}
-              hoverClass='page-feed__fetch--tap'
-              onClick={() => void onFetch()}
-            >
-              {fetching ? '抓取中…' : '抓取动态'}
-            </View>
           </View>
           <Text className='page-feed__panel-note'>
             {lastFetchedAt ? `抓取于 ${fromNow(lastFetchedAt)}` : '尚未抓取过动态'} · 每日限 10 次

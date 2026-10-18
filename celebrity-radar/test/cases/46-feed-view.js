@@ -377,12 +377,20 @@ describe('关注动态页：重设计后的结构（静态锁定）', () => {
   const page = read('package/feed/index.tsx')
   const scss = read('package/feed/index.scss')
 
-  it('三层结构：工具行里搜索与筛选并排（同一行、同一件事）', () => {
+  it('三层结构：工具行 = 筛选 | 搜索 | 抓取（同一行、同一件事）', () => {
     ok(page.includes("className='page-feed__toolbar'"), '缺工具行容器')
     const iBar = page.indexOf('page-feed__toolbar')
-    const iSearch = page.indexOf('page-feed__search')
     const iFilter = page.indexOf('page-feed__filter')
-    ok(iSearch > iBar && iFilter > iSearch, '搜索框与筛选按钮都应排在工具行内、搜索在前')
+    const iSearch = page.indexOf('page-feed__search')
+    const iFetch = page.indexOf('page-feed__fetch')
+    ok(iFilter > iBar, '筛选按钮应在工具行内')
+    ok(iSearch > iFilter, '筛选要排在搜索框前面（2026-10-18 用户指定顺序）')
+    ok(iFetch > iSearch, '抓取动态要紧跟搜索框之后')
+    ok(
+      iFetch < page.indexOf('page-feed__chips'),
+      '抓取要在 chips 之前 —— 它属于工具行，不该掉到条件回显下面去'
+    )
+    ok(iFetch < page.indexOf('page-feed__summary'), '抓取必须离开摘要行（原来缩在行尾，要往下扫才找得到）')
     ok(page.includes("placeholder='搜索动态 / 人名'"), '搜索框仍在（占位文案要说清能搜什么）')
     notOk(page.includes('<Picker'), '人物筛选不该再有第二套入口（旧的下拉已由底部面板取代）')
   })
