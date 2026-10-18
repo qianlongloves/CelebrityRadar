@@ -691,7 +691,7 @@ const collections = [
   {
     name: 'opinion_event_status',
     purpose:
-      '用户对舆情事件的个人状态（_id = openid，端上读写自己那一行）：**已读标记**（按事件）、**跟进**（按事件，E1-①）、**订阅对象**（按人/关键词标签，E1-②）三项，各自有条数上限与裁剪（见 utils/opinion-store.ts、utils/event-subscribe.ts）',
+      '用户对舆情事件的个人状态（_id = openid，端上读写自己那一行）：**已读标记**（按事件）、**跟进**（按事件，E1-①）、**关注对象**（按人/关键词标签，E1-②）三项，各自有条数上限与裁剪（见 utils/opinion-store.ts、utils/event-subscribe.ts）',
     acl: ACL.creator,
     fields: [
       f('_id', 'string', { system: true, required: true }),
@@ -699,7 +699,7 @@ const collections = [
       f('reads', 'object', { def: {} }),
       /* event_key → 跟进时刻（ISO）。缺省 = 未跟进 */
       f('follows', 'object', { def: {} }),
-      /* 订阅对象标签（人 / 关键词）→ 订阅时刻（ISO），E1-②。缺省 = 没订阅过任何对象。
+      /* 关注对象标签（人 / 关键词）→ 关注时刻（ISO），E1-②。缺省 = 没关注过任何对象。
          ⚠ 键**不是 event_key**，是对象标签文本；因此与 reads/follows 是两套键空间，
          条数上限独立（utils/event-subscribe.ts#SUB_MAX），也**不占** MAX_STATUS_ENTRIES 的额度。 */
       f('subs', 'object?', { def: null }),

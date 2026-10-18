@@ -275,7 +275,7 @@ export default function EventTimeline() {
     const outcome = await toggleSubject(key, on)
     if (outcome === 'full') {
       setEventStatus((s) => ({ ...s, subs: prevSubs }))
-      Taro.showToast({ title: `最多订阅 ${SUB_MAX} 个对象，请先取消一个`, icon: 'none' })
+      Taro.showToast({ title: `最多关注 ${SUB_MAX} 个对象，请先取消一个`, icon: 'none' })
       return
     }
     if (outcome === 'failed') {
@@ -490,7 +490,9 @@ export default function EventTimeline() {
               className={`page-event__action${subscribed ? ' page-event__action--on' : ''}`}
               onClick={() => void toggleSubjectSub(subLabel)}
             >
-              {subscribed ? '🔔 已订阅' : '🔕 订阅'}
+              {/* 按钮上少了「对象」两个字时，它会和左边的「☆ 跟进」看起来像同一个动作的两种叫法
+                  （两者一个盯单条事件、一个盯对象之后的一切）。这两个字就是分界。 */}
+              {subscribed ? '🔔 已关注' : '🔕 关注对象'}
             </Text>
           ) : null}
         </View>
@@ -504,11 +506,11 @@ export default function EventTimeline() {
           </Text>
         )}
 
-        {/* 订阅（E1-②）：说清「订阅的是对象、落点在站内」，否则它看起来跟上面的「跟进」是一回事。
+        {/* 关注对象（E1-②）：说清「关注的是对象、落点在站内」，否则它看起来跟上面的「跟进」是一回事。
             刻意点明「不发推送」—— 推送随 N-1 冻结，说成「有动静就通知你」就是空头承诺。 */}
         {subscribed && (
           <Text className='page-event__follow-note'>
-            已订阅「{subLabel}」：这个对象之后的新事件会出现在预警页的「订阅的对象」里（站内查看，不发推送）。
+            已关注「{subLabel}」：这个对象之后的新事件会出现在预警页的「关注的对象」里（站内查看，不发推送）。
           </Text>
         )}
       </View>

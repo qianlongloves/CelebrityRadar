@@ -272,7 +272,8 @@ function watchAt(w: FollowWatch): string {
 function describeWatch(w: FollowWatch): string {
   const parts: string[] = []
   if (w.heat !== null) parts.push(`热度 ${w.heat}`)
-  if (w.newsCount > 0) parts.push(`已收录 ${w.newsCount} 条动态`)
+  /* newsCount 为 null = 这次没读到（见 utils/watch.ts#PersonFacts）：不写「已收录 0 条」 */
+  if (typeof w.newsCount === 'number' && w.newsCount > 0) parts.push(`已收录 ${w.newsCount} 条动态`)
   const when = w.reportAt ?? w.feedAt
   parts.push(when ? `更新于 ${fromNow(when)}` : '尚未生成报告')
   return parts.join(' · ')

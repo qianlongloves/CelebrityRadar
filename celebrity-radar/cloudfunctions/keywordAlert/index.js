@@ -731,8 +731,39 @@ exports.main = async (event) => {
   const deepDiveDayKey = todayKey()
   let runBudgetLeft = DEEP_DIVE.perRunMax
 
+  /*
+   * 单轮时间预算（2026-10-18，P2）。
+   *
+   * 这个循环是**串行**的：每个词一次上游检索（命中还要深挖），词数上限 MAX_KEYWORDS。
+   * 一旦超出云函数超时，进程被直接杀掉 —— 已经扫过的词结果还在（缓存已写），
+   * 但**这一轮的日志里只有一条超时错误**，看不出「跑到第几个、还差几个没扫」，
+   * 排查时只能猜。到点主动收尾并把未跑的词数如实写进回执：
+   * ① 那些词没有写入缓存 ⇒ 下一轮排序仍把它们排在最前（公平轮转本就这么设计）；
+   * ② 第 4 步只会汇总 results 里有的词 ⇒ 未跑的词不会被误判成「无新报道」。
+   * 12s 是按云函数默认超时（20s）留出汇总 / 推送 / 写日志的余量估的。
+   */
+  const TIME_BUDGET_MS = 12 * 1000
+  const startedAt = Date.now()
+  let deferred = 0
+
   // 3. 逐个关键词检索并与上次结果比对
-  for (const keyword of queue) {
+  for (let qi = 0; qi < queue.length; qi++) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) {
+      deferred = queue.length - qi
+      console.warn(`[keywordAlert] 本轮时间预算用尽：已跑 ${qi}/${queue.length} 个词，剩余 ${deferred} 个顺延到下一轮`)
+      await writeLog(
+        'keyword',
+        '__budget__',
+        '本轮时间预算',
+        nowIso,
+        'skipped',
+        0,
+        0,
+        `时间预算用尽，${deferred} 个关键词顺延到下一轮`
+      )
+      break
+    }
+    const keyword = queue[qi]
     const prev = cached.get(cacheId(keyword)) || null
     const prevItems = (prev && prev.items) || []
     const prevUrls = new Set(prevItems.map((i) => i && i.url).filter(Boolean))
@@ -847,6 +878,8 @@ exports.main = async (event) => {
     keywords: queue.length,
     queries,
     updated,
+    /* 因本轮时间预算用尽而顺延到下一轮的关键词数（恒为 0 才是「一轮跑完」） */
+    deferred,
     users: userNews.size,
     pushed: 0,
     /* 因超长被忽略的订阅数（P2-31）：恒为 0 才是正常（它不是分档裁剪，是数据问题） */

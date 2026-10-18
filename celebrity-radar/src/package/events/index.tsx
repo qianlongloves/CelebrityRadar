@@ -368,44 +368,63 @@ export default function Events() {
         <Text className='page-events__hero-sub'>同一件事的多条来源聚成一条，点开看完整时间线</Text>
       </View>
 
+      {/*
+        卡头分两层（2026-10-18 用户反馈「最上面的卡片变形」）：
+        第一行只说「这是什么」（标题 + 短的「新 N 条」），第二行放**带回数的长入口**。
+        原因与舆情页事件卡头完全同源（见 pages/opinion 的卡头注释与用例 87）：
+        `.count-badge` 是 `white-space: nowrap` + `flex-shrink: 0` + 定高 36rpx ——
+        它既不会内部折行、也不肯被压缩，所以四个元素挤在 nowrap 的一行里时，
+        超出的部分**直接顶出卡片右边界**（卡头变形、右边露出半截胶囊）。
+        下沉后第二行自带 `flex-wrap`：窄屏 / 超大字号下整枚角标换行，而不是把字压扁。
+      */}
       <View className='card page-events__head'>
         <View className='page-events__head-main'>
           <Text className='page-events__head-title'>
             {scope === 'follows'
-              ? `★ 我盯的 · ${followRows.length} 件`
+              ? `★ 我跟进的 · ${followRows.length} 件`
               : events.length > 0
                 ? `🧩 事件 · ${events.length} 件事`
                 : '🧩 事件'}
           </Text>
           {newCount > 0 && <Text className='count-badge'>新 {newCount} 条</Text>}
-          {/* 已跟进的另有计数：跟进 = 订阅（云端日报按同一判据提醒，见 opinion-store 文件头）。
-              2026-10-18 起它同时是**入口**：点一下就把列表收窄到「我盯的」，不用先想清楚去哪找。 */}
-          {followCount > 0 && (
-            <Text className='count-badge page-events__follow-jump' onClick={() => switchScope('follows')}>
-              盯的 {followCount} 条有新进展 ›
-            </Text>
-          )}
-          {/* 订阅的对象（E1-②）：「盯的」是**单条事件**，「订阅的 N 个对象」是**对象**这一层 */}
-          {subFreshCount > 0 && <Text className='count-badge'>订阅的 {subFreshCount} 个对象有新动向</Text>}
         </View>
+        {/* 第二行：两个「带数字的长短语」。缺一个就只渲染另一个（不留空行、不留占位） */}
+        {(followCount > 0 || subFreshCount > 0) && (
+          <View className='page-events__head-sub'>
+            {/* 已跟进的另有计数：跟进 = 订阅（云端日报按同一判据提醒，见 opinion-store 文件头）。
+                2026-10-18 起它同时是**入口**：点一下就把列表收窄到「我盯的」，不用先想清楚去哪找。 */}
+            {followCount > 0 && (
+              <Text className='count-badge page-events__follow-jump' onClick={() => switchScope('follows')}>
+                跟进的 {followCount} 条有新进展 ›
+              </Text>
+            )}
+            {/* 订阅的对象（E1-②）：「盯的」是**单条事件**，「订阅的 N 个对象」是**对象**这一层。
+                它不可点：订阅的落点在预警页「订阅的对象」卡，本页不做二次入口。 */}
+            {subFreshCount > 0 && <Text className='count-badge'>关注的 {subFreshCount} 个对象有新动向</Text>}
+          </View>
+        )}
       </View>
 
       {/* 范围分段：「全部事件 | 我盯的」。从「盯的 N 条有新进展」进来后，得有一条路退回全部；
           两个数字分开报 —— 「我盯的」可能一件都没有新进展，那就没有角标可点。 */}
       {status === 'ready' && events.length > 0 && (
         <View className='page-events__scope'>
-          <Text
+          {/* 两段都用 View 做胶囊、Text 只放文字：`<text>` 是行内元素，拿它当定高定宽的
+              胶囊在部分基础库上会退化成行盒 —— 选中态背景塌成一条粗线，未选中那段的文字
+              下方还会带出一条下划线（2026-10-18 用户反馈）。View 的盒子模型在小程序里才是
+              完整的，height / border-radius / background 都能落到矩形上。 */}
+          <View
             className={`page-events__scope-tab${scope === 'all' ? ' page-events__scope-tab--on' : ''}`}
             onClick={() => switchScope('all')}
           >
-            全部事件 {events.length}
-          </Text>
-          <Text
+            <Text className='page-events__scope-tab-text'>全部事件 {events.length}</Text>
+          </View>
+          <View
             className={`page-events__scope-tab${scope === 'follows' ? ' page-events__scope-tab--on' : ''}`}
             onClick={() => switchScope('follows')}
           >
-            我盯的 {followRows.length}
-          </Text>
+            <Text className='page-events__scope-tab-text'>我跟进的 {followRows.length}</Text>
+          </View>
         </View>
       )}
 
@@ -424,7 +443,7 @@ export default function Events() {
       {status === 'ready' && events.length > 0 && scope === 'follows' && followRows.length === 0 && (
         <View className='card page-events__empty-card'>
           <Text className='page-events__empty'>
-            还没盯过事件。在「全部事件」里点某条的「☆ 跟进」（或点开一条、在完整时间线页跟进）——
+            还没有跟进任何事件。在「全部事件」里点某条的「☆ 跟进」（或点开一条、在完整时间线页跟进）——
             之后这件事的后续会聚合在这里，点开就是完整事件线。
           </Text>
           <Text className='page-events__empty-back' onClick={() => switchScope('all')}>
@@ -454,7 +473,7 @@ export default function Events() {
                   ) : null}
                   {/* 带上对象名而不是干写「订阅」：用户可能订了好几个对象，只写「订阅」等于让他自己回忆订了谁 */}
                   {subLabel ? (
-                    <Text className='page-events__badge page-events__badge--sub'>订阅·{subLabel}</Text>
+                    <Text className='page-events__badge page-events__badge--sub'>关注·{subLabel}</Text>
                   ) : null}
                 </View>
                 <Text className='page-events__meta'>
@@ -505,7 +524,7 @@ export default function Events() {
             {paged.hasMore
               ? `上滑加载更多（还有 ${paged.remaining} 条）…`
               : scope === 'follows'
-                ? '—— 我盯的事件就这些 ——'
+                ? '—— 我跟进的事件就这些 ——'
                 : '—— 没有更多事件 ——'}
           </Text>
         </>

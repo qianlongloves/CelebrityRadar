@@ -200,6 +200,15 @@ module.exports = function createReportStore(deps) {
   /** 单个人物动态列表上限：feed 只存检索结果映射（10~20 条），实测 10~30KB */
   const FEED_MAX_BYTES = 60 * 1024
   /**
+   * `fetched_at` 允许超前服务端时钟的容忍度（2026-10-18）。
+   *
+   * 上一版把端上传来的时间直接写进 `fetched_at`，于是任何一次时钟错乱 / 人工写库都能在这一行
+   * 留下一个未来时间戳 —— 而 feed_cache 是**全站共享**的一行，「只有更晚的才允许覆盖」一旦配上
+   * 未来值，这个人物就再也刷不动了。超前超过这个量的一律当脏值，按最旧处理并校正回服务端时间；
+   * 5 分钟足够容下真实的多机时钟偏差，又远小于「未来值」造成的影响。
+   */
+  const FEED_FUTURE_TOLERANCE_MS = 5 * 60 * 1000
+  /**
    * 写口限速（**不分会员档**）：它不产生上游成本，要防的只是「反复抢锁击穿全站缓存」这类 DoS。
    * 一次正常生成最多 7 次写口调用（acquire + 最多 4 次 saveParts + save + release），
    * 400 次 ≈ 57 次完整生成，远高于产品额度（免费 3 / 会员 30），对正常用户无感。
@@ -244,6 +253,22 @@ module.exports = function createReportStore(deps) {
    * 少摘一段 = 免费读者拿到的对象里仍带着付费内容。
    */
   const MEMBER_FIELDS = ['memberNotes', 'conflicts', 'peers', 'affiliations']
+  /**
+   * 主行剥段（阶段 3）的**上线开关**（2026-10-18）。
+   *
+   * 阶段 3 的代码 2026-10-17 就写好了，当时靠「**暂时不部署 aiProxy**」维持线上仍是阶段 1 的双写 ——
+   * 因为剥段之后四段要靠 `op:'member'` 取回，而那个读口在**端上**：还没发出去的旧包没有它，
+   * 新生成的报告在旧包上会员就看不到四段（不报错、页面正常，只是付费内容静默消失）。
+   *
+   * 问题在于「靠不部署保证」是**部署纪律**，不是代码约束：任何人执行一次
+   * `tcb fn code update aiProxy` 都会把它静默切上线 —— 2026-10-18 就发生了一次
+   * （CHANGELOG 里那句「本批不会部署 aiProxy」对命令行没有任何约束力）。
+   * 改成显式开关：**默认关闭 = 阶段 1 双写**（主行照旧带四段，副本照旧写），
+   * 等端上读口确认已全量覆盖，再置 true 重新部署。
+   *
+   * 也认环境变量 `MEMBER_SPLIT=1`：灰度或临时排查时不必改代码。
+   */
+  const MEMBER_SPLIT_ENABLED = process.env.MEMBER_SPLIT === '1'
   /**
    * 旗标（主行 `report.memberSections`）里的取值 token（P2 阶段 3，2026-10-17）——
    * 与端上 `utils/member.ts#MEMBER_FLAGS` **逐字相同**（手抄副本，用例 81 比对）。
@@ -695,11 +720,14 @@ module.exports = function createReportStore(deps) {
      */
     const memberFlags = memberFlagsOf(report)
     let stored = report
-    /* 副本先写（免费版则在这里**删**掉上一版残留的副本）：它同时是「能不能剥段」的开关。
-       免费版也走一次，是为了不留「旧四段 + 新时间戳」——那种组合在 storeMember 里
-       只差一个时间戳巧合就能凑成一次错配。 */
+    /* 副本先写（免费版则在这里**删**掉上一版残留的副本）：它是「能不能剥段」的必要条件之一
+       （另一个是 MEMBER_SPLIT_ENABLED）。免费版也走一次，是为了不留「旧四段 + 新时间戳」——
+       那种组合在 storeMember 里只差一个时间戳巧合就能凑成一次错配。 */
     const copied = await saveMemberRow(personKey, report, generatedAt, 'current', event.schemaVersion)
-    if (memberFlags.length > 0 && copied) stored = stripForRow(report, memberFlags)
+    /* 三个条件：开关打开（见 MEMBER_SPLIT_ENABLED）、这一版真有四段、副本写成功 */
+    if (MEMBER_SPLIT_ENABLED && memberFlags.length > 0 && copied) {
+      stored = stripForRow(report, memberFlags)
+    }
     try {
       /* doc(id).set = 整篇替换（与端上 upsert 同义）：对 report / search_meta 的初值没有要求，
          绕开「往 null 上写子字段被数据库拒绝」那类差异（见端上 cache.ts#saveReady） */
@@ -783,6 +811,18 @@ module.exports = function createReportStore(deps) {
    * P4-B（2026-10-13）：落库前用本地风险词典给每条补条目级分级字段（`gradeFeedItem`）——
    * 这是 feed_cache 分级字段的**唯一权威产出位置**，端上只透传 / 展示。纯本地匹配、零上游成本；
    * 未命中的条目不落任何字段（保持「未评级 / 未知」）。
+   *
+   * 2026-10-18（P1，只让新的盖旧的）：
+   *   ① 落库时间一律取**服务端**时间 —— `fetched_at` 既是「X 前更新」的展示依据，也是下面
+   *      新旧比较的判据，不能采信端上传来的值（设备时钟随手可改；同账号多台设备更不可比）。
+   *      `event.fetchedAt` 仍然接受（老版本端还会传），但**不再采用**。
+   *   ② 原实现是无条件 `set`：两个人同时刷新同一个人物、或一个人手快连点两次，先发出的那次
+   *      晚回来（检索慢的那次），会把已经落库的新内容整行盖回旧内容，`fetched_at` 一起倒退 ——
+   *      关注流下次算「多久没刷」也跟着算错。现在改成「先比再写，写时带条件」：
+   *      比对不通过直接回 `skipped-stale`，条件写落空（这中间有人抢先写了更新的）同样如此。
+   *   ③ 没有 `fetched_at` 的存量行按「最旧」处理，照常覆盖 —— 否则那些行会永远写不进去。
+   *   ④ 超前服务端时钟 5 分钟以上的 `fetched_at` 当**脏值**处理（同样按最旧覆盖）：否则一行被
+   *      写进一个未来的时间戳之后，这个人物（全站共享的一行）就再也刷不动了。
    */
   async function storeSaveFeed(event) {
     const personKey = str(event.personKey)
@@ -798,11 +838,35 @@ module.exports = function createReportStore(deps) {
     const bytes = Buffer.byteLength(JSON.stringify(graded), 'utf8')
     if (bytes > FEED_MAX_BYTES) return bad(`动态列表体积超限（${bytes} > ${FEED_MAX_BYTES} 字节）`)
 
+    const nowMs = Date.now()
+    const at = new Date(nowMs).toISOString()
+
     try {
-      await db
-        .collection('feed_cache')
-        .doc(personKey)
-        .set({ data: { items: graded, fetched_at: str(event.fetchedAt) || new Date().toISOString() } })
+      const probe = await db.collection('feed_cache').where({ _id: personKey }).limit(1).get()
+      const existing = (probe && probe.data && probe.data[0]) || null
+      const prevRaw = existing ? str(existing.fetched_at) : ''
+      const prevMs = prevRaw ? Date.parse(prevRaw) : NaN
+      /* ② 可比（有值且不超前太多）才参与比较；否则当最旧 */
+      const comparable = Number.isFinite(prevMs) && prevMs <= nowMs + FEED_FUTURE_TOLERANCE_MS
+
+      if (comparable && prevMs >= nowMs) {
+        /* 库里已经是同等或更新的内容：不覆盖，但也不算失败（端上按「已是最新」处理） */
+        return { ok: true, result: 'skipped-stale', fetchedAt: prevRaw }
+      }
+
+      if (existing && comparable) {
+        /* 带条件再写一次：上面那次读与这次写之间若有人写入了更新的内容，这次自动落空 */
+        const upd = await db
+          .collection('feed_cache')
+          .where({ _id: personKey, fetched_at: db.command.lt(at) })
+          .update({ data: { items: graded, fetched_at: at } })
+        if (!(upd && upd.stats && upd.stats.updated)) {
+          return { ok: true, result: 'skipped-stale', fetchedAt: prevRaw || null }
+        }
+        return { ok: true, result: 'saved' }
+      }
+
+      await db.collection('feed_cache').doc(personKey).set({ data: { items: graded, fetched_at: at } })
       return { ok: true, result: 'saved' }
     } catch (err) {
       return { ok: false, kind: 'upstream', error: `动态列表落库失败：${failDetail(err)}` }

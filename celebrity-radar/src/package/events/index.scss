@@ -18,18 +18,38 @@
     color: $text-3;
   }
 
-  /* 列表头：标题 + 「新 N 条」角标同排 */
+  /* 列表头：**两行**（2026-10-18 修「最上面的卡片变形」）。
+     原来是 `row + space-between`，把标题与三个角标塞进同一行 —— 而 `.count-badge`
+     是 nowrap + flex-shrink:0 + 定高 36rpx（全局，用例 87 钉住），既不能折行也不能压缩，
+     总宽一旦超过 `.card` 的可排宽度就**顶出卡片右边界**。
+     现在纵向分层：第一行「是什么」，第二行「能点什么」，第二行整行 wrap 兜底。 */
   &__head {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12rpx;
   }
 
   &__head-main {
     display: flex;
     align-items: center;
+    /* 标题本身也可能超长（「★ 我盯的 · 12 件」，超大字号下更甚）—— 允许它带着角标一起换行，
+       而不是把角标挤出去 */
+    flex-wrap: wrap;
     gap: 12rpx;
     min-width: 0;
+    max-width: 100%;
+  }
+
+  /* 第二行：带数字的长入口。wrap 是这里**唯一**的溢出防线：
+     每个角标整体换行（内部绝不折行），而不是被压扁或顶出卡片 */
+  &__head-sub {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12rpx;
+    width: 100%;
+    box-sizing: border-box;
   }
 
   &__head-title {
@@ -66,19 +86,33 @@
 
   &__scope-tab {
     flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     justify-content: center;
     height: 60rpx;
     border-radius: 999rpx;
+    /* 未选中态显式给透明底：切换时旧那段若残留一次背景，也不会露出半截色块 */
+    background: transparent;
     font-size: 24rpx;
     color: $text-2;
+    /* 胶囊是按钮不是链接：行内文字一律不带下划线（未选中那段曾出现一条贴文字底部的细线） */
+    text-decoration: none;
+    overflow: hidden;
 
     &--on {
       background: $brand;
       color: #fff;
       font-weight: 600;
     }
+  }
+
+  /* 文字层单独一层：居中交给外层 View 的 flex，文字本身不做盒子（见 tsx 里那段注释） */
+  &__scope-tab-text {
+    font-size: 24rpx;
+    line-height: 1;
+    white-space: nowrap;
+    text-decoration: none;
   }
 
   /* 「我盯的」空态卡：说清「不是没有事件，是还没盯过」，并给出退路 */

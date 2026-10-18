@@ -209,7 +209,7 @@ async function addWatchViaCloud(
       diagLog('warn', 'db', 'keywordAlert(add) 无有效回执，回退端上订阅')
       return null
     }
-    if (res.ok) return { ok: true, message: res.message || `已开始监测「${keyword}」` }
+    if (res.ok) return { ok: true, message: res.message || `已开始监控「${keyword}」` }
     /* over_limit 的文案按云端回执的档位生成（端上 mirror 可能已过期，以云端 tier 为准） */
     if (res.reason === 'over_limit') {
       return { ok: false, message: res.message || watchLimitNote(res.tier === 'member') }
@@ -297,7 +297,7 @@ export async function addWatch(raw: string): Promise<{ ok: boolean; message: str
     return { ok: false, message: watchLimitNote(isMember) }
   }
 
-  return { ok: true, message: `已开始监测「${check.keyword}」` }
+  return { ok: true, message: `已开始监控「${check.keyword}」` }
 }
 
 /** 取消订阅（列表页显式操作：已确定处于订阅态，省去一次存在性查询） */

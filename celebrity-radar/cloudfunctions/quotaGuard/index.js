@@ -67,13 +67,23 @@ function todayKey() {
   return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
 }
 
-/** 行不存在时 doc().get() 直接抛错 —— 对配额而言「读不到」就等同 0 */
+/**
+ * 行不存在时 doc().get() 直接抛错 —— 对配额而言「读不到」就等同 0。
+ *
+ * 2026-10-18（P2）：仍保持 fail-open（配额系统不能因为一次云库抖动就把所有付费用户拦在门外），
+ * 但**要把「读失败」和「行不存在」分开留痕**。原先两者一律静默 return 0：今天第一次用是 0，
+ * 权限配错 / 超时也是 0 —— 后者会让额度静默失效，且日志里一行都看不到，出问题只能靠猜。
+ */
 async function readCount(table, id) {
   try {
     const res = await db.collection(table).doc(id).get()
     const c = res && res.data && res.data.count
     return typeof c === 'number' ? c : 0
   } catch (err) {
+    const msg = String((err && (err.errMsg || err.message)) || err || '')
+    /* 行不存在是正常情况（今天第一次调用），不刷日志；其余一律告警 */
+    const notFound = /not\s*exist|not\s*found|DOCUMENT_NOT_FOUND|-502004/i.test(msg)
+    if (!notFound) console.warn(`[quotaGuard] 读计数失败 table=${table} id=${id}：${msg}`)
     return 0
   }
 }

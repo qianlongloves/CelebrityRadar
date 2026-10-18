@@ -683,7 +683,7 @@ export default function Opinion() {
     await loadAlertBlock()
     /* 已跟进的事件刻意留着角标（见上面的注释）：不把这件事说出来，用户会以为「按钮坏了」 */
     Taro.showToast({
-      title: followNew > 0 ? `已读；我盯的 ${followNew} 条仍留着` : '已全部标为已读',
+      title: followNew > 0 ? `已读；跟进的 ${followNew} 条仍留着` : '已全部标为已读',
       icon: 'none'
     })
   }
@@ -753,13 +753,13 @@ export default function Opinion() {
             {monitorBadge > 0 && <Text className='page-opinion__nav-badge'>{monitorBadge}</Text>}
             <Text className='page-opinion__nav-go'>›</Text>
           </View>
-          <Text className='page-opinion__nav-hint'>关键词 · 名人 · 订阅对象</Text>
+          <Text className='page-opinion__nav-hint'>关注对象 · 关键词 · 名人</Text>
         </View>
 
         <View className='page-opinion__nav-item' onClick={goWorkbench}>
           <View className='page-opinion__nav-top'>
             <Text className='page-opinion__nav-icon'>📊</Text>
-            <Text className='page-opinion__nav-label'>监测工作台</Text>
+            <Text className='page-opinion__nav-label'>监控工作台</Text>
             <Text className='page-opinion__nav-go'>›</Text>
           </View>
           <Text className='page-opinion__nav-hint'>多人台账 · 勾选对比 · 导出</Text>
@@ -794,7 +794,7 @@ export default function Opinion() {
         <View className='card page-opinion__pick'>
           <View className='page-opinion__head'>
             <View className='page-opinion__head-main'>
-              <Text className='page-opinion__head-title'>👀 先盯上几个人</Text>
+              <Text className='page-opinion__head-title'>👀 先关注几个人</Text>
             </View>
             {/* 关掉就永久不再出现：一次明确的拒绝不该被问第二遍（见 utils/opinion-pick#dismissPick） */}
             <Text className='page-opinion__pick-close' onClick={onDismissPick}>
@@ -829,7 +829,7 @@ export default function Opinion() {
           </View>
 
           {/* 出口：不想用推荐的人也要有下一步（这几个人是平台挑的，用户完全有理由全都不认） */}
-          <Text className='page-opinion__pick-note'>也可以直接去首页搜你想盯的人。</Text>
+          <Text className='page-opinion__pick-note'>也可以直接去首页搜你想关注的人。</Text>
 
           {/* 建立失败就地一行（全文，不截断）：本页不引入弹窗，toast 又会把修法截成半句 */}
           {!!pickError && (
@@ -992,13 +992,13 @@ export default function Opinion() {
             {followedCount > 0 && (
               <Text className='page-opinion__mine' onClick={goFollowedEvents}>
                 <Text className='page-opinion__mine-icon'>★</Text>
-                {`我盯的 ${followedCount}`}
+                {`我跟进的 ${followedCount}`}
               </Text>
             )}
             {followNew > 0 && (
               <Text className='page-opinion__follow-jump' onClick={goFollowedEvents}>
                 <Text className='page-opinion__follow-dot'>●</Text>
-                {`盯的 ${followNew} 条有新进展 ›`}
+                {`跟进的 ${followNew} 条有新进展 ›`}
               </Text>
             )}
           </View>

@@ -71,6 +71,12 @@ export interface VersionBoard {
   rows: VersionListRow[]
   /** 当前版信息；`null` = 还没有报告（或读不到）—— 页面据此不显示「当前版」那一行 */
   current: { generatedAt: string; newsCount: number } | null
+  /**
+   * 列表是否读成功（2026-10-18，P2）。
+   * `false` 时 `rows` 必为空，但那**不代表**「从没更新过」—— 页面必须说「读取失败」而不是
+   * 「还没有更新过的版本」（后者是在替一次故障向用户保证「本来就没有东西」）。
+   */
+  ok: boolean
 }
 
 /* ══════════════════════════ 纯函数 ══════════════════════════ */
@@ -166,11 +172,14 @@ export function versionHistoryNote(): string {
  * `_id` 天生有索引，排序不会因为「索引未建」被云侧拒），以及 `report_cache` 那一行
  * —— 列表要能说「比当前版少几条素材」，而当前版的条数只在 `search_meta` 里。
  *
- * 读失败一律返回空列表（不抛错）：历史版本是**附加信息**，它读不到不该让页面变成错误态，
- * 页面据 `rows.length === 0` 显示「还没有更新过的版本」即可。
+ * 读失败返回空列表（不抛错）：历史版本是**附加信息**，它读不到不该让页面变成错误态。
+ *
+ * 但要带上 `ok`（2026-10-18，P2）：`rows.length === 0` 同时意味着「这份报告从没更新过」和
+ * 「这次没读到」，而这两句话对用户的意思完全相反 —— 前者是「没东西可看」，
+ * 后者是「有东西但没取到」。页面据此显示「读取失败，下拉重试」，不编一个「从没更新过」。
  */
 export async function loadReportVersions(personKey: string): Promise<VersionBoard> {
-  const empty: VersionBoard = { rows: [], current: null }
+  const empty: VersionBoard = { rows: [], current: null, ok: false }
   const key = (personKey ?? '').trim()
   if (!key) return empty
 
@@ -198,7 +207,8 @@ export async function loadReportVersions(personKey: string): Promise<VersionBoar
 
   return {
     rows: buildVersionList((list.data as ReportVersionRow[]) ?? [], current),
-    current
+    current,
+    ok: true
   }
 }
 

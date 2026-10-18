@@ -77,6 +77,46 @@ function isNotDeployed(msg: string): boolean {
   return /not found|FunctionName|-501000/i.test(msg)
 }
 
+/** 只读查询的结果：当日计数 +（refresh 类）服务端上限与是否放行 */
+export interface QuotaPeek {
+  count: number
+  limit?: number
+  allowed?: boolean
+}
+
+/**
+ * 只读查询当日计数（`action:'peek'`，不自增）。云函数不可用时返回 null。
+ *
+ * 为什么要有它：刷新额度的闸门从「先扣后花」改成「先判后花」（2026-10-18）——
+ * 原实现先自增再检索，检索失败/空结果那一次照样扣掉，用户没拿到任何新动态却少了一次额度。
+ * 判（peek）与扣（consume）分开后，失败的那次不扣；代价是并发窗口内可能多放行一次，
+ * 由 aiProxy 的防滥用闸兜住（真正的成本硬边界在那里）。
+ *
+ * ⚠ 与 consume 的一个语义差别：consume 的 count 已经包含本次（云端按 `count <= limit` 判定），
+ *   而 peek 的 count 不含本次，所以调用方要用 `count < limit` 判越界。
+ */
+export async function peekQuotaViaCloud(kind: QuotaKind): Promise<QuotaPeek | null> {
+  try {
+    const res = (await callCloudFunction('quotaGuard', {
+      kind,
+      action: 'peek'
+    })) as QuotaGuardResult | null
+    if (res && res.ok && typeof res.count === 'number') {
+      return {
+        count: res.count,
+        limit: typeof res.limit === 'number' ? res.limit : undefined,
+        allowed: typeof res.allowed === 'boolean' ? res.allowed : undefined
+      }
+    }
+    diagLog('warn', 'db', `quotaGuard(${kind}) peek 未生效：${res?.error ?? '无返回值'}，回退端上计数`)
+    return null
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    diagLog('warn', 'db', `quotaGuard(${kind}) peek 调用失败，回退端上计数：${msg}`)
+    return null
+  }
+}
+
 /**
  * 原子自增一次配额，返回自增后的**当日计数**（含云端是否判定免计费）；
  * 云函数不可用时返回 null，由调用方回退端上读-改-写。

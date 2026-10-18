@@ -123,13 +123,21 @@ export async function saveReportPartsViaCloud(
   return 'unavailable'
 }
 
-/** 动态列表落库，语义同 saveReportViaCloud */
+/**
+ * 动态列表落库，语义同 saveReportViaCloud，外加一个 **skipped**：
+ *
+ * 云端会比 `fetched_at`，库里已经有更新的内容时**不覆盖**并回 `result:'skipped-stale'`
+ * （P1，2026-10-18：原先无条件 set，晚回来的旧结果会把新内容盖掉）。调用方要把它与
+ * 「写失败」分开：这次刷新确实拿到了新动态，只是没写进库 —— 不能回退直写（那正是要防的覆盖），
+ * 也不该被算成一次失败。
+ */
 export async function saveFeedViaCloud(
   personKey: string,
   items: NewsItem[]
-): Promise<'saved' | 'rejected' | 'unavailable'> {
+): Promise<'saved' | 'skipped' | 'rejected' | 'unavailable'> {
   const reply = await callStore({ op: 'saveFeed', personKey, items, fetchedAt: new Date().toISOString() })
   if (reply.kind === 'ok' && reply.result === 'saved') return 'saved'
+  if (reply.kind === 'ok' && reply.result === 'skipped-stale') return 'skipped'
   if (reply.kind === 'rejected') return 'rejected'
   return 'unavailable'
 }

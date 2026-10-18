@@ -5,7 +5,7 @@ import Skeleton from '@/components/skeleton'
 import EmptyState from '@/components/empty-state'
 import PersonAvatar from '@/components/person-avatar'
 import { domainLabel, domainStyleCode, parsePersonKey } from '@/config/domains'
-import { getCachedReports } from '@/utils/cache'
+import { getCachedReportsChecked } from '@/utils/cache'
 import { listHistory, clearHistory, HistoryRow, HISTORY_LIMIT } from '@/utils/history'
 import { readPortraits } from '@/utils/portrait'
 import { fromNow, isStaleReport } from '@/utils/time'
@@ -28,6 +28,12 @@ interface ContinueCard {
   generatedAt: string
   /** 是否已陈旧（≥ STALE_REPORT_DAYS 天，见 utils/time） */
   stale: boolean
+  /**
+   * `generatedAt === ''` 时它到底是「确实没生成」还是「这次没读到」（2026-10-18，P2）。
+   * 不区分的话，一次云库抖动会让三张卡片同时写「未生成报告」——
+   * 那是在告诉用户「你昨天看的那份没了」。
+   */
+  reportUnknown: boolean
 }
 
 /**
@@ -62,8 +68,8 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
    * `history` 表只存「谁、什么时候看过」，**不存报告版本** —— 而这一行卡片的价值恰恰在于
    * 「昨天那份还能接着用吗」，所以这里用一次 `getCachedReports` 批量读回最近 3 位的缓存报告
    * （`in` 一次往返，只读不触发生成）。这是全项目唯一为本功能新增的一次云读，
-   * 换来的是历史页第一次能说清「你手上的这份报告是哪一版」；读不到就退化成「未生成报告」，
-   * 不阻塞列表渲染。
+   * 换来的是历史页第一次能说清「你手上的这份报告是哪一版」；读不到也不阻塞列表渲染，
+   * 但要区分「确实没生成」与「这次没读到」（2026-10-18，P2：后者原来说成「未生成报告」）。
    */
   useEffect(() => {
     const picks = history.slice(0, CONTINUE_MAX)
@@ -72,7 +78,8 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
       return
     }
     let alive = true
-    void getCachedReports(picks.map((h) => h.person_key)).then((reports) => {
+    /* 用 *Checked 版本：读失败与「确实没生成」在卡片上是两句相反的话（见 ContinueCard#reportUnknown） */
+    void getCachedReportsChecked(picks.map((h) => h.person_key)).then(({ ok, reports }) => {
       if (!alive) return
       setRecent(
         picks.map((h, i) => {
@@ -82,7 +89,8 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
             name: h.name,
             domain: parsePersonKey(h.person_key)?.domain ?? 'other',
             generatedAt,
-            stale: isStaleReport(generatedAt)
+            stale: isStaleReport(generatedAt),
+            reportUnknown: !ok
           }
         })
       )
@@ -183,7 +191,9 @@ export default function HistoryView({ reloadKey }: HistoryViewProps) {
                 >
                   {c.generatedAt
                     ? `${fromNow(c.generatedAt)}${c.stale ? ' · 建议刷新' : ''}`
-                    : '未生成报告'}
+                    : c.reportUnknown
+                      ? '报告状态读取失败'
+                      : '未生成报告'}
                 </Text>
               </View>
             ))}

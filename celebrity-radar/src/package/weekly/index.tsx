@@ -49,6 +49,8 @@ type Phase =
   | 'nologin'
   | 'nofollow'
   | 'nomaterial'
+  /* 关注列表没读到（MaterialOutcome#unreadable）：单独一个态，别混进 nofollow */
+  | 'unreadable'
   | 'quota'
   | 'cooldown'
   | 'error'
@@ -706,6 +708,21 @@ export default function Weekly() {
           desc={MATERIAL_FAIL_TEXT.nofollow}
           actionText='去发现名人'
           onAction={() => Taro.switchTab({ url: '/pages/index/index' })}
+        />
+      )}
+
+      {/*
+        关注列表读失败（2026-10-18，P2）：原先把这种情况并进 nofollow，
+        一位关注了十几个人的用户会因为一次云库抖动被告知「还没有关注名人」。
+        这里给出「重试」而不是「去发现名人」—— 他要的东西没丢，只是没读到。
+      */}
+      {phase === 'unreadable' && (
+        <EmptyState
+          icon='🔄'
+          title='读取关注列表失败'
+          desc={MATERIAL_FAIL_TEXT.unreadable}
+          actionText='重试'
+          onAction={() => void load()}
         />
       )}
 

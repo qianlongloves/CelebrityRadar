@@ -482,7 +482,7 @@ describe('E1-② 接线：事件详情页是入口（package/event）', () => {
 
   it('文案说清「落到站内、不发推送」（推送随 N-1 冻结，不能空口承诺）', () => {
     ok(/不发推送/.test(EVENT_PAGE))
-    ok(/订阅的对象/.test(EVENT_PAGE), '要指出去哪里看')
+    ok(/关注的对象/.test(EVENT_PAGE), '要指出去哪里看')
   })
 
   it('埋点在结果判定**之后**报：满员/失败不许算进关系数', () => {
@@ -509,11 +509,27 @@ describe('E1-② 接线：预警页是消费落点（package/alerts）', () => {
     ok(/if \(!hasSubjectSubs\(evStatus\)\)/.test(ALERTS_PAGE))
   })
 
-  it('⚠ 渲染判据是 hasSubjectSubs(status)（读出来那行升到 state），不是 subHits.length（后者会把「没订阅」也画成空卡）', () => {
+  /*
+   * 2026-10-18 判据变更：卡片从「有订阅才渲染」改为「登录即渲染」。
+   *
+   * 旧判据 `userId && hasSubjectSubs(status)` 逻辑上没错，但产品上有一个致命副作用：
+   * 订阅的**唯一**新增入口在事件详情页，没订阅过的人永远不会看到这张卡 ——
+   * 「订阅」这个功能在新用户的屏幕上根本不存在，他既不知道有它，也猜不到去哪找
+   * （用户反馈「这几个功能是干嘛的、在哪边能找到」）。
+   * 所以：卡片常在，由**空态**回答「还没订阅」并指路；「有没有订阅」依旧不能拿
+   * `subHits.length` 判（订阅了但都没动向时它也是 0），这部分仍交给 hasSubjectSubs。
+   */
+  it('⚠ 卡片常在：登录即渲染，没关注时由空态指路（判据仍在 state 里）', () => {
     ok(/useState<EventStatus>/.test(ALERTS_PAGE), '判据要在 state 里活着，局部变量在重渲染时已经出作用域')
     ok(/setStatus\(evStatus\)/.test(ALERTS_PAGE), '读出来的状态必须升到 state')
-    ok(/userId && hasSubjectSubs\(status\)/.test(ALERTS_PAGE))
-    notOk(/subHits\.length/.test(ALERTS_PAGE))
+    ok(
+      /\{userId && \(\s*<View className='card'>\s*<View className='card-title'>关注的对象<\/View>/.test(ALERTS_PAGE),
+      '登录后这张卡必须一直在：只在已关注时渲染 ⇒ 新用户完全看不到「关注对象」这个功能'
+    )
+    ok(/!hasSubjectSubs\(status\) && \(/.test(ALERTS_PAGE), '「还没关注」空态要由真实关注状态决定')
+    ok(/hasSubjectSubs\(status\) && subHits\.every/.test(ALERTS_PAGE), '「暂无新动向」只在有关注时说')
+    ok(/去事件详情页点「关注对象」/.test(ALERTS_PAGE), '空态必须给出新增入口，否则这张卡只是一个空壳')
+    notOk(/subHits\.length/.test(ALERTS_PAGE), '有没有关注永远不能拿命中列表长度判')
   })
 
   it('⚠ 点进事件**不推进已读**：已读基线归事件详情页自己推进（两处都推会消掉用户没读的角标）', () => {
@@ -539,13 +555,13 @@ describe('E1-② 接线：事件列表页给命中订阅的事件打标（packag
 
   it('角标带上对象名，且样式与 NEW / 有新进展区分开', () => {
     ok(/page-events__badge--sub/.test(EVENTS_PAGE))
-    ok(/订阅·\{subLabel\}/.test(EVENTS_PAGE))
+    ok(/关注·\{subLabel\}/.test(EVENTS_PAGE))
     ok(/&--sub \{/.test(EVENTS_SCSS))
   })
 
-  it('与「盯的 N 条」分成两个数字（一个问单条事件，一个问对象）', () => {
-    ok(/盯的 \{followCount\} 条有新进展/.test(EVENTS_PAGE))
-    ok(/订阅的 \{subFreshCount\} 个对象有新动向/.test(EVENTS_PAGE))
+  it('与「跟进的 N 条」分成两个数字（一个问单条事件，一个问对象）', () => {
+    ok(/跟进的 \{followCount\} 条有新进展/.test(EVENTS_PAGE))
+    ok(/关注的 \{subFreshCount\} 个对象有新动向/.test(EVENTS_PAGE))
   })
 })
 
@@ -559,7 +575,7 @@ describe('E1-② 接线：埋点登记与字段声明（events.ts / dbInit）', 
     ok(/f\('subs', 'object\?'/.test(SCHEMA))
     const hint = (SCHEMA.match(/enumHint:\s*\[[^\]]*'event_subscribe'[^\]]*\]/) || [])[0] || ''
     ok(/'event_subscribe'/.test(hint), '只钉「在不在」；名单全量一致由用例 74-event-enum.js 钉住')
-    ok(/订阅对象/.test(SCHEMA), '字段用途要写清「键不是 event_key」')
+    ok(/关注对象/.test(SCHEMA), '字段用途要写清「键不是 event_key」')
   })
 
   it('存储层把 subs 与已读/跟进分成两套额度（pruneStatus 只裁 event_key 那两个）', () => {

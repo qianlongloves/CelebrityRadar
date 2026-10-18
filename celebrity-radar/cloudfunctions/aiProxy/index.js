@@ -82,6 +82,7 @@ const {
   AUX_PURPOSE,
   ABUSE_TABLE,
   ABUSE_LIMITS,
+  PORTRAIT_LIMITS,
   quotaGuardDisabled,
   todayKey
 } = require('./quota.config')
@@ -728,17 +729,40 @@ function portraitCloudPath(personKey, ext) {
  * 返回 `{ ok, fileId, cached? }`。**失败不抛错**（回 ok:false），让端上静默回退到「首字头像」——
  * 一张图取不到，不该影响任何主流程。
  */
-async function handlePortrait(event) {
+async function handlePortrait(event, openid) {
   const personKey = trimStr(event.personKey)
   const name = trimStr(event.name)
   /* 领域（中文标签）由端上传入：同名不同人（张三#文娱 vs 张三#科技）若只按名字查图，
      会拿到同一批图、选出同一张 —— 把领域拼进查询词，两个同名者各查到各行业的照片。 */
   const domain = trimStr(event.domain)
+  /*
+   * 身份闸门（2026-10-18 复审 P1）：这条路径原先既不判 openid 也不要额度，而它每次
+   * 都可能真花钱（博查图片检索最多 3 次 × count=5、图片外链下载、云存储写入），
+   * 于是「谁都能调」等于把检索资源包和存储敞给任何打开小程序的人 —— 连登录都不用。
+   * 端上 utils/portrait.ts 对任何失败都静默退回「首字头像」，故这里拒绝不会伤到主流程。
+   */
+  const caller = trimStr(openid)
+  if (!caller) return { ok: false, kind: 'auth', error: '取不到调用者 openid：portrait 只允许从小程序端调用' }
   if (!personKey || !name) return { ok: false, error: '缺少 personKey / name' }
   if (personKey.length > 120 || name.length > 40) return { ok: false, error: 'personKey / name 过长' }
+  /* personKey 会当文档 _id 写进 person_assets：挡掉控制字符与路径分隔符，避免拼出脏行 /
+     越界路径（真实 key 形如「雷军#tech」「pidx:雷军#科技」，都不受影响） */
+  if (/[\u0000-\u001f\u007f/\\]/.test(personKey)) return { ok: false, error: 'personKey 含非法字符' }
 
   const cached = await readPortraitRow(personKey)
   if (cached) return { ok: true, fileId: cached.avatar_file_id, cached: true }
+
+  /*
+   * 每日上限（命中缓存的那次已经在上面返回，不计入）：计数与 chat 同一个表、不同 key 前缀，
+   * 互不吃额度。调试放行（AI_PROXY_QUOTA_GUARD=off）只跳过判定，计数照旧写。
+   */
+  const portraitCount = await bumpAbuseCount(`portrait#${caller}#${todayKey()}`, caller)
+  if (!quotaGuardDisabled() && portraitCount !== null) {
+    const limit = (await isActiveMember(caller)) ? PORTRAIT_LIMITS.member : PORTRAIT_LIMITS.free
+    if (portraitCount > limit) {
+      return { ok: false, kind: 'quota', error: `今日头像抓取次数已达上限（${limit} 次），明日 0 点恢复` }
+    }
+  }
 
   const key = readEnv('BOCHA_API_KEY')
   if (!key) return { ok: false, error: '未配置 BOCHA_API_KEY' }
@@ -2017,8 +2041,9 @@ exports.main = async (event) => {
   if (action === 'vendors') return handleVendors(await loadDisabledVendors())
   /* 共享缓存写口（P0-2）：不需要口令，但要求登录身份，且 op 会过写口自己的限速 */
   if (action === 'report') return handleReportStore(event || {})
-  /* 头像 / 照片（2026-10-12）：从博查图片结果里挑一张存进云存储，写 person_assets 缓存 */
-  if (action === 'portrait') return handlePortrait(event || {})
+  /* 头像 / 照片（2026-10-12）：从博查图片结果里挑一张存进云存储，写 person_assets 缓存。
+     2026-10-18：与 search 同口径，先取调用者 openid 再进业务（见 handlePortrait 顶部的闸门） */
+  if (action === 'portrait') return handlePortrait(event || {}, (cloud.getWXContext() || {}).OPENID)
   if (action !== 'test') {
     return {
       ok: false,

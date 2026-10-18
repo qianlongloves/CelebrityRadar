@@ -214,6 +214,11 @@ async function inspectFields(def, event) {
   }
 }
 
+/** 空对象（`{}`）—— 这类默认值写库时要包 `_.set()`，见 backfillFields 里的说明 */
+function isEmptyObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0
+}
+
 /** 按默认值补齐「有 def 的可选字段」（只碰缺失的行；已存在的行一个字都不动） */
 async function backfillFields(def, pending) {
   const results = []
@@ -228,7 +233,16 @@ async function backfillFields(def, pending) {
     }
     const field = def.fields.find((x) => x.name === item.field)
     try {
-      const res = await db.collection(def.name).where({ [item.field]: _.exists(false) }).update({ data: { [item.field]: field.def } })
+      /*
+       * 默认值是**空对象**时必须包一层 `_.set()`（2026-10-18，线上实测踩到）。
+       *
+       * SDK 在拼 `$set` 时会把空对象当成「没有字段要设」而整个丢掉，服务端随后报
+       * `-502001 FailedOperation: '$set' is empty` —— 表现为「其它字段都回填成功，
+       * 只有 event_notified 这一条永远补不上，且每次巡检都报同一个错」。
+       * 非空对象 / 数组 / primitive / null 都不受影响，只有 `{}` 需要强制写。
+       */
+      const value = isEmptyObject(field.def) ? _.set(field.def) : field.def
+      const res = await db.collection(def.name).where({ [item.field]: _.exists(false) }).update({ data: { [item.field]: value } })
       results.push({ field: item.field, action: 'filled', default: field.def, updated: (res.stats && res.stats.updated) || 0 })
     } catch (err) {
       results.push({ field: item.field, action: 'error', error: String((err && err.errMsg) || err) })
@@ -735,8 +749,22 @@ async function runDbInit(event) {
     }
   }
 
-  /* 权限改不了：把设计要求的 ACL 逐表列出，供人工在控制台核对 */
-  out.permissions_manual = defs.map((d) => ({ collection: d.name, acl: d.acl.label, note: d.acl.rule ? '自定义规则（见 README 的「云开发配置 → 集合与权限」）' : '控制台预设' }))
+  /*
+   * 权限改不了（控制台接口没有它），只能把设计要求的 ACL 逐表列出供人工设。
+   *
+   * 以前这里只写一句「自定义规则（见 README）」—— 等于把**唯一能照着做的东西**
+   * （规则 JSON 本身）留在了另一份文档里：运维得先翻文档、再对集合名，抄错一个
+   * 字段名就是「看得到但写不进」或「干脆读不到」的静默故障。
+   * 现在把 `rule` 原样带出，并给一份可直接粘进控制台的单行 `rule_json`。
+   */
+  out.permissions_manual = defs.map((d) => ({
+    collection: d.name,
+    acl: d.acl.label,
+    /* 控制台预设的集合（仅创建者可读写）没有自定义规则，这两项为 null */
+    rule: d.acl.rule || null,
+    rule_json: d.acl.rule ? JSON.stringify(d.acl.rule) : null,
+    note: d.acl.rule ? '控制台 → 数据库 → 本集合 → 权限设置 → 自定义安全规则，粘贴 rule_json' : '控制台预设「仅创建者可读写」，无需自定义规则'
+  }))
   out.token_gate = process.env.DB_ADMIN_TOKEN ? '已配置 DB_ADMIN_TOKEN，写操作需传 event.token' : '未配置 DB_ADMIN_TOKEN ⇒ 写操作一律拒绝'
 
   return out

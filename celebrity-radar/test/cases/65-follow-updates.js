@@ -220,7 +220,7 @@ describe('云端 notifyFollowUpdates：跟进事件有新进展就提醒一次',
     eq(res.eventKeys, 1, '本轮有一个跟进的 event_key 参与判定')
     eq(res.targets, 0, '没配 BOCHA_API_KEY → 没有「关注的人」这类候选（不打上游），但事件照样提醒')
     eq(sent.length, 1)
-    ok(/我盯的/.test(sent[0].data.thing1.value), `正文要说明这条是「我盯的事」（实际「${sent[0].data.thing1.value}」）`)
+    ok(/我跟进的/.test(sent[0].data.thing1.value), `正文要说明这条是「我跟进的事」（实际「${sent[0].data.thing1.value}」）`)
     eq(sent[0].page.indexOf('package/event/index?eventKey='), 0, '点了要能到事件详情页（分包路径 + eventKey 参数）')
     ok(typeof userRow().event_notified[KEY] === 'string', '水位：端上打开详情页刻意不自动标已读，没有它就会天天重复提醒')
     eq(userRow().subscribe_ok, false, '一次性订阅：发完立刻复位')
@@ -368,7 +368,7 @@ describe('云端 notifyFollowUpdates：跟进事件有新进展就提醒一次',
 /* ─────────────────── 静态约束：口径写在代码里，别只写在文档里 ─────────────────── */
 
 describe('实现约束：角标口径单一、水位有上限、会员读权威表', () => {
-  it('端上：跟进的语义要说给用户听（详情页）+ 提醒入口文案覆盖「我盯的事」', () => {
+  it('端上：跟进的语义要说给用户听（详情页）+ 提醒入口文案覆盖「跟进的事」', () => {
     const detail = codeOf('src/package/event/index.tsx')
     ok(detail.includes('page-event__follow-note'), '跟进按钮下面要写清后果（跟进 = 订阅，不是一个书签）')
     ok(
@@ -377,7 +377,7 @@ describe('实现约束：角标口径单一、水位有上限、会员读权威�
     )
     /* 提醒入口 2026-10-17 迁到「我的 → 系统设置」（package/settings），文案随之搬过去 */
     const settings = codeOf('src/package/settings/index.tsx')
-    ok(settings.includes('我盯的事'), '提醒入口的文案要覆盖两类候选（只写「关注的人」用户就不敢指望跟进会被提醒）')
+    ok(settings.includes('跟进的事'), '提醒入口的文案要覆盖两类候选（只写「关注的人」用户就不敢指望跟进会被提醒）')
   })
 
   it('端上：角标口径与跟进计数分两处，且都复用同一个 eventNewness', () => {

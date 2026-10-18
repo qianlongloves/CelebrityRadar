@@ -55,6 +55,20 @@ const DEFAULT_PURPOSE = 'generate'
 /* 防滥用计数表（本函数写入，端上不可读写） */
 const ABUSE_TABLE = 'ai_calls'
 
+/**
+ * 头像抓取（action:'portrait'）的每日上限：次 / 人 / 日。
+ *
+ * 这条路径不走产品额度（它是列表渲染的零件，一个人物卡就是一次，按生成池计会把报告
+ * 额度吃光），但它**每次都可能真花钱**：博查图片检索最多 3 次 × 每次 count=5，
+ * 选中后还要把图下载下来写进云存储。原实现连 openid 都不要（谁都能调），
+ * 于是一个脚本就能把检索资源包和存储写满（2026-10-18 复审 P1）。
+ *
+ * 计数**只算「没命中 person_assets 缓存」的那几次**：命中缓存只是一次读库，不产生成本，
+ * 不该占额度。正常人一天翻上百张人物卡也碰不到这个上限；真碰到时端上会静默退回
+ * 「首字头像」（见 utils/portrait.ts），不影响任何主流程。
+ */
+const PORTRAIT_LIMITS = { free: 80, member: 160 }
+
 /*
  * 防滥用上限（次/日）：已随上面的 require 从 benefits.config.js 引入。
  * 按**每一次真实付费调用**计（生成 / 提问 / 辅助调用），取值依据（按正常用户一天的
@@ -103,6 +117,7 @@ module.exports = {
   AUX_PURPOSE,
   ABUSE_TABLE,
   ABUSE_LIMITS,
+  PORTRAIT_LIMITS,
   QUOTA_GUARD_ENV,
   quotaGuardDisabled,
   todayKey

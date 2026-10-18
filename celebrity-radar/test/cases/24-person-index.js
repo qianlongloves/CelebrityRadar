@@ -188,6 +188,9 @@ describe('读取侧回退：只对「同一个人」生效，同名的另一个�
     env.db.__seed('report_cache', [rowOf('雷军', 'tech', T2)])
 
     const out = await getOrBuildReport('雷军#auto', {})
+    /* 先钉「交回的到底是什么」：只写 `out.fromCache !== true` 时，生成链路整体失灵
+       （返回 error / undefined）也会通过 —— 断言必须在最坏情况下也是红的（2026-10-18 复审 P2） */
+    ok(out.kind !== 'report', `不能把 tech 那份当缓存命中交回（实际 kind=${out.kind}）`)
     ok(out.fromCache !== true, '不同领域不能算缓存命中')
     ok(!out.report || out.report.personKey !== '雷军#tech', '绝不能把 tech 那份交回来')
   })

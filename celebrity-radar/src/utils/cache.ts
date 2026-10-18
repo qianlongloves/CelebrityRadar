@@ -42,7 +42,7 @@ import {
   dailyRefreshLimit,
   FREE_REFRESH_COOLDOWN_HOURS
 } from './member'
-import { incrQuotaViaCloud } from './quota-guard'
+import { incrQuotaViaCloud, peekQuotaViaCloud } from './quota-guard'
 import { hasStrippedMember, patchMemberSections } from './member-sections'
 import {
   acquireLockViaCloud,
@@ -243,10 +243,27 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-async function getRow(personKey: string): Promise<ReportCacheRow | null> {
+/**
+ * 读一行报告缓存，**带回读取是否成功**。
+ *
+ * 为什么要有它（2026-10-18）：`getRow` 把「读失败」和「这行不存在」都收敛成 null，
+ * 于是报告页遇到一次云库抖动会显示「还没有报告」—— 用户以为没生成过，再点一次生成，
+ * 白扣一次额度，还可能拿新报告覆盖掉库里那份好的。付费路径必须先分清这两件事。
+ * 其余「读不到就降级」的调用方继续用 getRow（它们的降级是安全的）。
+ */
+async function getRowChecked(
+  personKey: string
+): Promise<{ ok: boolean; row: ReportCacheRow | null }> {
   const { data, error } = await table('report_cache').select('*').eq('id', personKey).maybeSingle()
-  if (error) diagLog('warn', 'db', `report_cache 读取失败：${error.message ?? error}`)
-  return ((data as ReportCacheRow) ?? null)
+  if (error) {
+    diagLog('warn', 'db', `report_cache 读取失败：${error.message ?? error}`)
+    return { ok: false, row: null }
+  }
+  return { ok: true, row: (data as ReportCacheRow) ?? null }
+}
+
+async function getRow(personKey: string): Promise<ReportCacheRow | null> {
+  return (await getRowChecked(personKey)).row
 }
 
 /**
@@ -754,7 +771,19 @@ export async function getOrBuildReport(
 
   // 0. 缓存命中优先（随用随查）：已生成的报告读取零成本，不受冷却影响。
   //    冷却检查后置到第 1.5 步，只拦「重新生成」，不拦「看已有报告」。
-  let row = await getRow(personKey)
+  /*
+   * 读失败必须**当场停住**（2026-10-18）：原实现读挂了也当「没有缓存」继续往下走，
+   * 于是生成成功、扣一次额度、再覆盖掉库里那份本来好的报告 —— 用户只是赶上了一次读超时。
+   * 这里回 error 而不是 coldstart：页面显示「读取失败，可重试」，不会给出「生成」按钮。
+   */
+  const firstRead = await getRowChecked(personKey)
+  if (!firstRead.ok) {
+    return {
+      kind: 'error',
+      message: '读取报告失败（网络或云数据库暂时不可用），请稍后重试，本次不消耗次数'
+    }
+  }
+  let row = firstRead.row
   if (isUsable(row) && !opts.force) {
     /*
      * force 的「免费档冷却」拦截原先就在这个分支里（批 2，2026-10-09），2026-10-10 撤销：
@@ -1333,7 +1362,11 @@ export async function getOrBuildReport(
     async function finalizeAndReturn(report: Report, materialCount: number): Promise<ReportOutcome> {
       /* 免计费申请：必须在 upsert 之前，理由见上方 ② */
       if (memberUpgrade) {
-        void consumeGenerateQuota(userId, { waiveIf: 'member_upgrade', target: personKey })
+        /* await 而不是 void（2026-10-18）：报告已经交给用户了，计费请求还在飞的时候页面一退，
+           这一次就永久漏计。多等一次云调用（百毫秒级）换计费可靠，值得 */
+        await consumeGenerateQuota(userId, { waiveIf: 'member_upgrade', target: personKey }).catch(
+          () => undefined
+        )
       }
 
       const saved = await saveReady(personKey, report, materialCount, userId)
@@ -1389,10 +1422,12 @@ export async function getOrBuildReport(
          * 复核不过就照常计数 —— 回退路径（云函数未部署）同样不认这个申请。
          * 与 memberUpgrade 互斥：那个要求行上已有报告（缺会员段），这个要求连行都没有。
          */
-        void consumeGenerateQuota(
+        /* 同上：await + 吞错。计费写失败不影响这份已经生成的报告（少算一次优于让用户等出错），
+           但**不能**再用 fire-and-forget —— 页面退出时那次调用会被丢掉，等于白送一份报告 */
+        await consumeGenerateQuota(
           userId,
           firstBuild ? { waiveIf: 'first_build', target: personKey } : undefined
-        )
+        ).catch(() => undefined)
       }
       /* 本次产物按**本次身份**过滤（批 1）：非会员生成的报告本就不含会员段 → 快路径直出、零额外读 */
       const shown = await exposeReport(report, memberDeep)
@@ -1456,10 +1491,29 @@ export function refreshFailureNote(outcome: ReportOutcome): string | null {
 async function writeFeedCache(personKey: string, items: NewsItem[]): Promise<boolean> {
   const viaCloud = await saveFeedViaCloud(personKey, items)
   if (viaCloud === 'saved') return true
+  /*
+   * 云端判定「库里已有更新的内容」⇒ 这次不覆盖（P1，2026-10-18）。按「刷成」计：
+   * 用户手里的确拿到了新动态，只是同一个人物在被别人同时刷新且对方结果更新。
+   * **绝不能在此时回退直写** —— 那恰好会把库里更新的那份盖掉，正是这条判断要防的事。
+   */
+  if (viaCloud === 'skipped') return true
   if (viaCloud === 'rejected') return false
 
+  /*
+   * 兜底直写（云端写口不可用）。同样「不拿旧的盖新的」：先读一次库里的 fetched_at 再决定写不写。
+   * 这条路径发生在函数未部署 / 网络故障时，读一次的成本可以接受 —— 否则它就是整个写链路里
+   * 唯一还在无条件覆盖的地方（与云端 storeSaveFeed 的判据保持同一条口径）。
+   * 读失败时按「库里没东西」继续写：这条路径本来就是「以能写进去优先」。
+   */
+  const at = new Date().toISOString()
+  const { data: cur } = await table('feed_cache').select('fetched_at').eq('id', personKey).maybeSingle()
+  const prev = cur && typeof (cur as { fetched_at?: unknown }).fetched_at === 'string'
+    ? ((cur as { fetched_at: string }).fetched_at)
+    : ''
+  if (prev && prev >= at) return true
+
   const { error } = await table('feed_cache').upsert(
-    { id: personKey, items, fetched_at: new Date().toISOString() },
+    { id: personKey, items, fetched_at: at },
     { onConflict: 'id' }
   )
   return !error
@@ -1467,7 +1521,14 @@ async function writeFeedCache(personKey: string, items: NewsItem[]): Promise<boo
 
 /** 只读缓存（不触发生成、不抢锁）：名人主页 / 关注流用 */
 export async function getCachedReport(personKey: string): Promise<Report | null> {
-  const row = await getRow(personKey)
+  /*
+   * 读失败重试一次（P1，2026-10-18）：本函数只有「有 / 没有」两种答案，一次云库抖动就会让
+   * 名人主页显示「还没有生成」，而它其实是有的。多试一次的成本远低于让用户以为报告没了
+   * （真正要拦的「读失败被当成没缓存、进而白扣一次额度」在 getOrBuildReport 里已直接报错）。
+   */
+  let read = await getRowChecked(personKey)
+  if (!read.ok) read = await getRowChecked(personKey)
+  const row = read.row
   if (row?.state !== 'ready' || !row.report) {
     /*
      * 名字回退（Task A；判据见 utils/person-index 文件头）：本 key 查不到时，找回**同一个人**
@@ -1501,13 +1562,26 @@ export async function getCachedReport(personKey: string): Promise<Report | null>
  * 缺位为 null（调用方可直接 filter），读失败时同样退化为全 null 而不是抛错。
  */
 export async function getCachedReports(personKeys: string[]): Promise<Array<Report | null>> {
+  return (await getCachedReportsChecked(personKeys)).reports
+}
+
+/**
+ * 同 `getCachedReports`，但带回「这次读取是否成功」（2026-10-18，P2）。
+ *
+ * 为什么要单开一个：全 null 可能意味着「这几个人都还没生成」，也可能意味着「一次都没读到」。
+ * 主页的「最近查看」把那句「未生成报告」按人显示出来，读失败时就是在断言「你昨天看的那份没了」。
+ * 只给需要区分的调用方（history-view）用，其余调用方仍走上面的旧签名。
+ */
+export async function getCachedReportsChecked(
+  personKeys: string[]
+): Promise<{ ok: boolean; reports: Array<Report | null> }> {
   const keys = personKeys.filter(Boolean)
-  if (keys.length === 0) return personKeys.map(() => null)
+  if (keys.length === 0) return { ok: true, reports: personKeys.map(() => null) }
 
   const { data, error } = await table('report_cache').select('*').in('id', keys)
   if (error) {
     diagLog('warn', 'db', `report_cache 批量读取失败：${error.message ?? error}`)
-    return personKeys.map(() => null)
+    return { ok: false, reports: personKeys.map(() => null) }
   }
 
   const byId = new Map<string, ReportCacheRow>()
@@ -1545,21 +1619,18 @@ export async function getCachedReports(personKeys: string[]): Promise<Array<Repo
    * 全都不藏（常见）则一次也不读 —— 与 getCachedReport 的快路径同一个取舍。
    * 逐份调 exposeReport 会变成 N 次 users 读（这个页是 tabBar 页，切回来就重跑）。
    */
-  if (!ready.some((r) => r && hasMemberBlocks(r))) return ready
+  if (!ready.some((r) => r && hasMemberBlocks(r))) return { ok: true, reports: ready }
   const member = (await readMemberState()).member
-  return member ? ready : ready.map((r) => (r ? stripMemberSections(r) : null))
-}
-
-export async function getFeed(personKey: string): Promise<NewsItem[]> {
-  const detail = await getFeedDetail(personKey)
-  return detail.items
+  return { ok: true, reports: member ? ready : ready.map((r) => (r ? stripMemberSections(r) : null)) }
 }
 
 /**
  * 关注流专用的详情版读取。
  *
- * getFeed 把「读失败」和「确实没有数据」都收敛成空数组，关注流因此无法区分二者，
- * 会把一次网络/权限故障渲染成「暂无公开动态」误导用户。这里额外带回 ok 与抓取时间。
+ * 曾经还有一个 `getFeed` 包装（只回 `items`）：它把「读失败」和「确实没有数据」都收敛成
+ * 空数组，调用方无法区分，会把一次网络/权限故障渲染成「暂无公开动态」误导用户。
+ * 2026-10-18 版审查发现它**已无任何调用方**（全部走本函数或批量版），直接删掉 ——
+ * 留着这个更省事的签名，早晚有人图方便再用一次，把同一个坑重新挖出来。
  */
 export async function getFeedDetail(
   personKey: string
@@ -1653,6 +1724,46 @@ export async function consumeRefreshQuota(
     allowed: REFRESH_QUOTA_DISABLED || real.allowed,
     remaining: real.remaining,
     limit: real.limit,
+    unlimited: REFRESH_QUOTA_DISABLED
+  }
+}
+
+/**
+ * 只读查询刷新额度（不自增）—— 刷新动作的「先判后花」闸门。
+ *
+ * 为什么不是复用 consumeRefreshQuota：那个是**先自增再判定**，一旦后续检索失败/空结果，
+ * 这一次额度就白扣了（用户没拿到任何新动态，却少了一次刷新）。2026-10-18 起改成
+ * 「peek 判越界 → 检索 → 真的刷成了才 consume」，代价是并发窗口内可能多放行一次，
+ * 由 aiProxy 的防滥用闸兜住 —— 那里才是成本硬边界。
+ *
+ * 判定口径与 consume 对齐：peek 的 count 不含本次，故越界条件是 `count >= limit`
+ * （consume 那边因为已经自增过，判的是 `count > limit`，由云端给 allowed）。
+ */
+export async function peekRefreshQuota(
+  userId: string
+): Promise<{ allowed: boolean; remaining: number; limit: number; unlimited: boolean }> {
+  const cloud = await peekQuotaViaCloud('refresh')
+  if (cloud !== null) {
+    const limit = typeof cloud.limit === 'number' ? cloud.limit : await localRefreshLimit()
+    return {
+      /* 云端 peek 回来的 `allowed` 用的是 `count <= limit`（与 consume 同式）：peek 时 count 不含本次，
+         所以这里自己判 `count < limit`，否则「刚好用满」的那一次会被再放行一遍 */
+      allowed: REFRESH_QUOTA_DISABLED || cloud.count < limit,
+      remaining: Math.max(0, limit - cloud.count),
+      limit,
+      unlimited: REFRESH_QUOTA_DISABLED
+    }
+  }
+
+  const id = `${userId}#${todayKey()}`
+  const { data, error } = await table('refresh_quota').select('*').eq('id', id).maybeSingle()
+  if (error) diagLog('warn', 'db', `refresh_quota 读取失败：${error.message ?? error}`)
+  const count = (data as RefreshQuotaRow | null)?.count ?? 0
+  const limit = await localRefreshLimit()
+  return {
+    allowed: REFRESH_QUOTA_DISABLED || count < limit,
+    remaining: Math.max(0, limit - count),
+    limit,
     unlimited: REFRESH_QUOTA_DISABLED
   }
 }
@@ -1777,9 +1888,10 @@ export async function refreshAllFeeds(
   /* 客户端不持有任何 Key，故这里判「云环境配了没」而非「用户填了没」 */
   if (!hasSearchChannel()) return { ok: false, message: '联网素材不可用，展示缓存动态', refreshed: 0 }
 
-  const quota = await consumeRefreshQuota(userId)
-  if (!quota.allowed) {
-    return { ok: false, message: `今日刷新已达上限（${quota.limit} 次），明日再来`, refreshed: 0 }
+  /* 先判后花（2026-10-18）：越界直接返回，不扣；真刷成了才 consume（见下方 loop 之后） */
+  const peek = await peekRefreshQuota(userId)
+  if (!peek.allowed) {
+    return { ok: false, message: `今日刷新已达上限（${peek.limit} 次），明日再来`, refreshed: 0 }
   }
 
   const targets = await pickStalestFollows(follows, FEED_REFRESH_MAX_PERSONS)
@@ -1805,6 +1917,13 @@ export async function refreshAllFeeds(
       else diagLog('warn', 'db', `feed_cache 写入失败（${hit.f.name}）`)
     }
   }
+
+  /*
+   * 计费放在**真正刷成之后**（2026-10-18）：一位都没刷成（检索全失败 / 空结果 / 写库失败）
+   * 就不扣 —— 用户没拿到任何新动态，不该少一次刷新。刷成了才 consume，`remaining` 取
+   * consume 之后的真实值（所以文案里的「剩余 N 次」仍然准确）。
+   */
+  const quota = refreshed > 0 ? await consumeRefreshQuota(userId) : peek
 
   /*
    * 埋点报**真正刷成的人数**（与返回值同一个数）。原先写的是 follows.length ——
@@ -1842,17 +1961,28 @@ export async function refreshFeed(
   if (!userId) return { ok: false, message: '未登录' }
   if (!hasSearchChannel()) return { ok: false, message: '联网素材不可用' }
 
-  const quota = await consumeRefreshQuota(userId)
-  if (!quota.allowed) {
-    return { ok: false, message: `今日刷新已达上限（${quota.limit} 次），明日再来` }
+  /* 先判后花（2026-10-18）：越界不扣；检索失败 / 没有新动态同样不扣，见下方 consume 的位置 */
+  const peek = await peekRefreshQuota(userId)
+  if (!peek.allowed) {
+    return { ok: false, message: `今日刷新已达上限（${peek.limit} 次），明日再来` }
   }
 
   /* 口径与批量刷新一致（只走主线，见 FEED_SEARCH_OPTS）：两处写的是同一张 feed_cache */
   const news = await fetchNews(name, FEED_SEARCH_OPTS)
   if (!news) return { ok: false, message: '联网素材不可用' }
+  if (news.length === 0) {
+    /* 开挂态不报剩余次数：理由同 refreshAllFeeds（见 consumeRefreshQuota） */
+    return {
+      ok: true,
+      items: [],
+      message: `暂无新动态${peek.unlimited ? '' : `（剩余 ${peek.remaining} 次刷新）`}`
+    }
+  }
+
+  /* 真的刷出了新动态才计费：与批量刷新同一口径（没拿到东西不扣次数） */
+  const quota = await consumeRefreshQuota(userId)
   /* 开挂态（quota.unlimited）不报剩余次数：理由同 refreshAllFeeds（见 consumeRefreshQuota） */
   const left = quota.unlimited ? '' : `（剩余 ${quota.remaining} 次刷新）`
-  if (news.length === 0) return { ok: true, items: [], message: `暂无新动态${left}` }
 
   await writeFeedCache(personKey, news)
   /* count: 1 —— 批量刷新报的是人数，这里保持同一字段可比（否则同一事件两种口径） */

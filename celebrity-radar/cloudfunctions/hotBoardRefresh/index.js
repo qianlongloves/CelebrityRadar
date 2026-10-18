@@ -758,9 +758,16 @@ exports.main = async (event) => {
      但 `force` 是另一回事：它跳过下面那道 20 小时幂等闸门，一次调用等于 6 组领域检索 + 一次生成。
      上面写着「force 只留给运维手动重建」，那就得真拦住：端上调用（getWXContext().OPENID
      非空）一律不许 force，否则任何人都能循环重建把上游额度烧光。 */
-  if (event && event.force === true && (cloud.getWXContext() || {}).OPENID) {
-    console.warn('[hotBoardRefresh] 拒绝端上 force：强制重建只允许定时器 / 控制台调用')
-    return { ok: false, skipped: 'force 仅供运维使用（端上请用 action:ensure）' }
+  /*
+   * 2026-10-18（P2）：`action:'dry'` 与 `force` **同等对待**。
+   * dry 同样跑满 6 组领域检索 + 一次生成，只是不落库、把结果直接返回 —— 成本一分不少，
+   * 而构建锁只挡 5 分钟：端上循环调用照样能把上游额度烧光，还能把整份榜单提前取走。
+   * 原先只拦 force，等于给这条路留了个后门。
+   */
+  const fromClient = !!((cloud.getWXContext() || {}).OPENID)
+  if (fromClient && event && (event.force === true || action === 'dry')) {
+    console.warn('[hotBoardRefresh] 拒绝端上 force/dry：强制重建与试跑只允许定时器 / 控制台调用')
+    return { ok: false, skipped: 'force / dry 仅供运维使用（端上请用 action:ensure）' }
   }
 
   if (action === 'report') {

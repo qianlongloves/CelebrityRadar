@@ -11,11 +11,17 @@ import { getCachedReport, getFeedDetail } from './cache'
  * 因此**不需要新增云函数、也不需要新增字段**。
  */
 
-/** 与用户无关的部分：同一个人对所有关注者都一样，可跨用户复用（见 memo） */
+/**
+ * 与用户无关的部分：同一个人对所有关注者都一样，可跨用户复用（见 memo）。
+ *
+ * `newsCount` 为 `null` = **这一次没读到**（2026-10-18，P2）。原实现直接在读失败时写 0，
+ * 页面于是把一次云库抖动渲染成「暂无动态」—— 用户以为这个人最近很安静，
+ * 而真相是数据没取到。`null` 让页面能说「动态暂不可读」，而不是编一个 0。
+ */
 interface PersonFacts {
   heat: number | null
   reportAt: string | null
-  newsCount: number
+  newsCount: number | null
   feedAt: string | null
 }
 
@@ -39,8 +45,9 @@ async function factsOf(personKey: string): Promise<PersonFacts> {
   return {
     heat: report ? report.heat : null,
     reportAt: report ? report.generatedAt : null,
-    newsCount: feed.items.length,
-    feedAt: feed.fetchedAt
+    /* 读失败写 null 而不是 0：0 会被页面说成「暂无动态」（见 PersonFacts） */
+    newsCount: feed.ok ? feed.items.length : null,
+    feedAt: feed.ok ? feed.fetchedAt : null
   }
 }
 
@@ -81,7 +88,9 @@ export async function loadFollowWatches(
     settled.forEach((f, idx) => {
       if (!f) return
       const key = slice[idx].person_key
-      memo.set(key, { at: Date.now(), facts: f })
+      /* 读到一半失败（newsCount === null）不写内存缓存：否则这次抖动会被锁 60 秒，
+         切页回来还是同一份残缺结果，看起来像「一直读不到」 */
+      if (f.newsCount !== null) memo.set(key, { at: Date.now(), facts: f })
       facts[key] = f
     })
   }

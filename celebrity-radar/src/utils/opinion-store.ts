@@ -152,18 +152,31 @@ export function pruneStatus(status: EventStatus | null | undefined, max: number 
 
 /**
  * 读**我自己的**状态（只查 `_id = 我的 openid` 那一行；写不到、也不读别人的）。
- * 未登录 / 读失败 → 空状态（页面照常工作，只是显示为「都没读过」）。
+ *
+ * 返回 `ok`（2026-10-18，P2）：展示侧读失败退化成空状态是安全的（顶多角标多几条），
+ * 但**写侧绝对不能这么退** —— `reads` 是整行覆盖写，拿一份空的「都没读过」去写，
+ * 会把真实的已读时间全抹成「刚刚」，从而让所有旧事件重新变 NEW，且原值再也回不来。
+ * 故写路径一律先看 `ok`。
  */
-export async function loadEventStatus(): Promise<EventStatus> {
+export async function loadEventStatusChecked(): Promise<{ ok: boolean; status: EventStatus }> {
   const userId = useAuth.getState().userId
-  if (!userId) return emptyStatus()
+  /* 未登录：没有可写的行，按「不可用」处理（写函数也要 userId，同样会短路） */
+  if (!userId) return { ok: false, status: emptyStatus() }
   const { data, error } = await table(STATUS_TABLE).select('*').eq('id', userId).maybeSingle()
   if (error) {
     diagLog('warn', 'db', `${STATUS_TABLE} 读取失败：${error.message ?? error}`)
-    return emptyStatus()
+    return { ok: false, status: emptyStatus() }
   }
   const row = data as OpinionEventStatusRow | null
-  return { reads: sanitizeMap(row?.reads), follows: sanitizeMap(row?.follows), subs: sanitizeMap(row?.subs) }
+  return {
+    ok: true,
+    status: { reads: sanitizeMap(row?.reads), follows: sanitizeMap(row?.follows), subs: sanitizeMap(row?.subs) }
+  }
+}
+
+/** 只读口（展示用）：未登录 / 读失败 → 空状态（页面照常工作，只是显示为「都没读过」） */
+export async function loadEventStatus(): Promise<EventStatus> {
+  return (await loadEventStatusChecked()).status
 }
 
 /**
@@ -194,7 +207,10 @@ export async function saveEventStatus(status: EventStatus): Promise<boolean> {
 /** 标记「已读」（记下当前时刻，供「有新进展」判定）。返回写库是否成功 */
 export async function markEventRead(eventKey: string, now: Date = new Date()): Promise<boolean> {
   if (!eventKey) return false
-  const cur = await loadEventStatus()
+  /* 读不到当前状态就不写：整行覆盖写会把真实已读时间抹平（见 loadEventStatusChecked） */
+  const read = await loadEventStatusChecked()
+  if (!read.ok) return false
+  const cur = read.status
   return saveEventStatus({ ...cur, reads: { ...cur.reads, [eventKey]: now.toISOString() } })
 }
 
@@ -210,7 +226,11 @@ export async function markEventRead(eventKey: string, now: Date = new Date()): P
 export async function markEventsRead(eventKeys: string[], now: Date = new Date()): Promise<boolean> {
   const keys = [...new Set((Array.isArray(eventKeys) ? eventKeys : []).filter((k): k is string => typeof k === 'string' && !!k))]
   if (keys.length === 0) return true
-  const cur = await loadEventStatus()
+  /* 「全部已读」是这条规则最要命的一处：读失败时若拿空状态写，整张 reads 表会被重写成
+     「全部刚刚读过」—— 用户真正的旧已读时间一次就没了（见 loadEventStatusChecked） */
+  const read = await loadEventStatusChecked()
+  if (!read.ok) return false
+  const cur = read.status
   const reads = { ...cur.reads }
   const iso = now.toISOString()
   for (const k of keys) reads[k] = iso
@@ -230,7 +250,10 @@ export async function setEventFollow(
   now: Date = new Date()
 ): Promise<boolean> {
   if (!eventKey) return false
-  const cur = await loadEventStatus()
+  /* 同 markEventsRead：整行覆盖写，读失败就不写（否则 follows / subs 一起被清空） */
+  const read = await loadEventStatusChecked()
+  if (!read.ok) return false
+  const cur = read.status
   const follows = { ...cur.follows }
   if (follow) follows[eventKey] = now.toISOString()
   else delete follows[eventKey]

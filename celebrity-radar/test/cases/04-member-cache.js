@@ -203,8 +203,12 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
      * 原先写 `indexOf('void consumeGenerateQuota(userId)')` —— 首建免计费（2026-10-15）给这一处
      * 补了第二个参数（`{ waiveIf: 'first_build', target }`），那串字面量就不存在了：
      * indexOf 返回 -1，`-1 > saveAt` 恒不成立，断言于是**静默失效**（这条正是靠它才被发现的）。
+     *
+     * 2026-10-18 再把 `void` 换成 `await`：计费请求 fire-and-forget 时，报告交出去后用户
+     * 立刻退页/杀进程，这一次就永久漏计（等于白送一份）。锚点跟着改成 `await`，
+     * 谁改回 void 这条会直接红。
      */
-    const plainQuotaAt = src.lastIndexOf('void consumeGenerateQuota(')
+    const plainQuotaAt = src.lastIndexOf('await consumeGenerateQuota(')
     const keptBranchAt = src.indexOf("if (saved === 'kept')")
 
     ok(earlyAt > 0 && saveAt > 0, '必须同时存在「落库前判定」与落库调用')
@@ -218,7 +222,7 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
     const shortfallAt = src.indexOf('const verdict = shortfallVerdict(report, memberDeep)')
     const saveAt = src.indexOf('const saved = await saveReady')
     /* 同上一处：取最后一处（普通计数），别被落库前那处会员补齐的调用骗到 */
-    const consumeAt = src.lastIndexOf('void consumeGenerateQuota(')
+    const consumeAt = src.lastIndexOf('await consumeGenerateQuota(')
 
     /*
      * 判定必须**前移到落库之前**：原顺序是「先 saveReady 再判 shortfall」，于是不达标的产物
@@ -286,13 +290,21 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
   })
 
   it('免计费申请在**落库之前**发出（云端复核读的就是那一行，晚一步条件就恒不成立）', () => {
-    const waiveAt = src.indexOf('void consumeGenerateQuota(userId, { waiveIf:')
+    const waiveAt = src.indexOf('await consumeGenerateQuota(userId, { waiveIf:')
     const saveAt = src.indexOf('const saved = await saveReady')
 
     ok(waiveAt > 0 && saveAt > 0)
     ok(
       waiveAt < saveAt,
       '否则 quotaGuard 读到的是刚写入的含会员段新版，member_upgrade 复核永远不过（P1 修复）'
+    )
+  })
+
+  it('计费一律 await，不留 fire-and-forget（退页即丢，等于白送一份报告）', () => {
+    notOk(/void\s+consumeGenerateQuota\(/.test(src), '计费请求必须 await（配 .catch 吞错），不能 void 掉')
+    ok(
+      (src.match(/await consumeGenerateQuota\(/g) || []).length >= 2,
+      '首建免计费与普通计数两处都要等结果落地'
     )
   })
 
@@ -573,7 +585,12 @@ describe('档位隔离已接进读取路径（源码钉住，防「写了剥离�
   })
 
   it('批量只读一次身份，而不是逐份读（tabBar 页每次切回来都会重跑）', () => {
-    const body = src.slice(src.indexOf('export async function getCachedReports'))
+    /*
+     * 锚点取 *Checked 版本（2026-10-18）：批量读取拆成了「主体 + 一行 wrapper」，
+     * `getCachedReports` 现在只转发一次 `.reports`，函数体里根本没有 readMemberState ——
+     * 仍按旧名字切片会在 wrapper 处停下，得到 0 次而误报失败。
+     */
+    const body = src.slice(src.indexOf('export async function getCachedReportsChecked'))
     ok(body.includes('ready.some('), '先看有没有人藏着东西，再决定要不要读')
     /*
      * 只数**这个函数体**内的次数。以前直接切到文件尾，等于默认「后面没有别的读身份的代码」——

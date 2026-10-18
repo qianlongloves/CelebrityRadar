@@ -162,3 +162,59 @@ describe('P2-33 索引结果三档：created / exists / unknown', () => {
     notOk(row.needs_review, '没有拿不准的条目就不该出现这个字段')
   })
 })
+
+/*
+ * 2026-10-18 线上实测：`users.event_notified` 的默认值是 `{}`，回填时报
+ * `-502001 FailedOperation: '$set' is empty` —— SDK 把空对象当成「没有字段要设」丢掉了。
+ * 表现极具迷惑性：同一张表其它字段全部 filled，只有这一条永远 error，且每次巡检重复同一个错。
+ * 这里钉住「空对象要包 _.set()」，并要求空数组不要被一起包进去（数组默认值本来是正常写的）。
+ */
+describe('P2：回填空对象要包 _.set()', () => {
+  it('只有空对象走 _.set()，其余原样写', () => {
+    const src = require('fs').readFileSync(FN, 'utf8')
+    ok(
+      src.includes('isEmptyObject(field.def) ? _.set(field.def) : field.def'),
+      '空对象默认值必须硬写：直接给 {} 会被 SDK 丢成「$set is empty」'
+    )
+    ok(src.includes('function isEmptyObject('), '判据要单独成函数（这个判断以后还会被别处用到）')
+    ok(
+      src.includes('!Array.isArray(v) && Object.keys(v).length === 0'),
+      '空数组不是空对象：数组默认值照旧直接写'
+    )
+  })
+})
+
+/*
+ * `permissions_manual` 是**唯一**的权限交付物（控制台没有 API，只能人工点）。
+ * 它以前只给一句「自定义规则（见 README）」—— 真正要粘进控制台的那段 JSON 不在里面，
+ * 运维得翻文档再对集合名，抄错一个字段名就是静默故障：
+ *   `read` 写成 true      ⇒ 全站能读别人的额度行（也能读出「谁今天用了几次」）
+ *   `write` 是 true 或缺省 ⇒ 额度可被改包重置，服务端化等于没做
+ * 所以钉住：三张配额表必须给出「本人可读、不可写」的规则原文与可粘贴串。
+ */
+describe('P2：permissions_manual 要带可粘贴的规则 JSON', () => {
+  it('三张配额表 = 本人可读 + write:false', async () => {
+    const { fn } = loadFn()
+    const res = await fn.main({ action: 'report', env: 'env-x', only: ['refresh_quota', 'generate_quota', 'ask_quota'] })
+
+    eq(res.permissions_manual.length, 3)
+    for (const row of res.permissions_manual) {
+      ok(row.acl.includes('本人可读'), `${row.collection} 的口径要是「本人可读」`)
+      eq(row.rule.read, 'doc._openid == auth.openid', `${row.collection}：read 必须限定到本人，写成 true 会泄露他人额度`)
+      eq(row.rule.write, false, `${row.collection}：write 必须关死，写入只允许 quotaGuard`)
+      /* 段字符串要真能粘：parse 回来必须逐字等于 rule */
+      deepEq(JSON.parse(row.rule_json), row.rule, `${row.collection}：rule_json 要能原样粘进控制台`)
+    }
+  })
+
+  it('正向对照：控制台预设表的 rule 为 null，不会被误导去设自定义规则', async () => {
+    const { fn } = loadFn()
+    const res = await fn.main({ action: 'report', env: 'env-x', only: ['users'] })
+
+    const row = res.permissions_manual[0]
+    eq(row.collection, 'users')
+    eq(row.rule, null)
+    eq(row.rule_json, null)
+    ok(row.note.includes('仅创建者可读写'), '预设表的 note 要说清用哪个预设项')
+  })
+})

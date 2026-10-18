@@ -417,7 +417,7 @@ export function buildWorkbenchBrief(input: {
 
   lines.push('---')
   lines.push('')
-  lines.push('本简报由「名人雷达」监测工作台生成；内容来自公开报道的检索结果，仅供参考。')
+  lines.push('本简报由「名人雷达」监控工作台生成；内容来自公开报道的检索结果，仅供参考。')
 
   return {
     fileNameBase: `名人雷达-监测简报-${dayKey8(at).replace(/-/g, '')}`,

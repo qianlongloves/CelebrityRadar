@@ -356,6 +356,25 @@ async function isActiveMember(openid) {
  * 身份来源：优先 `WXContext.OPENID`（小程序端调用必带，客户端无法伪造）；仅当**没有
  * WXContext**（控制台 / 运维调用）时才接受 `event.openid`。
  */
+/** personKey / 显示名的上限：它们会进 `_id`、检索 query 与页面文案 */
+const KEY_MAX_LEN = 120
+const NAME_MAX_LEN = 40
+
+/**
+ * 入参形状校验（2026-10-18，P2）。
+ *
+ * 原先只挡了 `/`：`personKey` 会拼进 `_id` 并作为检索 query，显示名会直接进页面文案，
+ * 控制字符（换行 / NUL）能让一条查询变成两条、或在拼接处截断；长度也没有上限，
+ * 一个几 KB 的字符串会被原样写库、每天定时器都拿它去检索。
+ */
+function badInputText(personKey, name) {
+  if (personKey.length > KEY_MAX_LEN) return 'personKey 过长'
+  if (/[\u0000-\u001f\u007f\\/]/.test(personKey)) return 'personKey 含非法字符'
+  if (name.length > NAME_MAX_LEN) return '名字过长'
+  if (/[\u0000-\u001f\u007f]/.test(name)) return '名字含非法字符'
+  return ''
+}
+
 async function handleAdd(event, ctxOpenid) {
   const openid = ctxOpenid || (event && event.openid)
   if (!openid) {
@@ -364,10 +383,12 @@ async function handleAdd(event, ctxOpenid) {
 
   const personKey = String((event && event.person_key) || '').trim()
   const name = String((event && event.name) || '').trim() || personKey
-  /* personKey 是主键组成部分，禁掉路径分隔符（与 quotaGuard 的 target 校验同一理由） */
+  /* personKey 是主键组成部分，禁掉路径分隔符与控制字符（与 quotaGuard 的 target 校验同一理由） */
   if (!personKey || personKey.includes('/')) {
     return { ok: false, reason: 'invalid', message: '缺少要监控的 personKey' }
   }
+  const shape = badInputText(personKey, name)
+  if (shape) return { ok: false, reason: 'invalid', message: shape }
 
   const tier = (await isActiveMember(openid)) ? 'member' : 'free'
   const limit = tier === 'member' ? PERSON_WATCH_LIMITS.member : PERSON_WATCH_LIMITS.free
@@ -732,6 +753,8 @@ exports.main = async (event) => {
     signals: 0,
     users: 0,
     pushed: 0,
+    /* 因本轮时间预算用尽而顺延到下一轮的名人数（恒为 0 才是「一轮跑完」，见下） */
+    deferred: 0,
     /* 扫描不按每人上限裁剪（见上），故不再有 over_limit 字段；被写入路径挡下的超额新增
        在 handleAdd 的回执里（reason:'over_limit'），不会静默丢弃。 */
     skipped: [],
@@ -739,8 +762,35 @@ exports.main = async (event) => {
     deep_dive: { hits: 0, queries: 0, skipped_run: 0, skipped_day: 0, filtered: 0 }
   }
 
+  /*
+   * 单轮时间预算（2026-10-18，P2）：循环是串行的，每位名人一次上游检索（命中还要深挖）。
+   * 超时被云函数杀掉时，已扫的还在、日志里却只剩一条超时错误 —— 看不出「跑到第几位、还差几位」。
+   * 到点主动收尾并把顺延数写进回执：未扫的名人没有更新 scanned_at ⇒ 下一轮仍排在最前
+   * （按「上次扫描最久」轮转），第 4 步也只汇总 perPerson 里有的人 ⇒ 不会被误判成「无信号」。
+   */
+  const TIME_BUDGET_MS = 12 * 1000
+  const startedAt = Date.now()
+
   // 3. 逐个名人：检索 → 词典命中 → 落 signal → 更新快照
-  for (const personKey of queue) {
+  for (let qi = 0; qi < queue.length; qi++) {
+    if (Date.now() - startedAt > TIME_BUDGET_MS) {
+      summary.deferred = queue.length - qi
+      console.warn(
+        `[riskWatch] 本轮时间预算用尽：已跑 ${qi}/${queue.length} 位，剩余 ${summary.deferred} 位顺延到下一轮`
+      )
+      await writeLog(
+        'person',
+        '__budget__',
+        '本轮时间预算',
+        nowIso,
+        'skipped',
+        0,
+        0,
+        `时间预算用尽，${summary.deferred} 位名人顺延到下一轮`
+      )
+      break
+    }
+    const personKey = queue[qi]
     const person = byPerson.get(personKey)
     const prev = scans.get(personKey) || null
 

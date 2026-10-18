@@ -88,7 +88,15 @@ export default function Following() {
   /** 一行内的活动描述；变化数据还没到时退回原有的关注时间，不留空白 */
   const activityText = (row: FollowRow, w?: FollowWatch): string => {
     if (!w) return `关注于 ${fromNow(row.followed_at)}`
-    const parts = [w.newsCount > 0 ? `${w.newsCount} 条动态` : '暂无动态']
+    /* newsCount 为 null = 这次没读到（见 utils/watch.ts#PersonFacts）：说「暂不可读」，
+       不要写成 0 —— 那会让一次读失败看着像「这个人最近很安静」 */
+    const parts = [
+      w.newsCount === null
+        ? '动态暂不可读'
+        : w.newsCount > 0
+          ? `${w.newsCount} 条动态`
+          : '暂无动态'
+    ]
     if (w.feedAt) parts.push(`${fromNow(w.feedAt)}更新`)
     if (w.reportAt) parts.push(`报告 ${fromNow(w.reportAt)}`)
     return parts.join(' · ')

@@ -1164,7 +1164,7 @@ export default function ReportPage() {
      */
     if (!check.ok) {
       await Taro.showModal({
-        title: '这条不能直接盯',
+        title: '这条不能直接监控',
         content: `${check.message}。可以改用上方的「+ 监控风险」盯这个人，他/她的风险情况一样会出现在预警页。`,
         showCancel: false,
         confirmText: '知道了'
@@ -1176,9 +1176,9 @@ export default function ReportPage() {
     if (watchedKeywords.has(keyword)) {
       /* 取消走二次确认：盯一条就是一份每天的检索成本，误触会让用户以后收不到、却不知道为什么 */
       void Taro.showModal({
-        title: '取消盯这条',
-        content: `不再关注「${keyword}」的新报道？已收集的内容会从预警页移除。`,
-        confirmText: '取消盯',
+        title: '取消监控这条',
+        content: `不再监控「${keyword}」的新报道？已收集的内容会从预警页移除。`,
+        confirmText: '取消监控',
         cancelText: '再想想',
         success: async (r) => {
           if (!r.confirm) return
@@ -1219,7 +1219,7 @@ export default function ReportPage() {
       track('watch_add', { keyword, from: 'report_controversy', personKey })
       setWatchedKeywords((prev) => new Set(prev).add(keyword))
       Taro.showToast({
-        title: notifyOk ? '已盯上，有新报道会推送提醒' : '已盯上，新报道会出现在预警页',
+        title: notifyOk ? '已监控，有新报道会推送提醒' : '已监控，新报道会出现在预警页',
         icon: 'none'
       })
       return
@@ -2040,7 +2040,7 @@ export default function ReportPage() {
               className={`page-report__follow page-report__monitor ${monitored ? 'page-report__follow--on' : ''}`}
               onClick={() => void onToggleMonitor()}
             >
-              {monitored ? '监控中' : '+ 监控风险'}
+              {monitored ? '已监控' : '+ 监控风险'}
             </View>
           </View>
         </View>
@@ -3020,7 +3020,7 @@ export default function ReportPage() {
                         className={`page-report__watch ${watching ? 'page-report__watch--on' : ''}`}
                         onClick={() => void onToggleWatchTopic(c.topic)}
                       >
-                        {watching ? '✓ 已盯进展' : '+ 盯这条进展'}
+                        {watching ? '✓ 已监控' : '+ 监控这条进展'}
                       </View>
                     )}
                   </View>

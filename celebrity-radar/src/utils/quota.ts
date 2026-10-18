@@ -154,10 +154,22 @@ export function beginGenerateInflight(
     const raw = Taro.getStorageSync(key)
     const list = (Array.isArray(raw) ? raw : []) as InflightEntry[]
     const now = Date.now()
+    /*
+     * 同一人物只留最后一条（2026-10-18）：同一个人连点 / 失败重试会 push 出好几条同 key 的占位，
+     * remaining 一次掉 N —— 用户看到的是「次数被扣了，报告却没出来」，而它们其实只是同一个
+     * 尚未落账的生成。换掉旧条目，而不是并列。
+     */
     list.push([personKey, now + ttlMs, usedAtBegin])
     Taro.setStorageSync(
       key,
-      list.filter((it) => Array.isArray(it) && typeof it[1] === 'number' && it[1] > now)
+      list.filter(
+        (it, i) =>
+          Array.isArray(it) &&
+          typeof it[1] === 'number' &&
+          it[1] > now &&
+          /* 同一人物只留刚 push 的最后一条 */
+          (it[0] !== personKey || i === list.length - 1)
+      )
     )
   } catch {
     /* 静默：占位只是闸门的加严项，写失败最坏是回到「可能被并发突破一次」的老行为 */

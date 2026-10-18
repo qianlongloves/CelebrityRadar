@@ -33,9 +33,15 @@ const storeClientSrc = read(path.join(ROOT, 'src', 'utils', 'report-store.ts'))
 const DAY_MS = 86400000
 
 /** 加载 aiProxy：wx-server-sdk → harness 内存 DB。写口不触达上游，故不注入假 https */
-function loadProxy({ openid = 'u1' } = {}) {
+function loadProxy({ openid = 'u1', split = false } = {}) {
   env.resetAll()
   process.env.BOCHA_API_KEY = 'bocha-test'
+  /*
+   * 主行剥段（阶段 3）要**显式打开**：2026-10-18 起 report-store 里有 MEMBER_SPLIT_ENABLED，
+   * 默认关闭 = 阶段 1 双写。这两个默认值刻意不同 —— 线上现状是双写，代码里的「阶段 3 已就绪」
+   * 不是理由（详见该常量上的注释：靠「暂不部署」维持的契约被一次手滑打破过）。
+   */
+  process.env.MEMBER_SPLIT = split ? '1' : ''
   const db = env.db.database()
   const fakeSdk = {
     DYNAMIC_CURRENT_ENV: 'test-env',
@@ -258,8 +264,36 @@ describe('P0-2 写口：落库校验', () => {
     eq(res.kind, 'auth')
   })
 
-  it('会员写会员段：放行，但四段**不进主行**（P2 阶段 3 剥段 + 旗标）', async () => {
+  it('会员写会员段：默认（开关关闭）主行照旧带四段，副本也写一份 —— 阶段 1 双写', async () => {
     const fn = loadProxy()
+    env.db.__seed('memberships', [memberRow()])
+    env.db.__seed('report_cache', [lockRow()])
+    const res = await callStore(fn, {
+      op: 'save',
+      personKey: 'A#tech',
+      report: report({ memberNotes: { compare: 'C' } }),
+      newsCount: 9,
+      schemaVersion: 2
+    })
+    eq(res.ok, true)
+    eq(res.result, 'saved')
+    const row = env.db.__dump('report_cache')[0]
+    eq(row.state, 'ready')
+    eq(row.builder, null, '落库即放锁')
+    eq(row.search_meta.news_count, 9)
+    eq(row.schemaVersion, 2)
+    /*
+     * 正向对照（故意与下一条相反）：默认不剥段 —— 线上端上包未必带 op:'member' 读口，
+     * 此刻剥掉等于让会员在旧包上少四段。这条一旦变红，说明有人把开关默认值改了。
+     */
+    eq(row.report.memberNotes.compare, 'C', '默认双写：主行仍带四段')
+    eq(row.report.memberSections, undefined, '没有剥就不该写旗标（旗标说有、正文没有 = 会员静默少四段）')
+    const copy = env.db.__dump('report_member')[0]
+    eq(copy.sections.memberNotes.compare, 'C', '副本照旧写（阶段 2 的读口要靠它）')
+  })
+
+  it('（开关打开）阶段 3 剥段：四段**不进主行**，改用旗标', async () => {
+    const fn = loadProxy({ split: true })
     env.db.__seed('memberships', [memberRow()])
     env.db.__seed('report_cache', [lockRow()])
     const res = await callStore(fn, {
@@ -282,6 +316,19 @@ describe('P0-2 写口：落库校验', () => {
     const copy = env.db.__dump('report_member')[0]
     eq(copy.sections.memberNotes.compare, 'C', '四段进副本表（客户端不可读）')
     eq(copy.generated_at, row.generated_at, '两行写同一个时间戳，它是唯一的配对依据')
+  })
+
+  it('开关关闭时不写旗标（否则端上会去取一份「不在副本里」的四段）', async () => {
+    const fn = loadProxy()
+    env.db.__seed('memberships', [memberRow()])
+    env.db.__seed('report_cache', [lockRow()])
+    await callStore(fn, {
+      op: 'save',
+      personKey: 'A#tech',
+      report: report({ memberNotes: { compare: 'C' } })
+    })
+    const row = env.db.__dump('report_cache')[0]
+    notOk(Array.isArray(row.report.memberSections), '旗标只在真正剥段时写')
   })
 
   /* ── P1-9（2026-10-09 复审）：只升不降，写在权威侧 ── */
@@ -317,9 +364,14 @@ describe('P0-2 写口：落库校验', () => {
     /* 静态断言而不是行为断言：让副本写失败在内存 DB 里不好造，而这条顺序一旦写反，
        后果是「旗标说有、副本里没有」——会员永久少四段，而且不报错、页面看不出异常。 */
     const copyAt = storeSrc.indexOf("const copied = await saveMemberRow(personKey, report, generatedAt, 'current'")
-    const stripAt = storeSrc.indexOf('if (memberFlags.length > 0 && copied) stored = stripForRow')
+    /* 2026-10-18：剥段多了第一道条件 MEMBER_SPLIT_ENABLED，定位串要跟着改（否则这条会红成假失败） */
+    const stripAt = storeSrc.indexOf('if (MEMBER_SPLIT_ENABLED && memberFlags.length > 0 && copied)')
     ok(copyAt > 0, '应能定位到前置写副本那一行')
     ok(stripAt > copyAt, '剥段必须发生在副本写成功之后，不能反过来')
+    ok(
+      storeSrc.includes("process.env.MEMBER_SPLIT === '1'"),
+      '剥段必须挂在显式开关上：靠「暂不部署」维持的契约挡不住一次 code update'
+    )
   })
 
   it('P1-9 是单向的：既有版本本就不含会员段，免费档照旧可覆盖', async () => {
@@ -537,6 +589,58 @@ describe('P0-2 写口：动态列表', () => {
     const row = env.db.__dump('feed_cache')[0]
     eq(row.items.length, 1)
     ok(row.fetched_at, '必须带抓取时刻，它决定下次要不要刷新')
+  })
+
+  it('库里已有更新的内容：skipped-stale，不覆盖（晚回来的旧结果不许盖掉新内容）', async () => {
+    const fn = loadProxy()
+    /* 比服务端时间晚 1 分钟：仍在 5 分钟容忍度内 ⇒ 参与比较，判为「库里更新」 */
+    const newer = new Date(Date.now() + 60 * 1000).toISOString()
+    env.db.__seed('feed_cache', [{ _id: 'A#tech', items: [{ title: '新' }], fetched_at: newer }])
+
+    const res = await callStore(fn, { op: 'saveFeed', personKey: 'A#tech', items: [{ title: '旧' }] })
+
+    eq(res.result, 'skipped-stale', '不覆盖要如实回报，端上据此既不算失败、也不回退直写')
+    const row = env.db.__dump('feed_cache')[0]
+    eq(row.items[0].title, '新', '库里的新内容必须原样保留')
+    eq(row.fetched_at, newer, '抓取时刻同样不许倒退（它决定「多久没刷」）')
+  })
+
+  it('fetched_at 是未来值（超容忍度）：当脏值覆盖 —— 否则这一行永远刷不动', async () => {
+    const fn = loadProxy()
+    env.db.__seed('feed_cache', [
+      { _id: 'A#tech', items: [{ title: '旧' }], fetched_at: '2099-01-01T00:00:00.000Z' }
+    ])
+
+    const res = await callStore(fn, { op: 'saveFeed', personKey: 'A#tech', items: [{ title: '新' }] })
+
+    eq(res.result, 'saved', 'feed_cache 是全站共享的一行，一个未来时间戳会把这个人锁死')
+    const row = env.db.__dump('feed_cache')[0]
+    eq(row.items[0].title, '新')
+    notOk(row.fetched_at === '2099-01-01T00:00:00.000Z', '脏值要被校正回服务端时间')
+  })
+
+  it('存量行没有 fetched_at：照常覆盖（否则它永远写不进去）', async () => {
+    const fn = loadProxy()
+    env.db.__seed('feed_cache', [{ _id: 'A#tech', items: [{ title: '旧' }] }])
+
+    const res = await callStore(fn, { op: 'saveFeed', personKey: 'A#tech', items: [{ title: '新' }] })
+
+    eq(res.result, 'saved')
+    eq(env.db.__dump('feed_cache')[0].items[0].title, '新')
+  })
+
+  it('落库时间取服务端，不采信端上传来的值', async () => {
+    const fn = loadProxy()
+    const claimed = new Date(Date.now() - 365 * DAY_MS).toISOString()
+    const res = await callStore(fn, {
+      op: 'saveFeed',
+      personKey: 'A#tech',
+      items: [{ title: 't' }],
+      fetchedAt: claimed
+    })
+
+    eq(res.result, 'saved')
+    notOk(env.db.__dump('feed_cache')[0].fetched_at === claimed, '端上时间戳不得直接落库')
   })
 
   it('items 不是数组：拒绝（形状校验）', async () => {

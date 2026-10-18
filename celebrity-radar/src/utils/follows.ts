@@ -25,19 +25,31 @@ function requireUserId(): string | null {
   return userId
 }
 
-/** 我的关注列表（按关注时间倒序） */
-export async function listFollows(): Promise<FollowRow[]> {
+/**
+ * 我的关注列表（按关注时间倒序），带回「是否读成功」（2026-10-18，P2）。
+ *
+ * 空数组有两种含义：真的一个人都没关注、或者这次没读到。大部分页面拿空数组降级就够了，
+ * 但**周报**会据此回 `nofollow` 并告诉用户「先去关注几个人」—— 一次云库抖动就会让
+ * 一位关注了十个人的用户看到这句话。这类调用方要看 `ok`。
+ */
+export async function listFollowsChecked(): Promise<{ ok: boolean; rows: FollowRow[] }> {
   const userId = useAuth.getState().userId
-  if (!userId) return []
+  /* 未登录：确实没有关注（写关注也要登录），按成功处理 */
+  if (!userId) return { ok: true, rows: [] }
   const { data, error } = await table('follows')
     .select('*')
     .eq('openid', userId)
     .order('followed_at', { ascending: false })
   if (error) {
     diagLog('warn', 'db', `follows 读取失败：${error.message ?? error}`)
-    return []
+    return { ok: false, rows: [] }
   }
-  return ((data as FollowRow[]) ?? [])
+  return { ok: true, rows: (data as FollowRow[]) ?? [] }
+}
+
+/** 我的关注列表（按关注时间倒序）；读失败等同空列表，需要区分请用 listFollowsChecked */
+export async function listFollows(): Promise<FollowRow[]> {
+  return (await listFollowsChecked()).rows
 }
 
 export async function isFollowed(personKey: string): Promise<boolean> {

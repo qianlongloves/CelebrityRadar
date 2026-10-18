@@ -359,6 +359,25 @@ export default function Mine() {
       onTap: () => Taro.navigateTo({ url: '/package/following/index' })
     },
     {
+      /*
+       * 我盯的事件（2026-10-18 用户反馈「不知道这几个是干嘛的、在哪找」）。
+       *
+       * 此前它是全站**唯一没有直接入口**的一类关注：数据在
+       * `opinion_event_status.follows[eventKey]`，但只能「舆情 tab → 事件卡 → 事件列表 →
+       * 再点一次『我盯的』分段」才到得了 —— 两次跳转 + 一次分段切换，等于没有入口。
+       * 现在与「关注的名人」并列：这两行合起来就是「我盯的东西」的两层
+       * （盯人 = 关注的名人；盯这件事 = 我盯的事件），用户不必先理解内部存了两张表。
+       *
+       * note 用固定说明而不是数字：本页 loadCounts 已在并行读四张表，为一个菜单说明再
+       * 加一次事件表查询，只会让首屏更慢；件数在列表页标题里如实显示（「★ 我盯的 · N 件」）。
+       */
+      icon: '👁',
+      iconBg: 'blue',
+      title: '我跟进的事件',
+      note: userId ? '跟进过的后续报道' : '登录后查看',
+      onTap: () => Taro.navigateTo({ url: '/package/events/index?only=follows' })
+    },
+    {
       icon: '⭐',
       iconBg: 'brand',
       title: '我的收藏',

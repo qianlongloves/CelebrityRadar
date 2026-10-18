@@ -307,7 +307,11 @@ describe('别名表读不到（未建表 / 权限未生效）也不能影响主�
     env.db.__seed('report_cache', [rowOf('雷军', 'tech')])
     env.db.__setReadFailing('person_alias', true)
 
-    eq((await resolvePersonIdentity('雷军', 'auto')).personKey, '雷军#auto', '读不到 ≠ 合并，退回入参 key')
-    ok(true, '没有抛错就已经是结论')
+    /* 断言里不再留 `ok(true, '没有抛错就已经是结论')`：那是零信息量（2026-10-18 复审 P2）。
+       「不抛错」由这一行本身证明（抛了就不会走到这里），真正要钉的是**降级结果**：
+       key 原样退回、且不给出 merge 建议（否则界面会对一次读失败弹「是同一位吗？」）。 */
+    const res = await resolvePersonIdentity('雷军', 'auto')
+    eq(res.personKey, '雷军#auto', '读不到 ≠ 合并，退回入参 key')
+    eq(res.merge, undefined, '读失败不得给出合并建议（否则会弹一次莫名其妙的确认）')
   })
 })

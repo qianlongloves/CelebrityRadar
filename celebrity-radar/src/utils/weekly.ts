@@ -2,7 +2,7 @@ import Taro from '@tarojs/taro'
 import { z } from 'zod'
 import { chatJSON } from './llm'
 import { getFeedDetails } from './cache'
-import { listFollows } from './follows'
+import { listFollowsChecked } from './follows'
 import { NewsItem } from './search'
 import { DISCLAIMER, isRefusedResult } from './report'
 import { setCooldown, cooldownMinutesLeft } from './cooldown'
@@ -98,12 +98,16 @@ export type MaterialOutcome =
   | { kind: 'nologin' }
   | { kind: 'nofollow' }
   | { kind: 'nomaterial' }
+  /* 关注列表这次没读到（2026-10-18，P2）：绝不能报成 nofollow ——
+     那会让一位关注了十个人的用户被告知「还没有关注任何名人」 */
+  | { kind: 'unreadable' }
 
-/** 空态文案：页面对三种「没有材料」的原因给出不同出口 */
+/** 空态文案：页面对「没有材料」的几种原因给出不同出口 */
 export const MATERIAL_FAIL_TEXT: Record<Exclude<MaterialOutcome['kind'], 'ok'>, string> = {
   nologin: '登录后即可把关注的名人汇总成周报',
   nofollow: '还没有关注任何名人，先去关注几位再来生成周报',
-  nomaterial: '关注的人最近 7 天还没有可汇总的动态'
+  nomaterial: '关注的人最近 7 天还没有可汇总的动态',
+  unreadable: '读取关注列表失败（网络或云数据库暂时不可用），请稍后重试'
 }
 
 /**
@@ -138,7 +142,10 @@ export async function collectWeeklyMaterial(): Promise<MaterialOutcome> {
   const userId = useAuth.getState().userId
   if (!userId) return { kind: 'nologin' }
 
-  const follows = await listFollows()
+  const followRead = await listFollowsChecked()
+  /* 读失败 ≠ 没关注（见 MaterialOutcome#unreadable） */
+  if (!followRead.ok) return { kind: 'unreadable' }
+  const follows = followRead.rows
   if (follows.length === 0) return { kind: 'nofollow' }
 
   const range = last7DayRange(WEEKLY_WINDOW_DAYS)

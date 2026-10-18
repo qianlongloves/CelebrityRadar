@@ -295,12 +295,12 @@ describe('事件列表页：「我盯的」聚合视图（点盯的事件 → �
   it('页内有「全部事件 | 我盯的」分段，可随时退回全部', () => {
     ok(page.includes('page-events__scope'), '缺范围分段')
     ok(page.includes('全部事件 {events.length}'), '全部那段要报总数')
-    ok(page.includes('我盯的 {followRows.length}'), '我盯的那段要报件数（不必都有新进展）')
+    ok(page.includes('我跟进的 {followRows.length}'), '跟进的那段要报件数（不必都有新进展）')
     ok(scss.includes('&__scope-tab'), '缺分段样式钩子')
   })
 
   it('「我盯的」空态说清「还没盯过」，并给退回全部的入口', () => {
-    ok(page.includes('还没盯过事件'), '空态不能只说「没有事件」，否则用户以为库空了')
+    ok(page.includes('还没有跟进任何事件'), '空态不能只说「没有事件」，否则用户以为库空了')
     ok(page.includes('page-events__empty-back'), '空态要给退路')
     ok(scss.includes('&__empty-card'), '缺空态卡样式')
   })

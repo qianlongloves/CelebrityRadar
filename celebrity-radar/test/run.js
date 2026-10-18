@@ -25,19 +25,33 @@ if (!fs.existsSync(env.BUILD)) {
 const files = fs.readdirSync(caseDir).filter((f) => f.endsWith('.js')).sort()
 process.stdout.write(`\n共 ${files.length} 个用例文件：${files.join(' ')}\n\n`)
 
+/*
+ * 用例文件在 require 期抛错（写在 describe 体里的断言、模块顶层读文件、语法错误）原先会让
+ * **整轮**跑挂：后面所有文件一条都不执行，连已经通过的统计也一起丢掉，报错只剩一行栈。
+ * 2026-10-18 起单个文件加载失败算一条失败，其余照常跑完（失败照样以退出码 1 收场）。
+ */
+const loadFailures = []
+
 for (const f of files) {
   process.stdout.write(`[${f.replace(/\.js$/, '')}]\n`)
-  require(path.join(caseDir, f))
+  try {
+    require(path.join(caseDir, f))
+  } catch (err) {
+    loadFailures.push({ label: `${f}（加载失败，该文件内的用例一条都没跑）`, err })
+    process.stdout.write(`  ✗ 加载失败：${err && err.message}\n`)
+  }
 }
 
 runAll().then((r) => {
+  const failures = loadFailures.concat(r.failures)
+  const total = r.total + loadFailures.length
   process.stdout.write(`\n────────────────────────────────────────\n`)
-  process.stdout.write(`通过 ${r.passed} / ${r.total}，失败 ${r.failed}\n`)
+  process.stdout.write(`通过 ${r.passed} / ${total}，失败 ${failures.length}\n`)
 
-  if (r.failed > 0) {
+  if (failures.length > 0) {
     process.stdout.write(`\n失败清单：\n`)
-    for (const f of r.failures) process.stdout.write(`  ✗ ${f.label}\n      ${f.err && f.err.message}\n`)
+    for (const f of failures) process.stdout.write(`  ✗ ${f.label}\n      ${f.err && f.err.message}\n`)
   }
   process.stdout.write('\n')
-  process.exit(r.failed > 0 ? 1 : 0)
+  process.exit(failures.length > 0 ? 1 : 0)
 })

@@ -1,6 +1,6 @@
 import {
   eventNewness,
-  loadEventStatus,
+  loadEventStatusChecked,
   saveEventStatus,
   type EventStatus
 } from './opinion-store'
@@ -286,7 +286,14 @@ export async function toggleSubject(
   const key = String(label ?? '').trim()
   if (!key || !normSubject(key)) return 'failed'
 
-  const cur = await loadEventStatus()
+  /*
+   * 读失败直接回 failed、**不写**（2026-10-18，P2）：saveEventStatus 是整行覆盖写，
+   * 拿一份空状态去写会把同一行的 reads / follows 一起清掉 —— 用户真实的「已读」与「关注」
+   * 会因为这个对象的订阅动作而全部丢失。
+   */
+  const read = await loadEventStatusChecked()
+  if (!read.ok) return 'failed'
+  const cur = read.status
   const subs = { ...(cur.subs ?? {}) }
   const existing = findSubjectSub(cur, key)
 

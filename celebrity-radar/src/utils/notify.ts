@@ -72,7 +72,7 @@ export async function requestNotify(): Promise<{ ok: boolean; message: string }>
   const saved = await setSubscribeOptIn(true)
   if (!saved) return { ok: false, message: '授权成功但记录失败，请重试' }
   /* 文案要覆盖两类候选（关注的人 / 我盯的事件），只写前者会让用户以为跟进的事不会被提醒 */
-  return { ok: true, message: '已开启：关注的人、我盯的事有新动态时会提醒你一次' }
+  return { ok: true, message: '已开启：关注的人、跟进的事有新动态时会提醒你一次' }
 }
 
 /* ── 关键词舆情预警的推送（2026-10-08）──────────────────────────────

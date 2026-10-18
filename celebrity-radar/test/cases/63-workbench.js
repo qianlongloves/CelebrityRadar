@@ -518,7 +518,7 @@ describe('S3-2 监测工作台 · 页面接入', () => {
 
   it('分包页硬约束：scss 自带 variables 导入、页面配置有标题、页面注册进 app.config', () => {
     ok(/@import '\.\.\/\.\.\/styles\/variables\.scss';/.test(read(path.join('package', 'workbench', 'index.scss'))))
-    ok(/navigationBarTitleText: '监测工作台'/.test(read(path.join('package', 'workbench', 'index.config.ts'))))
+    ok(/navigationBarTitleText: '监控工作台'/.test(read(path.join('package', 'workbench', 'index.config.ts'))))
     ok(/workbench\/index/.test(read('app.config.ts')))
   })
 

@@ -63,15 +63,15 @@ describe('报告页：版本号进目录标题、盯进展有点击反馈', () =
     ok(scss.includes('&__toc-ver'), '缺版本号样式（只加类名不写样式最难发现）')
   })
 
-  it('「盯这条进展」点击后进入提交中态：转圈 + 文案，且不再可点', () => {
+  it('「监控这条进展」点击后进入提交中态：转圈 + 文案，且不再可点', () => {
     ok(page.includes('page-report__watch--busy'), '缺提交中态')
     ok(/watchBusy === topic/.test(page), '只把被点的那一条置忙，其余条目照常可点')
     ok(page.includes('正在添加'), '提交中要有文字，不能只有一个圈')
     ok(scss.includes('@keyframes report-watch-spin'), '缺转圈动画')
     ok(scss.includes('&__watch-spin'), '缺转圈元素样式')
-    /* 仍保留原有两种按钮态的文字（用例 53 的入口断言依赖「盯这条进展」这句） */
-    ok(page.includes('盯这条进展'), '原有入口文案不能丢')
-    ok(page.includes('已盯进展'), '已盯态不能丢')
+    /* 仍保留原有两种按钮态的文字（用例 53 的入口断言依赖「监控这条进展」这句） */
+    ok(page.includes('监控这条进展'), '原有入口文案不能丢')
+    ok(page.includes('已监控'), '已监控态不能丢')
   })
 
   it('置忙排在订阅授权之前 —— 否则授权弹窗那几秒按了没反应', () => {

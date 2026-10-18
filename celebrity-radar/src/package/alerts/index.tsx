@@ -43,7 +43,7 @@ import type { SubjectHit } from '@/utils/event-subscribe'
 import EmptyState from '@/components/empty-state'
 /* 两路（关键词 / 名人）共用同一份执行日志渲染，此前是两份逐行相同的 JSX */
 import ScanLogList from '@/components/scan-log-list'
-/* 三处「名单 + ×」（关键词 / 订阅对象 / 名人）共用同一份胶囊排 */
+/* 三处「名单 + ×」（关键词 / 关注对象 / 名人）共用同一份胶囊排 */
 import ChipList from '@/components/chip-list'
 /* 关键词 / 名人两张监控状态表共用同一套表头、列宽与状态色 */
 import MonitorTable, { type MonitorRow } from '@/components/monitor-table'
@@ -55,7 +55,7 @@ import './index.scss'
  */
 const FOCUS_GROUP_CLASS = 'page-alerts__group--focus'
 
-/** 每个订阅对象最多列几条事件：这张卡是「有没有动静」，不是事件列表（全量去事件列表页看） */
+/** 每个关注对象最多列几条事件：这张卡是「有没有动静」，不是事件列表（全量去事件列表页看） */
 const SUB_EVENT_MAX = 3
 
 /** 用户从推送落地时，那个词的四种处境（S1-3）：文案与埋点共用一套取值 */
@@ -70,20 +70,20 @@ type FocusKind = 'group' | 'watching' | 'gone' | 'guest'
 const FOCUS_COPY: Record<FocusKind, (kw: string, count: number) => { title: string; desc: string }> = {
   guest: (kw) => ({
     title: `登录后查看「${kw}」`,
-    desc: '预警与监测按账号保存，登录后即可查看'
+    desc: '预警与监控按账号保存，登录后即可查看'
   }),
   group: (kw, count) => ({
     title: `推送提醒：「${kw}」有新报道`,
     desc: `已定位到下方这一组，共 ${count} 条。`
   }),
   watching: (kw) => ({
-    title: `正在监测「${kw}」`,
+    title: `正在监控「${kw}」`,
     /* 说清「什么时候才会有」，否则用户会以为这条推送是假的 */
     desc: '云端每天上午检索一次，有新报道时会出现在下方并提醒你一次。'
   }),
   gone: (kw) => ({
-    title: `「${kw}」已不在监测中`,
-    desc: '可能已在别处取消。想继续监测，在上方「关键词监控」里重新添加。'
+    title: `「${kw}」已不在监控中`,
+    desc: '可能已在别处取消。想继续监控，在上方「关键词监控」里重新添加。'
   })
 }
 
@@ -245,7 +245,7 @@ export default function Alerts() {
     }
     /* 环境问题（集合没建 / 权限不对）用弹窗说清修法，理由同报告页的监控入口 */
     if (res.fatal) {
-      await Taro.showModal({ title: '订阅没能开启', content: res.message, showCancel: false, confirmText: '知道了' })
+      await Taro.showModal({ title: '提醒没能开启', content: res.message, showCancel: false, confirmText: '知道了' })
       return
     }
     Taro.showToast({ title: res.message, icon: 'none' })
@@ -265,7 +265,14 @@ export default function Alerts() {
   }
 
   /** 「还有 N 条」的出口：订阅栏只列前几条，全量在事件列表页（不在本页做二级列表） */
-  const openEventList = () => void Taro.navigateTo({ url: '/package/events/index' })
+  /**
+   * 「还有 N 条」的出口（2026-10-18）。
+   *
+   * ⚠ 必须带 `?only=follows`：这段文字出在**订阅/跟进**的上下文里，用户点它想看的是
+   * 「我盯的那些」，落到「全部事件」等于让他自己再筛一次（舆情页同一个动作一直带着这个参数）。
+   * 之前漏了参数，是本页唯一一处「点了之后看不到自己刚看的那件事」的跳转。
+   */
+  const openEventList = () => void Taro.navigateTo({ url: '/package/events/index?only=follows' })
 
   /**
    * 取消订阅一个对象（E1-②）。乐观移除 + 失败重拉 —— 订阅关系正是这一页在展示的东西，
@@ -276,7 +283,7 @@ export default function Alerts() {
     setSubHits((hits) => hits.filter((h) => h.label !== label))
     const outcome = await toggleSubject(label, false)
     if (outcome === 'failed') {
-      Taro.showToast({ title: '取消订阅失败，请重试', icon: 'none' })
+      Taro.showToast({ title: '取消关注失败，请重试', icon: 'none' })
       void refresh()
       return
     }
@@ -309,8 +316,8 @@ export default function Alerts() {
     }
     void Taro.showModal({
       title: '已在风险监控中',
-      content: `「${dup.keyword}」只收命中风险词的报道。关键词监测收的是全部报道，但同一批内容会被云端再检索一次。`,
-      confirmText: '同时订阅关键词',
+      content: `「${dup.keyword}」只收命中风险词的报道。关键词监控收的是全部报道，但同一批内容会被云端再检索一次。`,
+      confirmText: '同时监控关键词',
       cancelText: '只保留监控',
       success: (r) => {
         if (r.confirm) void submitWatch()
@@ -320,9 +327,9 @@ export default function Alerts() {
 
   const handleRemove = (keyword: string) => {
     void Taro.showModal({
-      title: '取消监测',
-      content: `不再监测「${keyword}」？已有的预警记录会一并从列表移除。`,
-      confirmText: '取消监测',
+      title: '取消监控',
+      content: `不再监控「${keyword}」？已有的预警记录会一并从列表移除。`,
+      confirmText: '取消监控',
       cancelText: '再想想',
       success: async (r) => {
         if (!r.confirm) return
@@ -518,21 +525,135 @@ export default function Alerts() {
         </View>
       )}
 
-      {/* 订阅管理 */}
+      {/*
+        第一段：我在关注的（免费 · 站内）。
+        2026-10-18 词表收敛：本页此前是三块并列（关键词 / 订阅的对象 / 名人），
+        「订阅」夹在两个「监控」中间 —— 同一种「每天花一次检索」的功能被切成两段，
+        而一个不花额度的功能却顶着一个别的名字。现在按「要不要花额度、会不会推送」分成两段：
+          · 关注段（本节）—— 免费、站内、不推送：对象之后的新事件收在这里；
+          · 监控段（下方）—— 每天云端检索、可推送、有额度：关键词 / 名人。
+        用户只需记住两个词，且每个词只对应一种成本。
+      */}
+      {userId && (
+        <View className='page-alerts__section'>
+          <Text className='page-alerts__section-title'>我在关注的</Text>
+          <Text className='page-alerts__section-note'>免费 · 站内查看 · 不推送</Text>
+        </View>
+      )}
+
+      {/*
+        关注的对象（原「订阅的对象」，E1-②，2026-10-16）：
+        单位是「人 / 关键词」这个**对象**，回答「这个对象之后有没有我要看的新事件」。
+        与下方监控段的分工（同页并列，必须各说各的，否则用户看到同一个人出现三遍）：
+          · 关注的对象 —— 这个对象在**舆情事件**里有没有动（事件聚类的结果，免费）；
+          · 关键词监控 —— 这个词的公开报道（云端检索，词面命中就收，花额度）；
+          · 名人监控 —— 这个人的风险信号（命中司法 / 税务这类词才收，花额度）。
+        入口在**事件详情页**的「关注对象」按钮，本页只呈现与取消（不在本页新增：新增要知道
+        对象是谁，而那个对象只有事件页 / 报告页拿得到）。
+        ⚠ 判据：登录即渲染，**不要求已关注**。旧判据 `hasSubjectSubs(status)` 会让没关注过的人
+        永远看不到这张卡，而唯一新增入口在事件详情页 ⇒ 这个功能在新用户的屏幕上根本不存在。
+        卡内「有没有关注」仍不能用 `subHits.length` 判（关注了但都没动向时它也是 0），
+        这部分照旧交给 `hasSubjectSubs`。
+      */}
+      {userId && (
+        <View className='card'>
+          <View className='card-title'>关注的对象</View>
+          <Text className='page-alerts__intro'>
+            在事件详情页点「关注对象」，这个对象（人 / 关键词）之后的新事件就会收在这里。
+            免费、站内查看、不发推送；云端每天上午更新一次。
+          </Text>
+          {/* 取消没有二次确认（与关键词 chip 的二次确认不同）：关注随时可重加，代价是零 */}
+          <ChipList
+            items={subHits}
+            keyOf={(h) => h.label}
+            labelOf={(h) => h.label}
+            onTap={(h) => void unsubscribeSubject(h.label)}
+          />
+
+          {/* 只列**有未读动向**的对象：没动向的对象就是那一排 chip，不必再占一段 */}
+          {subHits
+            .filter((h) => h.fresh.length > 0)
+            .map((h) => (
+              <View key={`ev-${h.label}`} className='page-alerts__item'>
+                <View className='page-alerts__item-head'>
+                  <Text className='page-alerts__group-keyword'>{h.label}</Text>
+                  <Text className='page-alerts__group-count'>{`${h.fresh.length} 条新动向`}</Text>
+                </View>
+                {h.fresh.slice(0, SUB_EVENT_MAX).map((ev) => (
+                  <View
+                    key={ev.key}
+                    className='page-alerts__item'
+                    hoverClass='page-alerts__item--tap'
+                    onClick={() => openSubjectEvent(ev.key, ev.title)}
+                  >
+                    <View className='page-alerts__item-head'>
+                      <Text className='page-alerts__new'>新</Text>
+                      <Text className='page-alerts__item-title'>{ev.title}</Text>
+                    </View>
+                    <Text className='page-alerts__item-meta'>
+                      {[`${ev.memberTotal} 条来源`, ev.date ? formatMoment8(ev.date) : '']
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  </View>
+                ))}
+                {/* 不静默截断：这张卡只列前 3 条，多的**如实报数**并给出口（同 S3-3 预览的行数口径） */}
+                {h.fresh.length > SUB_EVENT_MAX && (
+                  <Text className='page-alerts__topic' onClick={openEventList}>
+                    <Text>{`还有 ${h.fresh.length - SUB_EVENT_MAX} 条，去事件列表看全部 ›`}</Text>
+                  </Text>
+                )}
+              </View>
+            ))}
+
+          {/* 一个都没关注：这张卡照样渲染，所以必须给出**去哪儿加**。
+              同时点明它与「跟进」的分界 —— 下方两段都在讲「我要监控谁 / 什么词」，
+              只有这句能告诉用户「单条事件该点跟进」。 */}
+          {!hasSubjectSubs(status) && (
+            <Text className='page-alerts__intro'>
+              还没有关注任何对象。想看某个人 / 某个话题的后续，去事件详情页点「关注对象」；
+              只想追某一条事件的后续，点那条事件里的「☆ 跟进」。
+            </Text>
+          )}
+
+          {/* 有关注、但一个对象都没动向时，上面整块为空 —— 必须给一句话，否则这张卡看起来像加载失败。
+              两种情况在这里合并成一句是**可以**的：对用户而言「还没事件」与「都看过了」的行动一致
+              （都是等新的），而「有没有关注」已经由 `hasSubjectSubs` 判过（上面那条空态）。 */}
+          {hasSubjectSubs(status) && subHits.every((h) => h.fresh.length === 0) && (
+            <Text className='page-alerts__intro'>
+              关注的对象暂无新动向：已收录的相关事件都看过了，或有新事件时会出现在这里。
+            </Text>
+          )}
+        </View>
+      )}
+
+      {/*
+        第二段：我在监控的（每天云端检索 · 可推送 · 有额度）。
+        两张卡（关键词 / 名人）现在**连续**排在同一段里 —— 它们共用 keyword_watches 与
+        同一份日常检索成本，只是 type 不同（见 utils/keyword-alert.ts / utils/risk-watch.ts）。
+      */}
+      {userId && (
+        <View className='page-alerts__section'>
+          <Text className='page-alerts__section-title'>我在监控的</Text>
+          <Text className='page-alerts__section-note'>云端每天检索一次 · 可推送 · 有额度上限</Text>
+        </View>
+      )}
+
+      {/* 关键词监控 */}
       <View className='card'>
         <View className='card-title'>关键词监控</View>
         <Text className='page-alerts__intro'>
           {watches.length
-            ? `正在监测 ${watches.length}/${watchCap} 个词，云端每天检索一次公开报道。`
-            : `最多可监测 ${watchCap} 个词，云端每天检索一次公开报道。`}
+            ? `正在监控 ${watches.length}/${watchCap} 个词，云端每天检索一次公开报道。`
+            : `最多可监控 ${watchCap} 个词，云端每天检索一次公开报道。`}
         </Text>
-        {/* 定位说明（2026-10-09）：本卡片与下方「监控中的名人」是两种订阅，同页并列时
+        {/* 定位说明（2026-10-09）：本卡片与下方「名人监控」是两种监控，同页并列时
             不写清就会被当成同一件事（甚至同一个人出现两遍）。一句话讲清各自的筛法即可。 */}
         <Text className='page-alerts__intro'>
-          盯的是话题（人名、公司、事件都行）：词面命中公开报道就收，不筛内容。
+          监控的是话题（人名、公司、事件都行）：词面命中公开报道就收，不筛内容。
         </Text>
         <Text className='page-alerts__intro page-alerts__intro--guide'>
-          想盯某个人的风险，去 TA 的报告页点「监控风险」—— 那边按风险词过滤，比关键词更准。
+          想监控某个人的风险，去 TA 的报告页点「+ 监控风险」—— 那边按风险词过滤，比关键词更准。
         </Text>
 
         {userId ? (
@@ -562,12 +683,12 @@ export default function Alerts() {
                 hoverClass='page-alerts__submit--tap'
                 onClick={() => void handleAdd()}
               >
-                <Text>开始监测</Text>
+                <Text>开始监控</Text>
               </View>
             </View>
           )
         ) : (
-          <Text className='page-alerts__login-tip'>登录后可订阅关键词（去「我的」页一键登录）</Text>
+          <Text className='page-alerts__login-tip'>登录后可添加关键词监控（去「我的」页一键登录）</Text>
         )}
 
         <ChipList
@@ -607,12 +728,12 @@ export default function Alerts() {
       {!userId ? (
         <EmptyState
           title='登录后可用'
-          desc='关键词预警与名人监控按账号保存，登录后即可订阅'
+          desc='关键词预警与名人监控按账号保存，登录后即可添加监控'
         />
       ) : watches.length === 0 && persons.length === 0 ? (
         <EmptyState
-          title='还没有监测中的关键词'
-          desc='添加一个关键词，或在某人的深度报告页点「监控风险」；有新的公开报道时会汇总到这里'
+          title='还没有监控中的关键词'
+          desc='添加一个关键词，或在某人的深度报告页点「+ 监控风险」；有新的公开报道时会汇总到这里'
         />
       ) : watches.length === 0 ? null : loading ? (
         <View className='card page-alerts__hint'>
@@ -620,7 +741,7 @@ export default function Alerts() {
         </View>
       ) : groups.length === 0 ? (
         <View className='card page-alerts__hint'>
-          <Text className='page-alerts__hint-title'>已开始监测，暂无相关报道</Text>
+          <Text className='page-alerts__hint-title'>已开始监控，暂无相关报道</Text>
           <Text className='page-alerts__hint-desc'>
             {notifyReady
               ? '云端每天上午检索一次，有新报道时会出现在这里并提醒你一次。'
@@ -690,80 +811,6 @@ export default function Alerts() {
         </>
       )}
 
-      {/*
-        订阅的对象（E1-②，2026-10-16）：订阅的单位是「人 / 关键词」这个**对象**，
-        回答的是「这个对象之后有没有我要看的新事件」。
-        与上下两段的分工（同页并列，必须各说各的，否则用户看到同一个人出现三遍）：
-          · 关键词监测 —— 盯「这个词的公开报道」（云端检索，词面命中就收）；
-          · 监控中的名人 —— 盯「这个人的风险信号」（命中司法/税务这类词才收）；
-          · 本段 —— 盯「这个对象在**舆情事件**里有没有动」（看事件聚类的结果）。
-        入口在**事件详情页**的「订阅」按钮，本页只呈现与取消（不在本页新增：新增要知道对象是谁，
-        而那个对象只有事件页/报告页拿得到）。
-        ⚠ 渲染判据是 `hasSubjectSubs(status)`、**不是** `subHits.length`：订阅了但都没动向时
-        subHits 里依然有元素（length 不为 0），而「一个都没订阅」与「订阅了都没动向」必须分开 ——
-        拿 length 判会让「没订阅」也长出一张「暂无动向」的空卡。
-      */}
-      {userId && hasSubjectSubs(status) && (
-        <View className='card'>
-          <View className='card-title'>订阅的对象</View>
-          <Text className='page-alerts__intro'>
-            在事件详情页点「订阅」，这个对象（人 / 关键词）之后的新事件就会收在这里。
-            站内查看、不发推送；云端每天上午更新一次。
-          </Text>
-          {/* 取消没有二次确认（与关键词 chip 的二次确认不同）：订阅随时可重订，代价是零 */}
-          <ChipList
-            items={subHits}
-            keyOf={(h) => h.label}
-            labelOf={(h) => h.label}
-            onTap={(h) => void unsubscribeSubject(h.label)}
-          />
-
-          {/* 只列**有未读动向**的对象：没动向的对象就是那一排 chip，不必再占一段 */}
-          {subHits
-            .filter((h) => h.fresh.length > 0)
-            .map((h) => (
-              <View key={`ev-${h.label}`} className='page-alerts__item'>
-                <View className='page-alerts__item-head'>
-                  <Text className='page-alerts__group-keyword'>{h.label}</Text>
-                  <Text className='page-alerts__group-count'>{`${h.fresh.length} 条新动向`}</Text>
-                </View>
-                {h.fresh.slice(0, SUB_EVENT_MAX).map((ev) => (
-                  <View
-                    key={ev.key}
-                    className='page-alerts__item'
-                    hoverClass='page-alerts__item--tap'
-                    onClick={() => openSubjectEvent(ev.key, ev.title)}
-                  >
-                    <View className='page-alerts__item-head'>
-                      <Text className='page-alerts__new'>新</Text>
-                      <Text className='page-alerts__item-title'>{ev.title}</Text>
-                    </View>
-                    <Text className='page-alerts__item-meta'>
-                      {[`${ev.memberTotal} 条来源`, ev.date ? formatMoment8(ev.date) : '']
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </Text>
-                  </View>
-                ))}
-                {/* 不静默截断：这张卡只列前 3 条，多的**如实报数**并给出口（同 S3-3 预览的行数口径） */}
-                {h.fresh.length > SUB_EVENT_MAX && (
-                  <Text className='page-alerts__topic' onClick={openEventList}>
-                    <Text>{`还有 ${h.fresh.length - SUB_EVENT_MAX} 条，去事件列表看全部 ›`}</Text>
-                  </Text>
-                )}
-              </View>
-            ))}
-
-          {/* 有订阅、但一个对象都没动向时，上面整块为空 —— 必须给一句话，否则这张卡看起来像加载失败。
-              两种情况在这里合并成一句是**可以**的：对用户而言「还没事件」与「都看过了」的行动一致
-              （都是等新的），而「有没有订阅」已经由 chip 那一排回答了。 */}
-          {subHits.every((h) => h.fresh.length === 0) && (
-            <Text className='page-alerts__intro'>
-              订阅的对象暂无新动向：已收录的相关事件都看过了，或有新事件时会出现在这里。
-            </Text>
-          )}
-        </View>
-      )}
 
       {/*
         监控中的名人（第 1 期名人风险监控）：与上方关键词订阅**同一张表**（keyword_watches 的
@@ -779,7 +826,7 @@ export default function Alerts() {
           </Text>
           {/* 与上方「关键词监测」互为镜像的说明：一个讲「这里收什么」，一个讲「这里不收什么」 */}
           <Text className='page-alerts__intro'>
-            {`盯的是人物风险：只有命中「司法 / 税务 / 合作 / 维权 / 表态」这类词的报道才会进下方信号列表，其余报道不收。想看 TA 的全部报道，用上面的关键词监控。`}
+            {`监控的是人物风险：只有命中「司法 / 税务 / 合作 / 维权 / 表态」这类词的报道才会进下方信号列表，其余报道不收。想看 TA 的全部报道，用上面的关键词监控。`}
           </Text>
           <ChipList
             items={persons}
@@ -802,7 +849,7 @@ export default function Alerts() {
             onClick={() => void Taro.navigateTo({ url: '/package/workbench/index?from=alerts' })}
           >
             <Text className='page-alerts__workbench-text'>把这些人横着排成台账：谁在动 · 勾选对比 · 导出简报</Text>
-            <Text className='page-alerts__workbench-go'>监测工作台 ›</Text>
+            <Text className='page-alerts__workbench-go'>监控工作台 ›</Text>
           </View>
           {riskNotifyReady && (
             <View className='page-alerts__notify'>

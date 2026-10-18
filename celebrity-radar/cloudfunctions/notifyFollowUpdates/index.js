@@ -484,8 +484,8 @@ exports.main = async () => {
     const thing1 = toldEvent
       ? clamp(
           toldEvent.count > 1
-            ? `我盯的${toldEvent.count}件事有新进展：${toldEvent.title}`
-            : `我盯的「${toldEvent.title}」有新进展`,
+            ? `我跟进的${toldEvent.count}件事有新进展：${toldEvent.title}`
+            : `我跟进的「${toldEvent.title}」有新进展`,
           THING_MAX
         )
       : clamp(`${feedLead.name}有${totalNew}条新动态：${feedLead.item.title}`, THING_MAX)

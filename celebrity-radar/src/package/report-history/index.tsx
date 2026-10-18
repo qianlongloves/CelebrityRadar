@@ -73,7 +73,7 @@ export default function ReportHistory() {
   const nameParam = decodeParam(router.params.name || '')
 
   const [loading, setLoading] = useState(true)
-  const [board, setBoard] = useState<VersionBoard>({ rows: [], current: null })
+  const [board, setBoard] = useState<VersionBoard>({ rows: [], current: null, ok: true })
   const [isMember, setIsMember] = useState(false)
   /** 正在展开的那一版（`null` = 都收着） */
   const [openId, setOpenId] = useState<string | null>(null)
@@ -84,6 +84,14 @@ export default function ReportHistory() {
   const [noteVisible, setNoteVisible] = useState(false)
   /** 进页埋点只报一次：`useDidShow` 每次切回都会重跑 */
   const viewedRef = useRef(false)
+  /**
+   * 「当前展开的是哪一版」的同步镜像（2026-10-18，P2）。
+   *
+   * `openId` 是 state，异步回调里闭包拿到的可能已经过时；而展开是**慢操作**（每人读两份报告），
+   * 先点 A 再点 B 时 A 的响应常常后到 —— 原实现无条件 setOpenView，于是 B 被选中、屏幕上却是 A
+   * 的正文，用户看到的标题/时间/差异全对不上。用 ref 记「此刻选中的是谁」，回来对不上就丢弃。
+   */
+  const openIdRef = useRef<string | null>(null)
 
   const load = useCallback(async () => {
     if (!personKey) {
@@ -114,7 +122,8 @@ export default function ReportHistory() {
    */
   const onOpen = useCallback(
     async (index: number, row: VersionListRow) => {
-      if (openId === row.id) {
+      if (openIdRef.current === row.id) {
+        openIdRef.current = null
         setOpenId(null)
         setOpenView(null)
         return
@@ -130,11 +139,15 @@ export default function ReportHistory() {
         setNoteVisible(true)
         return
       }
+      openIdRef.current = row.id
       setOpenId(row.id)
       setOpenView(null)
       setOpenBusy(true)
       try {
         const pair = await loadVersionPair(board.rows, index, personKey, isMember)
+        /* 期间用户又点了别的（或收起了）：这份响应已经过期，直接丢弃 —— 否则屏幕上会是
+           别的版本的内容，而标题/时间按选中的那一版渲染，两处对不上 */
+        if (openIdRef.current !== row.id) return
         /* 两版都拿到才谈得上对比：少一侧就只出这一版的摘要（不拿半份数据拼一份「看起来像对比」的东西） */
         const diff = pair.prev && pair.next ? buildReportDiff(pair.prev, pair.next) : null
         setOpenView(pair.prev ? { report: pair.prev, diff, nextIsCurrent: pair.nextIsCurrent } : null)
@@ -155,10 +168,13 @@ export default function ReportHistory() {
           })
         }
       } finally {
-        setOpenBusy(false)
+        /* 只有「还是我这一版在展开」才收 busy：旧响应回来把 busy 关掉，新那版就永远停在
+           「正在读取」上（而它其实还在读） */
+        if (openIdRef.current === row.id) setOpenBusy(false)
       }
     },
-    [openId, isMember, personKey, board.rows]
+    /* openId 不再参与：判据已换成 openIdRef（state 闭包会过时） */
+    [isMember, personKey, board.rows]
   )
 
   const goCurrent = () =>
@@ -203,10 +219,19 @@ export default function ReportHistory() {
       </View>
 
       {board.rows.length === 0 ? (
-        <EmptyState
-          title='还没有更新过的版本'
-          desc='这份报告从生成到现在没有被刷新过。等它下次更新后，这里就会出现「上一版是怎么写的」'
-        />
+        /* 读失败不说「从没更新过」（2026-10-18，P2）：那是在替一次故障向用户保证「本来就没东西」，
+           而真实情况可能只是这次没取到 —— 两句话对用户的意思完全相反 */
+        board.ok ? (
+          <EmptyState
+            title='还没有更新过的版本'
+            desc='这份报告从生成到现在没有被刷新过。等它下次更新后，这里就会出现「上一版是怎么写的」'
+          />
+        ) : (
+          <EmptyState
+            title='历史版本读取失败'
+            desc='网络或云数据库暂时不可用。返回后重新进入本页可重试 —— 这不代表这份报告没有被更新过'
+          />
+        )
       ) : (
         board.rows.map((row, index) => {
           const on = openId === row.id

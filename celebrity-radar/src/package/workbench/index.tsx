@@ -242,7 +242,7 @@ export default function Workbench() {
   if (!userId) {
     return (
       <View className='page-workbench'>
-        <EmptyState title='登录后可用' desc='监测工作台按账号保存，登录后即可查看你监控的人' />
+        <EmptyState title='登录后可用' desc='监控工作台按账号保存，登录后即可查看你监控的人' />
       </View>
     )
   }

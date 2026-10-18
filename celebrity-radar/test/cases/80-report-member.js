@@ -11,10 +11,15 @@
  *   · 历史版本裁剪时副本要跟着删（否则它会静默长成一张没人查得出用途的表）；
  *   · 读口 `op:'member'` 先判会员，且**非会员拿不到任何一段**。
  *
- * ⚠ 阶段 1 是**双写**（主行照旧带四段，副本在旁边攒）；**阶段 3（2026-10-17）起主行剥段**：
+ * ⚠ 阶段 1 是**双写**（主行照旧带四段，副本在旁边攒）；阶段 3 起主行剥段：
  *   四段只留在副本里，主行只剩旗标 `memberSections`。因此线上会**长期并存两种形态** ——
- *   阶段 3 之前落库的主行仍带四段（阶段 4 才迁移），之后的只剩旗标。读口必须两种都认，
- *   本文件断言的是「写口新写的这一行一定是剥段形态」。
+ *   剥段之前落库的主行仍带四段（阶段 4 才迁移），之后的只剩旗标。读口必须两种都认。
+ *
+ * ⚠ **2026-10-18：剥段改成显式开关**（`report-store.js#MEMBER_SPLIT_ENABLED`，认环境变量
+ *   `MEMBER_SPLIT=1`），默认**关闭** —— 因为端上 `op:'member'` 读口还没随发版全量覆盖，
+ *   而「靠暂不部署 aiProxy 来维持双写」这条纪律已经被人执行 code update 打破过一次。
+ *   本文件里断言剥段形态的用例显式 `loadProxy({ split: true })`；
+ *   默认关闭的那一面由 08-report-store.js 的「默认双写」用例钉住。
  */
 
 const fs = require('fs');
@@ -34,9 +39,11 @@ const schemaSrc = read(SCHEMA);
 
 const DAY_MS = 86400000;
 
-function loadProxy({ openid = 'u1' } = {}) {
+function loadProxy({ openid = 'u1', split = false } = {}) {
   env.resetAll();
   process.env.BOCHA_API_KEY = 'bocha-test';
+  /* 剥段（阶段 3）自 2026-10-18 起是显式开关，默认关闭 = 线上现状（双写） */
+  process.env.MEMBER_SPLIT = split ? '1' : '';
   const db = env.db.database();
   const fakeSdk = {
     DYNAMIC_CURRENT_ENV: 'test-env',
@@ -94,8 +101,8 @@ describe('P2 会员段边界：库结构', () => {
 /* ============== ② 双写：主行照旧、副本另存 ============== */
 
 describe('P2 会员段边界：落库双写', () => {
-  it('会员落库后：四段只进 report_member，主行只剩旗标', async () => {
-    const fn = loadProxy();
+  it('会员落库后：四段只进 report_member，主行只剩旗标（开关打开时）', async () => {
+    const fn = loadProxy({ split: true });
     env.db.__seed('memberships', [memberRow()]);
     env.db.__seed('report_cache', [lockRow()]);
     const res = await callStore(fn, {
@@ -144,7 +151,8 @@ describe('P2 会员段边界：落库双写', () => {
   });
 
   it('副本写失败不影响落库，且**不剥段**（宁可主行带四段，不能让会员永久少四段）', async () => {
-    const fn = loadProxy();
+    /* 开关必须打开，否则「不剥段」恒真、这条用例等于没测（2026-10-18） */
+    const fn = loadProxy({ split: true });
     env.db.__seed('memberships', [memberRow()]);
     env.db.__seed('report_cache', [lockRow()]);
     env.db.__setFailing('report_member', true);

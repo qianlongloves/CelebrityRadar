@@ -256,7 +256,7 @@ export default function Settings() {
       icon: '🔔',
       iconBg: 'brand',
       title: '更新提醒',
-      note: notifyConfigured() ? '关注的人 / 我盯的事 · 授权一次一条' : '未配置订阅模板',
+      note: notifyConfigured() ? '关注的人 / 跟进的事 · 授权一次一条' : '未配置订阅模板',
       onTap: () => void onSubscribeTap()
     },
     {

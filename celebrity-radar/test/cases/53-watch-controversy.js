@@ -56,7 +56,7 @@ describe('报告「争议」一键盯进展：用存量内容换一次订阅（S
 
   it('争议卡有一键盯入口，且走 utils/keyword-alert 的 addWatch（不另起一套写库）', () => {
     const code = stripComments(read(REPORT_PAGE))
-    ok(code.includes('盯这条进展'), '报告页「争议与回应」应给出一键盯入口')
+    ok(code.includes('监控这条进展'), '报告页「争议与回应」应给出一键监控入口')
     ok(
       /from '@\/utils\/keyword-alert'/.test(code),
       '盯进展必须复用 utils/keyword-alert：绕过去就绕过了分档门禁与归一化，也脱离预警页那条推送'

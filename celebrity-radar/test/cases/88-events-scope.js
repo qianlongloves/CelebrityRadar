@@ -55,11 +55,19 @@ describe('事件列表页：范围分段（全部事件 | 我盯的）必须与�
   const scopeRule = ruleOf(SCSS, '&__scope {')
   const scopeMargin = marginOf(scopeRule)
 
-  ok(cardMargin !== null, '找不到 .card 的 margin（对齐的参照物没了）')
-  ok(scopeRule.length > 0, '找不到 __scope 规则')
-  ok(scopeMargin !== null, '分段必须有 margin（左右为 0 就会铺满全宽）')
+  /*
+   * 前置三项必须放进 it（2026-10-18 复审 P2）：写在 describe 体里会在**加载期**执行，
+   * 既不计入 2164 的统计，一旦失败还会让整个文件 require 抛错、把这一轮汇总一起带走。
+   */
+  it('前置：对齐参照物齐全（.card 的 margin / __scope 规则 / 分段 margin）', () => {
+    ok(cardMargin !== null, '找不到 .card 的 margin（对齐的参照物没了）')
+    ok(scopeRule.length > 0, '找不到 __scope 规则')
+    ok(scopeMargin !== null, '分段必须有 margin（左右为 0 就会铺满全宽）')
+  })
 
   it('分段左右外边距 = .card 的左右外边距（同一个数，不写死）', () => {
+    ok(!!cardMargin && !!scopeMargin, '缺少参照物（见上一条前置用例）')
+    if (!cardMargin || !scopeMargin) return
     eq(scopeMargin[1], cardMargin[1], '左右外边距要与卡片一致，否则两段比卡片宽出一格')
     eq(scopeMargin[3], cardMargin[3], '左外边距同样要对齐')
     notOk(scopeMargin[1] === '0' || scopeMargin[1] === '0rpx', '左右为 0 正是本次错位的直接原因')
@@ -90,5 +98,52 @@ describe('事件列表页：范围分段（全部事件 | 我盯的）必须与�
     ok(/flex-wrap:\s*wrap/.test(actions), '三个文字按钮挤不下时折行，不要压断字')
     ok(/white-space:\s*nowrap/.test(ruleOf(SCSS, '&__action {')), '「标记已读」不许被压成两行')
     ok(/white-space:\s*nowrap/.test(ruleOf(SCSS, '&__go {')), '「查看完整时间线 ›」同样不许折字')
+  })
+})
+
+/*
+ * 卡头变形（2026-10-18 用户反馈「事件列表页最上面的卡片变形，新的数、盯的提示、
+ * 订阅的对象提示挤在一起」）—— 与舆情页事件卡头是**同一个坑的第二次**：
+ * 标题 + 三个 `.count-badge` 塞进 nowrap 的一行，而全局 `.count-badge` 是
+ * `white-space: nowrap` + `flex-shrink: 0` + 定高 36rpx（用例 87 钉住），
+ * 既不折行也不收缩 ⇒ 超出 `.card` 可排宽度的部分直接顶出卡片。
+ * 修法与舆情页一致：卡头纵向分层（一行说是什么，一行说能点什么），第二行 wrap 兜底。
+ */
+describe('P2：事件列表页卡头分层，长角标不进第一行', () => {
+  const between = (src, from, to) => {
+    const a = src.indexOf(from)
+    if (a < 0) return ''
+    const b = src.indexOf(to, a + from.length)
+    return b < 0 ? src.slice(a) : src.slice(a, b)
+  }
+
+  it('结构：第一行只放标题 + 「新 N 条」，两个长角标下沉到 __head-sub', () => {
+    const head = between(PAGE, "className='card page-events__head'", "className='page-events__scope'")
+    ok(head.length > 0, '找不到卡头')
+    const main = between(head, "className='page-events__head-main'", "className='page-events__head-sub'")
+    ok(main.includes("className='count-badge'>新 {newCount} 条"), '第一行要有「新 N 条」（短角标）')
+    notOk(main.includes('条有新进展'), '「盯的 N 条有新进展」是长入口，留在第一行必挤爆卡头')
+    notOk(main.includes('个对象有新动向'), '「订阅的 N 个对象有新动向」同理')
+
+    const sub = between(head, "className='page-events__head-sub'", "className='page-events__scope'")
+    ok(sub.includes('条有新进展'), '第二行要保留「盯的 … ›」入口（它同时是筛选入口）')
+    ok(sub.includes('个对象有新动向'), '第二行要保留「订阅的 … 个对象」提示')
+  })
+
+  it('第二行缺一个就不渲染（不留空行）', () => {
+    ok(
+      PAGE.includes('{(followCount > 0 || subFreshCount > 0) && ('),
+      '两个提示都为空时整行不该存在，否则卡头下面挂一条空白'
+    )
+  })
+
+  it('样式：卡头纵向排列，第一行与第二行都允许换行', () => {
+    const head = ruleOf(SCSS, '&__head {')
+    ok(/flex-direction:\s*column/.test(head), '卡头必须纵向分层（原来 row + space-between 是挤成一行的地方）')
+    /* 全局角标不许折行（用例 87），所以每一层自己必须能换行 */
+    ok(/flex-wrap:\s*wrap/.test(ruleOf(SCSS, '&__head-main {')), '第一行也要 wrap：超长标题不能把「新 N 条」挤出去')
+    const sub = ruleOf(SCSS, '&__head-sub {')
+    ok(/flex-wrap:\s*wrap/.test(sub), '第二行必须有 wrap —— 这是长角标唯一的溢出防线')
+    ok(/box-sizing:\s*border-box/.test(sub), '整行铺满时 padding / gap 不能再吃出溢出')
   })
 })

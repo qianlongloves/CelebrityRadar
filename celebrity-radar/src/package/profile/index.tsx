@@ -273,9 +273,11 @@ export default function Profile() {
         {/*
           监控风险（S2-2）：不挤进上面那行胶囊按钮，而是独占一行 —— 两个理由：
             · 「关注」和「监控」动作相邻、语义完全不同（关注是记一笔，监控是让云端每天替你盯风险），
-              三个等宽按钮里「+ 监控风险」会被挤成省略号，缩成「+ 监控」又与「+ 关注」分不清；
-            · 监控是**每天真花一次检索**的订阅，先说清它做什么、去哪取消，再让用户点
-              （报告页同样把「风险」二字写进按钮文案，这里更进一步给一行说明）。
+              挤在三个等宽按钮里时「+ 监控风险」会被压成省略号；
+            · 监控是**每天真花一次检索**的订阅，先说清它做什么、去哪取消，再让用户点。
+          2026-10-18 词表收敛：既然独占一行、宽度够，按钮就写**全称**「+ 监控风险」/「已监控」，
+          与报告页逐字一致（此前这里是「+ 监控」/「监控中」、报告页是「+ 监控风险」/「监控中」
+          ⇒ 同一个人在两个页面上看到的按钮名不同，「监控中」也不像「已关注」那样是完成态）。
         */}
         <View className='page-profile__monitor'>
           <View className='page-profile__monitor-main'>
@@ -289,7 +291,7 @@ export default function Profile() {
             hoverClass='page-profile__monitor-btn--tap'
             onClick={() => void onToggleMonitor()}
           >
-            {monitorBusy ? '处理中' : monitored ? '监控中' : '+ 监控'}
+            {monitorBusy ? '处理中' : monitored ? '已监控' : '+ 监控风险'}
           </View>
         </View>
       </View>

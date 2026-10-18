@@ -444,8 +444,15 @@ exports.main = async (event) => {
 
   if (!outTradeNo) return ack(`通知缺少 outTradeNo，忽略（returnCode=${returnCode}）`)
 
-  /* 失败 / 关闭通知：不涉及发货，ack 掉即可，避免微信反复重试 */
-  if ((returnCode && returnCode !== 'SUCCESS') || (resultCode && resultCode !== 'SUCCESS')) {
+  /*
+   * 失败 / 关闭通知：不涉及发货，ack 掉即可，避免微信反复重试。
+   *
+   * 判据收紧为「必须显式 SUCCESS」（2026-10-18）：原写法是 `returnCode && returnCode !== 'SUCCESS'`，
+   * 两个字段**缺失或空串时短路放行** —— 一份不带 returnCode / resultCode 的载荷会直接当成功通知处理，
+   * 只剩金额校验一道拦。微信 v2 的通知里这两个字段恒有值，所以收紧不改变正常回调的行为，
+   * 却把「少写两个字段就绕过判定」这条路堵上（PAY_CALLBACK_GUARD 配成 log / off 时尤其要紧）。
+   */
+  if (returnCode !== 'SUCCESS' || resultCode !== 'SUCCESS') {
     return ack(`非成功通知（returnCode=${returnCode} resultCode=${resultCode}），忽略`)
   }
 
