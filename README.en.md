@@ -67,44 +67,53 @@ name → disambiguation → search-term planning → multi-source web search
 
 ## Highlights
 
-- **One cache, shared by everyone** — reports are a **globally shared cache**: each figure is generated once, and the client's summary cards **aggregate purely locally, producing zero new model calls**. The more users, the lower the per-user cost.
-- **Every statement is traceable** — output goes through **source-URL allow-list sanitization**, and every material item points to its original source; registered business domains open inline, unregistered ones degrade to a material card + "copy link" — always predictable.
-- **Costs have a hard ceiling** — the *only* entry point that incurs upstream cost is `aiProxy`, and every request passes two gates first (product quota + anti-abuse rate limiting); event-driven deep dives are further capped by a three-layer budget (1 query per hit / ≤ 6 per round / ≤ 60 per day).
-- **Compliance built in, not bolted on** — a full PIPL toolkit ships with the code: consent gate (`consent-gate` / `privacy-gate`), consent withdrawal, personal-data export and account deletion, with the impact assessment filed in [`doc/`](./celebrity-radar/doc/个人信息保护影响评估.md).
-- **Verifiable engineering quality** — **1200+ test cases** (static constraints + pure-function assertions); `npm test` needs **no cloud connection and no keys**.
+- **One cache, shared by everyone** — reports are a **globally shared cache**: each figure is generated once, and the client's summary cards **aggregate purely locally with zero model calls**. The more users, the lower the per-user cost.
+- **11 sections free, 18 for members** — tiering works on two levers at once: **section count** and **rows per section**. Member sections render a lock card in place instead of disappearing, so the data stays complete and truncation only ever happens on the rendering line.
+- **Every statement is traceable** — output passes **source-URL allow-list sanitization**, every material item points to its origin, and exports carry the full provenance; registered business domains can be previewed inline.
+- **Watch people sideways, not just by subscription** — the monitoring ledger lines up "which of the people I watch is moving", with up to 4 ticked for a metric comparison; the ledger, comparison and event tracking all read cached data at **zero upstream cost**.
+- **Costs have a hard ceiling** — every upstream call goes through **one** exit, behind a product-quota + anti-abuse rate-limit double gate; quotas are incremented atomically per user and day on the cloud, and **the client can only read them**, so editing the bundle can neither reset nor forge usage.
+- **Compliance built in, engineering verifiable** — consent, withdrawal, data export and account deletion ship with the product, with the impact assessment archived separately; **2200+ test cases** run with one command, needing no cloud and no keys.
 
 ---
 
 ## Features
 
-All the capabilities below are **actually implemented in the code**, not blueprints. They fall into three groups.
+All the capabilities below are **actually implemented in the code**, not blueprints. They are grouped by the four tabs (Discover / Ask / Opinion / Mine), with deliverables and operations folded into the last group.
 
-### 1. Reports & search (core path)
+### 1. Discover: reports & search
 
-- **Generation pipeline**: web search → material grouped by event and compressed under a character budget → batched prompt injection → structured LLM output → field validation + length trimming + source-URL allow-list sanitization → rendered card by card.
-- **Summary cards**: profile overview, stance & opinion, risk radar, commercial value — **cache-read only, purely local aggregation, zero model calls**.
-- **Figure comparison**: put two public figures side by side (cache-read only, zero model calls).
-- **Topic knowledge base**: recatalog existing reports by topic into reusable entries.
-- **Source preview**: every material item links to its origin; sites with a registered business domain open inline, others degrade to a material card + "copy link".
+- **Discover page**: figure of the day (AI picks one and explains why), random exploration, search by name (hot words + recent searches), industry and focus filters, hot board.
+- **Reports**: 18 sections in 4 groups; **11 sections free / all 18 for members**, with rows per section tiered too (3 free plus an in-place "N more"); member sections render a lock card in place instead of vanishing.
+- **Summary cards**: profile overview, stance & opinion, risk radar, commercial value — cache-read only, zero model calls.
+- **Search**: three-layer fallback (degradation ladder → second source → knowledge-only), thin reports marked "brief"; a focus can be picked before generation (everything / dynamics / quotes / timeline).
+- **Figure profile page**: dynamics / quotes / timeline / data tabs, all reading the cache; the data tab shows coverage, sources, source × sentiment, credibility, sentiment composition and trend, and skips charts whose sample is too thin.
+- **Comparison & knowledge base**: two-figure comparison (metrics + comparative Q&A) and a topic knowledge base that recatalogs existing reports.
+- **Refresh & versions**: old versions are archived — **version list free, old-version body for members**; the diff compares counts and named entries only, and each refresh reports one of seven honest outcomes.
+- **Provenance & disambiguation**: every material item links to its origin (registered domains preview inline); a three-layer disambiguation round runs before search, and a confirmed alias is remembered for every later generation and aggregation.
 
-### 2. Following & opinion monitoring
+### 2. Ask: AI Q&A
 
-- **Following feed**: a follow list, a change overview and an aggregated feed (filter/search by figure or domain).
-- **Weekly digest & hot board**: the last seven days are summarised weekly; the hot board is produced by AI daily.
-- **Keyword alerts**: subscribe to a word; a scheduled daily search runs on it and the client lists new items.
-- **Person risk watch**: watch a person with a daily scheduled search; hits on judicial, tax, cooperation, rights-defense and statement keywords are summarised — it **only states what was hit and where the source is, with no rating or prediction**.
-- **Opinion event clustering & timeline**: a scheduled job clusters multiple sources of the same event into one; the timeline is a separate secondary page.
-- **Daily opinion brief**: aggregates the day's follow updates, keyword alerts and risk signals into risk-category distribution and impact figures (pure client-side aggregation, zero model calls).
-- **AI Q&A**: ask follow-up questions against a figure's cached report using a reasoning model — a **separate quota pool** from report generation.
+- **Two entries, one panel**: ask from the Ask tab, or follow up from the report page's tool row — same panel, same quota.
+- **Semantics**: reads the cached report, uses a reasoning model, and has its **own pool** (5 free / 30 for members, resetting at UTC+8); counted **only when an answer comes back**.
 
-### 3. Account & monetization
+### 3. Opinion: following & monitoring
 
-- **Favorites & history**: four favorite types (quote / report / dynamic / timeline) plus browsing history.
-- **Message center**: follow updates, weekly reminders, platform notices and keyword alerts in one timeline, with read state stored locally only.
-- **Membership**: tiered quotas with WeChat Pay order placement, callback fulfillment and refund reconciliation (optional).
-- **Quote cards**: rendered on the client via Canvas, shared with native forwarding, landing on the specific figure's report page.
+- **Following feed**: follow list plus an aggregated feed, filterable by figure / domain.
+- **Opinion desk**: four entries (my alerts / monitoring ledger / following feed / weekly digest), the daily brief (follows / watched words / dynamics / risks + risk categories and impact), the top 3 of today's focus and event / keyword preview cards — all aggregated locally, zero model calls.
+- **Alerts & monitoring**: keyword monitoring and person risk watch — daily scheduled searches that **only state what was hit and where, with no rating or prediction**.
+- **Weekly digest & hot board**: the digest produces a share image plus a ≤5-point summary with sources (costs one generation credit); the hot board is produced daily and feeds the figure of the day and hot words.
+- **Events & subscriptions**: multiple sources of the same event are clustered into one (timeline detail rows: 5 free / all for members); "follow" watches what happens next to that one event, "subscribe" watches all events about a person / word (up to 30 subjects, same names merge).
+- **Monitoring ledger**: sorted by latest activity, tick 4 people for a metric comparison (people without a report still appear, marked "not generated"), export a brief; free in-app, export is the only member capability.
 
-> The client has **22 pages and 4 tabs** (Discover / Ask / Opinion / Mine); 4 tab pages stay in the main package and the other 18 secondary pages are pushed down into the `package/` subpackage to keep the main bundle small (see `app.config.ts`). The cloud side has **14 cloud functions and 23 database collections**, detailed in "Architecture" and "Deployment" below.
+### 4. Mine: account, quotas & deliverables
+
+- **Favorites, history & messages**: four favorite types + browsing history; follow updates, weekly reminders, report updates and notices in one timeline, read state on device only.
+- **Membership tiers**: three daily quotas + section count (11 / 18) + rows per section + timeline detail + monitoring caps + poster and structured export + old-version bodies + model tier (non-members always fall back to basic on the cloud); WeChat Pay optional.
+- **Quotas**: generation / refresh / ask each count per day (the numbers are written once in a benefits config), incremented atomically on the cloud and **read back from the cloud**, client read-only.
+- **Deliverables**: poster, Markdown (every fact carries its source), JSON, weekly card, quote card; the mini program code on share images is generated server-side.
+- **Settings & admin console**: settings collects update reminders, data export, consent withdrawal and deletion; the admin console (openid allow-list) finds users, inspects quotas, grants membership and toggles LLM vendors.
+
+> The client has **26 pages and 4 tabs** (Discover / Ask / Opinion / Mine); 4 tab pages stay in the main package and the other 22 secondary pages are pushed down into a subpackage to keep the main bundle small. The cloud side has **16 cloud functions and 27 database collections**, detailed in "Architecture" and "Deployment" below.
 
 ---
 
@@ -176,14 +185,15 @@ The system splits in two with a clear division of labour: **the client owns expe
 
 On the **client**, beyond pages and shared components, the core logic lives in `utils`, layered by "search, reports, cache, membership & payment, opinion, security". The config directory is the other key point: package-level public config, local-only config, and the **single source of truth** for "who gets how much, at what price" all live here, so the client and cloud never keep two drifting copies.
 
-The **14 cloud functions** on the cloud side are grouped as follows:
+The **16 cloud functions** on the cloud side are grouped as follows:
 
 | Group | Functions | Role |
 |---|---|---|
 | Core egress | `aiProxy` | The **only source of upstream cost**: proxies search and LLM calls, passes the "product quota + anti-abuse rate limit" gates first, and is also the shared-cache write entry |
-| Gates & security | `quotaGuard`, `contentCheck` | Authority for quota counting / automated content-safety screening |
+| Gates & security | `quotaGuard`, `contentCheck` | Cloud authority for the three quota pools (generate / refresh / ask): `consume` increments atomically, `peek` reads without incrementing; automated content-safety screening |
 | Scheduled jobs | `hotBoardRefresh`, `notifyFollowUpdates`, `keywordAlert`, `riskWatch`, `opinionCluster` | Hot board / follow push / keyword alerts / risk watch / opinion clustering (clustering reads only — zero upstream cost) |
 | Payment | `payCreate`, `payCallback` | Order placement / callback and reconciliation |
+| Sharing & admin console | `wxacode`, `adminConsole` | Mini program code for share images (access_token stays server-side) / server side of the in-app super-admin console (openid allow-list) |
 | Users & ops | `userInit`, `dbInit`, `adminOps`, `userBackfill` | Sole writer of account & config / create collections & indexes / ops write endpoint / data backfill |
 
 Expanded, one report generation goes like this: the client plans search terms, hands them to `aiProxy` for multi-source web search (Bocha as the primary source, an optional second source as fallback); the results are grouped by event and compressed under a character budget, injected into prompts in batches, and sent back to `aiProxy` for structured generation; the output passes field validation, length trimming, source-URL allow-list sanitization and a "is the material sufficient" threshold check with graceful degradation; on success it is persisted into the globally shared `report_cache`, and the client renders it into card sections and aggregates the various summary cards. The whole run costs upstream exactly once — every later read is free.
@@ -242,23 +252,24 @@ The beauty of this `.env` is its **single origin**: at deploy time the cloud rea
 The order matters: **create collections and permissions first, deploy cloud functions second**, otherwise reads and writes inside the functions fail silently. Membership payment, subscription push and every scheduled job are **optional** — get the core "search a name → generate a report" path working first, then open up the rest gradually.
 
 1. **CloudBase environment**: enable it in DevTools and put the environment ID into `.env`.
-2. **Collections & permissions** (23 collections; the schema source of truth is `dbInit/schema.js`).
+2. **Collections & permissions** (27 collections; the schema source of truth is `dbInit/schema.js`).
 3. **Deploy cloud functions** (with the CloudBase CLI, `tcb`).
 4. **Scheduled triggers** (shipped along with `tcb fn deploy`).
 5. **The `dbInit` ops function** (read-only inspection first → create collections and indexes only with token + `apply`).
 6. **Domains** (no server domain needed).
 7. **Subscription messages** (optional).
 
-**Step two is collections and permissions.** One easily missed point: **permissions cannot be set programmatically** — they must be configured by hand, collection by collection, in the CloudBase console; `dbInit` can only create collections and add/modify indexes. There are four tiers:
+**Step two is collections and permissions.** One easily missed point: **permissions cannot be set programmatically** — they must be configured by hand, collection by collection, in the CloudBase console; `dbInit` can only create collections and add/modify indexes. There are five tiers:
 
 | Tier | Count | Details |
 |---|---|---|
 | Creator-only read/write | 7 | Users, follows, favorites, history, events, keyword watches, event status |
 | Self read-only | 4 | Three quota tables (refresh / generate / ask) + orders |
-| Public read, client write forbidden | 9 | Report cache, hot board, feed cache, keywords, risk scans / signals / logs, opinion events, person assets |
-| Client fully denied | 3 | Membership authority table, upstream call counter, deep-dive quota |
+| Public read, client write forbidden | 10 | Report cache, report versions, hot board, feed cache, keywords, risk scans / signals / logs, opinion events, person assets |
+| Public read, signed-in write | 1 | Person aliases (`person_alias`): the client writes after the user confirms "same person"; only the disambiguation layer reads it |
+| Client fully denied | 5 | Membership authority table, upstream call counter, deep-dive quota, member-section copy (`report_member`), system config (`sys_config`) |
 
-Three spots are the most error-prone: the three quota tables must be "self-readable but **not writable**", or users could edit their own quota — and **deploy `quotaGuard` before tightening them**; the membership table and anti-abuse counter must be fully client-denied since they are server-side authority; and the report cache and feed cache are shared caches, so deploy the write-enabled `aiProxy` first and only tighten them to read-only once the old version has been fully replaced.
+Three spots are the most error-prone: the three quota tables must be "self-readable but **not writable**", or users could edit their own quota — and **deploy `quotaGuard` before tightening them** (since 2026-10-18 the client reads quotas via the cloud function's `peek` first and falls back to a direct client read, so a missing custom rule no longer makes usage freeze at `0 / 30` or lets the gate through forever — but do configure it anyway: it saves one function call and keeps the fallback path usable); the membership table and anti-abuse counter must be fully client-denied since they are server-side authority; and the report cache and feed cache are shared caches, so deploy the write-enabled `aiProxy` first and only tighten them to read-only once the old version has been fully replaced.
 
 **Step three is deploying cloud functions** with the CloudBase CLI (`tcb`); timeouts, environment variables and timers are declared in `cloudbaserc.json`. A key warning: if you instead use DevTools' "upload and deploy", it **uploads code only and ignores `cloudbaserc.json`** — environment variables, timeouts and triggers must be added by hand in the console. Also, cloud functions default to a 20-second timeout; report generation is a long task, so raise `aiProxy` to 60 seconds or the platform will cut it off.
 
@@ -278,8 +289,8 @@ Tests run in Node, with **no cloud connection and no keys**. `npm test` first co
 
 Cases come in two kinds:
 
-- **Static constraints**: pin down "this source must / must not contain this pattern" — e.g. cloud gates and client semantics must agree, config sources of truth and cloud-function copies must agree, and the two hand-synced model-tier tables must be character-identical.
-- **Pure-function assertions**: assert inputs and outputs directly for side-effect-free functions such as quota, cache, report sanitization and event clustering.
+- **Static constraints**: pin down "this source must / must not contain this pattern" — e.g. cloud gates and client semantics must agree, config sources of truth and cloud-function copies must agree, and the two hand-synced model-tier tables must be character-identical; for quota tables they also pin "the client must not write" and "the cloud `peek` must be the primary read".
+- **Pure-function assertions**: assert inputs and outputs directly for side-effect-free functions such as quota, cache, report sanitization and event clustering, including boundaries like "fall back to the local mirror when the cloud read fails, and the fallback never flips the verdict".
 
 ---
 
@@ -312,8 +323,8 @@ celebrity-radar/                ← repository root (no package.json)
 └── celebrity-radar/            ← the mini program itself (run npm commands here)
     ├── src/                    source (components / utils / config / stores / styles / types)
     │   ├── pages/              4 main-package tab pages (Discover / Ask / Opinion / Mine)
-    │   └── package/            18 subpackage pages (report / figure / feed / weekly / events / alerts …)
-    ├── cloudfunctions/         14 cloud functions (dbInit/schema.js is the schema source of truth)
+    │   └── package/            22 subpackage pages (report / figure / feed / weekly / events / alerts / ledger / versions / settings / admin …)
+    ├── cloudfunctions/         16 cloud functions (dbInit/schema.js is the schema source of truth)
     ├── scripts/sync-config.js  config source-of-truth sync
     ├── test/                   tests (cases / harness / run.js)
     ├── config/                 Taro build config
@@ -330,6 +341,7 @@ celebrity-radar/                ← repository root (no package.json)
 - **Push unavailable**: subscription-message templates must be applied for under **your own service category**, and some categories simply cannot obtain the relevant templates. That is a deployment-environment restriction, not a missing feature — with templates empty the system degrades to in-app data only, and in-app features are unaffected.
 - **Freshness**: reports and rankings are essentially "an AI snapshot of public material at a moment in time" and are not guaranteed real-time. Reports are a globally shared cache, so parameter changes only affect reports generated afterwards; old caches are not rebuilt automatically unless you manually hit "regenerate".
 - **Client-side caps are not a security boundary**: client quotas, debug switches and monitoring caps are experience-layer design only and can be bypassed by modifying the bundle; the real cost boundary is on the cloud — the anti-abuse counter and membership authority tables are validated server-side only.
+- **Quota numbers never move / the gate never blocks**: first check that DevTools is signed in with the **same WeChat account as the real device** — after switching accounts, `wx.getStorageSync('auth:profile').userId` must equal the `_openid` of that row in `users`; quotas are stored per `openid#date`, so two accounts simply read two different rows, which is the usual reason two devices disagree. If the same account still reads 0, read it back from the console: `wx.cloud.callFunction({ name: 'quotaGuard', data: { kind: 'ask', action: 'peek' } }).then(r => console.log(r.result))` (swap `kind` for `generate` / `refresh` for the other two). `{ ok: true, count: N }` means the cloud row really is N — if the page still shows 0, the local mirror or the view simply has not refreshed (leave and re-enter "Mine"), which has nothing to do with permissions. The direct client read is only used when the function is unreachable, and failing it now makes the number stale, not the quota meaningless. Since `2026-10-18` both the display and the gates use this `peek` as the primary read, so a frozen number has only three causes left: wrong account, no row for today, or the function not deployed.
 
 ---
 
