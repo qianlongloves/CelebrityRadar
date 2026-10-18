@@ -4,7 +4,7 @@ import { diagLog } from './cloud-diagnostics'
 import { chatText } from './llm'
 import { toUserMessage } from './error'
 import { checkUserText } from './sec-check'
-import { incrQuotaViaCloud } from './quota-guard'
+import { incrQuotaViaCloud, peekQuotaViaCloud } from './quota-guard'
 import { track } from './events'
 import { useAuth } from '@/stores/auth'
 import { askQuotaExhaustedMessage, dailyAskLimit } from './member'
@@ -866,6 +866,21 @@ function raiseMirror(count: number): void {
 async function readServerCount(): Promise<number | null> {
   const userId = useAuth.getState().userId
   if (!userId) return null
+  /*
+   * 云端 peek 优先（2026-10-18，与 utils/quota.ts#readCount 同一次修复）。
+   *
+   * `ask_quota` 的端上读受自定义安全规则 `doc._openid == auth.openid` 约束，而这条规则
+   * **要在控制台手工配**；没配对时读取不是报错，而是静默返回空集 ⇒ 计数恒为 0
+   * ⇒ 界面永远「已用 0 / 30」，闸门也永远放行（与「额度从没扣过」长得一模一样）。
+   * 实测数据佐证：云端这张表里某账号今天已有 3 次，端上两边都显示 0。
+   *
+   * 云函数用管理员身份读同一行、不受该规则影响，本来就是 `ask` 的计数写入口（consume），
+   * 拿它的只读分支（peek）当主读法后，**端上读只作兜底**：云函数不可用时数字仍能显示
+   * （可能偏旧），而不是直接归 0 把用户骗过去。
+   */
+  const cloud = await peekQuotaViaCloud('ask')
+  if (cloud) return cloud.count
+
   const { data, error } = await table('ask_quota')
     .select('*')
     .eq('id', `${userId}#${todayKey()}`)

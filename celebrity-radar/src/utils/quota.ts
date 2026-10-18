@@ -2,7 +2,7 @@ import Taro from '@tarojs/taro'
 import { table } from './db'
 import { todayKey } from './time'
 import { diagLog } from './cloud-diagnostics'
-import { incrQuotaViaCloud } from './quota-guard'
+import { incrQuotaViaCloud, peekQuotaViaCloud } from './quota-guard'
 import type { QuotaWaiveOptions } from './quota-guard'
 import { GENERATE_QUOTA_DISABLED } from './debug'
 import {
@@ -86,6 +86,22 @@ export interface GenerateQuotaSummary {
 }
 
 async function readCount(userId: string): Promise<number> {
+  /*
+   * 云端 peek 优先（2026-10-18，用户追问「生成了但次数不变」时改的）。
+   *
+   * 原先只走端上直读：`generate_quota` 是 `{read: doc._openid == auth.openid, write: false}`
+   * —— 这条规则**要在控制台手工设**，而它是「读不到就静默归 0」的形态：规则没设对、`_openid`
+   * 没写上、或任何一次读取失败，计数都变成 0。表现出来不是报错，而是**数字一直不动**
+   * （界面上「已用 0 / 30」），同时闸门永远放行 —— 与「额度从来没被扣过」完全一样，
+   * 却极难被当成故障发现。
+   *
+   * 云端 peek 用管理员身份读同一行、不受上面那条规则影响，本来就存在（refresh 类在用）。
+   * 拿它当主读法之后，「端上读」只作兜底：云函数不可用时数字仍能显示（可能偏旧），
+   * 而不是直接归 0 把用户骗过去。
+   */
+  const cloud = await peekQuotaViaCloud('generate')
+  if (cloud) return cloud.count
+
   const id = `${userId}#${todayKey()}`
   const { data, error } = await table('generate_quota').select('*').eq('id', id).maybeSingle()
   if (error) diagLog('warn', 'db', `generate_quota 读取失败：${error.message ?? error}`)
