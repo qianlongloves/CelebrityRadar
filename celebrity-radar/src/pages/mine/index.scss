@@ -590,6 +590,33 @@
       background: $brand-weak;
       border-color: $brand;
     }
+
+    /* 被运营停用（2026-10-18）：压暗 + 虚线边框，一眼看出「摆着但点不动」。
+       不做 pointer-events:none —— 点击要能弹出一句「当前不可用」，否则点了没反应更像卡死 */
+    &--off {
+      opacity: 0.55;
+      border-style: dashed;
+      border-color: $line;
+      background: #fafafa;
+    }
+  }
+
+  /* 名称与「当前不可用」角标同一行：角标不能挤到下一行去抢简介的位置 */
+  &__vendor-line {
+    display: flex;
+    align-items: center;
+    gap: 8rpx;
+  }
+
+  &__vendor-off {
+    flex: none;
+    padding: 0 8rpx;
+    height: 30rpx;
+    line-height: 30rpx;
+    border-radius: 6rpx;
+    font-size: 18rpx;
+    color: $text-3;
+    background: $bg;
   }
 
   /* 图标底托：白底圆角方块，让彩色表情在浅灰卡片上站得住（选中态也保持一致） */

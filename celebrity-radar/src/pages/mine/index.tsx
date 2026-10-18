@@ -96,11 +96,28 @@ export default function Mine() {
    * `?? []` 是**防御**：正常构建里 llm.vendors 恒存在，但新旧包混用（页面按新结构读、
    * 公共配置还是旧结构）时会拿到 undefined，`undefined.map` 会把整页打成白屏 ——
    * 白屏把「配置读错」伪装成「页面坏了」，代价远大于选择器短暂为空。
+   *
+   * **只按 ready 过滤，不按 enabled 过滤**（2026-10-18 改）：被运营停用的厂要留在原地
+   * 置灰并标「当前不可用」。藏起来的话用户只会觉得「我的 Kimi 怎么没了」，还得去问；
+   * 摆在那里灰着，一眼就知道是「暂时停了」而不是「我不会用」。
    */
   const vendors: readonly LlmVendor[] = publicConfig.llm.vendors ?? []
   const visibleVendors = readyVendors
-    ? vendors.filter((v) => readyVendors.some((r) => r.key === v.key && r.ready && r.enabled))
+    ? vendors.filter((v) => readyVendors.some((r) => r.key === v.key && r.ready))
     : vendors
+
+  /**
+   * 这家是不是被运营停用了（点不动、要提示）。
+   *
+   * 只认云端明确回 `enabled:false` 的情况：清单没拉到（null）或旧版云函数不带该字段 ⇒
+   * 一律当可用 —— 网络抖动或版本落后不该把整个选择器变成一片灰。
+   */
+  const isVendorOff = (key: string): boolean => {
+    if (!readyVendors) return false
+    const r = readyVendors.find((v) => v.key === key)
+    return !!r && r.enabled === false
+  }
+  const hasOffVendor = visibleVendors.some((v) => isVendorOff(v.key))
 
   /**
    * 质量档清单：来自 publicConfig.llm.qualities（基础 / 标准 / 高级）。
@@ -122,7 +139,7 @@ export default function Mine() {
     if (cur && cur !== publicConfig.llm.defaultVendor && !list.some((v) => v.key === cur && v.ready && v.enabled)) {
       setPreferredProvider(publicConfig.llm.defaultVendor)
       setSelection(resolveChatSelection(isMember))
-      Taro.showToast({ title: '原选厂商暂不可用，已切回腾讯云', icon: 'none' })
+      Taro.showToast({ title: '原选厂商当前不可用，已切回腾讯云', icon: 'none' })
     }
   }
 
@@ -131,6 +148,17 @@ export default function Mine() {
    * 切换厂商不改变质量档选择（各家都是基础/标准/高级同一套）。
    */
   const chooseVendor = (v: LlmVendor) => {
+    /*
+     * 被运营停用的厂：**不写偏好**，只把话说清楚。
+     *
+     * 为什么不在渲染层直接不给点击：卡片是并排的，点了没反应比弹一句话更像「卡了」；
+     * 用户点它的动机通常是「我想用它」，需要被告知「现在用不了」而不是被判无声失败。
+     * 闸门仍在云端（停用清单在 aiProxy 裁决时生效），这里只防「选了也白选」。
+     */
+    if (isVendorOff(v.key)) {
+      Taro.showToast({ title: `${v.label}当前不可用，请稍后再试或选择其他厂商`, icon: 'none' })
+      return
+    }
     if (v.key === selection.vendor) {
       /* 显示与存储对齐（残留偏好被回落时顺手修正），与质量档同一做法 */
       if (getPreferredProvider() !== v.key) setPreferredProvider(v.key)
@@ -647,19 +675,35 @@ export default function Mine() {
           比原先的整行列表更容易一眼扫出「有哪几家」，也把「换家 = 整组换」的语义做成并列的选项。
         */}
         <View className='page-mine__vendor-grid'>
-          {visibleVendors.map((v) => (
-            <View
-              key={v.key}
-              className={`page-mine__vendor-card${v.key === selection.vendor ? ' page-mine__vendor-card--on' : ''}`}
-              hoverClass='page-mine__vendor-card--tap'
-              onClick={() => chooseVendor(v)}
-            >
-              <View className='page-mine__vendor-icon'>{v.icon}</View>
-              <Text className='page-mine__vendor-label'>{v.label}</Text>
-              <Text className='page-mine__vendor-desc'>{v.desc}</Text>
-            </View>
-          ))}
+          {visibleVendors.map((v) => {
+            /*
+             * 被运营停用（欠费 / 风控）：卡片留在原地但置灰、带「当前不可用」角标，点击给提示。
+             * 停用是**暂时**运营动作，不是这家不存在 —— 藏掉会让人以为厂商丢了；
+             * 灰着摆在这里，用户自己就能得出「换一家用」的结论。
+             */
+            const off = isVendorOff(v.key)
+            return (
+              <View
+                key={v.key}
+                className={`page-mine__vendor-card${v.key === selection.vendor ? ' page-mine__vendor-card--on' : ''}${off ? ' page-mine__vendor-card--off' : ''}`}
+                hoverClass='page-mine__vendor-card--tap'
+                onClick={() => chooseVendor(v)}
+              >
+                <View className='page-mine__vendor-icon'>{v.icon}</View>
+                <View className='page-mine__vendor-line'>
+                  <Text className='page-mine__vendor-label'>{v.label}</Text>
+                  {off && <Text className='page-mine__vendor-off'>当前不可用</Text>}
+                </View>
+                <Text className='page-mine__vendor-desc'>{v.desc}</Text>
+              </View>
+            )
+          })}
         </View>
+        {hasOffVendor && (
+          <Text className='page-mine__model-note'>
+            「当前不可用」的厂商由管理员临时停用（多为额度或风控问题），暂不能选择；正在使用它的会被自动切回腾讯云，已生成的报告不受影响。
+          </Text>
+        )}
         <Text className='page-mine__model-grouplabel'>质量档</Text>
         <View className='page-mine__model-options'>
           {qualities.map((q) => {

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import Taro from '@tarojs/taro'
 import { publicConfig } from '@/config/public'
 import type { LlmVendor, LlmQuality } from '@/config/public'
 import { getPreferredTier, getPreferredProvider } from './settings'
@@ -85,6 +86,14 @@ interface ProxyChatResult {
   /** 所选档缺该能力槽、同厂商向下降档时置 true（如 Kimi 高级档生成报告 → 降到 k2.6） */
   qualityDowngraded?: boolean
   /**
+   * 原选厂商被运营停用、云端被迫换了家（2026-10-18）。`fallbackFrom` 是被停用的那家。
+   *
+   * 端上必须**说出来**：「我明明选了 Kimi，怎么一会儿一个样」这种投诉，如果只能靠翻
+   * 云函数日志解释，等于没解释。旧版云函数没有这两个字段 ⇒ 按「没换厂」处理。
+   */
+  vendorFallback?: boolean
+  fallbackFrom?: string | null
+  /**
    * 上游的 finish_reason 原样回传（见 aiProxy 的 handleChat）。'length' = 输出撞上 max_tokens 被截断，
    * 报告这类长 JSON 一旦被截断就会解析失败、整份降级成纯文本（表现是卡片成批消失），
    * 所以它是这里唯一值得端上专门记一笔的字段。
@@ -96,6 +105,14 @@ interface ProxyChatResult {
 
 /** 值得重试的 kind：上游 5xx / 网络层失败。与 search.ts 的 RETRYABLE_KINDS 同构 */
 const RETRYABLE_KINDS = new Set(['upstream', 'network'])
+
+/**
+ * 「原选厂商被停用、云端已换家」这次运行是否已提示过（2026-10-18）。
+ *
+ * 报告是分节生成、一次任务会连打十几回，每次都弹「已自动切换」会把界面刷成弹幕；
+ * 但一次都不说的话，用户永远不知道手里的「Kimi 高级版」其实跑在别家 —— 故只提示第一次。
+ */
+let vendorFallbackNotified = false
 
 /** 已被显式提取的字段，兜底摊平时跳过，避免重复 */
 const ERR_TEXT_FIELDS = ['message', 'errMsg', 'errCode']
@@ -278,9 +295,10 @@ export interface ReadyVendor {
   ready: boolean
   /**
    * 运营是否启用（2026-10-18）：某家厂商欠费 / 被风控时，运维在「运维中心」把它停用，
-   * 云端裁决会跳过它。端上据此**不再展示**这家 —— 展示了却必然被回落到别家，
-   * 用户会以为「选了高级版」，实际拿到的却是另一家的基础档。
-   * 旧版云函数没有这个字段 ⇒ 按启用处理（不能因为读不到开关就把厂商全藏掉）。
+   * 云端裁决会跳过它。端上据此把这家**置灰并标「当前不可用」**，点了给提示、不写偏好 ——
+   * 直接藏掉的话，用户只会以为「这家怎么没了」；而允许选中则必然被云端回落到别家，
+   * 用户以为选了高级版、实际拿到的是另一家的档位。
+   * 旧版云函数没有这个字段 ⇒ 按启用处理（不能因为读不到开关就把厂商全灰掉）。
    */
   enabled: boolean
 }
@@ -288,6 +306,16 @@ export interface ReadyVendor {
 /** 成功缓存清单；拉取失败为 null（调用方据此「失败放行」：展示全部静态厂商） */
 let readyVendorCache: ReadyVendor[] | null = null
 let readyVendorPromise: Promise<ReadyVendor[] | null> | null = null
+let readyVendorCachedAt = 0
+
+/**
+ * 清单缓存有效期（2026-10-18）：运维在「运维中心」把某家停用后，端上最迟 60 秒就该看到。
+ *
+ * 此前是「本次运行期永久缓存」：停用后用户不杀进程就永远看不到开关变化，点一下照样选中、
+ * 生成时被云端悄悄换厂 —— 开关等于只对重启过的人生效。60 秒既能让开关及时生效，
+ * 又不至于每次 onShow 都打一次云函数（「我的」页每次显示都会刷这张卡）。
+ */
+const READY_VENDOR_TTL_MS = 60 * 1000
 
 /**
  * 拉厂商就绪清单：哪些 http 厂在云端配了 key（cloudbase 恒就绪）。
@@ -297,7 +325,9 @@ let readyVendorPromise: Promise<ReadyVendor[] | null> | null = null
  * 网络抖动不该把所有厂商藏掉，调用方应按「未知 = 全展示」处理。
  */
 export function listReadyVendors(force = false): Promise<ReadyVendor[] | null> {
-  if (!force && readyVendorCache) return Promise.resolve(readyVendorCache)
+  if (!force && readyVendorCache && Date.now() - readyVendorCachedAt < READY_VENDOR_TTL_MS) {
+    return Promise.resolve(readyVendorCache)
+  }
   if (!force && readyVendorPromise) return readyVendorPromise
   readyVendorPromise = (async () => {
     try {
@@ -306,6 +336,7 @@ export function listReadyVendors(force = false): Promise<ReadyVendor[] | null> {
         | null
       const list = res && res.ok === true && Array.isArray(res.vendors) ? res.vendors : null
       if (!list) return null
+      readyVendorCachedAt = Date.now()
       readyVendorCache = list
         .filter((v) => typeof v.key === 'string' && v.key)
         .map((v) => ({
@@ -472,6 +503,21 @@ async function chatViaPlatform(messages: ChatMessage[], purpose: QuotaPurpose): 
   const content = typeof res.content === 'string' ? res.content : ''
   if (!content.trim()) {
     return { ok: false, error: '生成服务没有返回内容，请重试', retryable: true, kind: 'empty' }
+  }
+
+  /*
+   * 原选厂商已被运营停用 ⇒ 云端跳过了它、回落到可用的一家（见 llm.config.js 的 disabledError /
+   * vendorFallback）。这条路径走到的场景是「用户的端上清单还没刷新」：页面停在那、或刚被停用。
+   * 说一句比不说强：不说的话，用户只会发现报告「味道不对」，却以为是模型抽风。
+   */
+  if (res.vendorFallback && !vendorFallbackNotified) {
+    vendorFallbackNotified = true
+    diagLog(
+      'warn',
+      'llm',
+      `原选厂商「${res.fallbackFrom || vendor}」已被运营停用，本次云端回落到「${res.vendor || ''}」`
+    )
+    void Taro.showToast({ title: '原选厂商当前不可用，已自动切换', icon: 'none' })
   }
 
   diagLog(

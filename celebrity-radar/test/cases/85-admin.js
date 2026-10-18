@@ -232,10 +232,42 @@ describe('端上：入口只在超管时出现，且页面三件套齐全', () =
     notOk(/collection\('users'\)/.test(a), '端上没有跨用户读权限，硬读只会静默返回空');
   });
 
-  it('厂商选择过滤掉「已停用」（否则用户选了必然被云端回落，等于骗人）', () => {
+  it('停用厂商留在选择器里，但置灰并标「当前不可用」（藏起来只会让人以为厂商没了）', () => {
     const mine = codeOf(readSrc('pages/mine/index.tsx'));
-    ok(/r\.ready && r\.enabled/.test(mine), '「我的」页的选择器要同时看就绪与启用');
+    ok(
+      /readyVendors\.some\(\(r\) => r\.key === v\.key && r\.ready\)/.test(mine),
+      '选择器只按就绪过滤 —— 停用的要留在原地灰着'
+    );
+    notOk(
+      /r\.ready && r\.enabled/.test(mine),
+      '按启用过滤会把整张卡片藏掉，用户连「已停用」都看不到，只会来问「我的 Kimi 呢」'
+    );
+    ok(/page-mine__vendor-card--off/.test(mine), '要有置灰态');
+    ok(/isVendorOff/.test(mine), '停用判定要收口成一个函数，别在两处各写一份');
+    const scss = readSrc('pages/mine/index.scss');
+    ok(/&--off\s*\{/.test(scss), '置灰样式要真的写（只加类名不写样式最难发现）');
+    ok(/&__vendor-off\s*\{/.test(scss), '「当前不可用」角标样式');
+  });
+
+  it('点已停用的厂商不写偏好，只提示（不能「点了没反应」）', () => {
+    const mine = codeOf(readSrc('pages/mine/index.tsx'));
+    const guard = mine.indexOf('if (isVendorOff(v.key))');
+    const write = mine.indexOf('setPreferredProvider(v.key)')
+    ok(guard >= 0, 'chooseVendor 里要有停用闸门');
+    ok(write > guard, '闸门必须在写偏好之前 —— 排在后面等于照旧选中，只是多弹一句话');
+    ok(/当前不可用/.test(mine.slice(guard, guard + 400)), '提示要说明「当前不可用」，而不是「切换失败」');
+  });
+
+  it('云端被迫换厂时端上说出来（旧包 / 清单还没刷新的兜底）', () => {
     const llm = codeOf(readSrc('utils/llm.ts'));
+    ok(/res\.vendorFallback/.test(llm), '回执里的换厂标记要被消费');
+    ok(/原选厂商当前不可用/.test(llm), '要有一句人话，而不是只写诊断日志');
+  });
+
+  it('清单缓存有 TTL（停用不能只对「重启过的人」生效）', () => {
+    const llm = codeOf(readSrc('utils/llm.ts'));
+    ok(/READY_VENDOR_TTL_MS/.test(llm), '永久缓存会让开关永远看不到');
+    ok(/readyVendorCachedAt/.test(llm));
     ok(/enabled: v\.enabled !== false/.test(llm), '旧回执没有这个字段时按启用处理');
   });
 });
