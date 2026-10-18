@@ -134,12 +134,18 @@ export function adminGetUser(openid: string): Promise<AdminResult<AdminUserDetai
   return call<AdminUserDetail>('getUser', { openid })
 }
 
-/** 发放 / 续期会员（天数为单位；代理到 payCallback，唯一写口不变） */
+/**
+ * 发放 / 续期会员（天数为单位；代理到 payCallback，唯一写口不变）。
+ *
+ * `plan` 由天数**派生**、不由调用方随手写死（2026-10-18）：它只决定会员卡上显示哪一档，
+ * 但显示「年度会员 · 剩 30 天」会让人以为买错了档。30 / 90 / 365 正是 PLANS 的三档，
+ * 运维台的「+30 天 / +365 天」按钮与它对得上；其它天数按最近的档位归类。
+ */
 export function adminGrantMember(
   openid: string,
-  days: number,
-  plan = 'annual'
-): Promise<AdminResult<{ openid: string; days?: number; expires_at?: string }>> {
+  days: number
+): Promise<AdminResult<{ openid: string; plan?: string; days?: number; expires_at?: string }>> {
+  const plan = days >= 365 ? 'annual' : days >= 90 ? 'quarterly' : 'monthly'
   return call('grantMember', { openid, days, plan })
 }
 

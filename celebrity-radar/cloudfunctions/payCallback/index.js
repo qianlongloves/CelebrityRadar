@@ -408,17 +408,29 @@ const afterSales = createAfterSales({
 })
 
 exports.main = async (event) => {
+  const e = event || {}
+
+  /*
+   * ① 运营写口：必须排在调用方闸门**之前**（2026-10-18 修）。
+   *
+   * 闸门的判据是「带 OPENID ⇒ 端上调用」，而运维台那条路是 `adminConsole` → 本函数的
+   * **云函数间调用**，CloudBase 会把触发链源头的用户 OPENID 一并透传下来 —— 于是合法的运营
+   * 写口被当成端上伪造回调拦掉。症状极隐蔽：运维点「+30 天」看到「已加 30 天」，
+   * 库里一行没变，而 payCallback 日志里只有一句「拒绝端上调用」。
+   *
+   * 安全性不靠闸门，靠 handleAdminOp 自带的口令闸门：`PAY_ADMIN_TOKEN` 未配置一律拒绝、
+   * 配了还要逐字比对。端上拿不到这个值，直接调 payCallback 编一个 adminOp 一样进不来。
+   * 换句话说，这两道门保护的是**不同的东西**：口令门保护「谁能改会员」，调用方闸门保护
+   * 「谁能让本函数发货」—— 混在一起才会把合法的服务端转发误伤掉。
+   */
+  if (e.adminOp) return afterSales.handleAdminOp(e)
+
   const blocked = callerGuard()
   if (blocked) {
     /* 拦下之后先留痕再回绝：万一判据错了，对账才看得见这单（见 markGuardBlocked） */
     await markGuardBlocked(event)
     return blocked
   }
-
-  const e = event || {}
-
-  /* ① 运营写口：先于形状判断，因为它的事件里也可能带 outTradeNo */
-  if (e.adminOp) return afterSales.handleAdminOp(e)
 
   /* ② 定时对账：CloudBase 的 timer 事件形如 { Type: 'Timer', TriggerName, Time } */
   if (e.Type === 'Timer' || e.TriggerName) return afterSales.reconcile()

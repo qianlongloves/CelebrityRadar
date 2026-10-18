@@ -59,8 +59,18 @@ function adminOpenids() {
     .filter((s) => s.length >= 16)
 }
 
+/**
+ * 按 openid 找 users 行。
+ *
+ * ⚠ 判据是 **`_openid`，不是 `_id`**（2026-10-18 修）：users 行由云函数 `userInit` 用
+ * `add()` 写入，`_id` 是数据库自动生成的随机串，`_openid` 才是那个人的 openid
+ * （schema 里 `_openid` 标 system，而 `_id` 也是 system，两者极易看混）。
+ * 写成 `where({_id: openid})` 的后果不是报错而是**恒查不到** —— 详情页永远显示
+ * 「用户不存在」，而列表页（走 `_openid`）显示得好好的，于是运维会以为「这个人没登录过」。
+ * 同项目里 `adminOps` / `payCallback` 的同类查询一律用 `_openid`，这里是唯一的例外。
+ */
 async function findUserRow(openid) {
-  const res = await db.collection('users').where({ _id: openid }).limit(1).get()
+  const res = await db.collection('users').where({ _openid: openid }).limit(1).get()
   return (res && res.data && res.data[0]) || null
 }
 
@@ -233,6 +243,11 @@ async function getUser(e) {
 /**
  * 代理到 payCallback 的运营写口 —— 会员数据的**唯一**写口。
  * 本函数只负责「我是谁」（`by`）与转发，不碰任何会员字段。
+ *
+ * ⚠ 必须**读懂 payCallback 的回执**（2026-10-18 修）：它拒绝时有两种形状 ——
+ * 运营写口的 `{ ok:false, error }`，以及被调用方闸门挡下时的 `{ errcode:-1, errmsg }`。
+ * 以前这里只看「拿到了一个对象」就当成功，于是任何一种拒绝都被包成 `ok:true` 回给端上：
+ * 运维点「+30 天」，页面弹出「已加 30 天」，库里一行没变。**静默失败比报错难查十倍**。
  */
 async function proxyToPayCallback(payload) {
   const token = str(process.env.PAY_ADMIN_TOKEN)
@@ -246,7 +261,29 @@ async function proxyToPayCallback(payload) {
     name: 'payCallback',
     data: Object.assign({ token }, payload, { by: openidOf() })
   })
-  return { result: (res && res.result) || null }
+  const result = (res && res.result) || null
+  if (!result || typeof result !== 'object') {
+    return { proxyError: 'payCallback 没有返回结果（可能尚未部署，或调用超时）' }
+  }
+  if (result.ok === true) return { result }
+  const why = str(result.error) || str(result.errmsg)
+  return {
+    proxyError: why
+      ? `payCallback 拒绝了这次操作：${why}`
+      : `payCallback 拒绝了这次操作（errcode=${result.errcode == null ? '?' : result.errcode}）`
+  }
+}
+
+/**
+ * 把 payCallback 的回执摊平成本函数的返回值。
+ * 端上只需要「改完之后的到期日」，不该知道中间多了一跳代理；而失败必须走 `{error}`，
+ * 由 `exports.main` 统一翻成 `ok:false`（否则又会变成一次静默成功）。
+ */
+function unwrapProxy(r) {
+  if (r.proxyError) return { error: r.proxyError }
+  const out = r.result || {}
+  if (out.ok !== true) return { error: str(out.error) || str(out.errmsg) || 'payCallback 拒绝了这次操作' }
+  return out
 }
 
 /** 发放 / 续期会员：参数与 payCallback 的 adminOp=grantMember 完全一致 */
@@ -255,14 +292,25 @@ async function grantMember(e) {
   const days = Math.floor(Number(e.days))
   if (!openid) return { error: '需要 openid' }
   if (!(days > 0)) return { error: 'days 必须是正整数' }
-  return proxyToPayCallback({ adminOp: 'grantMember', openid, days, plan: str(e.plan) || 'annual' })
+  const out = unwrapProxy(
+    await proxyToPayCallback({ adminOp: 'grantMember', openid, days, plan: str(e.plan) || 'annual' })
+  )
+  if (out.error) return out
+  return {
+    openid: str(out.openid) || openid,
+    plan: str(out.plan) || str(e.plan) || 'annual',
+    days: Number(out.days) || days,
+    expires_at: out.expires_at || null
+  }
 }
 
 /** 撤销会员：把有效期收到此刻（不删行，见 payCallback#adminRevokeMember 的说明） */
 async function revokeMember(e) {
   const openid = str(e.openid)
   if (!openid) return { error: '需要 openid' }
-  return proxyToPayCallback({ adminOp: 'revokeMember', openid, reason: str(e.reason) })
+  const out = unwrapProxy(await proxyToPayCallback({ adminOp: 'revokeMember', openid, reason: str(e.reason) }))
+  if (out.error) return out
+  return { openid: str(out.openid) || openid, revoked: out.revoked === true, expires_at: out.expires_at || null }
 }
 
 /** 厂商目录 + 停用清单（一次拿全，端上开关据此渲染） */
@@ -375,7 +423,16 @@ exports.main = async (event) => {
     }
   }
   try {
-    return Object.assign({ ok: true, action }, await run(e))
+    const out = await run(e)
+    /*
+     * 任何 action 都用 `{ error }` 表示失败（2026-10-18 修）。
+     * 以前只有**抛错**才算失败，于是 `getUser` 缺 openid、`grantMember` 被 payCallback 拒绝
+     * 这两个分支都回成了 `ok:true` + 一个没人看的 error 字段 —— 端上只判 ok，就变成了
+     * 「提示成功、实际没改」。判定放在这里一次，比每个 action 各自记得返回 ok:false 可靠。
+     */
+    const bad = out && typeof out === 'object' ? str(out.error) : ''
+    if (bad) return { ok: false, action, error: bad }
+    return Object.assign({ ok: true, action }, out)
   } catch (err) {
     return { ok: false, action, error: msgOf(err) }
   }

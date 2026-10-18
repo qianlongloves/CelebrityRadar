@@ -285,3 +285,58 @@ describe('dbInit：开关集合与人工改会员的留痕都登记了', () => {
     ok(/f\('last_admin_op'/.test(schema));
   });
 });
+
+/**
+ * 「运维台点 +30 天，提示成功，会员没变」（2026-10-18 实测）。
+ *
+ * 三处缺陷叠在一起，每一处单独看都"说得过去"：
+ *   ① payCallback 的调用方闸门排在运营写口前面 —— 闸门判据是「带 OPENID ⇒ 端上调用」，
+ *      而 adminConsole 转发是云函数间调用、OPENID 会透传，合法的运营写口被自己人拦掉；
+ *   ② adminConsole 只看「payCallback 有没有返回对象」，于是 ① 的拒绝被包成 ok:true；
+ *   ③ 端上只判 ok，于是弹「已加 30 天」。
+ * 结果是一次**没有任何报错的失败**，这才是最难查的地方。本节按链路顺序把三处都钉住。
+ */
+describe('运维台改会员：一次点击必须真的落到库里（三处静默失败）', () => {
+  const consoleCode = codeOf(readCloud(CONSOLE_JS));
+  const payCode = codeOf(readCloud('payCallback/index.js'));
+
+  it('payCallback 的运营写口排在调用方闸门之前（否则服务端转发带 OPENID 被当端上回调）', () => {
+    const atAdminOp = payCode.indexOf('if (e.adminOp) return afterSales.handleAdminOp(e)')
+    const atGuard = payCode.indexOf('const blocked = callerGuard()')
+    ok(atAdminOp >= 0, '运营写口分支不能丢');
+    ok(atGuard >= 0, '调用方闸门不能丢');
+    ok(
+      atAdminOp < atGuard,
+      '闸门排在运营写口前面 ⇒ adminConsole 的合法转发会被拦成「拒绝端上调用」'
+    );
+    /* 顺序放开不等于放弃鉴权：闸门管不到的那条路必须自带口令门，且未配置即拒绝 */
+    const sales = codeOf(readCloud('payCallback/after-sales.js'));
+    ok(/PAY_ADMIN_TOKEN/.test(sales), '运营写口的安全性落在口令闸门上');
+  });
+
+  it('查 users 行按 _openid（写成 _id 不会报错，只会永远「用户不存在」）', () => {
+    const at = consoleCode.indexOf('async function findUserRow')
+    ok(at > 0, '找不到 findUserRow');
+    const fn = consoleCode.slice(at, consoleCode.indexOf('\n}', at));
+    ok(/_openid/.test(fn), 'users 行由 userInit 用 add() 写入，openid 在 _openid 上、_id 是随机串');
+    notOk(/where\(\{\s*_id:/.test(fn), '按 _id 查 openid 恒查不到，且列表页照样正常 ⇒ 极难发现');
+  });
+
+  it('payCallback 的拒绝不许被包成成功（两种拒绝形状都要认）', () => {
+    ok(/result\.ok === true/.test(consoleCode), '要判 ok，而不是「拿到了对象就算成功」');
+    ok(/errcode/.test(consoleCode), '被闸门挡下时回的是 {errcode,errmsg}，同样不是成功');
+    ok(/proxyError/.test(consoleCode), '失败要能被上层识别成失败');
+    const atRun = consoleCode.indexOf('const out = await run(e)')
+    ok(atRun > 0, 'main 必须检查 action 的返回值');
+    ok(
+      consoleCode.indexOf('ok: false, action, error: bad') > atRun,
+      'action 回 {error} 时必须翻成 ok:false —— 端上只判 ok，否则又是「提示成功、库里没变」'
+    );
+  });
+
+  it('端上 plan 由天数派生（「年度会员 · 剩 30 天」会让人以为买错档）', () => {
+    const a = codeOf(readSrc('utils/admin.ts'));
+    ok(/days >= 365 \? 'annual'/.test(a), 'plan 要由天数派生，不由调用方随手写死');
+    ok(/'monthly'/.test(a) && /'quarterly'/.test(a), '三档要与 PLANS 对上');
+  });
+});
