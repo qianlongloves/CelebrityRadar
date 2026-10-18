@@ -433,11 +433,12 @@
     font-size: 20rpx;
   }
 
-  /* 热搜词：一行轻量胶囊，点击「填词 + 搜索」 */
+  /* 热搜词 / 最近搜索：一行「标签 + 单行横滑胶囊」，点击「填词 + 搜索」。
+     容器只管标签与滑轨并排；chip 的排布交给下面两条 —— 别在这里写 flex-wrap，
+     否则滑轨之外的内容一旦变长，整块又会折行（2026-10-18 用户反馈「热搜长度换行」）。 */
   &__hot-words {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
     gap: 12rpx;
     margin-top: 18rpx;
   }
@@ -448,10 +449,12 @@
     color: $text-3;
   }
 
-  /* 「最近」容器：单行横滑，与「行业 / 关注」筛选同一套写法 ——
+  /* 「最近」与「热搜」共用一条滑轨：单行横滑，与「行业 / 关注」筛选同一套写法 ——
      scroll-view 内部不是 flex 容器（要上 enable-flex 才认 display:flex），
-     直接铺 chip 会各占一行，故用 nowrap + inline-block 子项压成一行 */
-  &__recent-chips {
+     直接铺 chip 会各占一行，故用 nowrap + inline-block 子项压成一行。
+     ⚠ 名字长短不一时只能横向滚，不能折行：折行会让搜索卡高度随榜单变化而跳动。 */
+  &__recent-chips,
+  &__hot-chips {
     flex: 1;
     min-width: 0;
     height: 60rpx;
@@ -462,24 +465,27 @@
   }
 
   &__hot-word {
+    /* 滑轨内的 chip：必须自身 inline-block + 右间距 —— scroll-view 里的 gap 不生效，
+       而 block 元素会各占一行（见上面滑轨的说明） */
+    display: inline-block;
+    vertical-align: top;
+    margin-right: 12rpx;
     padding: 6rpx 20rpx;
     border-radius: 999rpx;
     background: $brand-weak;
     color: $brand;
     font-size: 22rpx;
     line-height: 1.6;
+    /* 胶囊本身也不许折行：名字长的热搜宁可横向滚出去，也不要把两个字挤成两行 */
+    white-space: nowrap;
 
     &--tap,
     &--tap:active {
       opacity: 0.7;
     }
 
-    /* 「最近」是低权重的复访入口：中性色胶囊，与品牌紫的「热搜」区分开；
-       横滑容器里需 inline-block —— flex 子项那套在 scroll-view 内不成立 */
+    /* 「最近」是低权重的复访入口：中性色胶囊，与品牌紫的「热搜」区分开 */
     &--recent {
-      display: inline-block;
-      vertical-align: top;
-      margin-right: 12rpx;
       background: #fff;
       color: $text-2;
       box-shadow: $shadow-card;

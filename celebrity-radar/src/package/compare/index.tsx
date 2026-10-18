@@ -12,6 +12,7 @@ import type { Report } from '@/utils/report'
 import { isFollowed, listFollows, toggleFollow } from '@/utils/follows'
 import { listHistory } from '@/utils/history'
 import { readPortraits } from '@/utils/portrait'
+import { resolvePersonKey } from '@/utils/person-index'
 import { readMemberState } from '@/utils/member'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
 import { isSensitiveQuery } from '@/utils/sensitive'
@@ -237,19 +238,32 @@ export default function Compare() {
   const pickRival = useCallback(
     async (c: Candidate) => {
       setNotice('')
+      /*
+       * 先按「同一人」判据归一（utils/person-index.ts）：同一个人已有一份报告时读那一份。
+       * 不归一的后果就是这个入口在造分报告 —— 库里明明有「雷军#tech」，这里按「雷军#auto」
+       * 查不到，于是提示「要花一次额度」，再生成一份。归一失败就用入参 key（端上零阻塞）。
+       */
+      let personKey = c.personKey
+      try {
+        personKey = await resolvePersonKey(c.name, c.domain)
+      } catch {
+        personKey = c.personKey
+      }
+      /* 后续生成也用归一后的 key，否则写了一行新的、下次还得再归一次 */
+      const picked: Candidate = personKey === c.personKey ? c : { ...c, personKey }
       let found: Report | null = null
       try {
-        found = await getCachedReport(c.personKey)
+        found = await getCachedReport(personKey)
       } catch {
         found = null
       }
       if (found) {
-        setPending(c)
+        setPending(picked)
         setRival(found)
         setPhase('ready')
         return
       }
-      setPending(c)
+      setPending(picked)
       setPhase('noReport')
     },
     []

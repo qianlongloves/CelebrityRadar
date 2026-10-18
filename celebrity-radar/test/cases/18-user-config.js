@@ -606,6 +606,12 @@ describe('注销账号 · userInit/deleteAccount（P1-4）', () => {
     'risk_scans',
     'risk_signals',
     'opinion_events',
+    /* 人物别名（2026-10-18）：_id = `名字#领域` → 已有 personKey，行内不写 openid。
+       它描述的是「两个名字之间的关系」（谁和谁是同一个人），不是「我的那一行」——
+       注销时按用户删既无从下手，也会把别人已确认的结论一起清掉。
+       ⚠ 写入方是端上（utils/person-index.ts#confirmPersonMerge），不是云函数：
+       一次误写的后果止于「同一个名字下两个同名者被并成一份」（读侧还要验目标行存在 + 同名）。 */
+    'person_alias',
     'person_assets',
     'deep_dive_quota',
     'scan_logs',

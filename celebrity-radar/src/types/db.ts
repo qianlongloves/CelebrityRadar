@@ -36,6 +36,35 @@ export interface ReportCacheRow {
 }
 
 /**
+ * person_alias：人物别名（2026-10-18，「同一人判定」的落盘结论）。
+ *
+ * `_id` / alias = `名字#领域`（**入口给的那个写法**），personKey = 已经存在的那份报告的 key。
+ * 于是「雷军#auto」可以被永久指到「雷军#tech」，即使领域不同也只用一份报告 ——
+ * 这是「领域不是身份」的补偿：领域仍不进主键、不进 URL，只是解析时被别名盖住。
+ *
+ * `personKey` 为空串 = 用户点过**「不是同一位」**：读侧看到空串就直接走入参 key，
+ * 既不自动合并也不再追问（否定结论与肯定结论共用一张表，少一张表少一次查询）。
+ *
+ * 权限 `acl: publicRead`（所有人可读、登录可写）：结论是**全站共享**的，
+ * 同一种写法不需要每个用户各点一次；写失败只影响「下次还要再问一遍」。
+ * ⚠ 行内不含 `_openid` 之外的任何用户标识，`by` 也不记 —— 它描述的是两个人名之间的关系，
+ *   不是「我的那一行」，故注销时不必按用户删（见 cloudfunctions/dbInit/schema.js）。
+ */
+export interface PersonAliasRow {
+  id: string // `名字#领域`
+  alias: string // 同上，查询列（_id 在云侧叫 _id，业务列另存一份便于 where）
+  /** 目标 personKey；空串 = 用户确认「不是同一位」 */
+  personKey: string
+  name: string
+  /** 入口给的领域原串（不是归一后的组键） */
+  domain: string
+  /** 目标报告的一句话身份（命中时用于提示文案，可为空） */
+  headline?: string
+  /** 写入时间（ISO），便于排查脏数据 */
+  at?: string
+}
+
+/**
  * report_versions：报告历史版本（S3-1 ③，2026-10-16）。
  *
  * 存**被覆盖掉的那一版**：`report_cache` 一人一份、`force` 重生即整篇替换，旧版不留就永久消失。

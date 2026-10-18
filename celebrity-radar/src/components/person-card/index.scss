@@ -120,6 +120,52 @@ $pc-icon-ai: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5v
   }
 
   /*
+    「是不是同一位」的确认条（2026-10-18）：浅紫底、无描边 —— 它是卡片里的一句**提示**，
+    不该长成第三块视觉重点（关注与主操作才是动作）。
+    文案与按钮分两行：卡片正文不到 400rpx 宽，「已用『科技』那份报告：小米集团创始人」
+    再加两枚按钮同一行必然折行，不如显式分行、按钮靠左对齐。
+  */
+  &__merge {
+    margin-top: 10rpx;
+    padding: 12rpx 16rpx;
+    border-radius: $radius-sm;
+    background: $brand-weak;
+  }
+
+  &__merge-text {
+    font-size: 22rpx;
+    color: $brand;
+    line-height: 1.5;
+    /* 机构名可能很长（「小米集团」+ 头衔），允许在任意处断行，避免撑破卡片 */
+    word-break: break-all;
+  }
+
+  &__merge-actions {
+    display: flex;
+    gap: 12rpx;
+    margin-top: 10rpx;
+  }
+
+  &__merge-btn {
+    padding: 4rpx 18rpx;
+    border-radius: 999rpx;
+    background: #fff;
+    color: $text-2;
+    font-size: 22rpx;
+    line-height: 1.6;
+
+    /* 主选项（「是同一人」）：与卡片主操作同色，但更小 —— 它是一句话的确认，不是页面级动作 */
+    &--primary {
+      background: $brand;
+      color: #fff;
+    }
+
+    &--tap {
+      opacity: 0.6;
+    }
+  }
+
+  /*
     主操作（taro-ui AtButton，size='small' + circle）。
     选择器写成三级 `.at-button.at-button--small` 是为了稳过 taro-ui 自带的
     `.at-button--small`(0,1,0) 与 `.at-button--small.at-button--circle`(0,2,0)，

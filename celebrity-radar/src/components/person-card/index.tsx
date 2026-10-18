@@ -18,6 +18,27 @@ export interface PersonInfo {
   followed?: boolean
 }
 
+/**
+ * 「是不是同一个人」的确认条（2026-10-18）。
+ *
+ * 场景：搜「雷军」时库里已经有一份「科技」的报告，而这是从别的领域/写法进来的同名候选。
+ * 判据在 utils/person-index.ts（领域同组 → 用户别名 → 机构指纹），这里只负责**把结论摆出来**：
+ * 强判据（机构命中）直接把两者并成一份，只留一个「不是这位」的出口；
+ * 弱判据（只说档案里的所属机构对得上）不合并，先问一句。
+ *
+ * 文案由调用方组装（它知道领域标签与那份报告的身份），组件不认识业务。
+ */
+export interface PersonMergeHint {
+  /** 一句话说明（如「已用『科技』那份报告：小米集团创始人」） */
+  text: string
+  /** 主按钮（确认是同一人）；不传则只显示次按钮（= 已经自动合并好了） */
+  confirmLabel?: string
+  onConfirm?: (p: PersonInfo) => void
+  /** 次按钮（不是同一位）；两端都必须给，否则用户没有反悔的出口 */
+  rejectLabel: string
+  onReject: (p: PersonInfo) => void
+}
+
 interface PersonCardProps {
   person: PersonInfo
   /** 右侧操作：关注/取关 或 查看报告 等 */
@@ -41,6 +62,8 @@ interface PersonCardProps {
    * 图标反而丢了语义。
    */
   iconActions?: boolean
+  /** 「是不是同一位」的确认条（见 PersonMergeHint） */
+  merge?: PersonMergeHint
 }
 
 /** 名人卡：消歧候选、关注列表、热门位共用 */
@@ -51,7 +74,8 @@ export default function PersonCard({
   onClick,
   onToggleFollow,
   followPending,
-  iconActions
+  iconActions,
+  merge
 }: PersonCardProps) {
   /* 领域自由化后：配色 / 变体类统一经 domainStyleCode（未知领域复用 other），标签经 domainLabel（自创词原样展示） */
   const styleCode = domainStyleCode(person.domain)
@@ -72,6 +96,44 @@ export default function PersonCard({
           <View className='person-card__brief-row'>
             {person.tag && <View className='person-card__tag'>{person.tag}</View>}
             {person.brief && <View className='person-card__brief'>{person.brief}</View>}
+          </View>
+        )}
+        {/*
+          同一人判定提示（2026-10-18）：整块 stopPropagation —— 两个小按钮就在卡片里，
+          不拦住的话点「不是这位」会先触发卡片的 onClick 直接跳进报告页。
+        */}
+        {merge && (
+          <View
+            className='person-card__merge'
+            onClick={(e) => {
+              e.stopPropagation?.()
+            }}
+          >
+            <View className='person-card__merge-text'>{merge.text}</View>
+            <View className='person-card__merge-actions'>
+              {merge.confirmLabel && merge.onConfirm && (
+                <View
+                  className='person-card__merge-btn person-card__merge-btn--primary'
+                  hoverClass='person-card__merge-btn--tap'
+                  onClick={(e) => {
+                    e.stopPropagation?.()
+                    merge.onConfirm?.(person)
+                  }}
+                >
+                  {merge.confirmLabel}
+                </View>
+              )}
+              <View
+                className='person-card__merge-btn'
+                hoverClass='person-card__merge-btn--tap'
+                onClick={(e) => {
+                  e.stopPropagation?.()
+                  merge.onReject(person)
+                }}
+              >
+                {merge.rejectLabel}
+              </View>
+            </View>
           </View>
         )}
       </View>

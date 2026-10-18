@@ -334,6 +334,22 @@ export type TrackEvent =
    * 拿它当「会员读了几次报告」会与 report_open 重复计。
    */
   | 'member_sections'
+  /**
+   * 一次「同名候选被判定为同一个人」的结论（2026-10-18，判据见 utils/person-index.ts）。
+   *
+   * props.decision = `'auto'`（机构指纹强命中，直接并用已有那份报告）/ `'confirm'`（用户点了
+   * 「是同一人」）/ `'reject'`（用户点了「不是这位」）；props.from = 判据来源
+   * （`domain` / `alias` / `brief`）；props.saved = 结论有没有落进 `person_alias`。
+   *
+   * 为什么必须埋：这个功能唯一的验收指标是**同名多行率有没有降下来**，而它由两件事决定 ——
+   *   · 判据准不准：`reject ÷ (confirm + reject)` 就是误判率。偏高说明机构指纹的阈值太松
+   *     （把两位同名的真不同人并成了一份），这是**比多一份报告严重得多**的错，必须能被看见；
+   *   · 自动判够不够：`auto ÷ 全部` 越高，说明靠报告自身的机构指纹就能收敛，
+   *     不需要用户每次都点一下。
+   * ⚠ `saved=false` 也报：它意味着「这次并了，但下次换个人/换台设备还得再来一遍」，
+   *    写盘失败如果没记录，现象与「用户没点」完全一样。
+   */
+  | 'person_merge'
 
 /** 非阻塞埋点：失败静默（埋点不允许影响业务路径） */
 export function track(event: TrackEvent, props: { personKey?: string; [k: string]: unknown } = {}): void {

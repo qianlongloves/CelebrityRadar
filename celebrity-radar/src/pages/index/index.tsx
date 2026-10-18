@@ -5,7 +5,15 @@ import { View, Text, ScrollView, Image } from '@tarojs/components'
    故组件一律从 dist/components/<名字> 取（那一层是 ESM 源码）。用例 70 钉住这一点。 */
 import AtSearchBar from 'taro-ui/dist/components/search-bar'
 import AtButton from 'taro-ui/dist/components/button'
-import { DOMAIN_CODES, DOMAIN_COVERAGE_TEXT, DomainCode, buildPersonKey, domainLabel, domainStyleCode } from '@/config/domains'
+import {
+  DOMAIN_CODES,
+  DOMAIN_COVERAGE_TEXT,
+  DomainCode,
+  buildPersonKey,
+  domainDisplayForKey,
+  domainLabel,
+  domainStyleCode
+} from '@/config/domains'
 import {
   DOMAIN_FILTER_CODES,
   DomainFilterCode,
@@ -15,7 +23,7 @@ import {
   domainFilterLabel,
   summarizeFilters
 } from '@/config/filters'
-import PersonCard, { PersonInfo } from '@/components/person-card'
+import PersonCard, { PersonInfo, PersonMergeHint } from '@/components/person-card'
 import PersonAvatar from '@/components/person-avatar'
 import EmptyState from '@/components/empty-state'
 import { useAuth } from '@/stores/auth'
@@ -24,13 +32,20 @@ import { loadHotBoard } from '@/utils/hot-board'
 import { readPortraits } from '@/utils/portrait'
 import { isSensitiveQuery } from '@/utils/sensitive'
 import { disambiguate, PersonCandidate } from '@/utils/disambiguate'
-import { splitPersonQuery } from '@/utils/query-split'
+import { buildCandidateKeyword, splitPersonQuery } from '@/utils/query-split'
 import { track } from '@/utils/events'
 import { exploreRandomPerson, pickRandomPerson, todayPerson } from '@/utils/explore'
 import { listRecentHistory, HistoryRow } from '@/utils/history'
 import { listFollows, toggleFollow } from '@/utils/follows'
 import { toUserMessage } from '@/utils/error'
-import { resolvePersonKey } from '@/utils/person-index'
+import {
+  confirmPersonMerge,
+  rejectPersonMerge,
+  resolvePersonIdentity,
+  resolvePersonKey,
+  PersonMerge,
+  PersonResolution
+} from '@/utils/person-index'
 import { loadMessages } from '@/utils/messages'
 import { personShareTitle, reportSharePath } from '@/utils/share'
 import { useTabBarSync } from '@/utils/tabbar'
@@ -66,6 +81,14 @@ export default function Index() {
   const [focus, setFocus] = useState<FocusCode>('all')
   /** 候选列表内的领域筛选（结果返回后可用）。领域自由化后为自由短串，故不限 DomainCode */
   const [domainFilter, setDomainFilter] = useState<string>('all')
+  /**
+   * 候选的身份解析结果：原始 `名字#领域` → 应该用的 personKey（+「为什么合并」）。
+   *
+   * 候选一返回就异步跑一遍 resolvePersonIdentity（判据见 utils/person-index.ts）：
+   * 同一个人的另一种写法会拿到已有那份报告的 key，卡片上随即出现「已用『科技』那份报告」。
+   * 解析未完成时卡片仍用原始 key（不为了一次判定卡住整个列表的渲染）。
+   */
+  const [candIndex, setCandIndex] = useState<Record<string, PersonResolution>>({})
   /** 横幅右侧「今日名人」（同一天稳定，可点 ⟳ 随机换一位） */
   const [hero, setHero] = useState(() => todayPerson())
   /**
@@ -178,6 +201,82 @@ export default function Index() {
    * personKey），后半段**关键词**只作提示（消歧补充 + 检索补充）—— 整串塞进消歧会把
    * 「雷军 小米科技」当成一个人的名字（查无此人）。关键词不进 personKey、不进缓存键。
    */
+  /**
+   * 候选一返回就批量解析「是不是同一个人已有那份报告里的那位」（2026-10-18）。
+   *
+   * 为什么放在候选阶段而不是等用户点开：用户此刻要判断的正是「这几个候选里哪个是我要找的人」，
+   * 而判定所需的信号（同名报告的机构指纹 × 候选的 brief）这一刻已经齐了。等到点开才做，
+   * 人已经跳进报告页看到了内容，再回头改就晚了。
+   *
+   * 并发解析（最多 4 个候选），失败各自退化成原始 key（resolvePersonIdentity 内部兜底），
+   * 故这里不 try/catch，也不阻塞列表渲染 —— 未解析完的卡片先用原始 key。
+   */
+  const indexCandidates = async (list: PersonCandidate[]) => {
+    const pairs = await Promise.all(
+      list.map(async (c) => {
+        const raw = buildPersonKey(c.name, c.domain)
+        const res = await resolvePersonIdentity(c.name, c.domain, c.brief)
+        return [raw, res] as const
+      })
+    )
+    const next: Record<string, PersonResolution> = {}
+    for (const [raw, res] of pairs) {
+      next[raw] = res
+      /* 强判据直接并成一份：埋点用来量「自动合并」到底救回了多少分叉 */
+      if (res.merge?.strength === 'auto') {
+        track('person_merge', { decision: 'auto', from: res.merge.from, personKey: res.personKey })
+      }
+    }
+    setCandIndex(next)
+  }
+
+  /**
+   * 把解析结论变成卡片上的一句话 + 两个动作（组件不认识业务，文案在这里组装）。
+   *
+   * · auto：已经用同一份了 → 只留「不是这位」（反悔出口，写否定别名）；
+   * · maybe：只说档案里的所属机构对得上 → 先问「是同一人」，点了才写别名。
+   */
+  const mergeHintOf = (c: PersonCandidate, m: PersonMerge): PersonMergeHint => {
+    const raw = buildPersonKey(c.name, c.domain)
+    const label = domainDisplayForKey(m.domain)
+    const headline = m.headline ? `：${m.headline}` : ''
+    const reject = () => {
+      void (async () => {
+        const saved = await rejectPersonMerge(c.name, c.domain)
+        track('person_merge', { decision: 'reject', from: m.from, saved })
+        /* 不论是否落库成功，本机立刻恢复成两个人（下次进来会重新判） */
+        setCandIndex((prev) => ({ ...prev, [raw]: { personKey: raw } }))
+      })()
+    }
+    if (m.strength === 'auto') {
+      return { text: `已用「${label}」那份报告${headline}`, rejectLabel: '不是这位', onReject: reject }
+    }
+    return {
+      text: `已有「${label}」的报告${headline}，是同一位吗？`,
+      confirmLabel: '是同一人',
+      onConfirm: () => {
+        void (async () => {
+          const saved = await confirmPersonMerge(c.name, c.domain, m.personKey, m.headline)
+          track('person_merge', { decision: 'confirm', from: m.from, saved })
+          if (!saved) {
+            /* 写库失败也不影响本次：索引已记住，本机会话内仍用同一份 */
+            setCandIndex((prev) => ({
+              ...prev,
+              [raw]: { personKey: m.personKey, merge: { ...m, strength: 'auto' } }
+            }))
+            return
+          }
+          setCandIndex((prev) => ({
+            ...prev,
+            [raw]: { personKey: m.personKey, merge: { ...m, from: 'alias', strength: 'auto' } }
+          }))
+        })()
+      },
+      rejectLabel: '不是',
+      onReject: reject
+    }
+  }
+
   const doSearch = async (rawInput?: string) => {
     const raw = (rawInput ?? keyword).trim()
     if (!raw) return
@@ -213,18 +312,35 @@ export default function Index() {
       domainHint !== 'all' && res.data.candidates.some((c) => c.domain === domainHint) ? domainHint : 'all'
     )
     setState({ phase: 'candidates', candidates: res.data.candidates })
+    void indexCandidates(res.data.candidates)
   }
 
   /**
-   * 生成 personKey 前先按名字归一到「已有报告的那份 key」（Task C）：避免同一个人被本入口分叉出第二种领域。
+   * 生成 personKey 前先归一到「同一个人已有报告的那份 key」（Task C；2026-10-18 判据扩到三层：
+   * 领域同组 → 用户确认过的别名 → brief × 报告机构指纹，见 utils/person-index.ts 文件头）。
    *
-   * `kw` 是从输入拆出的补充关键词（仅搜索候选走这条时传）：它只随 URL 透传给生成链路作检索补充，
-   * **绝不参与 personKey / 缓存键** —— 见 utils/query-split.ts 与 utils/cache.ts 的注释。
+   * 所以 `brief` 在这里有**两个用途**：既是检索限定（拼进 keyword），也是身份判据（传给 resolve）——
+   * 同一个字段，两处都只做「缩小范围」，不进 personKey。
+   *
+   * 检索限定（`kw` 用户关键词 / `brief` 候选卡的一句话身份）**全部透传**给报告页：
+   * 拼装规则见 utils/query-split.ts#buildCandidateKeyword —— 得到「科技 小米创始人…」这样的词串，
+   * 报告页再拿它去查（`?keyword=`），于是「雷军」这件事的检索实际是「雷军 + 科技 + 小米创始人」。
+   *
+   * 三个东西的分工不变：name / domain 决定 **personKey（身份 + 缓存键）**，
+   * keyword 只决定 **这一次生成查什么**，绝不进 personKey、绝不进缓存键。
    */
-  const openPerson = async (name: string, domain: string, kw = '') => {
-    const personKey = await resolvePersonKey(name, domain)
+  const openPerson = async (name: string, domain: string, kw = '', brief = '') => {
+    /* brief 参与身份判定：热榜点开时没有 brief，只能靠领域与别名（见 resolvePersonIdentity） */
+    const personKey = await resolvePersonKey(name, domain, brief)
     track('disambiguate_selected', { personKey, focus })
-    const extra = kw ? `&keyword=${encodeURIComponent(kw)}` : ''
+    /*
+     * 只在「用户确实给了限定」时才带关键词：搜出来的候选有 brief（一句话身份），
+     * 或用户自己填了补充词。**光有领域标签不算** —— 否则从热榜点开一个已有报告的人，
+     * 报告页会弹出「你填的补充关键词『科技』只在重新生成时才生效」（见
+     * package/report/index.tsx 的 keywordUnused），而用户一个字都没填。
+     */
+    const keyword = kw || brief ? buildCandidateKeyword({ keyword: kw, domain, brief }) : ''
+    const extra = keyword ? `&keyword=${encodeURIComponent(keyword)}` : ''
     Taro.navigateTo({
       url: `/package/report/index?personKey=${encodeURIComponent(personKey)}&focus=${focus}${extra}`
     })
@@ -402,22 +518,28 @@ export default function Index() {
           </View>
         )}
 
-        {/* 热搜词：一键「填词 + 搜索」，降低首屏输入成本 */}
+        {/* 热搜词：一键「填词 + 搜索」，降低首屏输入成本。
+            2026-10-18：改成**单行横滑**（与上面「最近」同一套写法）。热门位来自 AI 日榜，
+            名字长短不一（两字到六七个字），四个 chip 平铺一折行就把搜索卡顶高一截；
+            它们本来就只是「点一下试试」的快捷入口，横着滑比换行省版面，也不会因为
+            名字变长而让卡片高度跳一下。 */}
         <View className='page-index__hot-words'>
           <Text className='page-index__hot-words-label'>热搜</Text>
-          {hotWords.map((w) => (
-            <View
-              key={w.name}
-              className='page-index__hot-word'
-              hoverClass='page-index__hot-word--tap'
-              onClick={() => {
-                setKeyword(w.name)
-                void doSearch(w.name)
-              }}
-            >
-              {w.name}
-            </View>
-          ))}
+          <ScrollView className='page-index__hot-chips' scrollX>
+            {hotWords.map((w) => (
+              <View
+                key={w.name}
+                className='page-index__hot-word'
+                hoverClass='page-index__hot-word--tap'
+                onClick={() => {
+                  setKeyword(w.name)
+                  void doSearch(w.name)
+                }}
+              >
+                {w.name}
+              </View>
+            ))}
+          </ScrollView>
         </View>
 
         {/* 行业筛选：单行横滑，避免 chip 换行把首屏顶长 */}
@@ -532,10 +654,13 @@ export default function Index() {
             {/* 候选卡嵌在搜索卡内，person-card 自带的 44rpx 页边距由 &__output-cards 清零 */}
             <View className='page-index__output-cards'>
               {filteredCandidates.map((c) => {
-                const personKey = buildPersonKey(c.name, c.domain)
+                /* key 必须是原始 key（筛选/重渲染时身份稳定），personKey 用解析后的（可能是别人的行） */
+                const rawKey = buildPersonKey(c.name, c.domain)
+                const info = candIndex[rawKey]
+                const personKey = info?.personKey ?? rawKey
                 return (
                   <PersonCard
-                    key={personKey}
+                    key={rawKey}
                     person={{
                       personKey,
                       name: c.name,
@@ -544,10 +669,11 @@ export default function Index() {
                       followed: followedKeys.has(personKey)
                     }}
                     followPending={followPending === personKey}
+                    merge={info?.merge ? mergeHintOf(c, info.merge) : undefined}
                     onToggleFollow={(p) => void onToggleFollow(p, 'candidate_card')}
                     actionText='查看'
-                    onAction={(p) => openPerson(p.name, p.domain, searchKeyword)}
-                    onClick={(p) => openPerson(p.name, p.domain, searchKeyword)}
+                    onAction={(p) => openPerson(p.name, p.domain, searchKeyword, p.brief)}
+                    onClick={(p) => openPerson(p.name, p.domain, searchKeyword, p.brief)}
                   />
                 )
               })}

@@ -132,6 +132,157 @@ export function domainStyleCode(code: string): DomainCode {
 }
 
 /**
+ * 领域「同义组」表（2026-10-18）：**只用于身份判定，不改展示、不改存储**。
+ *
+ * 为什么需要它：领域是 2026-10-12 之后就自由化的短串，同一个行业会被写成许多种样子 ——
+ * 「科技 / AI / 人工智能 / 大模型 / 芯片」都是 tech，「投资 / 创投 / 财经 / 私募」都是 finance。
+ * 若判定「是不是同一个人」时按字面比领域，同一个人从四个入口进来就会裂成四份报告
+ * （见 utils/person-index.ts 的判据演进）。这里把同义写法收口成**同一组的键**，
+ * 组内视为同一领域，跨组（tech ↔ internet、business ↔ finance、auto ↔ tech）**绝不合并** ——
+ * 那已经是「相邻但不同」的行业，合并等于把两个同名者重新混起来。
+ *
+ * 刻意只做「同义归一」，不做模糊匹配：别名表是白名单，写进来的每一对都是可以互换的；
+ * 没有收录的自由词只与自己字面相等（保持自由领域的原样行为）。
+ *
+ * ⚠ 它**不参与** buildPersonKey：personKey 里的领域段仍是入口给的原串。归一放在判定这一侧，
+ * 存量行（`雷军#科技`）与新入口（`雷军#tech`）因此不需要迁移就自动被认成同一个人。
+ */
+const DOMAIN_IDENTITY_ALIASES: Record<string, DomainCode> = {
+  /* tech：硬件 / 软件 / 半导体 / 算法 都属于「科技」这一组 */
+  科技: 'tech',
+  硬科技: 'tech',
+  AI: 'tech',
+  ai: 'tech',
+  人工智能: 'tech',
+  大模型: 'tech',
+  算法: 'tech',
+  芯片: 'tech',
+  半导体: 'tech',
+  硬件: 'tech',
+  软件: 'tech',
+  云计算: 'tech',
+  算力: 'tech',
+  通信: 'tech',
+  手机: 'tech',
+  消费电子: 'tech',
+  智能硬件: 'tech',
+  机器人: 'tech',
+  /* internet：与 tech 刻意分开 */
+  互联网: 'internet',
+  电商: 'internet',
+  社交: 'internet',
+  短视频: 'internet',
+  本地生活: 'internet',
+  平台经济: 'internet',
+  内容平台: 'internet',
+  /* business：与 finance 刻意分开 */
+  商业: 'business',
+  企业: 'business',
+  企业家: 'business',
+  商界: 'business',
+  创业: 'business',
+  /* finance */
+  财经: 'finance',
+  金融: 'finance',
+  投资: 'finance',
+  投资人: 'finance',
+  创投: 'finance',
+  风投: 'finance',
+  私募: 'finance',
+  基金: 'finance',
+  证券: 'finance',
+  银行: 'finance',
+  保险: 'finance',
+  资本市场: 'finance',
+  /* 模型偶尔给拉丁缩写（「vc / pe / invest」），与中文同义，一并归组 */
+  vc: 'finance',
+  pe: 'finance',
+  invest: 'finance',
+  /* auto */
+  汽车: 'auto',
+  造车: 'auto',
+  新能源: 'auto',
+  新能源车: 'auto',
+  新能源汽车: 'auto',
+  智能汽车: 'auto',
+  自动驾驶: 'auto',
+  出行: 'auto',
+  ev: 'auto',
+  /* ent */
+  文娱: 'ent',
+  娱乐: 'ent',
+  影视: 'ent',
+  音乐: 'ent',
+  综艺: 'ent',
+  明星: 'ent',
+  演艺: 'ent',
+  偶像: 'ent',
+  短剧: 'ent',
+  相声: 'ent',
+  /* art */
+  艺术: 'art',
+  美术: 'art',
+  设计: 'art',
+  建筑: 'art',
+  时尚: 'art',
+  摄影: 'art',
+  /* sports */
+  体育: 'sports',
+  竞技: 'sports',
+  电竞: 'sports',
+  足球: 'sports',
+  篮球: 'sports',
+  赛事: 'sports',
+  /* health */
+  健康: 'health',
+  医疗: 'health',
+  医药: 'health',
+  生物: 'health',
+  医学: 'health',
+  养生: 'health',
+  /* academia */
+  学术: 'academia',
+  科研: 'academia',
+  高校: 'academia',
+  学者: 'academia',
+  科学: 'academia',
+  /* edu */
+  教育: 'edu',
+  教学: 'edu',
+  培训: 'edu',
+  教培: 'edu'
+}
+
+/**
+ * 领域在**身份判定**里的归一键（同义组内相等，跨组不等）。
+ *
+ * · 12 个已知码 → 自身（`tech` 与 `internet` 仍是两个领域）；
+ * · 中文标签与常见自创写法 → 查同义组表，落到该组的码；
+ * · 未收录的自由词 → 净化后的原串（只与自己相等）。
+ * 空 / 非法 → `'other'`，与 buildPersonKey 的回落一致（否则「空领域」会自成一类）。
+ */
+export function domainIdentityKey(domain: string): string {
+  const s = sanitizeDomain(domain)
+  if (!s) return 'other'
+  if (isDomainCode(s)) return s
+  /* 拉丁写法大小写不敏感（「AI」/「ai」），中文不受影响 */
+  return DOMAIN_IDENTITY_ALIASES[s] ?? DOMAIN_IDENTITY_ALIASES[s.toLowerCase()] ?? s
+}
+
+/**
+ * 一个领域串的**展示名**（给「已并入『科技』那份报告」这类提示用）。
+ *
+ * 与 domainLabel 的差别只在自由词：`AI` 直接展示是「AI」，但它属于 tech 组，
+ * 提示里说「科技」比说「AI」更能让用户对上号 —— 故先归一再取标签，
+ * 唯一例外是未收录的自由词（归一键就是原串，原样展示）。
+ */
+export function domainDisplayForKey(domain: string): string {
+  const key = domainIdentityKey(domain)
+  /* 未收录的自由词：原样展示（domainLabel 会原样返回它） */
+  return isDomainCode(key) ? domainLabel(key) : domainLabel(domain)
+}
+
+/**
  * 生成稳定 personKey：名字#领域（§1.6）。
  *
  * 名字里的 `#` 会让**所有**按 `#` 切分的地方错位（这是缓存主键，也进 URL 参数），

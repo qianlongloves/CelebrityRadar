@@ -237,7 +237,15 @@ describe('补充关键词：只作提示（消歧 + 检索），不进 personKey
       'utf8'
     )
     ok(src.includes('splitPersonQuery('), '搜索入口要先拆词')
-    ok(src.includes('resolvePersonKey(name, domain)'), 'personKey 只由 name + domain 生成（不含关键词）')
+    /*
+     * 第三参 brief 是**身份判据**（2026-10-18：机构指纹比对，见 utils/person-index.ts），
+     * 与关键词一样不进 key —— 所以这里既要看到 brief 被传进去，也要看到它没被拼进 buildPersonKey。
+     */
+    ok(
+      src.includes('resolvePersonKey(name, domain, brief)'),
+      'personKey 只由 name + domain 生成（brief 只作身份判据，不作 key 的一部分）'
+    )
+    ok(!/buildPersonKey\([^)]*brief/.test(src), 'brief 绝不参与 key 的拼装')
     ok(src.includes('&keyword='), '关键词随 URL 透传给生成链路')
     ok(src.includes('disambiguate(name, { domainHint, keyword: queryKeyword })'), '关键词透传给消歧')
 

@@ -444,7 +444,7 @@ const collections = [
        * ⚠ 它只是**登记**：dbInit 目前并不消费 enumHint（不校验、不告警），别把它当成生效中的白名单 ——
        * 它保证的仅仅是「埋点名单有唯一真源可对」，而不是「写错会被拦住」。
        */
-      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'report_kept_member', 'report_knowledge_fallback', 'report_generate_shortfall', 'report_generate_retry', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'report_qa_ask', 'topic_open', 'watch_add', 'watch_remove', 'alert_focus', 'watch_share_arrive', 'monitor_add', 'monitor_remove', 'report_open', 'report_export', 'report_exported', 'workbench_compare', 'workbench_export', 'report_history_view', 'report_version_open', 'report_version_diff', 'revisit_ready', 'revisit_open', 'opinion_pick', 'event_subscribe', 'report_lock_see', 'member_entry', 'member_sections'] }),
+      f('event', 'string', { required: true, enumHint: ['search', 'disambiguate_selected', 'report_hit_cache', 'report_generate', 'report_kept_member', 'report_knowledge_fallback', 'report_generate_shortfall', 'report_generate_retry', 'follow', 'unfollow', 'favorite', 'refresh_feed', 'share', 'weekly_generate', 'messages_open', 'report_qa_ask', 'topic_open', 'watch_add', 'watch_remove', 'alert_focus', 'watch_share_arrive', 'monitor_add', 'monitor_remove', 'report_open', 'report_export', 'report_exported', 'workbench_compare', 'workbench_export', 'report_history_view', 'report_version_open', 'report_version_diff', 'revisit_ready', 'revisit_open', 'opinion_pick', 'event_subscribe', 'report_lock_see', 'member_entry', 'member_sections', 'person_merge'] }),
       f('person_key', 'string?', { required: true }),
       f('props', 'object?', { required: true }),
       f('created_at', 'string', { required: true })
@@ -706,6 +706,44 @@ const collections = [
       f('updated_at', 'string', { def: null })
     ],
     indexes: []
+  },
+  {
+    name: 'person_alias',
+    /*
+     * 人物别名（2026-10-18）：`_id` = `名字#领域` → 已存在的那份报告的 personKey。
+     *
+     * 为什么需要一张表：`report_cache` 的主键是「名字#领域」，而领域由各入口自己给（自由短串）——
+     * 同一个人跨领域（雷军：科技 / 汽车 / 投资）会裂成多份报告；反过来只按名字合并又会串人
+     * （同名不同人，用户会在 A 的报告里看到 B 的内容）。判据在端上 utils/person-index.ts
+     * （领域同组 → 用户别名 → 机构指纹），本表只存**判定的结论**：用户点过
+     * 「是同一人」/「不是这位」的那一对「名字 + 领域」。
+     *
+     * 为什么是 publicRead（所有人可读、登录可写）而不是 cloudOnly：
+     *   · 结论是**全站共享**的 —— 同一个名字的同一种写法不该让每个用户各点一次；
+     *   · 它不参与权限、额度、计费，写坏了也只影响「这个人被归到哪份报告」；
+     *   · 读侧仍然会验「目标行存在 + 与别名同名」（utils/person-index.ts#resolvePersonIdentity），
+     *     所以一次恶意写入最多把**同一个名字**下的两个同名者并起来，串不到别的名字上。
+     * 若日后发现被刷，收紧成 cloudOnly 需要同时给 aiProxy 加一个写口（同 report_cache 的收紧顺序）。
+     *
+     * ⚠ 行内不含用户标识（除 system 的 `_openid`）：它描述的是「两个名字之间的关系」，
+     *   不是「我的那一行」—— 注销时无需按用户删（同 report_versions）。
+     */
+    purpose: '人物别名（`名字#领域` → 已有 personKey；personKey 为空串 = 用户确认「不是同一位」）',
+    acl: ACL.publicRead,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      /* 端上写口是 doc(id).set：真实环境是否自动补 _openid 未验证，故 nullable、不 required */
+      f('_openid', 'string', { system: true }),
+      /* 查询列：_id 在云侧叫 _id，业务侧 where 用 alias（同 report_cache 存 id 的写法） */
+      f('alias', 'string', { required: true }),
+      f('personKey', 'string', { required: true }),
+      f('name', 'string', { required: true }),
+      /* 入口给的那个写法（不是归一后的组键），便于排查「哪两个写法被并了」 */
+      f('domain', 'string', { required: true }),
+      f('headline', 'string?', { def: '' }),
+      f('at', 'string?', { def: null })
+    ],
+    indexes: [ix('idx_alias', [['alias', 'asc']], { supports: '按「名字#领域」反查 personKey（读侧最常见的那一次查询）' })]
   },
   {
     name: 'person_assets',

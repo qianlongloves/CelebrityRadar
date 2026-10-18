@@ -777,7 +777,11 @@ export async function getOrBuildReport(
   }
 
   /**
-   * 名字回退（Task A，2026-10-12）：本 key 没有可用报告时，按名字找回「最新那一份」的 personKey。
+   * 名字回退（Task A，2026-10-12；2026-10-18 判据收窄为「名字 + 领域」）：本 key 没有可用报告时，
+   * 找回**同一个人**（名字相同且领域同义）那份报告的 personKey。
+   *
+   * ⚠ 领域不同的同名者**不回退**（见 utils/person-index 文件头）：那可能是另一个人，
+   * 把 TA 的报告交回来等于给错人。
    *
    * 只在这里（缓存**落空**时）做，是为了既解决存量分叉、又不给常态读取加任何一次查询：
    * 命中自己 key 的报告时上面已返回，根本走不到这里；只有「查不到」才付出这一次查询 + storage 记忆
@@ -1335,11 +1339,13 @@ export async function getOrBuildReport(
       const saved = await saveReady(personKey, report, materialCount, userId)
 
       /*
-       * 落库成功即记住「这个名字的最新 personKey」（Task A，2026-10-12）：此后各入口按名字找人
-       * 都会命中这一份，不再各自分叉出第二种领域。仅落库成功才记（saved === 'saved'）——
-       * kept / failed 时缓存里那份并未改变，记住旧 key 反而可能把索引指偏。
+       * 落库成功即记住「这个名字 + 这个领域对应的 personKey」（Task A，2026-10-12；
+       * 2026-10-18 索引键补上领域）：此后同一个人从别的入口进来（热榜给中文标签、搜索给领域码）
+       * 都能命中这一份。仅落库成功才记（saved === 'saved'）—— kept / failed 时缓存里那份并未改变，
+       * 记住旧 key 反而可能把索引指偏。
+       * ⚠ 要传 domain：只按名字记会让同名的另一个人也被带来这一份（见 utils/person-index 文件头）。
        */
-      if (saved === 'saved') rememberPerson(name, personKey)
+      if (saved === 'saved') rememberPerson(name, domain, personKey)
 
       /*
        * saveReady 内部仍独立判一次同一份守卫（兜底）：正常路径下走不到这里 —— 上面已提前
@@ -1464,8 +1470,8 @@ export async function getCachedReport(personKey: string): Promise<Report | null>
   const row = await getRow(personKey)
   if (row?.state !== 'ready' || !row.report) {
     /*
-     * 名字回退（Task A）：本 key 查不到（存量分叉里名人主页正是这种情况 —— 它按 URL 里的
-     * personKey 读，而那可能是第三种领域、压根没有这一行）时，按名字找回最新那一份。
+     * 名字回退（Task A；判据见 utils/person-index 文件头）：本 key 查不到时，找回**同一个人**
+     * （同领域或领域同义）那一份。领域不同的同名者不参与 —— 那可能是另一个人。
      * 命中另一 key 才替换；否则维持 null（与「确实没有」同口径，端上行为不变）。
      */
     const parsed = parsePersonKey(personKey)
@@ -1513,8 +1519,9 @@ export async function getCachedReports(personKeys: string[]): Promise<Array<Repo
   })
 
   /*
-   * 名字回退（Task A）：批内有 key 落空时，按名字找回「最新那一份」（同 getCachedReport 的口径）。
-   * 只对落空项付出查询 —— 命中项零额外开销；结果写回同一位置，数组仍与入参一一对应。
+   * 名字回退（Task A）：批内有 key 落空时，找回**同一个人**那一份（同 getCachedReport 的口径 ——
+   * 领域不同则不回退）。只对落空项付出查询 —— 命中项零额外开销；结果写回同一位置，
+   * 数组仍与入参一一对应。
    */
   const missIdx: number[] = []
   ready.forEach((r, i) => {
