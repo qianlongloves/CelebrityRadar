@@ -602,6 +602,15 @@ export default function ReportPage() {
    * **与埋点同一个判定**的结果，否则「埋点说冷门、页面说不是」这类分歧没人能发现）。
    */
   const [coldFirstBuild, setColdFirstBuild] = useState(false)
+  /**
+   * 云端**已确认**这一次没有计入生成次数（2026-10-18，见 utils/cache.ts#ReportOutcome.quotaWaived）。
+   *
+   * 为什么现在才加：此前 consumeGenerateQuota 是 fire-and-forget，端上拿不到裁决，
+   * 首建提示条只好刻意不提这层（「不说免计费」写在渲染注释里）。代价是「报告生成了、
+   * 额度却没动」时用户无处求证，只能怀疑漏计。改成 await 之后回包里就有 waived，
+   * 这里可以照着事实补一句，把疑问就地答掉。
+   */
+  const [quotaWaived, setQuotaWaived] = useState(false)
 
   /**
    * 本页可关闭的提示条条目名。
@@ -724,6 +733,7 @@ export default function ReportPage() {
       setShortfallRetryable(false)
       setFirstBuild(false)
       setColdFirstBuild(false)
+      setQuotaWaived(false)
       setMemberLocked([])
       /* 新一轮的刷新结果条要能被看到：把上一轮「已关」的记忆整体清掉（见 closedNotices 注释） */
       setClosedNotices({})
@@ -766,6 +776,7 @@ export default function ReportPage() {
           setShortfallRetryable(outcome.shortfallRetryable === true)
           setFirstBuild(outcome.firstBuild === true)
           setColdFirstBuild(outcome.coldFirstBuild === true)
+          setQuotaWaived(outcome.quotaWaived === true)
           setMemberLocked(outcome.memberLocked ?? [])
           /* 降级警示条若是这版才出的，已由上面 load 开头的整体复位放行（见 closedNotices 注释） */
           setRefreshError(failureNote)
@@ -2108,8 +2119,9 @@ export default function ReportPage() {
         不是「我这趟值」。而**公开报道很少的长尾人物**正是「没人愿意花额度建」的那一类——
         第一个建的人补上的是库里长期空着的一个位置，值得一句看得见的回报（判据与埋点同源，
         见 utils/report.ts#isColdPerson）。三件事一起说：他建的是什么人（附本次素材条数，可自查）、
-        此前的位置是空的、这份之后全站共用。**不加码任何承诺**（不说「免计费」「送次数」，
-        那笔账由 quotaGuard 复核、端上给不了准话）。
+        此前的位置是空的、这份之后全站共用。**免计费只在云端确认后说**（见 quotaWaived）：
+        quotaGuard 复核通过时补一句「这一次没有计入你的生成次数」，没通过就一个字都不提 ——
+        端上不自己猜，也不空口承诺。
         仍是同一个 notice key（`firstBuild`）——不为荣誉再长出一条提示条，用户已经嫌多。
       */}
       {firstBuild && !closedNotices.firstBuild && (
@@ -2120,12 +2132,15 @@ export default function ReportPage() {
             </Text>
             {coldFirstBuild ? (
               <Text className='page-report__diff-body'>
-                {`TA 的公开报道不多（本次检索到 ${coldFirstItems} 条素材），此前库里没有 TA 的报告 —— 你补上的这一份此后全站共用、长期可查，之后任何人查看都不再消耗生成次数（包括你自己）。`}
+                {`TA 的公开报道不多（本次检索到 ${coldFirstItems} 条素材），此前库里没有 TA 的报告 —— 你补上的这一份此后全站共用、长期可查，之后任何人查看都不再消耗生成次数（包括你自己）。${
+                  quotaWaived ? '这一次也没有计入你的生成次数。' : ''
+                }`}
               </Text>
             ) : (
               <Text className='page-report__diff-body'>
-                报告按人物全站共用一份：之后任何人查看都不再消耗生成次数（包括你自己），
-                你这次的检索与整理会留在库里，供之后一直查看。
+                {`报告按人物全站共用一份：之后任何人查看都不再消耗生成次数（包括你自己），你这次的检索与整理会留在库里，供之后一直查看。${
+                  quotaWaived ? '这一次也没有计入你的生成次数。' : ''
+                }`}
               </Text>
             )}
           </View>

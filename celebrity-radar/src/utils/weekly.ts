@@ -578,7 +578,11 @@ export async function generateWeekly(material: WeeklyMaterial): Promise<WeeklyOu
 
   writeWeeklyCache(report)
   track('weekly_generate', { personCount: report.personCount, entryCount: report.entryCount })
-  /* 与报告一致：只对「用户确实拿到了周报」计数（best-effort，失败不影响返回） */
-  void consumeGenerateQuota(userId)
+  /* 与报告一致：只对「用户确实拿到了周报」计数（best-effort，失败不影响返回）。
+     2026-10-18：这里原来是 `void consumeGenerateQuota(...)`（fire-and-forget）——
+     周报生成完页面立刻展示，用户随手返回 / 切页，那条还没飞出去的调用就丢了，这一次就永久漏计。
+     报告主路径早改成 await（见 utils/cache.ts#finalizeAndReturn），周报漏了一处 ——
+     同一个坑，多等一次百毫秒级云调用换计费可靠。 */
+  await consumeGenerateQuota(userId).catch(() => undefined)
   return { kind: 'ok', report }
 }

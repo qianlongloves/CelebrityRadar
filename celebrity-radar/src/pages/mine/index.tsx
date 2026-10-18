@@ -354,7 +354,7 @@ export default function Mine() {
     {
       icon: '🤝',
       iconBg: 'blue',
-      title: '关注的名人',
+      title: '我的关注',
       note: userId ? `${counts.follows} 位` : '登录后查看',
       onTap: () => Taro.navigateTo({ url: '/package/following/index' })
     },
@@ -373,7 +373,7 @@ export default function Mine() {
        */
       icon: '👁',
       iconBg: 'blue',
-      title: '我跟进的事件',
+      title: '事件跟进',
       note: userId ? '跟进过的后续报道' : '登录后查看',
       onTap: () => Taro.navigateTo({ url: '/package/events/index?only=follows' })
     },

@@ -101,7 +101,8 @@ export default function Settings() {
   const clearMyData = async () => {
     const res = await Taro.showModal({
       title: '清空我的数据',
-      content: '将清除本地偏好设置与缓存，并删除云端的关注、收藏、历史、监控与行为计数，不可恢复。',
+      content:
+        '将清除本机偏好与缓存，并删除云端的关注、收藏、历史、监控与行为记录，不可恢复。账号、会员与剩余次数不受影响。',
       confirmText: '清除',
       confirmColor: '#EF4444'
     })
@@ -195,13 +196,20 @@ export default function Settings() {
    *
    * 撤回即失去处理依据，故基于该同意收集的数据（关注 / 收藏 / 历史 / 监控 / 埋点）**一并删除**；
    * 订单按法定留存要求不在此动作内（走注销的去标识化路径）。撤回经 store（`withdraw`），
+   *
+   * 2026-10-18 明确两处**刻意保留**（用户追问过「花钱买的会员会不会被一起清掉」）：
+   *   · `memberships`（会员档位 / 到期时间）—— 用户已经付费，撤回同意不该吞掉已购买的服务；
+   *   · 四张用量表（generate / ask / refresh / ai_calls）—— 防「撤回 → 重登」重置当日额度。
+   * 两者都不在 clearAllMyData 的清单里，users 行本身也留着（下次登录 ensure 复用同一行）。
+   * 代价是撤回后仍留下两条「openid ↔ 状态」的记录 —— 这是实现与「停止处理」之间的取舍，
+   * 所以弹窗文案如实写明「会员与剩余次数不受影响」，不让用户自己猜。真正连会员一起删的只有注销。
    * 使 app.tsx 即时重现同意网关 —— 撤回后不会出现「没同意却还能用 / 还能再登录」的漏洞。
    */
   const withdrawConsent = async () => {
     const res = await Taro.showModal({
       title: '撤回同意',
       content:
-        '撤回后将停止处理你的个人信息并退出登录，云端与本机的关注、收藏、历史、监控与行为计数一并删除，不可恢复；如需继续使用可重新同意。',
+        '撤回后将停止处理你的个人信息并退出登录，关注、收藏、历史、监控与行为记录连同本机缓存一并删除，不可恢复。已购买的会员与剩余次数不受影响；重新同意并登录后可继续使用。',
       confirmText: '撤回',
       confirmColor: '#EF4444'
     })

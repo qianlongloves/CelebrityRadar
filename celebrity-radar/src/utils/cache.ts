@@ -233,6 +233,15 @@ export type ReportOutcome =
        * 页面据此把首建提示条换成荣誉版（见 package/report/index.tsx）。
        */
       coldFirstBuild?: boolean
+      /**
+       * 云端**已确认**这一次没有计入生成次数（2026-10-18，首建豁免 / 会员补段豁免）。
+       *
+       * 为什么现在才敢交回页面：consumeGenerateQuota 改成 await 之后，云函数回包里就带着
+       * `waived`，端上拿得到准话。此前是 fire-and-forget，「生成成功但额度没动」时用户
+       * 只能自己猜是免计费还是漏计 —— 首建提示条也刻意不敢提这层（见报告页注释）。
+       * 页面只在为真时补一句「这一次没有计入你的生成次数」，不为真就完全不提。
+       */
+      quotaWaived?: boolean
     }
   | { kind: 'coldstart' } // 无联网素材 + 缓存为空（或强刷）：引导态
   | { kind: 'nonews' } // 抓取为空：暂未检索到
@@ -1360,13 +1369,17 @@ export async function getOrBuildReport(
      * 参数 report 覆盖外层那个 `let report`（重跑达标时传的是 retryReport），函数体内只用参数。
      */
     async function finalizeAndReturn(report: Report, materialCount: number): Promise<ReportOutcome> {
+      /** 云端确认这一次没计入（见 ReportOutcome.quotaWaived）：两条申请路径都写这一格 */
+      let quotaWaived = false
       /* 免计费申请：必须在 upsert 之前，理由见上方 ② */
       if (memberUpgrade) {
         /* await 而不是 void（2026-10-18）：报告已经交给用户了，计费请求还在飞的时候页面一退，
            这一次就永久漏计。多等一次云调用（百毫秒级）换计费可靠，值得 */
-        await consumeGenerateQuota(userId, { waiveIf: 'member_upgrade', target: personKey }).catch(
-          () => undefined
-        )
+        const r = await consumeGenerateQuota(userId, {
+          waiveIf: 'member_upgrade',
+          target: personKey
+        }).catch(() => null)
+        quotaWaived = r?.waived === true
       }
 
       const saved = await saveReady(personKey, report, materialCount, userId)
@@ -1424,10 +1437,11 @@ export async function getOrBuildReport(
          */
         /* 同上：await + 吞错。计费写失败不影响这份已经生成的报告（少算一次优于让用户等出错），
            但**不能**再用 fire-and-forget —— 页面退出时那次调用会被丢掉，等于白送一份报告 */
-        await consumeGenerateQuota(
+        const r = await consumeGenerateQuota(
           userId,
           firstBuild ? { waiveIf: 'first_build', target: personKey } : undefined
-        ).catch(() => undefined)
+        ).catch(() => null)
+        quotaWaived = r?.waived === true
       }
       /* 本次产物按**本次身份**过滤（批 1）：非会员生成的报告本就不含会员段 → 快路径直出、零额外读 */
       const shown = await exposeReport(report, memberDeep)
@@ -1439,7 +1453,10 @@ export async function getOrBuildReport(
         memberLocked: shown.locked,
         /* 首建才带（见 ReportOutcome.firstBuild）：页面据此说明「这次是你为全站建立的」；
            冷门首建再带一个 coldFirstBuild，页面换成荣誉版文案（S2-3） */
-        ...(firstBuild ? { firstBuild: true, ...(cold ? { coldFirstBuild: true } : {}) } : {})
+        ...(firstBuild ? { firstBuild: true, ...(cold ? { coldFirstBuild: true } : {}) } : {}),
+        /* 云端已确认免计费才带（见 ReportOutcome.quotaWaived）：页面据此补一句「没扣次数」，
+           把用户「额度怎么没动」的疑问就地答掉 */
+        ...(quotaWaived ? { quotaWaived: true } : {})
       }
     }
     return finalizeAndReturn(report, news.length)

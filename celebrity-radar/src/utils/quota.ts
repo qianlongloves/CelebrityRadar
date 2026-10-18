@@ -92,6 +92,58 @@ async function readCount(userId: string): Promise<number> {
   return (data as GenerateQuotaRow | null)?.count ?? 0
 }
 
+/* ------------------------------------------------- 未上报计数（2026-10-18） */
+
+/**
+ * 云函数写失败时，这一次**已经成立的消费**先记在本机，下次能连上云端时一并补报。
+ *
+ * 为什么必须记：`generate_quota` 的权限是 selfRead（本人可读、**客户端不可写**），
+ * 旧回退路径「函数没响应就自己 insert/update」根本写不进去 —— 权限拒绝只进 diagLog，
+ * 用户看到的就是「报告生成了，额度一直不涨」，且能一直生成下去。
+ *
+ * 语义边界（都是刻意选的）：
+ *   · 按天记：云端那一行 `_id` 带日期，跨了天就没有可补的那一行，静默丢弃（宁可漏一天，
+ *     也不把昨天的账压到今天）；
+ *   · 只补**普通计数**，不补免计费：有待补账时本次不再申请 waive —— 一次调用里
+ *     「豁免一次 + 补 N 次」两个语义纠缠不清，宁可多算；
+ *   · 方向永远「宁可多算」：云端其实写成功、只是回包丢了，补报就会多算一次。
+ */
+const PENDING_KEY = 'generate_pending'
+
+/** 一条欠账：[日期, 次数] —— 同一天内累加；换天即作废 */
+interface PendingEntry {
+  day: string
+  count: number
+}
+
+function pendingKey(userId: string): string {
+  return `${PENDING_KEY}#${userId}`
+}
+
+/** 本机欠账（0 = 没有）。读的时候顺手把跨天的作废，理由见上 */
+function readPending(userId: string): number {
+  try {
+    const raw = Taro.getStorageSync(pendingKey(userId)) as PendingEntry | ''
+    if (!raw || typeof raw !== 'object') return 0
+    if (raw.day !== todayKey()) {
+      Taro.removeStorageSync(pendingKey(userId))
+      return 0
+    }
+    return typeof raw.count === 'number' && raw.count > 0 ? Math.floor(raw.count) : 0
+  } catch {
+    return 0
+  }
+}
+
+function writePending(userId: string, count: number): void {
+  try {
+    if (count <= 0) Taro.removeStorageSync(pendingKey(userId))
+    else Taro.setStorageSync(pendingKey(userId), { day: todayKey(), count } as PendingEntry)
+  } catch {
+    /* 静默：写失败最坏是回到「漏这一次」，不影响已经生成的报告 */
+  }
+}
+
 /* ------------------------------------------------- 在途占位（P1，2026-10-11） */
 
 /**
@@ -183,7 +235,13 @@ export function beginGenerateInflight(
 export async function peekGenerateQuota(userId: string): Promise<GenerateQuotaSummary> {
   const state = await readMemberState()
   const limit = dailyGenerateLimit(state.member)
-  const used = await readCount(userId)
+  /* 本机欠账算进「已用」：界面必须**先**如实 —— 云端没收到的那几次，不能等补报成功才显示 */
+  const used = (await readCount(userId)) + readPending(userId)
+  /*
+   * 在途占位的基准必须和**写入时**一个口径：beginGenerateInflight 收到的就是 peek 的 used
+   * （同样含本机欠账）。拿云端裸计数去比，会让「欠账还没上报」那段时窗口里的占位永远不失效，
+   * 一个名额被重复占 —— 用满后还能多生成一次。
+   */
   const realRemaining = Math.max(0, limit - used - readInflight(userId, used).length)
   return {
     used,
@@ -213,7 +271,8 @@ export async function peekGenerateQuota(userId: string): Promise<GenerateQuotaSu
 /**
  * 消耗一次配额：仅在生成成功落库后调用（best-effort，计数失败不影响已生成的报告）。
  *
- * 优先由云函数原子自增；不可用时回退本地读-改-写（与 refresh_quota 同构，不做重试）。
+ * 优先由云函数原子自增；不可用时**记本机欠账**，下次能连上云端时一并补报（见上一节）。
+ * 「回退本地读-改-写」的老写法是假的：generate_quota 已收紧成 selfRead，端上写必被拒。
  *
  * waive（免计费申请，两种理由见 QuotaWaiveOptions）：他这一次生成产出的东西是替**全站**
  * 建的（写进共享缓存、之后所有人免费读），那笔账不该只由他掏每日次数。端上只**申请**，
@@ -222,26 +281,53 @@ export async function peekGenerateQuota(userId: string): Promise<GenerateQuotaSu
  * ⚠ 回退路径（函数未部署）**不认**这个申请 —— 端上无法自证身份，宁可多算一次，
  *   也不留下「改包即免次数」的口子（回退态本来就是过渡态，部署函数后即消除）。
  */
+/** `consumeGenerateQuota` 的结果：够页面把这一次的账如实说清 */
+export interface QuotaConsumeResult {
+  /**
+   * 云端确认「这一次没有计入次数」（首建豁免 / 会员补段豁免）。
+   *
+   * 2026-10-18 才敢把它交给页面：此前是 fire-and-forget，端上拿不到裁决，只能在注释里
+   * 反复强调「不许承诺免计费」；现在 consume 是 await 的，云端回包里就带着 waived，
+   * 页面可以照着事实说话，而不是让用户对着不变的额度自己猜。
+   */
+  waived: boolean
+  /** 云端返回的当日已用次数；这一次没能上报到云端时为 null（已记本机欠账） */
+  count: number | null
+}
+
 export async function consumeGenerateQuota(
   userId: string,
   waive?: QuotaWaiveOptions
-): Promise<void> {
-  const cloud = await incrQuotaViaCloud('generate', waive)
+): Promise<QuotaConsumeResult> {
+  const pending = readPending(userId)
+  /*
+   * 有待补账时**不申请**免计费（理由见上一节）；extra 随同一次调用带回：
+   * 云端一次原子加上 1 + pending，不必为补报再打一发。
+   */
+  const cloud = await incrQuotaViaCloud(
+    'generate',
+    waive && pending === 0 ? waive : undefined,
+    pending
+  )
   if (cloud !== null) {
+    if (pending > 0) {
+      writePending(userId, 0)
+      diagLog('info', 'db', `补报 ${pending} 次此前未入账的生成`)
+    }
     if (cloud.waived) {
       const reason = waive?.waiveIf === 'first_build' ? '首建共享缓存' : '会员补齐共享缓存'
       diagLog('info', 'db', `${reason}，本次生成不计入配额：${waive?.target ?? ''}`)
     }
-    return
+    return { waived: cloud.waived === true, count: cloud.count }
   }
 
-  const id = `${userId}#${todayKey()}`
-  const count = await readCount(userId)
-  if (count === 0) {
-    const { error } = await table('generate_quota').insert({ id, count: 1 })
-    if (error) diagLog('warn', 'db', `generate_quota 写入失败：${error.message ?? error}`)
-    return
-  }
-  const { error } = await table('generate_quota').update({ count: count + 1 }).eq('id', id)
-  if (error) diagLog('warn', 'db', `generate_quota 更新失败：${error.message ?? error}`)
+  /*
+   * 云函数不可用：**不要**再去写 generate_quota —— 那是 selfRead 表，端上写必被拒。
+   * 旧代码在这里 insert / update，失败只落一行 diagLog，用户看到的就是
+   * 「报告生成了，额度一直不涨」，而且还能无限生成 —— 这正是这条回退路径的坑。
+   * 现在记本机欠账：peek 立刻把它算进已用（界面如实），云端恢复后一次补报。
+   */
+  writePending(userId, pending + 1)
+  diagLog('warn', 'db', `本次生成未计入云端额度，已记本机欠账 ${pending + 1} 次，云端恢复后补报`)
+  return { waived: false, count: null }
 }

@@ -123,14 +123,18 @@ export async function peekQuotaViaCloud(kind: QuotaKind): Promise<QuotaPeek | nu
  */
 export async function incrQuotaViaCloud(
   kind: QuotaKind,
-  opts?: QuotaWaiveOptions
+  opts?: QuotaWaiveOptions,
+  extra = 0
 ): Promise<QuotaIncrResult | null> {
   try {
     const res = (await callCloudFunction('quotaGuard', {
       kind,
       action: 'consume',
       /* 只在传了才带上：老版本云函数不认这个参数，多传反而干扰日志 */
-      ...(opts ? { waiveIf: opts.waiveIf, target: opts.target } : {})
+      ...(opts ? { waiveIf: opts.waiveIf, target: opts.target } : {}),
+      /* 补报本机欠账（2026-10-18）：与本次这一次合并成一次原子自增。
+         老版本云函数忽略它 ⇒ 只丢补报的那几次，本次计数照常。 */
+      ...(extra > 0 ? { extra } : {})
     })) as QuotaGuardResult | null
 
     if (res && res.ok && typeof res.count === 'number') {

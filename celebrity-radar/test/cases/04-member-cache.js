@@ -290,7 +290,12 @@ describe('只升不降已接进生成主流程（源码钉住，防「写了守�
   })
 
   it('免计费申请在**落库之前**发出（云端复核读的就是那一行，晚一步条件就恒不成立）', () => {
-    const waiveAt = src.indexOf('await consumeGenerateQuota(userId, { waiveIf:')
+    /*
+     * 2026-10-18 起 member_upgrade 那处写成多行（要接返回值判 waived），
+     * 这里改成「方法名 + userId + 对象字面量」的正则，不依赖换行与参数写法。
+     * 首个匹配就是 member_upgrade（它在 saveReady 之前，首建那处在函数末尾）。
+     */
+    const waiveAt = src.search(/await consumeGenerateQuota\(\s*userId,\s*\{/)
     const saveAt = src.indexOf('const saved = await saveReady')
 
     ok(waiveAt > 0 && saveAt > 0)
@@ -341,7 +346,10 @@ describe('会员补齐免计费：云端复核（源码钉住）', () => {
 
   it('端上那个标记不可信：复核不过就照常自增（waived 回落 false）', () => {
     ok(guard.includes('waived = false'), '默认不免')
-    ok(guard.includes('const r = await incr(table, id, openid)'), '未豁免仍走原自增')
+    ok(
+      guard.includes('const r = await incr(table, id, openid, 1 + extra)'),
+      '未豁免仍走原自增（extra 只补欠账，不影响这一次）'
+    )
     ok(/waived: false/.test(guard), '未豁免必须如实回报 waived:false')
   })
 
@@ -372,9 +380,12 @@ describe('会员补齐免计费：云端复核（源码钉住）', () => {
     ok(guard.includes('report.conflicts.length > 0'), 'conflicts 要看是否非空数组')
   })
 
-  it('端上回退路径不认这个申请（拿不到云端裁决就宁可多算一次）', () => {
+  it('端上只在没有欠账时申请免计费（有待补账先补账，不混两种语义）', () => {
     const quota = read(path.join(SRC, 'utils/quota.ts'))
-    ok(quota.includes("incrQuotaViaCloud('generate', waive)"), '申请要真的送上去')
+    ok(
+      quota.includes('waive && pending === 0 ? waive : undefined'),
+      '申请要真的送上去；有本机欠账时先走普通计数（宁可多算，不白送）'
+    )
     ok(quota.includes('cloud.waived'), '免计费只能由云端裁决，端上不自作主张')
   })
 })

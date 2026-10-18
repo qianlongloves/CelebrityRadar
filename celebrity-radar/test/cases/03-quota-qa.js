@@ -2,9 +2,15 @@
 
 /** 配额与问答：配额云端通道 / 生成配额 / 会员权益 / 问答闸门与计数 / 问答语料 */
 
+const fs = require('fs')
+const path = require('path')
 const dayjs = require('dayjs')
 const env = require('../harness/env')
 const { describe, it, ok, notOk, eq, deepEq, rejects } = require('../harness/t')
+
+/** 读源码做静态断言（同 92-follow-entry.js）：只用于「某写法不许回来」这类负向检查 */
+const SRC = path.resolve(__dirname, '..', '..', 'src')
+const read = (p) => fs.readFileSync(path.join(SRC, p), 'utf8')
 
 /**
  * 本文件的用例一律按「线上口径」跑：先把全部调试开关关掉再加载模块（见 env.setDebugFlags）。
@@ -612,36 +618,68 @@ describe('生成配额 utils/quota', () => {
     eq(db.__dump('generate_quota').length, 0, '云端已计数，端上不应再写一行')
   })
 
-  it('consume：云端不可用时回退本机读-改-写（0 → insert）', async () => {
-    const { db, load } = fresh()
-    await load('utils/quota').consumeGenerateQuota('u1')
-    const rows = db.__dump('generate_quota')
-    eq(rows.length, 1)
-    eq(rows[0]._id, `u1#${todayKey()}`, '主键口径应为 openid#日期')
-    eq(rows[0].count, 1)
-  })
-
-  it('consume：回退路径连续调用走 update 递增，而不是插第二行', async () => {
-    const { db, load } = fresh()
-    const { consumeGenerateQuota } = load('utils/quota')
-    await consumeGenerateQuota('u1')
-    await consumeGenerateQuota('u1')
-    await consumeGenerateQuota('u1')
-    const rows = db.__dump('generate_quota')
-    eq(rows.length, 1, '同一天仍是一行')
-    eq(rows[0].count, 3)
-  })
-
-  it('consume：回退路径与 peek 口径闭环（用满后被拦）', async () => {
+  /*
+   * 2026-10-18 改口径：云端不可用时**不再**去写 generate_quota ——
+   * 那张表是 selfRead（客户端不可写），老代码在这里 insert / update，写必被权限拒绝，
+   * 表现就是「报告生成了、额度一直不涨」，还能无限生成。现在改为记本机欠账：
+   * peek 立刻算进已用（界面如实），云函数恢复后随下一次调用一次补报。
+   */
+  it('consume：云端不可用时不再写只读表，改记本机欠账（peek 立刻如实）', async () => {
     const { db, load } = fresh()
     const q = load('utils/quota')
-    for (let i = 0; i < 3; i++) await q.consumeGenerateQuota('u1')
-    eq((await q.peekGenerateQuota('u1')).allowed, false)
+    await q.consumeGenerateQuota('u1')
+
+    eq(db.__dump('generate_quota').length, 0, 'selfRead 表写不进，不该再尝试')
+    const peek = await q.peekGenerateQuota('u1')
+    eq(peek.used, 1, '欠账必须先算进已用：界面不能等云端恢复才变')
+    eq(peek.remaining, 2)
   })
 
-  it('consume：本机计数行写入失败也不会抛给调用方（报告已生成不能被回滚）', async () => {
-    const { db, load } = fresh()
-    db.__setFailing('generate_quota', true)
+  it('consume：连续欠账累加，用满后照常被拦（云端挂掉不等于免费）', async () => {
+    const { load } = fresh()
+    const q = load('utils/quota')
+    for (let i = 0; i < 3; i++) await q.consumeGenerateQuota('u1')
+    const peek = await q.peekGenerateQuota('u1')
+    eq(peek.used, 3)
+    eq(peek.allowed, false)
+  })
+
+  it('consume：云端恢复后把欠账随同一次调用补报，并清空本机欠账', async () => {
+    const { load } = fresh()
+    const q = load('utils/quota')
+    await q.consumeGenerateQuota('u1')
+    await q.consumeGenerateQuota('u1')
+
+    let seen = null
+    env.registerCloudFn('quotaGuard', (data) => {
+      seen = data
+      return { ok: true, count: 3 }
+    })
+    await q.consumeGenerateQuota('u1')
+
+    eq(seen.extra, 2, '两次欠账要随这一次一起补上（云端一次原子加 1 + extra）')
+
+    /* 欠账清零的证据：紧接着再消费一次，请求里就不该再出现 extra */
+    await q.consumeGenerateQuota('u1')
+    eq(seen.extra, undefined, '补报成功后本机不再重复计')
+  })
+
+  it('consume：云端成功且无欠账时不带 extra（不给老云函数塞多余参数）', async () => {
+    const { load } = fresh()
+    let seen = null
+    env.registerCloudFn('quotaGuard', (data) => {
+      seen = data
+      return { ok: true, count: 1 }
+    })
+    await load('utils/quota').consumeGenerateQuota('u1')
+    eq(seen.extra, undefined)
+  })
+
+  it('consume：云端报错也不抛（报告已生成，不能被计费回滚）', async () => {
+    const { load } = fresh()
+    env.registerCloudFn('quotaGuard', () => {
+      throw new Error('function down')
+    })
     let threw = false
     try {
       await load('utils/quota').consumeGenerateQuota('u1')
@@ -651,11 +689,20 @@ describe('生成配额 utils/quota', () => {
     notOk(threw, 'consume 是 best-effort，不应抛异常')
   })
 
-  it('consume：云端报错时回退本机计数，额度不会形同虚设', async () => {
-    const { db, load } = fresh()
-    env.registerCloudFn('quotaGuard', () => { throw new Error('function down') })
-    await load('utils/quota').consumeGenerateQuota('u1')
-    eq(db.__dump('generate_quota')[0].count, 1)
+  it('consume：源码里不许再出现对 generate_quota 的写（selfRead 表，写了必被拒）', () => {
+    const src = read('utils/quota.ts')
+    notOk(/generate_quota'\)\.(insert|update)/.test(src), 'generate_quota 只能由云函数写')
+  })
+
+  /*
+   * 周报计费（2026-10-18）：报告主路径早就从 `void consume` 改成 await，
+   * 周报这处漏了 —— 周报生成完页面立刻展示，用户随手返回，那条还没飞出去的调用就丢了，
+   * 这一次永久漏计。同一类坑，用一条静态断言钉住。
+   */
+  it('周报计费必须 await（fire-and-forget 会随页面退出丢单）', () => {
+    const src = read('utils/weekly.ts')
+    ok(/await consumeGenerateQuota\(/.test(src), '周报拿到手就算这一单，必须等计费落地')
+    notOk(/^\s*void consumeGenerateQuota\(/m.test(src), 'void 掉的计费请求会随页面退出而丢')
   })
 
   it('在途占位：已过闸门但还没落库的那一次先占住名额（P1，2026-10-11 防并发突破）', async () => {

@@ -6,7 +6,12 @@ import { toUserMessage } from './error'
 
 /**
  * 「清空我的数据」（§六.6）：本地设置 + 云端用户数据
- * （follows / favorites / history / keyword_watches / events）。
+ * （follows / favorites / history / keyword_watches / events / opinion_event_status）。
+ *
+ * opinion_event_status 是 2026-10-18 补进来的（用户问「撤回同意到底删了什么」时发现的漏项）：
+ * 那一行住着**已读 / 跟进（我盯的事件）/ 订阅对象（我关注的人与关键词）**，三项都可关联到人，
+ * 且 ACL 是「仅创建者可读写」、端上删得掉。此前它不在清单里 —— 于是撤回同意后
+ * 「我盯的事」「我订阅的人」原样还在，与「停止处理个人信息」直接矛盾（注销那边一直有删）。
  *
  * keyword_watches 必须一起删：同一张表既存关键词订阅（type='keyword'）又存名人监控
  * （type='person'，含 person_key），键就是 openid，属 ACL.creator 用户数据。漏删会出现
@@ -30,7 +35,12 @@ export async function clearAllMyData(): Promise<boolean> {
       table('favorites').delete().eq('openid', userId),
       table('history').delete().eq('openid', userId),
       table('keyword_watches').delete().eq('openid', userId),
-      table('events').delete().eq('openid', userId)
+      table('events').delete().eq('openid', userId),
+      /*
+       * 主键就是 openid（`_id = openid`），行里没有 openid 字段，故按 `_id` 删。
+       * 删不掉也不该静默：下面的 `results.find(r => r.error)` 会把它算进失败。
+       */
+      table('opinion_event_status').delete().eq('_id', userId)
     ])
     /*
      * ⚠ db 适配层**不会抛错**：db.ts#Builder.run 把异常吞掉并返回 `{ error }`

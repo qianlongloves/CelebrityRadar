@@ -163,6 +163,13 @@ $qa-icon-pdf-off: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy5
 
   &__msg {
     max-width: 84%;
+    /*
+      min-width: 0 是必须的（2026-10-18 用户反馈「引用链接太长会捅出卡片」）：
+      本元素是 __row（flex）的子项，flex 子项默认 min-width:auto —— 最小宽度取
+      「最长不可断片段」的固有宽度，一个没有空格的长 URL 就是这样的片段。
+      结果是 max-width:84% 只限制了行盒，内容照样横向溢出卡片。
+    */
+    min-width: 0;
     padding: 22rpx 26rpx;
     border-radius: $radius-md;
     background: #fff;
@@ -191,7 +198,13 @@ $qa-icon-pdf-off: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy5
 
   &__msg-text {
     white-space: pre-wrap;
+    /*
+      模型常把原文 URL 直接写进正文（联网检索的回答尤其多）。长 URL 是**一个没有空格的词**，
+      只在行尾放不下时才断的 word-break:break-word 在部分内核里不够用 —— 补 anywhere：
+      任何位置都可断，链接一定折行而不是捅出卡片。中文本来逐字可断，不受影响。
+    */
     word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   /*
@@ -218,11 +231,18 @@ $qa-icon-pdf-off: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy5
   }
 
   &__src {
+    /*
+      来源小条也是 flex 子项，且联网条目的 source 偶尔就是一串域名 / URL：
+      同样要给 max-width 与断行，否则这一条会把 __srcs 整行撑出卡片。
+    */
+    max-width: 100%;
+    min-width: 0;
     padding: 6rpx 14rpx;
     border-radius: 8rpx;
     background: $bg;
     color: $text-1;
     font-size: 21rpx;
+    overflow-wrap: anywhere;
 
     &--tap {
       opacity: 0.7;

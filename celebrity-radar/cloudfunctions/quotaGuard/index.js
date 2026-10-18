@@ -18,7 +18,7 @@
  *   ⇒ 免费额度形同虚设（可无限生成）。
  *
  * action：
- *   'consume'（默认）原子自增一次并返回新值
+ *   'consume'（默认）原子自增一次并返回新值；可带 `extra`（0..20）一并补报本机欠账
  *   'peek'    只读当日计数，不自增
  * kind：
  *   'generate' → generate_quota（报告生成配额，免费 3 / 会员 30）
@@ -102,19 +102,19 @@ function updatedOf(res) {
  * 「配额写入失败」→ 端上静默回退本机计数，云端计数永远停在 0 ⇒ 多设备口径兜底失效。
  * 归一成 0 后照常走「插首行」分支，两种真机行为下结论完全一致。
  */
-async function incrExistingRow(coll, id) {
+async function incrExistingRow(coll, id, n = 1) {
   try {
-    return updatedOf(await coll.doc(id).update({ data: { count: _.inc(1) } })) > 0
+    return updatedOf(await coll.doc(id).update({ data: { count: _.inc(n) } })) > 0
   } catch (err) {
     return false
   }
 }
 
-async function incr(table, id, openid) {
+async function incr(table, id, openid, n = 1) {
   const coll = db.collection(table)
 
   /* 常规路径：行已存在，原子自增（并发安全，不会丢计数） */
-  if (await incrExistingRow(coll, id)) {
+  if (await incrExistingRow(coll, id, n)) {
     return { count: await readCount(table, id), created: false }
   }
 
@@ -125,11 +125,11 @@ async function incr(table, id, openid) {
    * 就看不到这一行，会员/配额卡会一直显示 0/3。
    */
   try {
-    await coll.add({ data: { _id: id, _openid: openid, count: 1 } })
-    return { count: 1, created: true }
+    await coll.add({ data: { _id: id, _openid: openid, count: n } })
+    return { count: n, created: true }
   } catch (err) {
     /* 并发：另一端刚插好，改回自增路径；仍失败才是真故障 */
-    if (await incrExistingRow(coll, id)) {
+    if (await incrExistingRow(coll, id, n)) {
       return { count: await readCount(table, id), created: false }
     }
     throw err
@@ -420,6 +420,13 @@ exports.main = async (event) => {
   const date = todayKey()
   const id = `${openid}#${date}`
   const action = (event && event.action) || 'consume'
+  /*
+   * 补报本机欠账（2026-10-18）：端上云调用失败时把「已经发生的那次消费」记在本机，
+   * 下次成功时随同一次调用一起补上（见 src/utils/quota.ts「未上报计数」）。
+   * 上限 20 是防篡改 —— extra 来自客户端，改包可以传任意值，不能让它一次把额度刷穿；
+   * 20 也远大于正常欠账（一天最多几次）。
+   */
+  const extra = Math.max(0, Math.min(20, Math.floor(Number(event && event.extra) || 0)))
 
   try {
     /*
@@ -451,12 +458,18 @@ exports.main = async (event) => {
         console.warn(`[quotaGuard] ${event.waiveIf} 复核失败，按普通生成计数：${(err && err.message) || err}`)
       }
       if (waived) {
-        /* 免计费：不自增，回报当前计数（端上按 waived 处理，不再补记） */
-        return { ok: true, kind, date, count: await readCount(table, id), waived: true }
+        /*
+         * 免计费：**这一次**不自增，回报当前计数（端上按 waived 处理）。
+         * 但 extra（早先没报上的那几次）不是被豁免的那一次，仍要补上 ——
+         * 端上只在 pending === 0 时才会申请免计费，两条路正常不会同时出现，
+         * 这里兜的是「老端 + 新函数」或极端时序。
+         */
+        const count = extra > 0 ? (await incr(table, id, openid, extra)).count : await readCount(table, id)
+        return { ok: true, kind, date, count, waived: true }
       }
     }
 
-    const r = await incr(table, id, openid)
+    const r = await incr(table, id, openid, 1 + extra)
     return Object.assign(
       { ok: true, kind, date, count: r.count, created: r.created, waived: false },
       judgeLimit(kind, r.count, refreshLimit)

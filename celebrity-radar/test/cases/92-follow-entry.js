@@ -42,15 +42,15 @@ const EVENTS_PAGE = stripComments(read('package/events/index.tsx'))
 const OPINION_PAGE = stripComments(read('pages/opinion/index.tsx'))
 
 describe('入口：「我的」页能直接回到我跟进的事件', () => {
-  it('「我跟进的事件」与「关注的名人」挨着，跳转带 ?only=follows', () => {
-    ok(MINE.includes("title: '我跟进的事件'"), '「我的」页必须有这一行 —— 它是全站唯一没有入口的一类关注')
+  it('「事件跟进」与「我的关注」挨着，跳转带 ?only=follows', () => {
+    ok(MINE.includes("title: '事件跟进'"), '「我的」页必须有这一行 —— 它是全站唯一没有入口的一类关注')
     ok(
       MINE.includes('/package/events/index?only=follows'),
       '不带 only=follows 会落到「全部事件」，等于让用户进去再自己筛一次'
     )
 
-    const iFollows = MINE.indexOf("title: '关注的名人'")
-    const iEvents = MINE.indexOf("title: '我跟进的事件'")
+    const iFollows = MINE.indexOf("title: '我的关注'")
+    const iEvents = MINE.indexOf("title: '事件跟进'")
     const iFav = MINE.indexOf("title: '我的收藏'")
     ok(iFollows > 0 && iEvents > 0 && iFav > 0, '三行都要在')
     eq(
