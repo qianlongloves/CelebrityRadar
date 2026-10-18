@@ -8,7 +8,7 @@
 
 **Taro 3（React + TypeScript）· 微信云开发 CloudBase**
 
-[**中文**](./README.md) ｜ [English](./README.en.md) ｜ [GitHub](https://github.com/qianlongloves/CelebrityRadar) ｜ [Gitee](https://gitee.com/qianlonglove_admin/celebrity-radar)
+[**中文**](./README.md) ｜ [English](./README.en.md) ｜ [GitHub](https://github.com/qianlongloves/CelebrityRadar) ｜ [Gitee](https://gitee.com/qianlonglove_admin/celebrity-radar) ｜ [AtomGit](https://atomgit.com/fivestar/CelebrityRadar)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 ![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)
@@ -359,10 +359,11 @@ celebrity-radar/                ← 仓库根目录（无 package.json）
 
 ## 支持本项目
 
-项目**同时在 GitHub 与 Gitee 开源**，欢迎 Star 与提 Issue：
+项目**同时在 GitHub、Gitee 与 AtomGit 开源**，欢迎 Star 与提 Issue：
 
 - **GitHub**：<https://github.com/qianlongloves/CelebrityRadar>
 - **Gitee**：<https://gitee.com/qianlonglove_admin/celebrity-radar>
+- **AtomGit**：<https://atomgit.com/fivestar/CelebrityRadar>
 
 如果这个项目对你有帮助，也可以请作者喝杯咖啡：
 
