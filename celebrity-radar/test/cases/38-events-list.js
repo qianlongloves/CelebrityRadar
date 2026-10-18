@@ -156,7 +156,8 @@ describe('事件列表页：首屏只渲染第一页 + 触底追加（静态锁�
   const scss = read('package/events/index.scss')
 
   it('首屏只渲染第一页：渲染 paged.rows，绝不直接渲染全量', () => {
-    ok(page.includes('pageSlice(events, page, EVENTS_PAGE_SIZE)'), '应对全量事件按 EVENTS_PAGE_SIZE 切片')
+    /* 2026-10-18 起切片对象是 `scoped`（当前范围：全部 / 我盯的）—— 仍是同一套 pageSlice */
+    ok(page.includes('pageSlice(scoped, page, EVENTS_PAGE_SIZE)'), '应对当前范围的列表按 EVENTS_PAGE_SIZE 切片')
     ok(page.includes('{paged.rows.map('), '列表应渲染分页切片（首屏即第一页）')
     notOk(page.includes('{events.map((ev)'), '不得直接渲染全量事件（否则退化成一次渲染全部）')
     ok(page.includes('useState(1)'), '页号 state 初值应为 1（首屏第一页）')
@@ -165,8 +166,8 @@ describe('事件列表页：首屏只渲染第一页 + 触底追加（静态锁�
   it('触底加载更多：useReachBottom 仅在还有下一页时前进一页', () => {
     ok(page.includes('useReachBottom('), '缺触底加载')
     ok(
-      page.includes('p * EVENTS_PAGE_SIZE < events.length ? p + 1 : p'),
-      '触底应仅在还有下一页时前进一页，到底不动'
+      page.includes('p * EVENTS_PAGE_SIZE < scoped.length ? p + 1 : p'),
+      '触底应仅在当前范围还有下一页时前进一页，到底不动'
     )
   })
 
@@ -261,5 +262,67 @@ describe('舆情页三张卡：不再「加载更多」，改为跳独立页的�
   it('每条事件仍可点进 pages/event（既有能力不丢）', () => {
     ok(page.includes('/package/event/index'), '舆情页事件卡仍应能点进单事件时间线页')
     ok(page.includes('eventKey=${encodeURIComponent(ev.key)}'), 'eventKey 必须 encode 后带上')
+  })
+})
+
+/* ───────────────────── 7. 「我盯的」聚合视图（2026-10-18） ───────────────────── */
+
+describe('事件列表页：「我盯的」聚合视图（点盯的事件 → 只看盯的 → 完整事件线）', () => {
+  const page = read('package/events/index.tsx')
+  const scss = read('package/events/index.scss')
+  const opinion = read('pages/opinion/index.tsx')
+  const opinionScss = read('pages/opinion/index.scss')
+
+  it('范围由 ?only=follows 直达，缺省 / 未知取值都落回全部', () => {
+    ok(page.includes('useRouter()'), '要读路由参数，舆情页才能直达聚合视图')
+    ok(
+      page.includes("router.params?.only === 'follows' ? 'follows' : 'all'"),
+      '只有显式 follows 才收窄，其余一律看全部（不能把脏参数当成空列表）'
+    )
+    ok(page.includes("type Scope = 'all' | 'follows'"), '范围只有两档')
+  })
+
+  it('判据只看 eventStatus.follows（与计数 / 全部已读 同源，不另立「盯过」标记）', () => {
+    ok(page.includes('events.filter((e) => !!eventStatus.follows[e.key])'), '我盯的 = follows 里有这个键')
+    ok(page.includes("const scoped = scope === 'follows' ? followRows : events"), '渲染范围由 scope 决定')
+    ok(page.includes('pageSlice(scoped, page, EVENTS_PAGE_SIZE)'), '分页作用于当前范围，而不是全量')
+  })
+
+  it('切换范围回到第一页（换的是另一份列表，沿用旧页号会翻到空页）', () => {
+    ok(/const switchScope = \(next: Scope\)[\s\S]{0,200}?setPage\(1\)/.test(page), '切范围必须 setPage(1)')
+  })
+
+  it('页内有「全部事件 | 我盯的」分段，可随时退回全部', () => {
+    ok(page.includes('page-events__scope'), '缺范围分段')
+    ok(page.includes('全部事件 {events.length}'), '全部那段要报总数')
+    ok(page.includes('我盯的 {followRows.length}'), '我盯的那段要报件数（不必都有新进展）')
+    ok(scss.includes('&__scope-tab'), '缺分段样式钩子')
+  })
+
+  it('「我盯的」空态说清「还没盯过」，并给退回全部的入口', () => {
+    ok(page.includes('还没盯过事件'), '空态不能只说「没有事件」，否则用户以为库空了')
+    ok(page.includes('page-events__empty-back'), '空态要给退路')
+    ok(scss.includes('&__empty-card'), '缺空态卡样式')
+  })
+
+  it('聚合视图里每条仍整卡跳事件时间线页 —— 「完整事件线」只在那页渲染一次', () => {
+    ok(page.includes('onClick={() => goEvent(ev)}'), '每条仍要能点进完整时间线')
+    ok(page.includes('/package/event/index'), '跳转目标不变')
+  })
+
+  it('舆情页「盯的 N 条有新进展」可点，直达 ?only=follows；「我盯的 ›」常显', () => {
+    ok(opinion.includes("url: '/package/events/index?only=follows'"), '入口必须带 only=follows 参数')
+    ok(opinion.includes('const goFollowedEvents'), '缺聚合视图入口函数')
+    ok(opinion.includes('page-opinion__follow-jump'), '计数角标要有可点的样式钩子')
+    ok(opinionScss.includes('&__follow-jump'), '缺可点角标样式')
+    ok(
+      /followedCount > 0 &&[\s\S]{0,200}?page-opinion__mine/.test(opinion),
+      '「我盯的 ›」应常显（只要盯过，不要求当前有新进展）'
+    )
+    ok(opinion.includes('page-opinion__mine'), '缺我盯的入口样式钩子')
+  })
+
+  it('不复用被形态锁钉死的 page-opinion__more（全页仍只剩事件卡那一处）', () => {
+    eq((opinion.match(/className='page-opinion__more'/g) || []).length, 1, '第二个卡头入口必须另起类名')
   })
 })

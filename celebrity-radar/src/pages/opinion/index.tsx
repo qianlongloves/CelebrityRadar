@@ -477,11 +477,23 @@ export default function Opinion() {
     [events, eventStatus]
   )
 
+  /**
+   * 我盯的**全部**事件件数（含当前没有新进展的，2026-10-18）。
+   *
+   * 「我盯的 ›」入口的显示依据只能是它：只按 `followNew` 显示，会让「盯了 5 件、这几天都没动」
+   * 的用户找不到入口 —— 而那正是最想回看的时候。判据与事件列表页的「我盯的」同一口径
+   * （`eventStatus.follows` 有没有这个键）。
+   */
+  const followedCount = useMemo(
+    () => events.filter((ev) => !!eventStatus.follows[ev.key]).length,
+    [events, eventStatus]
+  )
+
   /** 首页「舆情」入口角标口径：预警 + 风险 + 事件（关注动态归铃铛，见 utils/inbox 文件头） */
   const inboxTotal = alerts.newTotal + alerts.riskNew + eventNew
 
   /**
-   * 页首「监控」格上的角标：只算预警 + 风险，**不含事件** ——
+   * 页首「预警工作台」格上的角标：只算预警 + 风险，**不含事件** ——
    * 事件未读在下方「事件时间线」卡头已经报过一次，同一页里报两遍会让人以为是两件事。
    */
   const monitorBadge = alerts.newTotal + alerts.riskNew
@@ -517,6 +529,14 @@ export default function Opinion() {
    * 入口位置与关注动态卡统一（同为卡头 `page-opinion__more`，不再放在卡底）。
    */
   const goEvents = () => void Taro.navigateTo({ url: '/package/events/index' })
+  /**
+   * 「我盯的 ›」/「盯的 N 条有新进展」→ 事件列表页的**聚合视图**（2026-10-18）。
+   *
+   * 带 `?only=follows`，进去只列已跟进的事件；每条仍整卡跳 `package/event`，那就是**完整事件线**。
+   * 为什么不在舆情页内展开：本页只给固定预览（见上方三卡注释），而「完整时间线」的分层
+   * （免费 5 / 会员全部）只作用在详情页 —— 在这里再渲染一份必然要与详情页漂移。
+   */
+  const goFollowedEvents = () => void Taro.navigateTo({ url: '/package/events/index?only=follows' })
   /** 名人主页（方案 A：今日要点 feed 条目精准跳转，与关注动态卡的整页跳转区分开） */
   const goProfile = (personKey: string) =>
     void Taro.navigateTo({ url: `/package/profile/index?personKey=${encodeURIComponent(personKey)}` })
@@ -717,14 +737,19 @@ export default function Opinion() {
       */}
       <View className='page-opinion__nav'>
         {/*
-          监控：角标 = 关键词预警新 + 风险信号新（口径复用 inboxTotal 的那两项，**不含事件** ——
+          预警工作台（2026-10-18 由「监控」改名）：这一格进去的是 package/alerts，
+          页内三块分别是关键词监测 / 风险信号 / 订阅的对象 —— 全部是「预警」性质，
+          而旧名「监控」既没说清它是什么，又和右边那格「监测工作台」只差一个字。
+          改名后与页内标题「关键词预警」对得上，用户按「预警」找得到。
+
+          角标 = 关键词预警新 + 风险信号新（口径复用 inboxTotal 的那两项，**不含事件** ——
           事件未读已经显示在下方「事件时间线」卡头，同一页里报两遍会让人以为是两件事）。
           这两项都在 state 里，渲染零成本。
         */}
         <View className='page-opinion__nav-item' onClick={goAlerts}>
           <View className='page-opinion__nav-top'>
             <Text className='page-opinion__nav-icon'>🔔</Text>
-            <Text className='page-opinion__nav-label'>监控</Text>
+            <Text className='page-opinion__nav-label'>预警工作台</Text>
             {monitorBadge > 0 && <Text className='page-opinion__nav-badge'>{monitorBadge}</Text>}
             <Text className='page-opinion__nav-go'>›</Text>
           </View>
@@ -934,11 +959,27 @@ export default function Opinion() {
             {/* 「新 N 条」：口径来自 utils/inbox#countNewEvents（复用 opinion_event_status.reads） */}
             {eventNew > 0 && <Text className='count-badge'>新 {eventNew} 条</Text>}
             {/* 「我盯的 N 条有新进展」：口径来自 utils/inbox#countFollowUpdates（只数已跟进的，
-                它们不会被「全部已读」清掉，见 markAllRead 与 opinion-store 文件头） */}
-            {followNew > 0 && <Text className='count-badge'>盯的 {followNew} 条有新进展</Text>}
+                它们不会被「全部已读」清掉，见 markAllRead 与 opinion-store 文件头）。
+                2026-10-18 起它同时是**入口**：点它跳事件列表页的「我盯的」聚合视图（带 ?only=follows）。 */}
+            {followNew > 0 && (
+              <Text
+                className='count-badge page-opinion__follow-jump'
+                onClick={goFollowedEvents}
+              >
+                盯的 {followNew} 条有新进展 ›
+              </Text>
+            )}
           </View>
-          {/* 右侧动作组：「查看全部 ›」入口 */}
+          {/* 右侧动作组：「我盯的 ›」+「查看全部 ›」 */}
           <View className='page-opinion__head-actions'>
+            {/* 我盯的事件**全部**的入口（不一定有新进展，见 followedCount 注释）。
+                另起 `page-opinion__mine` 而不复用 `page-opinion__more`：那个类名被 36 / 39 / 59
+                三条用例钉死为「全页只剩事件卡一处」，复用会让形态锁失效。 */}
+            {followedCount > 0 && (
+              <Text className='page-opinion__mine' onClick={goFollowedEvents}>
+                我盯的 ›
+              </Text>
+            )}
             {/* 卡头右上角文字按钮（同类名 `page-opinion__more`），跳独立的事件列表页 pages/events。 */}
             <Text className='page-opinion__more' onClick={goEvents}>
               查看全部 ›

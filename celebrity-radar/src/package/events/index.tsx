@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import Taro, { useDidShow, usePullDownRefresh, useReachBottom } from '@tarojs/taro'
+import Taro, { useDidShow, usePullDownRefresh, useReachBottom, useRouter } from '@tarojs/taro'
 import { Text, View } from '@tarojs/components'
 import { listFollows } from '@/utils/follows'
 import { getFeedDetails } from '@/utils/cache'
@@ -66,11 +66,22 @@ import './index.scss'
  *     本页不碰它。
  *   · 合规红线不变（见 `utils/opinion-events.ts` 文件头）：涉政涉军仍由上游拒答；无来源的条目
  *     不进事件；**聚合 ≠ 认定**；可信度最高只到「官方通报」。本页保留一句克制的轻量说明。
+ *
+ * ## 「我盯的」聚合视图（2026-10-18）
+ *
+ * 用户诉求：点「盯的事件」要能看到自己盯的那些事、并能点进完整事件线，而不是在长列表里一条条翻。
+ * 做法是**在本页加一层范围**（`scope`：`all` / `follows`），不新开页面 —— 数据源、分页函数、
+ * 每条事件的跳转都与「全部事件」完全同一套，只把渲染范围收窄到 `eventStatus.follows` 里的键。
+ * 入口：舆情页事件卡的「盯的 N 条有新进展」与「我盯的 ›」带 `?only=follows` 直达；
+ * 页内卡头的分段可随时切回「全部事件」（用户可能想对照着看）。
  */
 
 type Status = 'loading' | 'ready' | 'error'
+/** 列表范围：全部事件 / 我盯的（已跟进）。见文件头「我盯的」聚合视图 */
+type Scope = 'all' | 'follows'
 
 export default function Events() {
+  const router = useRouter()
   const [status, setStatus] = useState<Status>('loading')
   const [events, setEvents] = useState<OpinionEvent[]>([])
   /** 数据来源：cloud（落库）/ local（本端聚类降级）。仅用于渲染降级说明与排障 */
@@ -94,6 +105,13 @@ export default function Events() {
    * 首屏（还没有数据）/ 错误重试没有可保留的列表，照常显示加载态。
    */
   const loadedRef = useRef(false)
+  /**
+   * 列表范围（2026-10-18）：`all` = 全部事件；`follows` = 只看我盯的（`eventStatus.follows`）。
+   *
+   * 初值来自路由参数 `?only=follows` —— 舆情页事件卡的「盯的 N 条有新进展」和「我盯的 ›」
+   * 都带它直达，省掉「进来再点一次筛选」。参数缺失 / 取值不认识一律落回 all。
+   */
+  const [scope, setScope] = useState<Scope>(router.params?.only === 'follows' ? 'follows' : 'all')
 
   /** 本端聚类所需的输入：复用舆情页同一批既有读取函数，每块各自 try/catch（一块读失败不拖垮整页） */
   const collectInput = useCallback(async (): Promise<OpinionInput> => {
@@ -244,13 +262,32 @@ export default function Events() {
     Taro.stopPullDownRefresh()
   })
 
+  /**
+   * 我盯的（已跟进）事件：判据只看 `eventStatus.follows` 有没有这个键 ——
+   * 与角标、「盯的 N 条有新进展」计数、「全部已读」跳过已跟进 完全同源
+   * （见 utils/opinion-store 文件头），不另立「盯过」标记。
+   */
+  const followRows = events.filter((e) => !!eventStatus.follows[e.key])
+  /** 当前范围要渲染的那份列表；分页、触底、空态都基于它，不再各自判断 scope */
+  const scoped = scope === 'follows' ? followRows : events
+
   /* 客户端分段渲染：首屏只渲染第一页，触底追加下一页（每页 EVENTS_PAGE_SIZE 条，见该常量注释） */
-  const paged = pageSlice(events, page, EVENTS_PAGE_SIZE)
+  const paged = pageSlice(scoped, page, EVENTS_PAGE_SIZE)
 
   /* 触底加载更多：还有下一页才前进一页；到底则不动（不追加、不触发任何请求） */
   useReachBottom(() => {
-    setPage((p) => (p * EVENTS_PAGE_SIZE < events.length ? p + 1 : p))
+    setPage((p) => (p * EVENTS_PAGE_SIZE < scoped.length ? p + 1 : p))
   })
+
+  /**
+   * 切换范围：**页号必须回 1**。两份列表长度与顺序都不同，沿用旧页号会翻到空页
+   * （`pageSlice` 超界返回空行），观感像「点了没反应」。这是换筛选、不是「返回」，不适用保留页号。
+   */
+  const switchScope = (next: Scope) => {
+    if (next === scope) return
+    setScope(next)
+    setPage(1)
+  }
 
   /**
    * 「标记已读」/「跟进」（沿用舆情页事件卡交互）：乐观更新本地态，写库失败回滚并轻提示。
@@ -334,15 +371,43 @@ export default function Events() {
       <View className='card page-events__head'>
         <View className='page-events__head-main'>
           <Text className='page-events__head-title'>
-            {events.length > 0 ? `🧩 事件 · ${events.length} 件事` : '🧩 事件'}
+            {scope === 'follows'
+              ? `★ 我盯的 · ${followRows.length} 件`
+              : events.length > 0
+                ? `🧩 事件 · ${events.length} 件事`
+                : '🧩 事件'}
           </Text>
           {newCount > 0 && <Text className='count-badge'>新 {newCount} 条</Text>}
-          {/* 已跟进的另有计数：跟进 = 订阅（云端日报按同一判据提醒，见 opinion-store 文件头） */}
-          {followCount > 0 && <Text className='count-badge'>盯的 {followCount} 条有新进展</Text>}
+          {/* 已跟进的另有计数：跟进 = 订阅（云端日报按同一判据提醒，见 opinion-store 文件头）。
+              2026-10-18 起它同时是**入口**：点一下就把列表收窄到「我盯的」，不用先想清楚去哪找。 */}
+          {followCount > 0 && (
+            <Text className='count-badge page-events__follow-jump' onClick={() => switchScope('follows')}>
+              盯的 {followCount} 条有新进展 ›
+            </Text>
+          )}
           {/* 订阅的对象（E1-②）：「盯的」是**单条事件**，「订阅的 N 个对象」是**对象**这一层 */}
           {subFreshCount > 0 && <Text className='count-badge'>订阅的 {subFreshCount} 个对象有新动向</Text>}
         </View>
       </View>
+
+      {/* 范围分段：「全部事件 | 我盯的」。从「盯的 N 条有新进展」进来后，得有一条路退回全部；
+          两个数字分开报 —— 「我盯的」可能一件都没有新进展，那就没有角标可点。 */}
+      {status === 'ready' && events.length > 0 && (
+        <View className='page-events__scope'>
+          <Text
+            className={`page-events__scope-tab${scope === 'all' ? ' page-events__scope-tab--on' : ''}`}
+            onClick={() => switchScope('all')}
+          >
+            全部事件 {events.length}
+          </Text>
+          <Text
+            className={`page-events__scope-tab${scope === 'follows' ? ' page-events__scope-tab--on' : ''}`}
+            onClick={() => switchScope('follows')}
+          >
+            我盯的 {followRows.length}
+          </Text>
+        </View>
+      )}
 
       {status === 'loading' && <Text className='page-events__hint'>正在归并事件…</Text>}
       {status === 'error' && (
@@ -354,8 +419,22 @@ export default function Events() {
         <Text className='page-events__empty'>暂无可归并的事件，关注的人或监控词有新动态时会聚在这里</Text>
       )}
 
+      {/* 「我盯的」空态：不是「没有事件」，而是「还没盯过」—— 两条空态必须分开说，
+          否则用户会以为库里空了，反而去反复下拉刷新 */}
+      {status === 'ready' && events.length > 0 && scope === 'follows' && followRows.length === 0 && (
+        <View className='card page-events__empty-card'>
+          <Text className='page-events__empty'>
+            还没盯过事件。在「全部事件」里点某条的「☆ 跟进」（或点开一条、在完整时间线页跟进）——
+            之后这件事的后续会聚合在这里，点开就是完整事件线。
+          </Text>
+          <Text className='page-events__empty-back' onClick={() => switchScope('all')}>
+            去看全部事件 ›
+          </Text>
+        </View>
+      )}
+
       {status === 'ready' &&
-        events.length > 0 &&
+        scoped.length > 0 &&
         <>
           {paged.rows.map((ev) => {
             /* 「新事件」角标：没读过 → NEW；读过但最近有报道 → 有新进展 */
@@ -423,7 +502,11 @@ export default function Events() {
           {/* 触底加载更多的状态行：切片渲染没有真实网络加载，故不伪造 loading，
               只如实区分「还有 N 条（触底会追加）」与「到底」两种状态 */}
           <Text className='page-events__foot'>
-            {paged.hasMore ? `上滑加载更多（还有 ${paged.remaining} 条）…` : '—— 没有更多事件 ——'}
+            {paged.hasMore
+              ? `上滑加载更多（还有 ${paged.remaining} 条）…`
+              : scope === 'follows'
+                ? '—— 我盯的事件就这些 ——'
+                : '—— 没有更多事件 ——'}
           </Text>
         </>
       }

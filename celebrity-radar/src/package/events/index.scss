@@ -38,6 +38,55 @@
     color: $text-1;
   }
 
+  /* 可点的计数角标（2026-10-18）：「盯的 N 条有新进展 ›」—— 原先只是装饰，
+     现在点一下把列表收窄到「我盯的」。下划线是唯一提示「这里能点」的信号，
+     不另加背景色（角标本身已有配色语义：NEW / 有新进展 / 订阅，各不相同）。 */
+  &__follow-jump {
+    text-decoration: underline;
+  }
+
+  /* 范围分段：全部事件 | 我盯的。两段等宽、共用一条底槽，
+     选中态用品牌色 + 底色 —— 与页内其它「不可点角标」在体量上要能一眼分开。 */
+  &__scope {
+    display: flex;
+    align-items: center;
+    gap: 8rpx;
+    margin: 4rpx 0 16rpx;
+    padding: 6rpx;
+    border-radius: 999rpx;
+    background: $bg;
+    border: 2rpx solid $line;
+  }
+
+  &__scope-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 60rpx;
+    border-radius: 999rpx;
+    font-size: 24rpx;
+    color: $text-2;
+
+    &--on {
+      background: $brand;
+      color: #fff;
+      font-weight: 600;
+    }
+  }
+
+  /* 「我盯的」空态卡：说清「不是没有事件，是还没盯过」，并给出退路 */
+  &__empty-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12rpx;
+  }
+
+  &__empty-back {
+    font-size: 24rpx;
+    color: $brand;
+  }
+
   /* 单条事件：一张卡，整卡可点进事件时间线页 */
   &__item {
     display: flex;
