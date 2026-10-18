@@ -125,6 +125,24 @@ export function isStaleReport(iso?: string | null, days = STALE_REPORT_DAYS): bo
 }
 
 /**
+ * 报告版本号（2026-10-18）：`v2026.10.18`。
+ *
+ * 由 `generatedAt` **派生**，不新增字段、不额外查库 —— 版本本来就等于「哪一天生成的那一版」，
+ * 与 `report_versions` 的 `_id`（`personKey#generatedAt`）同一份时间源，因此不会出现
+ * 「目录写一个编号、版本列表写另一个日期」的第二套口径（同 N-6 的病）。
+ *
+ * 为什么按 **UTC+8** 取日、而不是设备时区：同一份报告必须**在哪台手机上都显示同一个版本号**，
+ * 否则用户截图给别人看时对不上（P2-36 已经因为设备时区吃过大亏）。故直接复用 `dayKey8`。
+ *
+ * 只到日、不带到分秒：目录标题要一行放得下，而「具体多久之前生成」工具卡已经用相对时间说过。
+ * 不可解析（老报告没有 `generatedAt`）返回空串，调用方据此整段不渲染。
+ */
+export function reportVersion(iso?: string | null): string {
+  const day = dayKey8(iso ?? '')
+  return day ? `v${day.replace(/-/g, '.')}` : ''
+}
+
+/**
  * 绝对时间刻度的解析：只认**绝对刻度**，相对说法一律不认（返回 null）。
  *
  * 认的形式：2026-11-05 / 2026-11 / 2026/11 / 2026年11月5日 / 2026（只有年）。

@@ -93,7 +93,7 @@ import { renderReportPoster, reportCardHeight } from '@/utils/share-card'
 import { openSourceLink } from '@/utils/source-link'
 import { toUserMessage } from '@/utils/error'
 import { useAuth } from '@/stores/auth'
-import { fromNow, formatDay, isStaleReport, reportAgeDays, stampAgo } from '@/utils/time'
+import { fromNow, formatDay, isStaleReport, reportAgeDays, reportVersion, stampAgo } from '@/utils/time'
 import './index.scss'
 
 /** 深度报告页（§2.3 六段渲染 + §2.4 全部边界态） */
@@ -1200,13 +1200,19 @@ export default function ReportPage() {
      * 授权拿不到也照常订阅（与 utils/risk-watch.ts 取舍 3 同源）：站内预警页能看到，是这条链路的下限。
      * 授权结果只决定订阅成功后那句话怎么说，不决定订不订得上 —— 不能让用户以为「没授权 = 没盯」。
      */
+    /*
+     * 置忙要放在**授权之前**（2026-10-18）：从点击到「已盯上」之间要过订阅授权弹窗、
+     * 一次读库去重、一次写库，快则半秒、慢则几秒 —— 全程按钮毫无变化，用户会以为没点上而反复点。
+     * 注意 `setWatchBusy` 是同步 setState、不是 await，不改变下面「授权必须是点击后第一个 await」
+     * 的微信硬约束（见本函数开头与用例 53 那条断言）。
+     */
+    setWatchBusy(keyword)
     let notifyOk = false
     if (alertNotifyConfigured()) {
       const notify = await requestAlertNotify()
       notifyOk = notify.ok
     }
 
-    setWatchBusy(keyword)
     const res = await addWatch(keyword)
     setWatchBusy(null)
     if (res.ok) {
@@ -1764,6 +1770,17 @@ export default function ReportPage() {
    * 以后动模板不需要动页面。
    */
   const lockedIds = new Set(tocLocked.map((s) => s.id))
+
+  /**
+   * 这份报告的版本号（2026-10-18）：`v2026.10.18`，显示在目录卡标题里。
+   *
+   * 为什么不新存一个 version 字段：报告已经有一份权威的生成时间（`generatedAt`，
+   * 与 `report_cache.generated_at`、`report_versions._id` 同源），再造一个编号就必须
+   * 在**每条**生成路径上同步维护，漏一处就出现「这份报告没有版本号」。
+   * 派生则天然对齐：缓存命中、强制重生、降级兜底都走同一个 `generatedAt`。
+   * 老报告解析不出时间 => 空串，标题只显示节数（不写「v未知」冒充版本）。
+   */
+  const reportVer = reportVersion(report?.generatedAt)
 
   /*
    * S3-3：免费档「速览」—— 列表型节按档截断（免费 3 条 / 会员不截断）。
@@ -2400,7 +2417,17 @@ export default function ReportPage() {
                 hoverClass='page-report__toc-head--tap'
                 onClick={() => setTocOpen(!tocOpen)}
               >
-                <View className='card-title'>{`目录 · ${tocSections.length} 节`}</View>
+                {/*
+                  版本号跟着目录标题走（2026-10-18）：目录是「这份报告有什么」的总入口，
+                  版本号放在这里，用户一眼就知道「我读的是 v2026.10.18 这一版」，
+                  翻到历史版本对照时也不用再回顶部找生成时间。
+                  `.card-title` 全局是 flex + 居中，故版本号作为兄弟 Text 直接横排、
+                  靠 margin-left 拉开距离，不必另包一层容器去改全局标题样式。
+                */}
+                <View className='card-title'>
+                  {`目录 · ${tocSections.length} 节`}
+                  {reportVer && <Text className='page-report__toc-ver'>{reportVer}</Text>}
+                </View>
                 <Text className='page-report__toc-toggle'>{tocOpen ? '收起' : '展开'}</Text>
               </View>
               {tocOpen && (
@@ -2978,12 +3005,24 @@ export default function ReportPage() {
                       排在依据之后 —— 它是对这一条的**延伸动作**，不是这一条的内容本身，
                       得让用户先读完争议，再决定要不要盯。
                     */}
-                    <View
-                      className={`page-report__watch ${watching ? 'page-report__watch--on' : ''}`}
-                      onClick={() => void onToggleWatchTopic(c.topic)}
-                    >
-                      {watching ? '✓ 已盯进展' : '+ 盯这条进展'}
-                    </View>
+                    {/*
+                      提交中（2026-10-18）：授权 / 读库 / 写库期间换成转圈 + 「正在添加…」。
+                      这一态**不挂 onClick** —— 加载动画本身就是「别点了」的表达，比再判一次 busy 更直白；
+                      只把被点的那一条置忙（`watchBusy === topic`），其余争议条目照常可点。
+                    */}
+                    {watchBusy === topic ? (
+                      <View className='page-report__watch page-report__watch--busy'>
+                        <View className='page-report__watch-spin' />
+                        <Text>正在添加…</Text>
+                      </View>
+                    ) : (
+                      <View
+                        className={`page-report__watch ${watching ? 'page-report__watch--on' : ''}`}
+                        onClick={() => void onToggleWatchTopic(c.topic)}
+                      >
+                        {watching ? '✓ 已盯进展' : '+ 盯这条进展'}
+                      </View>
+                    )}
                   </View>
                 )
               })}
