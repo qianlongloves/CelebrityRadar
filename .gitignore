@@ -29,3 +29,7 @@ project.private.config.json
 
 # 软著申请材料（源代码鉴别材料 / 说明书 / 生成报告），私有办理材料，不随仓库分发
 softcopyright/
+
+# 根级本地运维脚本（一条命令推送三远端等），含个人环境与远端地址，只在本地用、不随仓库分发
+# 只锚定根目录：celebrity-radar/scripts/ 里的 release-check.js、sync-config.js 是工程的一部分，必须提交
+/scripts/
