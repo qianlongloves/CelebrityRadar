@@ -8,7 +8,7 @@ Search recent public coverage → distil it into a structured profile with an LL
 
 **Taro 3 (React + TypeScript) · WeChat CloudBase**
 
-[中文](./README.md) ｜ [**English**](./README.en.md) ｜ [GitHub](https://github.com/qianlongloves/CelebrityRadar) ｜ [Gitee](https://gitee.com/qianlonglove_admin/celebrity-radar) ｜ [AtomGit](https://atomgit.com/fivestar/CelebrityRadar)
+[中文](./README.md) ｜ [**English**](./README.en.md) ｜ [GitHub](https://github.com/qianlongloves/CelebrityRadar) ｜ [Gitee](https://gitee.com/qianlonglove_admin/celebrity-radar) ｜ [AtomGit](https://atomgit.com/fivestar/CelebrityRadar) ｜ [Author's site](https://www.esuper.top)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 ![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)
@@ -373,7 +373,7 @@ If this project helps you, you can also buy the author a coffee:
   </tr>
 </table>
 
-**Author**: 刘双乐 (Liu Shuangle) · **Email**: [qianlongloves@qq.com](mailto:qianlongloves@qq.com)
+**Author**: 刘双乐 (Liu Shuangle) · **Website**: <https://www.esuper.top> · **Email**: [qianlongloves@qq.com](mailto:qianlongloves@qq.com)
 
 ---
 

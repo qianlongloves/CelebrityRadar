@@ -8,7 +8,7 @@
 
 **Taro 3（React + TypeScript）· 微信云开发 CloudBase**
 
-[**中文**](./README.md) ｜ [English](./README.en.md) ｜ [GitHub](https://github.com/qianlongloves/CelebrityRadar) ｜ [Gitee](https://gitee.com/qianlonglove_admin/celebrity-radar) ｜ [AtomGit](https://atomgit.com/fivestar/CelebrityRadar)
+[**中文**](./README.md) ｜ [English](./README.en.md) ｜ [GitHub](https://github.com/qianlongloves/CelebrityRadar) ｜ [Gitee](https://gitee.com/qianlonglove_admin/celebrity-radar) ｜ [AtomGit](https://atomgit.com/fivestar/CelebrityRadar) ｜ [作者主页](https://www.esuper.top)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 ![Node](https://img.shields.io/badge/Node-16%20%7C%2018-339933.svg)
@@ -374,7 +374,7 @@ celebrity-radar/                ← 仓库根目录（无 package.json）
   </tr>
 </table>
 
-**作者**：刘双乐　·　**联系邮箱**：[qianlongloves@qq.com](mailto:qianlongloves@qq.com)
+**作者**：刘双乐　·　**个人主页**：<https://www.esuper.top>　·　**联系邮箱**：[qianlongloves@qq.com](mailto:qianlongloves@qq.com)
 
 ---
 
