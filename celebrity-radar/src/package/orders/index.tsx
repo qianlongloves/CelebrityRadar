@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Taro, { usePullDownRefresh } from '@tarojs/taro'
-import { Text, View } from '@tarojs/components'
+import { Text, Textarea, View } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { ensureLogin } from '@/utils/auth'
 import { table } from '@/utils/db'
 import { planEmojiOf, planLabelOf } from '@/utils/pay'
+import {
+  applyRefund,
+  loadMyRefundRequests,
+  refundMapOf,
+  refundReasonError,
+  REFUND_REASON_MAX,
+  type RefundRequest
+} from '@/utils/refund'
 import { formatDate } from '@/utils/time'
 import Skeleton from '@/components/skeleton'
 import EmptyState from '@/components/empty-state'
@@ -124,6 +132,12 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<OrderRow[]>([])
   /** 读库失败 / 未登录时的降级文案（非空即渲染提示卡，不白屏） */
   const [error, setError] = useState('')
+  /** 我的退款申请（订单号 → 最近一条）：与订单**并行**读，读不到就是空对象，不阻塞订单展示 */
+  const [refunds, setRefunds] = useState<Record<string, RefundRequest>>({})
+  /** 正在填写退款理由的订单（null = 弹层收起） */
+  const [askFor, setAskFor] = useState<OrderRow | null>(null)
+  const [askReason, setAskReason] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
   /**
    * 取数。首次进页与下拉刷新共用同一条路径。
@@ -148,11 +162,18 @@ export default function OrdersPage() {
       return
     }
 
-    const { data, error: dbError } = await table('orders')
-      .select('*')
-      .eq('_openid', openid)
-      .order('created_at', { ascending: false })
-      .limit(ORDER_LIMIT)
+    /*
+     * 订单与退款申请**并行**取：申请只影响卡片底部那一个小块，
+     * 让它串行挡在订单前面（多一次云函数往返）会让整页慢一拍。
+     */
+    const [{ data, error: dbError }, myRefunds] = await Promise.all([
+      table('orders')
+        .select('*')
+        .eq('_openid', openid)
+        .order('created_at', { ascending: false })
+        .limit(ORDER_LIMIT),
+      loadMyRefundRequests()
+    ])
 
     if (dbError) {
       /* 读失败给一句可操作的话 + 下拉重试，而不是让页面停在骨架或干脆空白 */
@@ -162,9 +183,50 @@ export default function OrdersPage() {
       return
     }
 
+    setRefunds(refundMapOf(myRefunds))
     setOrders(((data as Record<string, unknown>[] | null) ?? []).map(toOrder))
     setLoading(false)
   }, [])
+
+  /** 打开发起退款的弹层（清空上一次的草稿，避免把上一单的理由带过来） */
+  const openAsk = useCallback((order: OrderRow) => {
+    setAskFor(order)
+    setAskReason('')
+  }, [])
+
+  const closeAsk = useCallback(() => {
+    setAskFor(null)
+    setAskReason('')
+  }, [])
+
+  /**
+   * 提交退款申请。
+   *
+   * 端上这一道校验（`refundReasonError`）只为省一次往返 —— **真正的闸门在云函数**
+   * refundApply（端上校验永远可以被绕过）。提交成功后重新拉一次，让卡片立刻变成
+   * 「等待平台核实」，不给用户「点了没反应」的错觉。
+   */
+  const submitAsk = useCallback(async () => {
+    if (!askFor || submitting) return
+    const why = refundReasonError(askReason)
+    if (why) {
+      void Taro.showToast({ title: why, icon: 'none' })
+      return
+    }
+    setSubmitting(true)
+    const res = await applyRefund(askFor.id, askReason)
+    setSubmitting(false)
+    if (!res.ok) {
+      void Taro.showToast({ title: res.error || '提交失败，请稍后重试', icon: 'none' })
+      return
+    }
+    closeAsk()
+    void Taro.showToast({
+      title: res.already ? res.hint || '这笔申请已在核实中' : res.hint || '已提交，等待平台核实',
+      icon: 'none'
+    })
+    await load()
+  }, [askFor, askReason, submitting, closeAsk, load])
 
   useEffect(() => {
     void load()
@@ -231,6 +293,7 @@ export default function OrdersPage() {
           {orders.map((o) => {
             const note = STATUS_NOTE[o.status]
             const isFolded = !!folded[o.id]
+            const refund = refunds[o.id]
             /*
              * 明细行：只列这条订单**确实有值**的字段（没有的整行不渲染）。
              * 不铺一排「—」的原因：待支付单没有支付/发货时间，退款单多两行 ——
@@ -264,6 +327,28 @@ export default function OrdersPage() {
                 </View>
                 {!!note && <Text className='page-orders__note'>{note}</Text>}
 
+                {/*
+                  * 退款入口（2026-10-22）：只在 `paid`（已生效）上给。
+                  *   pending / failed 退不出钱；granting 是发货进行中的几秒窗口，adminRefund 会拒
+                  *   （让用户下拉刷新一下再申请，比让超管点到一个必然失败的单要好）。
+                  * 已提交 / 被拒绝都要有明确回执：这块是用户唯一能看到「我的申请怎么了」的地方。
+                  */}
+                {o.status === 'paid' && (
+                  <View className='page-orders__refund'>
+                    {refund && refund.status === 'pending' ? (
+                      <Text className='page-orders__refund-state'>退款申请已提交，等待平台核实</Text>
+                    ) : refund && refund.status === 'rejected' ? (
+                      <Text className='page-orders__refund-state page-orders__refund-state--rejected'>
+                        {`退款申请未通过${refund.decisionNote ? `：${refund.decisionNote}` : ''}`}
+                      </Text>
+                    ) : (
+                      <Text className='page-orders__refund-apply' onClick={() => openAsk(o)}>
+                        申请退款
+                      </Text>
+                    )}
+                  </View>
+                )}
+
                 {/* 明细区：超过阈值才限高（阈值口径见 DETAIL_MAX_PX），按钮只在需要时出现 */}
                 <View
                   className={`page-orders__detail${isFolded ? ' page-orders__detail--fold' : ''}`}
@@ -295,6 +380,43 @@ export default function OrdersPage() {
             订单仅自己可见；支付由微信支付完成，会员权益由服务端异步开通
           </Text>
         </>
+      )}
+
+      {/*
+        * 退款理由弹层。
+        * 用页面内的弹层而不是 `Taro.showModal({ editable:true })`：后者只有单行输入，
+        * 而退款理由往往需要两三句（「买错了档位」「重复支付」…），单行输入会把理由
+        * 压成几个字 —— 而理由正是超管核实的唯一依据（refundApply 强制 2~200 字）。
+        */}
+      {!!askFor && (
+        <View className='page-orders__mask' onClick={() => (submitting ? undefined : closeAsk())}>
+          <View className='page-orders__sheet' onClick={(e) => e.stopPropagation()}>
+            <Text className='page-orders__sheet-title'>申请退款</Text>
+            <Text className='page-orders__sheet-sub'>
+              {`${planLabelOf(askFor.plan)} · ¥${formatYuan(askFor.amountFen)}`}
+            </Text>
+            <Textarea
+              className='page-orders__textarea'
+              value={askReason}
+              onInput={(e) => setAskReason(e.detail.value)}
+              placeholder='请说明退款原因（至少 2 个字），平台核实后会处理'
+              maxlength={REFUND_REASON_MAX}
+            />
+            <Text className='page-orders__counter'>{`${askReason.trim().length}/${REFUND_REASON_MAX}`}</Text>
+            <View className='page-orders__sheet-actions'>
+              <View className='page-orders__btn page-orders__btn--ghost' onClick={closeAsk}>
+                <Text>取消</Text>
+              </View>
+              <View
+                className={`page-orders__btn${submitting ? ' page-orders__btn--disabled' : ''}`}
+                onClick={() => void submitAsk()}
+              >
+                <Text>{submitting ? '提交中…' : '提交申请'}</Text>
+              </View>
+            </View>
+            <Text className='page-orders__sheet-tip'>提交后会通知平台核实，结果会显示在这张订单上</Text>
+          </View>
+        </View>
       )}
     </View>
   )

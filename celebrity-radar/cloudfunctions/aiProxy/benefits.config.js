@@ -64,6 +64,13 @@ module.exports = {
       "body": "名人雷达·年度会员"
     }
   ],
+  "PLAN_LIMITS": {
+    "priceFenMin": 100,
+    "priceFenMax": 100000,
+    "daysMin": 1,
+    "daysMax": 3650,
+    "badgeMax": 8
+  },
   "REPORT_SOURCE": {
     "fullItemCount": 10,
     "extractMinChars": 400,

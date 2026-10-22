@@ -127,6 +127,20 @@ function readPlanCache(maxAgeMs?: number): MembershipPlan[] | null {
 }
 
 /**
+ * 清掉本机套餐缓存（运维中心改价后调用）。
+ *
+ * 24h 缓存对普通用户是对的（价格极少变，省一次云函数调用），但管理员刚改完价
+ * 再进会员页看到旧价，会以为「没保存成功」。改价是低频动作，清一次缓存不心疼。
+ */
+export function clearPlanCache(): void {
+  try {
+    Taro.removeStorageSync(PLAN_CACHE_KEY)
+  } catch {
+    /* 清缓存失败不影响功能，最多再显示一次旧价 */
+  }
+}
+
+/**
  * 拉取套餐（展示用）：24h 内直接用本机缓存，否则问云函数 `payCreate`。
  * 任一环节失败都逐级回退（新鲜缓存 → 旧缓存 → 离线兜底），**绝不因价格拉取失败挡住页面**。
  */
@@ -226,7 +240,7 @@ async function readMembershipExpiry(): Promise<number> {
  * 等待回调把会员落库：轮询直到 `expires_at` **超过**支付前的值。
  * 超时不算失败 —— 回调可能延迟，此时会员仍会在稍后生效，交由调用方提示用户。
  */
-async function waitMembershipActivated(before: number, timeoutMs = 12000): Promise<boolean> {
+async function waitMembershipActivated(before: number, timeoutMs = 20000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     if ((await readMembershipExpiry()) > before) return true

@@ -61,7 +61,7 @@ const SOURCES = [
          · personWatchCount 是「监控某人」的新增上限 → riskWatch（同样写入路径按档判定，2026-10-13）
        事件驱动深挖的成本闸门（DEEP_DIVE，P4-A 2026-10-13）：
          · keywordAlert / riskWatch 命中即深挖的「词数 / 单轮 / 单日」三层上限都取自它 */
-    targets: ['aiProxy', 'quotaGuard', 'payCreate', 'keywordAlert', 'riskWatch']
+    targets: ['aiProxy', 'quotaGuard', 'payCreate', 'keywordAlert', 'riskWatch', 'adminConsole']
   },
   {
     key: 'user-defaults',

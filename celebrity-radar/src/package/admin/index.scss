@@ -48,7 +48,7 @@
   border-radius: $radius-sm;
 }
 
-/* ── 顶部两个 tab ─────────────────────────────────────── */
+/* ── 顶部三个 tab ─────────────────────────────────────── */
 .page-admin__tabs {
   display: flex;
   margin-bottom: 24rpx;
@@ -252,6 +252,302 @@
   display: block;
   margin-top: 8rpx;
   font-size: 23rpx;
+  line-height: 1.6;
+  color: $text-3;
+}
+
+/* ── 价格（2026-10-22）─────────────────────────────────── */
+.page-admin__plan {
+  margin-bottom: 20rpx;
+  padding: 24rpx;
+}
+
+.page-admin__plan-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8rpx;
+}
+
+.page-admin__plan-name {
+  font-size: 29rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-admin__plan-meta {
+  font-size: 23rpx;
+  color: $text-3;
+}
+
+/* 输入行：标签固定宽度、输入框撑满 —— 三档长得一样，靠左标签区分，避免改错档位 */
+.page-admin__plan-row {
+  display: flex;
+  align-items: center;
+  margin-top: 14rpx;
+  padding: 12rpx 20rpx;
+  background: $bg;
+  border-radius: $radius-sm;
+}
+
+.page-admin__plan-label {
+  width: 120rpx;
+  font-size: 25rpx;
+  color: $text-2;
+}
+
+.page-admin__plan-input {
+  flex: 1;
+  height: 56rpx;
+  font-size: 28rpx;
+  color: $text-1;
+}
+
+/* 保存按钮做整行：改价低频但后果直接，按钮要显眼、且与输入框拉开距离 */
+.page-admin__save {
+  margin: 8rpx 0 20rpx;
+  padding: 26rpx 0;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #fff;
+  text-align: center;
+  background: $brand;
+  border-radius: $radius-md;
+  box-shadow: $shadow-card;
+}
+
+.page-admin__save--busy {
+  opacity: 0.6;
+}
+
+/* ── 退款待办（2026-10-22）─────────────────────────────── */
+
+/* 顶部提醒条：一进页面就知道「有事要做」，点一下直达退款 tab */
+.page-admin__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+  padding: 22rpx 24rpx;
+  background: $knowledge-warn-bg;
+  border-radius: $radius-md;
+}
+
+.page-admin__notice-text {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: $knowledge-warn-text;
+}
+
+.page-admin__notice-go {
+  font-size: 25rpx;
+  color: $knowledge-warn-text;
+}
+
+/* tab 上的数字：在选中态（brand 底）与未选中态（白底）下都要看得清 */
+.page-admin__tab-dot {
+  margin-left: 8rpx;
+  padding: 2rpx 10rpx;
+  font-size: 20rpx;
+  font-weight: 600;
+  color: #fff;
+  background: $danger;
+  border-radius: 999rpx;
+}
+
+/* 待核实 / 全部记录：两个口径，宽度均分 */
+.page-admin__seg {
+  display: flex;
+  padding: 8rpx;
+  background: #fff;
+  border-radius: $radius-md;
+  box-shadow: $shadow-card;
+}
+
+.page-admin__seg-item {
+  flex: 1;
+  padding: 16rpx 0;
+  font-size: 26rpx;
+  color: $text-2;
+  text-align: center;
+  border-radius: $radius-sm;
+}
+
+.page-admin__seg-item--on {
+  font-weight: 600;
+  color: $brand;
+  background: $brand-weak;
+}
+
+.page-admin__refund {
+  margin-bottom: 20rpx;
+  padding: 24rpx;
+}
+
+.page-admin__refund-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.page-admin__refund-amount {
+  font-size: 36rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-admin__refund-state {
+  padding: 4rpx 16rpx;
+  font-size: 21rpx;
+  color: $text-2;
+  background: $bg;
+  border-radius: 999rpx;
+}
+
+.page-admin__refund-state--pending {
+  color: $knowledge-warn-text;
+  background: $knowledge-warn-bg;
+}
+
+.page-admin__refund-state--approved {
+  color: $brand;
+  background: $brand-weak;
+}
+
+.page-admin__refund-state--rejected {
+  color: $danger;
+  background: $danger-weak;
+}
+
+/* 用户理由单独一块：核实的全部依据就在这里，不能混在灰色小字里 */
+.page-admin__refund-reason {
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  background: $bg;
+  border-radius: $radius-sm;
+}
+
+.page-admin__refund-reason-label {
+  display: block;
+  margin-bottom: 6rpx;
+  font-size: 21rpx;
+  color: $text-3;
+}
+
+.page-admin__refund-reason-text {
+  display: block;
+  font-size: 25rpx;
+  line-height: 1.7;
+  color: $text-1;
+  word-break: break-all;
+}
+
+.page-admin__refund-done {
+  margin-top: 16rpx;
+  padding-top: 16rpx;
+  border-top: 1rpx solid $line;
+}
+
+/* ── 核实弹层 ─────────────────────────────────────────── */
+.page-admin__mask {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.page-admin__sheet {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  box-sizing: border-box;
+  padding: 32rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+  background: #fff;
+  border-radius: $radius-lg $radius-lg 0 0;
+}
+
+.page-admin__sheet-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: $text-1;
+}
+
+.page-admin__sheet-sub {
+  display: block;
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  color: $text-3;
+}
+
+.page-admin__sheet-reason {
+  display: block;
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  font-size: 24rpx;
+  line-height: 1.7;
+  color: $text-2;
+  word-break: break-all;
+  background: $bg;
+  border-radius: $radius-sm;
+}
+
+.page-admin__textarea {
+  box-sizing: border-box;
+  width: 100%;
+  height: 150rpx;
+  margin-top: 20rpx;
+  padding: 16rpx 20rpx;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: $text-1;
+  background: $bg;
+  border-radius: $radius-sm;
+}
+
+.page-admin__counter {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 21rpx;
+  color: $text-3;
+  text-align: right;
+}
+
+.page-admin__sheet-actions {
+  display: flex;
+  margin-top: 16rpx;
+}
+
+.page-admin__btn {
+  flex: 1;
+  margin-right: 16rpx;
+  padding: 24rpx 0;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #fff;
+  text-align: center;
+  background: $brand;
+  border-radius: $radius-md;
+
+  &:last-child {
+    margin-right: 0;
+  }
+}
+
+.page-admin__btn--ghost {
+  color: $text-2;
+  background: $bg;
+}
+
+.page-admin__btn--busy {
+  opacity: 0.6;
+}
+
+.page-admin__sheet-tip {
+  display: block;
+  margin-top: 16rpx;
+  font-size: 22rpx;
   line-height: 1.6;
   color: $text-3;
 }

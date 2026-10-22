@@ -173,6 +173,126 @@
     text-align: center;
   }
 
+  /* ===== 退款申请（2026-10-22）：入口 + 状态回执 =====
+     单独一条上边线，与明细区隔开：明细是「这单发生了什么」，
+     退款是「我现在能对它做什么」—— 两个不同的动作区，不该糊在一起。 */
+  &__refund {
+    margin-top: 16rpx;
+    padding-top: 14rpx;
+    border-top: 2rpx solid $line;
+  }
+
+  &__refund-apply {
+    display: block;
+    font-size: 24rpx;
+    color: $brand;
+    text-align: right;
+  }
+
+  &__refund-state {
+    display: block;
+    font-size: 22rpx;
+    line-height: 1.55;
+    color: $text-3;
+
+    /* 被拒绝要能被看见：灰字会被当成「已处理」，而这里恰恰需要用户去联系客服 */
+    &--rejected {
+      color: $accent-orange;
+    }
+  }
+
+  /* ===== 退款理由弹层 =====
+     从底部升起（微信里最常见的输入弹层形态），遮罩点击可关 —— 但提交中不关，
+     否则用户会以为「点一下就取消了」，回头又提一次。 */
+  &__mask {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 100;
+    display: flex;
+    align-items: flex-end;
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  &__sheet {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 32rpx 32rpx calc(32rpx + env(safe-area-inset-bottom));
+    border-radius: $radius-lg $radius-lg 0 0;
+    background: #fff;
+  }
+
+  &__sheet-title {
+    display: block;
+    font-size: 30rpx;
+    font-weight: 600;
+    color: $text-1;
+  }
+
+  &__sheet-sub {
+    display: block;
+    margin-top: 8rpx;
+    font-size: 24rpx;
+    color: $text-2;
+  }
+
+  &__textarea {
+    width: 100%;
+    box-sizing: border-box;
+    height: 180rpx;
+    margin-top: 20rpx;
+    padding: 16rpx 18rpx;
+    border-radius: $radius-sm;
+    background: $bg;
+    font-size: 26rpx;
+    line-height: 1.55;
+    color: $text-1;
+  }
+
+  &__counter {
+    display: block;
+    margin-top: 6rpx;
+    font-size: 22rpx;
+    color: $text-3;
+    text-align: right;
+  }
+
+  &__sheet-actions {
+    display: flex;
+    gap: 20rpx;
+    margin-top: 24rpx;
+  }
+
+  &__btn {
+    flex: 1;
+    padding: 20rpx 0;
+    border-radius: 999rpx;
+    background: $brand;
+    font-size: 26rpx;
+    color: #fff;
+    text-align: center;
+
+    &--ghost {
+      background: $bg;
+      color: $text-2;
+    }
+
+    &--disabled {
+      opacity: 0.6;
+    }
+  }
+
+  &__sheet-tip {
+    display: block;
+    margin-top: 16rpx;
+    font-size: 22rpx;
+    line-height: 1.5;
+    color: $text-3;
+    text-align: center;
+  }
+
   /* ===== 降级提示（读库失败 / 未登录） ===== */
   &__hint {
     font-size: 24rpx;

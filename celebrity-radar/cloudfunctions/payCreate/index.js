@@ -2,9 +2,13 @@
  * payCreate —— 会员下单：服务端定价 → 建订单 → 调云支付统一下单。
  *
  * 为什么定价必须在服务端：小程序包可解包，客户端传来的任何价格 / 时长都不可信。
- * 下面的 `PLANS` 是**唯一价格源**：端上不再硬编码价格，而是用
- * `{ action: 'plans' }` 把这份清单拉回去渲染（本地只留一份离线兜底清单，
- * 仅用于「函数未部署 / 首次冷启无缓存」时占位）。因此**改价只改本文件**，无需发版。
+ * 价格分两层：
+ *   · **构建期默认值**来自 `benefits.config.js`（真源 src/config/benefits.ts 的 PLANS，
+ *     `npm run config:sync` 生成）；
+ *   · **运行期覆盖**来自云端 `sys_config/membership_plans`，由运维中心（adminConsole）
+ *     写入，改价在手机上点几下即可，不必改代码、不必重新部署、不必发版。
+ * 端上通过 `{ action: 'plans' }` 把**生效后**的清单拉回去渲染（本地只留一份离线兜底，
+ * 仅用于「函数未部署 / 首次冷启无缓存」时占位）。
  *
  * 本函数只做「下单」，不做「发货」：支付结果由微信服务器回调 `payCallback` 处理，
  * 因此用户付款后会员不会立即生效（端上轮询确认，见 pay.ts）。
@@ -43,13 +47,120 @@ function readEnv(name) {
  *   priceLabel 展示价文案；badge 角标（运营文案，空串 = 不显示）
  *   body      微信支付订单标题（仅本函数使用，不下发）
  */
-const { PLANS } = require('./benefits.config')
+const { PLANS, PLAN_LIMITS } = require('./benefits.config')
 
-/** id → 套餐（下单按 id 查白名单，未知 id 一律拒绝） */
-const PLAN_BY_ID = PLANS.reduce((acc, p) => {
-  acc[p.id] = p
-  return acc
-}, {})
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 价格覆盖：云端 `sys_config/membership_plans`（2026-10-22）
+ *
+ * 为什么价格要上云：以前改价 = 改 benefits.ts + `npm run config:sync` + 重新部署云函数，
+ * 一次调价要动代码、走一次发布。现在运维中心点几下就生效，端上不用发版。
+ *
+ * ⚠ 三条约束（改这段前先读）：
+ *   1. **只覆盖金额与角标**：days / name / body 仍取构建期常量 —— 改天数会动发货口径、
+ *      改名字会让历史订单的套餐名漂移，两者都不该在手机上随手改。
+ *   2. **校验不过就整份丢弃**（回到构建期价格），不做「部分采纳」：一份半对的价格表
+ *      比旧价更危险，而半对的表现是「有的档位改了、有的没改」，排查起来毫无线索。
+ *   3. **读库失败不阻断下单**：宁可卖旧价，也不能因为一张配置表读不到就全站买不了。
+ *
+ * 缓存 60 秒（与 aiProxy 的厂商开关同节奏）：改价最迟一分钟内全网生效。下单与展示都走
+ * `effectivePlans()` —— 若展示读云端、下单读常量，就会出现「看到 ¥12 扣了 ¥9.9」。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+const PLAN_DOC_COLL = 'sys_config'
+const PLAN_DOC_ID = 'membership_plans'
+const PLAN_CACHE_MS = 60 * 1000
+
+/** 金额（分）→ 展示文案：990 → `¥9.9`、6800 → `¥68`、1999 → `¥19.99` */
+function priceLabelOf(fen) {
+  const yuan = Math.round(fen) / 100
+  if (Number.isInteger(yuan)) return `¥${yuan}`
+  return `¥${String(yuan.toFixed(2)).replace(/0+$/, '').replace(/\.$/, '')}`
+}
+
+/**
+ * 校验云端覆盖值。返回 `{ ok, reason, prices, badges, updated_at, updated_by, note }`；
+ * `ok=false` 表示文档存在但不可用 —— 调用方整份回退构建期价格。
+ *
+ * 漏配某档不算错（该档用默认值）：加档位时旧文档天然只有两个 id，不该因此整份失效。
+ */
+function sanitizePlanOverride(doc) {
+  const empty = { prices: {}, badges: {}, updated_at: null, updated_by: null, note: null }
+  const fail = (reason) => Object.assign({ ok: false, reason }, empty)
+  if (!doc) return Object.assign({ ok: true, reason: 'unset' }, empty)
+
+  const prices = doc.prices
+  if (!prices || typeof prices !== 'object' || Array.isArray(prices)) return fail('prices 不是对象')
+
+  const outPrices = {}
+  for (const p of PLANS) {
+    const raw = prices[p.id]
+    if (raw === undefined) continue
+    const fen = Number(raw)
+    if (!Number.isFinite(fen) || Math.round(fen) !== fen) return fail(`${p.id} 的价格不是整数分`)
+    if (fen < PLAN_LIMITS.priceFenMin || fen > PLAN_LIMITS.priceFenMax) {
+      return fail(`${p.id} 的价格 ${fen} 分超出 ${PLAN_LIMITS.priceFenMin}~${PLAN_LIMITS.priceFenMax}`)
+    }
+    outPrices[p.id] = fen
+  }
+
+  const outBadges = {}
+  const badges = doc.badges
+  if (badges && typeof badges === 'object' && !Array.isArray(badges)) {
+    for (const p of PLANS) {
+      const raw = badges[p.id]
+      if (typeof raw !== 'string') continue
+      const text = raw.trim()
+      if (text.length > PLAN_LIMITS.badgeMax) return fail(`${p.id} 的角标超过 ${PLAN_LIMITS.badgeMax} 字`)
+      outBadges[p.id] = text
+    }
+  }
+
+  return {
+    ok: true,
+    reason: 'cloud',
+    prices: outPrices,
+    badges: outBadges,
+    updated_at: typeof doc.updated_at === 'string' ? doc.updated_at : null,
+    updated_by: typeof doc.updated_by === 'string' ? doc.updated_by : null,
+    note: typeof doc.note === 'string' ? doc.note : null
+  }
+}
+
+let planOverrideCache = null
+
+async function readPlanOverride() {
+  const now = Date.now()
+  if (planOverrideCache && now - planOverrideCache.at < PLAN_CACHE_MS) return planOverrideCache.value
+
+  let doc = null
+  try {
+    const res = await db.collection(PLAN_DOC_COLL).doc(PLAN_DOC_ID).get()
+    doc = (res && res.data) || null
+  } catch (err) {
+    /* 文档不存在 = 还没配过价；读库整体失败也走这里 —— 都按「没配」处理 */
+    doc = null
+  }
+  const value = sanitizePlanOverride(doc)
+  if (!value.ok) console.warn(`[payCreate] 云端价格配置不可用，回退构建期价格：${value.reason}`)
+  planOverrideCache = { at: now, value }
+  return value
+}
+
+/** 本次生效的套餐清单：构建期常量 + 云端覆盖（金额、角标） */
+async function effectivePlans() {
+  const ov = await readPlanOverride()
+  return PLANS.map((p) => {
+    const fen = ov.prices[p.id] === undefined ? p.priceFen : ov.prices[p.id]
+    return {
+      id: p.id,
+      name: p.name,
+      days: p.days,
+      priceFen: fen,
+      priceLabel: priceLabelOf(fen),
+      badge: ov.badges[p.id] === undefined ? p.badge : ov.badges[p.id],
+      body: p.body
+    }
+  })
+}
 
 function pad2(n) {
   return String(n).padStart(2, '0')
@@ -133,9 +244,10 @@ exports.main = async (event) => {
    * 否则「我的」页只能退化成端上那份兜底清单，改价就得等发版。
    */
   if (event && event.action === 'plans') {
+    const plans = await effectivePlans()
     return {
       ok: true,
-      plans: PLANS.map((p) => ({
+      plans: plans.map((p) => ({
         id: p.id,
         name: p.name,
         days: p.days,
@@ -147,12 +259,14 @@ exports.main = async (event) => {
   }
 
   const planId = event && event.plan
-  const plan = PLAN_BY_ID[planId]
+  /* 下单与展示同源：价格可能已被运维中心改过，不能再用构建期常量查表 */
+  const plans = await effectivePlans()
+  const plan = plans.find((p) => p.id === planId)
   if (!plan) {
     return {
       ok: false,
       kind: 'badrequest',
-      error: `未知套餐：${planId}（支持 ${PLANS.map((p) => p.id).join(' / ')}）`
+      error: `未知套餐：${planId}（支持 ${plans.map((p) => p.id).join(' / ')}）`
     }
   }
 

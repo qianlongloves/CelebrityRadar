@@ -38,6 +38,12 @@ export interface UserRow {
   subscribe_ok?: boolean
   subscribe_at?: string | null
   /**
+   * 关键词预警 / 名人风险提醒的订阅授权（各一枚模板、各一份授权，见 utils/notify.ts）。
+   * 与 subscribe_ok 同构：客户端置 true，keywordAlert / riskWatch 成功推送后复位。
+   */
+  alert_ok?: boolean
+  risk_ok?: boolean
+  /**
    * 会员权益（买断时长制）：由微信支付回调云函数 `payCallback` 写入，客户端只读。
    * expires_at 未过期即生效（判定见 utils/quota.ts 的 isMembershipActive）。
    * last_order_id 是回调侧的幂等标记（同一订单只发一次货），端上不用。

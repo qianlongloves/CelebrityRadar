@@ -11,7 +11,7 @@
  *
  * 消息模板字段（选模板时必须包含这两项，键名不符微信会报 47003）：
  *   thing1  提醒内容（≤20 个字符）
- *   date2   更新时间
+ *   time2   更新时间（time 类型，只收 HH:mm，带日期会被判格式错误）
  *
  * 权限：本函数用**云调用**发消息，必须靠同目录 config.json 的
  *   permissions.openapi: ["subscribeMessage.send"]
@@ -132,6 +132,140 @@ function postJson(target, headers, payload, timeoutMs) {
   })
 }
 
+/* ───────────────── 订阅消息下发（@push-send begin）─────────────────
+ * 为什么不直接 `cloud.openapi.subscribeMessage.send` 一条路走到黑：
+ *   云调用的「免鉴权」只在**由小程序端触发的云函数**里成立（微信云调用文档原文；CloudBase
+ *   错误码 INVALID_WX_ACCESS_TOKEN 的官方解释就是「未从小程序端触发使用云调用的云函数」）。
+ *   本函数由**定时器**触发，没有小程序端上下文 ⇒ 线上表现是每轮 `pushed` 恒为 0、一条都发不
+ *   出去，而且失败发生在扫描之后、不落 scan_logs，日志看着全绿（2026-10-22 实测：同一枚模板、
+ *   同一个 openid，自取 token 后直连返回 errcode 0 并真实收到消息）。
+ *   所以：先试云调用（将来若改成端上触发、或平台行为变化，它仍是最省事的一条），只对「通道类」
+ *   错误降级到自己取 token 直连；43101 这类业务错误原样抛出，绝不重试（重试只会白白再消耗一次
+ *   授权，用户还得多点一次「允许」）。
+ * ⚠ 本段在 notifyFollowUpdates / keywordAlert / riskWatch 三处**逐字一致**，
+ *   改一处必须三处同改（test/cases/96-push-channel.js 钉住）。
+ */
+const WX_API_BASE = 'https://api.weixin.qq.com'
+let pushTokenCache = { appid: '', token: '', exp: 0 }
+let pushOpenapiUsable = true
+
+/** 云调用拿不到鉴权的典型报错：只对这些降级，别的错误照旧抛给调用方 */
+function isPushChannelError(err) {
+  const msg = String((err && (err.errMsg || err.message)) || err)
+  return /invalid wx openapi access_token|INVALID_WX_ACCESS_TOKEN|-501001|openapi permission denied|-604101/i.test(
+    msg
+  )
+}
+
+/**
+ * 自建 access_token。
+ * 用 `stable_token` 而不是 `/cgi-bin/token`：后者会把此前发放的 token 全部作废 —— 云开发侧自己也在
+ * 用同一个 appid 的 token，用老接口等于顺手把别的 openapi 调用搞坏（dbInit 里是同源取舍）。
+ */
+async function wxAccessToken(force) {
+  const appid = readEnv('WX_APPID')
+  const secret = readEnv('WX_APPSECRET')
+  if (!appid || !secret) return null
+  if (!force && pushTokenCache.appid === appid && pushTokenCache.token && Date.now() < pushTokenCache.exp) {
+    return pushTokenCache.token
+  }
+  const res = await postJson(
+    `${WX_API_BASE}/cgi-bin/stable_token`,
+    {},
+    { grant_type: 'client_credential', appid, secret, force_refresh: false },
+    8000
+  )
+  const data = res && res.data
+  if (!data || !data.access_token) {
+    throw new Error(`取 access_token 失败：${(data && `${data.errcode} ${data.errmsg}`) || '无响应'}`)
+  }
+  /* 提前 5 分钟过期，避免踩在边界上刚好失效 */
+  const ttlMs = Math.max(60, (Number(data.expires_in) || 7200) - 300) * 1000
+  pushTokenCache = { appid, token: data.access_token, exp: Date.now() + ttlMs }
+  return pushTokenCache.token
+}
+
+/** 把云调用那套驼峰入参翻成 HTTP 接口的 snake_case —— 调用点因此不必改形状 */
+async function sendSubscribeViaHttp(args) {
+  const body = {
+    touser: args.touser,
+    template_id: args.templateId,
+    page: args.page,
+    miniprogram_state: args.miniprogramState || 'formal',
+    lang: args.lang || 'zh_CN',
+    data: args.data
+  }
+  const post = (token) =>
+    postJson(
+      `${WX_API_BASE}/cgi-bin/message/subscribe/send?access_token=${encodeURIComponent(token)}`,
+      {},
+      body,
+      10000
+    )
+  let token = await wxAccessToken(false)
+  if (!token) throw new Error('未配置 WX_APPID / WX_APPSECRET：拿不到 access_token，订阅消息无法下发')
+  let data = (await post(token)).data
+  /* 40001/42001 = token 失效（过期或被别的调用顶掉）：强制刷新后只重试一次 */
+  if (data && (Number(data.errcode) === 40001 || Number(data.errcode) === 42001)) {
+    token = await wxAccessToken(true)
+    data = (await post(token)).data
+  }
+  if (!data || Number(data.errcode) !== 0) {
+    const err = new Error(`${(data && data.errcode) || 'unknown'} ${(data && data.errmsg) || '订阅消息下发失败'}`)
+    err.errCode = data && data.errcode
+    throw err
+  }
+  return data
+}
+
+/** 订阅消息唯一出口：云调用优先，通道不可用时自动降级（原因见本段开头） */
+async function sendSubscribeMessage(args) {
+  if (pushOpenapiUsable) {
+    try {
+      return await cloud.openapi.subscribeMessage.send(args)
+    } catch (err) {
+      if (!isPushChannelError(err)) throw err
+      /* 只在本实例内记忆：冷启动的新实例仍会先试一次，成本可忽略，却能享受平台修好后的好处 */
+      pushOpenapiUsable = false
+    }
+  }
+  return sendSubscribeViaHttp(args)
+}
+/* ───────────────── 订阅消息下发（@push-send end）───────────────── */
+
+/* ───────────────── 整轮执行日志（scan_logs，kind='follow'）─────────────────
+ * 这条链路为什么必须留痕：2026-10-22 之前它**一条消息都没发出去过** —— 定时器拿不到云调用的
+ * 自动鉴权（见上方 @push-send 段），而失败发生在扫描之后、什么都不写，于是每天 10:30 的自检
+ * 都报「一切正常」。整轮写一条、键固定为 `(round)`：这样「一条都没有」本身就是可判定的信号
+ * （cron 没跑 / 提前崩了），而不必去推「有授权却没消耗」那种本身有歧义的指标
+ * （没新动态本来就不该推，推不出来也正常）。
+ */
+const LOG_TABLE = 'scan_logs'
+
+async function writeRoundLog(status, hit, total, note) {
+  const ranAt = new Date().toISOString()
+  try {
+    await db
+      .collection(LOG_TABLE)
+      .add({
+        data: {
+          _id: `follow#(round)#${ranAt}`,
+          kind: 'follow',
+          object_key: '(round)',
+          object_name: '关注更新',
+          ran_at: ranAt,
+          status,
+          hit: Math.max(0, Number(hit) || 0),
+          total: Math.max(0, Number(total) || 0),
+          note: String(note || '')
+        }
+      })
+  } catch (err) {
+    /* 日志写不进去不能反过来影响推送结果，但也别静默 —— 控制台至少留一行 */
+    console.warn(`[notifyFollowUpdates] 写执行日志失败：${err && err.message}`)
+  }
+}
+
 /** 博查 {url} 的主机名，用作 source 的兜底（与端上 utils/search.ts#hostOf 同口径） */
 function hostOf(url) {
   return String(url || '')
@@ -187,10 +321,10 @@ function clamp(text, max) {
   return chars.length <= max ? chars.join('') : `${chars.slice(0, max - 1).join('')}…`
 }
 
-/** date 类字段要求 yyyy-MM-dd HH:mm 形态 */
-function formatDate(d) {
+/** time 类字段只收 HH:mm（带日期部分会被微信判为格式错误，报 47003） */
+function formatTime(d) {
   const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 /* ─────────────────── E1：跟进事件的判定与取数（2026-10-16） ─────────────────── */
@@ -363,7 +497,11 @@ exports.main = async () => {
 
   // 1. 只服务「已授权提醒」的用户（分页取全 —— 裸 limit 会让第 101 个之后的用户永远收不到，见 listAll）
   const users = await listAll('users', { subscribe_ok: true })
-  if (!users.length) return { ok: true, users: 0, queries: 0, pushed: 0 }
+  if (!users.length) {
+    /* 早退也要留痕：否则「全站没人订阅」与「cron 没跑」在日志里长得一模一样 */
+    await writeRoundLog('skipped', 0, 0, '没有用户订阅关注更新')
+    return { ok: true, users: 0, queries: 0, pushed: 0 }
+  }
 
   /* 2/3. 「关注的人」候选：需要打上游检索，故缺 BOCHA_API_KEY 时整段跳过（空表 → 该用户无此类候选） */
   const byUser = new Map()
@@ -498,7 +636,7 @@ exports.main = async () => {
       lang: 'zh_CN',
       data: {
         thing1: { value: thing1 },
-        date2: { value: formatDate(new Date()) }
+        time2: { value: formatTime(new Date()) }
       }
     }
 
@@ -510,11 +648,11 @@ exports.main = async () => {
        * 故两个落点各写一次字面量，不做「拼路径」的抽象；参数名 eventKey 与 package/event 的取值一致。
        */
       if (toldEvent) {
-        await cloud.openapi.subscribeMessage.send(
+        await sendSubscribeMessage(
           Object.assign({}, base, { page: `package/event/index?eventKey=${encKey}` })
         )
       } else {
-        await cloud.openapi.subscribeMessage.send(
+        await sendSubscribeMessage(
           Object.assign({}, base, { page: `package/report/index?personKey=${encPerson}` })
         )
       }
@@ -583,6 +721,19 @@ exports.main = async () => {
       results.set(personKey, Object.assign({}, r, { writeError: String(err && err.message) }))
     }
   }
+
+  /* 只有「不是 43101」的失败才值得人看：43101 = 用户没授权，属正常状态（见文件头第 2 条取舍） */
+  const hardFails = skipped.filter((s) => !/43101|user refuse/i.test(String((s && s.reason) || '')))
+  await writeRoundLog(
+    hardFails.length ? 'error' : 'ok',
+    pushed,
+    users.length,
+    hardFails.length
+      ? `${hardFails.length} 次推送/写回失败：${String(hardFails[0].reason || '').slice(0, 160)}`
+      : pushed
+        ? `推送 ${pushed} 人`
+        : '本轮无新动态，未推送'
+  )
 
   return {
     ok: true,

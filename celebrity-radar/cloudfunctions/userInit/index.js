@@ -218,10 +218,11 @@ async function setSetting(openid, key, value) {
  *         history / keyword_watches（关注 / 收藏 / 历史 / 监控）、opinion_event_status
  *         （舆情已读与跟进）、四张用量表（generate / ask / refresh_quota、ai_calls）、
  *         events（埋点）。
- *   · 留：orders（订单与退款）。依《电子商务法》等要求，交易记录须留存（不少于三年）；
- *         对账也依赖它。为兼顾「删除权」与「留存义务」，这里把订单**去标识化**——
- *         把 `_openid` 换成不可逆散列（`anon:<sha256 前 16 位>`）并记 `account_deleted_at`，
- *         即与自然人**解除关联**后保留。
+ *   · 留：orders（订单与退款）、refund_requests（退款申请，2026-10-22 新增）。
+ *         依《电子商务法》等要求，交易记录须留存（不少于三年）；对账也依赖它们，
+ *         退款申请还是「这笔钱为什么退」的唯一凭据。为兼顾「删除权」与「留存义务」，
+ *         这里把两者都**去标识化**——把 `_openid` 换成不可逆散列（`anon:<sha256 前 16 位>`）
+ *         并记 `account_deleted_at`，即与自然人**解除关联**后保留。
  *   · 共享数据（report_cache / feed_cache / hot_board / keywords / opinion_events /
  *     risk_* / person_assets）与个人无关，一律不动。
  *
@@ -237,6 +238,22 @@ const PURGE_BY_ID = ['memberships', 'opinion_event_status']
 /** 订单去标识化后的 `_openid`：不可逆散列，与自然人解除关联，仅用于「同一单只保留一次」的记账 */
 function anonId(openid) {
   return 'anon:' + crypto.createHash('sha256').update(String(openid)).digest('hex').slice(0, 16)
+}
+
+/**
+ * 把某张交易表的`_openid`换成不可逆散列（与自然人解除关联，但记录本身留下）。
+ * 失败只回报、不抛：注销不该因为一张表改不动就整体中止。
+ */
+async function anonymize(openid, collection, now) {
+  try {
+    const res = await db
+      .collection(collection)
+      .where({ _openid: openid })
+      .update({ data: { _openid: anonId(openid), account_deleted_at: now } })
+    return { count: (res && res.stats && res.stats.updated) || 0, error: null }
+  } catch (err) {
+    return { count: 0, error: (err && (err.errMsg || err.message)) || String(err) }
+  }
 }
 
 async function deleteAccount(openid) {
@@ -269,25 +286,24 @@ async function deleteAccount(openid) {
     }
   }
 
-  /* 订单：去标识化保留（失败不阻断注销，只如实回报） */
-  let ordersAnonymized = 0
-  let ordersError = null
-  try {
-    const res = await db
-      .collection('orders')
-      .where({ _openid: openid })
-      .update({ data: { _openid: anonId(openid), account_deleted_at: now } })
-    ordersAnonymized = (res && res.stats && res.stats.updated) || 0
-  } catch (err) {
-    ordersError = (err && (err.errMsg || err.message)) || String(err)
-  }
+  /* 订单与退款申请：去标识化保留（失败不阻断注销，只如实回报） */
+  const orders = await anonymize(openid, 'orders', now)
+  /*
+   * 退款申请（2026-10-22）同样只能去标识化，不能删：
+   *   · 一条 pending 的申请对应的是一笔**还没退出去的钱**，删掉就等于把用户的退款诉求丢了；
+   *   · 已处理的申请是「这笔钱为什么退」的唯一凭据，与 orders 留存的理由相同。
+   * 理由文本是用户自己写的，但它是财务凭据的一部分，与 `_openid` 解除关联后保留。
+   */
+  const refundRequests = await anonymize(openid, 'refund_requests', now)
 
   return {
     ok: failed.length === 0,
     action: 'deleteAccount',
     deleted: removed,
-    ordersAnonymized,
-    ordersError,
+    ordersAnonymized: orders.count,
+    ordersError: orders.error,
+    refundRequestsAnonymized: refundRequests.count,
+    refundRequestsError: refundRequests.error,
     failed,
     at: now
   }

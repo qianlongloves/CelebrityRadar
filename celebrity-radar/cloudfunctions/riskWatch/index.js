@@ -21,7 +21,7 @@
  *                    **缺失不算错误**：只落 risk_signals（端上进预警页看得见）、跳过推送 ——
  *                    模板要单独去公众平台申请，没申请之前这功能也该能长出东西来。
  *
- * 消息模板字段：thing1 提醒内容（≤20 字符）、date2 更新时间（与预警模板同键名）。
+ * 消息模板字段：thing1 提醒内容（≤20 字符）、time2 更新时间（与预警模板同键名，HH:mm）。
  *
  * ⚠ 两个「上限」是两件事，改代码前必须分清（与 keywordAlert 同一口径）：
  *   ① **新增上限（按档）** PERSON_WATCH_LIMITS.free / .member —— 只拦「还能不能再盯一个」，
@@ -246,6 +246,107 @@ function postJson(target, headers, payload, timeoutMs) {
   })
 }
 
+/* ───────────────── 订阅消息下发（@push-send begin）─────────────────
+ * 为什么不直接 `cloud.openapi.subscribeMessage.send` 一条路走到黑：
+ *   云调用的「免鉴权」只在**由小程序端触发的云函数**里成立（微信云调用文档原文；CloudBase
+ *   错误码 INVALID_WX_ACCESS_TOKEN 的官方解释就是「未从小程序端触发使用云调用的云函数」）。
+ *   本函数由**定时器**触发，没有小程序端上下文 ⇒ 线上表现是每轮 `pushed` 恒为 0、一条都发不
+ *   出去，而且失败发生在扫描之后、不落 scan_logs，日志看着全绿（2026-10-22 实测：同一枚模板、
+ *   同一个 openid，自取 token 后直连返回 errcode 0 并真实收到消息）。
+ *   所以：先试云调用（将来若改成端上触发、或平台行为变化，它仍是最省事的一条），只对「通道类」
+ *   错误降级到自己取 token 直连；43101 这类业务错误原样抛出，绝不重试（重试只会白白再消耗一次
+ *   授权，用户还得多点一次「允许」）。
+ * ⚠ 本段在 notifyFollowUpdates / keywordAlert / riskWatch 三处**逐字一致**，
+ *   改一处必须三处同改（test/cases/96-push-channel.js 钉住）。
+ */
+const WX_API_BASE = 'https://api.weixin.qq.com'
+let pushTokenCache = { appid: '', token: '', exp: 0 }
+let pushOpenapiUsable = true
+
+/** 云调用拿不到鉴权的典型报错：只对这些降级，别的错误照旧抛给调用方 */
+function isPushChannelError(err) {
+  const msg = String((err && (err.errMsg || err.message)) || err)
+  return /invalid wx openapi access_token|INVALID_WX_ACCESS_TOKEN|-501001|openapi permission denied|-604101/i.test(
+    msg
+  )
+}
+
+/**
+ * 自建 access_token。
+ * 用 `stable_token` 而不是 `/cgi-bin/token`：后者会把此前发放的 token 全部作废 —— 云开发侧自己也在
+ * 用同一个 appid 的 token，用老接口等于顺手把别的 openapi 调用搞坏（dbInit 里是同源取舍）。
+ */
+async function wxAccessToken(force) {
+  const appid = readEnv('WX_APPID')
+  const secret = readEnv('WX_APPSECRET')
+  if (!appid || !secret) return null
+  if (!force && pushTokenCache.appid === appid && pushTokenCache.token && Date.now() < pushTokenCache.exp) {
+    return pushTokenCache.token
+  }
+  const res = await postJson(
+    `${WX_API_BASE}/cgi-bin/stable_token`,
+    {},
+    { grant_type: 'client_credential', appid, secret, force_refresh: false },
+    8000
+  )
+  const data = res && res.data
+  if (!data || !data.access_token) {
+    throw new Error(`取 access_token 失败：${(data && `${data.errcode} ${data.errmsg}`) || '无响应'}`)
+  }
+  /* 提前 5 分钟过期，避免踩在边界上刚好失效 */
+  const ttlMs = Math.max(60, (Number(data.expires_in) || 7200) - 300) * 1000
+  pushTokenCache = { appid, token: data.access_token, exp: Date.now() + ttlMs }
+  return pushTokenCache.token
+}
+
+/** 把云调用那套驼峰入参翻成 HTTP 接口的 snake_case —— 调用点因此不必改形状 */
+async function sendSubscribeViaHttp(args) {
+  const body = {
+    touser: args.touser,
+    template_id: args.templateId,
+    page: args.page,
+    miniprogram_state: args.miniprogramState || 'formal',
+    lang: args.lang || 'zh_CN',
+    data: args.data
+  }
+  const post = (token) =>
+    postJson(
+      `${WX_API_BASE}/cgi-bin/message/subscribe/send?access_token=${encodeURIComponent(token)}`,
+      {},
+      body,
+      10000
+    )
+  let token = await wxAccessToken(false)
+  if (!token) throw new Error('未配置 WX_APPID / WX_APPSECRET：拿不到 access_token，订阅消息无法下发')
+  let data = (await post(token)).data
+  /* 40001/42001 = token 失效（过期或被别的调用顶掉）：强制刷新后只重试一次 */
+  if (data && (Number(data.errcode) === 40001 || Number(data.errcode) === 42001)) {
+    token = await wxAccessToken(true)
+    data = (await post(token)).data
+  }
+  if (!data || Number(data.errcode) !== 0) {
+    const err = new Error(`${(data && data.errcode) || 'unknown'} ${(data && data.errmsg) || '订阅消息下发失败'}`)
+    err.errCode = data && data.errcode
+    throw err
+  }
+  return data
+}
+
+/** 订阅消息唯一出口：云调用优先，通道不可用时自动降级（原因见本段开头） */
+async function sendSubscribeMessage(args) {
+  if (pushOpenapiUsable) {
+    try {
+      return await cloud.openapi.subscribeMessage.send(args)
+    } catch (err) {
+      if (!isPushChannelError(err)) throw err
+      /* 只在本实例内记忆：冷启动的新实例仍会先试一次，成本可忽略，却能享受平台修好后的好处 */
+      pushOpenapiUsable = false
+    }
+  }
+  return sendSubscribeViaHttp(args)
+}
+/* ───────────────── 订阅消息下发（@push-send end）───────────────── */
+
 /** 博查 {url} 的主机名，用作 source 的兜底（与端上 utils/search.ts#hostOf 同口径） */
 function hostOf(url) {
   return String(url || '')
@@ -266,10 +367,10 @@ function clamp(text, max) {
   return chars.length <= max ? chars.join('') : `${chars.slice(0, max - 1).join('')}…`
 }
 
-/** date 类字段要求 yyyy-MM-dd HH:mm 形态 */
-function formatDate(d) {
+/** time 类字段只收 HH:mm（带日期部分会被微信判为格式错误，报 47003） */
+function formatTime(d) {
   const p = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  return `${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 /**
@@ -1012,7 +1113,7 @@ exports.main = async (event) => {
         : `「${lead.view.name}」出现${lead.top.category_label}类表述：${lead.top.title}`
 
     try {
-      await cloud.openapi.subscribeMessage.send({
+      await sendSubscribeMessage({
         touser: openid,
         templateId: tmplId,
         /* ⚠ 分包路径（2026-10-14 起二级页都在 package/ 下）：必须与 app.config.ts 的
@@ -1022,7 +1123,7 @@ exports.main = async (event) => {
         lang: 'zh_CN',
         data: {
           thing1: { value: clamp(text, THING_MAX) },
-          date2: { value: formatDate(new Date()) }
+          time2: { value: formatTime(new Date()) }
         }
       })
       summary.pushed++

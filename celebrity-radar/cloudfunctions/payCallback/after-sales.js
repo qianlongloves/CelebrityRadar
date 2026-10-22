@@ -8,12 +8,15 @@
  * 撤销会员同样是写会员数据 —— 换个地方写，这条不变量就只剩一半，「会员为什么变了」不再只有一个答案。
  * 顺带也不新增部署单元：对账挂在 payCallback 自己的定时触发器上（cloudbaserc.json 的 `payReconcile`）。
  *
- * 本模块做三件事 + 一个写口 + 一处报告，全部**幂等、可重复跑**（对账的全部价值就在这里）：
+ * 本模块做四件事 + 一个写口 + 两处报告，全部**幂等、可重复跑**（对账的全部价值就在这里）：
  *   ① 补发货：`granting` 残留且已超出微信重试窗口 ⇒ 继续发货 + 置 `paid`（P1-7 前半）
  *   ② 补镜像：权威行与镜像行不一致 ⇒ **以权威覆盖镜像**（P1-7 后半）
  *   ③ 撤销：订单已 `refunded` 且未处理过 ⇒ 从会员有效期里扣掉这一单买的天数（P1-6）
  *   ④ `adminOp:'refund'`：运营写口，把订单置 `refunded`（能这么写订单的只有它）
  *   ⑤ 闸门留痕报告：被调用方闸门拦下且带订单号的单 ⇒ 报进 summary 等人工核对（**只报不改**）
+ *   ⑥ 异常单报告（2026-10-22 审计修补）：`failed`（金额不符）与超期 `pending` 报进 summary。
+ *      这两类正是「钱可能已经付了、系统却没有对应动作」的形状，此前只能靠人翻库/翻日志发现
+ *      （**只报不改**：改动它们要么发错货、要么关错单）
  *
  * 四处边界（都是最容易做错的地方）：
  *   - ② 只能「以权威覆盖镜像」，**绝不能反方向**。users 是「仅创建者可读写」，端上能改自己那一行；
@@ -56,6 +59,13 @@ const MIRROR_SCAN_LIMIT = 100
 /** 权威行上「已撤销退款的订单号」名单保留多少条（真正的幂等判据在订单行的 refund_revoked_at，
  *  这个名单只用来自愈「扣了权威、还没写标记」那一段，留 20 条远够） */
 const REFUND_LOG_MAX = 20
+/**
+ * 下单后多久还没收到成功通知就报进对账（2026-10-22）。
+ * 取 24 小时与微信支付的「未支付订单自动关闭」同量级：多数超期单是用户放弃支付（正常），
+ * 但回调丢失也是这个形状 —— 两者在库里长得完全一样，所以只报不改（关错了补不回来）。
+ */
+const STALE_PENDING_HOURS = 24
+const STALE_PENDING_MS = STALE_PENDING_HOURS * 3600 * 1000
 /**
  * 退款撤销时最多读多少条订单账本（见 ledgerExpiryWithout）。
  * 命中这个上限说明账本被截断、算出来的有效期不可信 —— 那时宁可退回「按天数减法」，也不拿半份账本乱算。
@@ -470,6 +480,86 @@ module.exports = function createAfterSales(deps) {
     }
   }
 
+  /* ───────────── ⑤ 异常单报告：金额不符 / 超期未支付（只报不改） ───────────── */
+
+  /**
+   * 把两类「钱的去向说不清」的单报出来（2026-10-22 审计修补）。**只报不改**。
+   *
+   *   ① `failed`：金额与订单不符，永不自动发货。以前只写库 + 一条 console.log，
+   *      对账一类都不扫它 —— 只要没人去翻库、翻日志，这一单就静默存在：
+   *      用户付了钱没会员，而系统里连一个「有人该处理」的信号都没有。
+   *   ② 超期 `pending`：下单后一直没收到成功通知。多数是用户放弃支付（正常），
+   *      但**回调丢失**（闸门误判、平台侧异常）也是这个形状，两者在库里长得一模一样 ——
+   *      所以只报到 summary 里让人扫一眼，绝不自动关单（关错了就再也补不回来）。
+   *
+   * 报过就打标记（`failed_reported` / `stale_pending_reported`），避免每小时重复报同一单
+   * —— 与 reconcileGuardBlocked 同一套噪声控制。标记只表示「已有人看到过一次」，
+   * 不改变订单状态、不影响任何后续流程（清掉标记就会再报一次）。
+   */
+  async function reconcileAnomalies(summary) {
+    const _ = db.command
+    const cut = new Date(Date.now() - STALE_PENDING_MS).toISOString()
+
+    /* ① 金额不符：账本上唯一的异常终态 */
+    try {
+      const res = await db
+        .collection('orders')
+        .where(
+          _.and([
+            { status: 'failed' },
+            _.or([{ failed_reported: _.exists(false) }, { failed_reported: null }])
+          ])
+        )
+        .orderBy('_id', 'asc')
+        .limit(SCAN_LIMIT)
+        .get()
+      const rows = res.data || []
+      summary.feeMismatch = rows.length
+      for (const o of rows) {
+        if (!o || !o._id) continue
+        summary.watch.push(
+          `金额不符 ${o._id}: 订单 ${o.amount_fen} 分 / 回调 ${o.callback_fee} 分` +
+          `（transaction_id=${o.transaction_id || '无'}，${o.failed_at || '时间未知'}）—— ` +
+          `核对商户平台后二选一：确已收款则 adminOp:'grantMember' 补发；未收款则无需处理`
+        )
+        await db.collection('orders').doc(o._id).update({ data: { failed_reported: nowIso() } })
+      }
+    } catch (err) {
+      summary.skipped.push(`金额不符单扫描失败：${msgOf(err)}`)
+      log(`金额不符单扫描失败（下一轮再试）：${msgOf(err)}`)
+    }
+
+    /* ② 超期未支付：可能是回调丢了，也可能用户就是没付 */
+    try {
+      const res = await db
+        .collection('orders')
+        .where(
+          _.and([
+            { status: 'pending' },
+            { created_at: _.lt(cut) },
+            _.or([{ stale_pending_reported: _.exists(false) }, { stale_pending_reported: null }])
+          ])
+        )
+        .orderBy('_id', 'asc')
+        .limit(SCAN_LIMIT)
+        .get()
+      const rows = res.data || []
+      summary.stalePending = rows.length
+      for (const o of rows) {
+        if (!o || !o._id) continue
+        summary.watch.push(
+          `超期未支付 ${o._id}: 下单于 ${o.created_at}（${o.amount_fen} 分），` +
+          `超过 ${STALE_PENDING_HOURS} 小时仍未收到成功通知 —— 多为用户放弃支付；` +
+          `若商户平台显示已收款，说明回调丢了，用 adminOp:'grantMember' 补发`
+        )
+        await db.collection('orders').doc(o._id).update({ data: { stale_pending_reported: nowIso() } })
+      }
+    } catch (err) {
+      summary.skipped.push(`超期未支付单扫描失败：${msgOf(err)}`)
+      log(`超期未支付单扫描失败（下一轮再试）：${msgOf(err)}`)
+    }
+  }
+
   /**
    * 一轮对账（定时触发器 `payReconcile` 触发，或运营用 `adminOp:'reconcile'` 手动跑）。
    *
@@ -492,6 +582,12 @@ module.exports = function createAfterSales(deps) {
       stuck: 0,
       /** 被调用方闸门拦下、且带着订单号的单（见 reconcileGuardBlocked）：>0 必须人工核对 */
       guardBlocked: 0,
+      /** 金额不符被判 failed 的单（见 reconcileAnomalies）：>0 必须人工核对「钱去哪了」 */
+      feeMismatch: 0,
+      /** 超过 STALE_PENDING_HOURS 仍未收到成功通知的单：多数是放弃支付，少数是回调丢了 */
+      stalePending: 0,
+      /** 上面两类 + 闸门留痕的明细（人工可读的一句话），最多 3×SCAN_LIMIT 条 */
+      watch: [],
       skipped: []
     }
     /* 逐类跑、逐类兜（见本函数注释）：一类读表失败只丢自己那一类，绝不拖掉另外三类 */
@@ -507,11 +603,19 @@ module.exports = function createAfterSales(deps) {
     await step('补镜像', reconcileMirrors)
     await step('退款撤销', reconcileRefunds)
     await step('闸门留痕', reconcileGuardBlocked)
+    await step('异常单报告', reconcileAnomalies)
     log(
       `对账完成：granting 候选 ${summary.granting} / 补发货 ${summary.granted}，` +
       `补镜像 ${summary.mirrors}，退款单 ${summary.refunded} / 撤销 ${summary.revoked}，` +
-      `闸门留痕 ${summary.guardBlocked}，转人工 ${summary.stuck}，跳过 ${summary.skipped.length}`
+      `闸门留痕 ${summary.guardBlocked}，金额不符 ${summary.feeMismatch}，` +
+      `超期未支付 ${summary.stalePending}，转人工 ${summary.stuck}，跳过 ${summary.skipped.length}`
     )
+    if (summary.feeMismatch > 0 || summary.stalePending > 0) {
+      log(
+        `⚠ 有 ${summary.feeMismatch} 笔金额不符 / ${summary.stalePending} 笔超期未支付的订单待人工确认` +
+        `（详见本次返回的 watch 字段，或云函数日志的上一行）`
+      )
+    }
     if (summary.stuck > 0) {
       log(`⚠ 有 ${summary.stuck} 笔订单自动补救已达 ${MAX_RECONCILE_ATTEMPTS} 次上限，请人工核查（见 skipped 明细）`)
     }
@@ -544,6 +648,23 @@ module.exports = function createAfterSales(deps) {
       return { ok: false, error: `订单 ${outTradeNo} 正在发货中（granting），请 1 分钟后重试` }
     }
 
+    /*
+     * 退款凭据（2026-10-22 审计修补）：这是「钱出去」的账，原先只留了时间与原因 ——
+     * 财务拿不到**退了多少**（全额还是部分）、也拿不到**微信侧的退款单号**去逐笔核对。
+     *   · refund_fee    实际退款金额（分）。不传 = 全额退；传了必须是 1~订单金额 之间的整数分。
+     *   · refund_id     微信退款单号（在商户平台退完后填，与微信账单对账用）。
+     *   · refunded_by   操作人（超管 openid 后 6 位 / CLI 调用方自填），与 grantMember 同口径。
+     *   · refunded_from 退款前的状态 —— 「退了一张从没发过货的单」在账本上一眼可见。
+     */
+    const amount = Number(order.amount_fen) || 0
+    const fee = event.fee === undefined || event.fee === null ? amount : Math.round(Number(event.fee))
+    if (!Number.isFinite(fee) || fee <= 0 || fee > amount) {
+      return {
+        ok: false,
+        error: `退款金额不合法：${event.fee}（订单 ${amount} 分，须为 1~${amount} 之间的整数分）`
+      }
+    }
+
     await db
       .collection('orders')
       .doc(outTradeNo)
@@ -551,10 +672,17 @@ module.exports = function createAfterSales(deps) {
         data: {
           status: 'refunded',
           refunded_at: nowIso(),
+          refunded_from: order.status,
+          refund_fee: fee,
+          refund_id: String(event.refundId || '').slice(0, 64) || null,
+          refunded_by: String(event.by || '').slice(-6) || null,
           refund_reason: String(event.reason || '').slice(0, 200) || null
         }
       })
-    log(`运营置退款：订单 ${outTradeNo}（原状态 ${order.status}）${event.reason ? `，原因：${event.reason}` : ''}`)
+    log(
+      `运营置退款：订单 ${outTradeNo}（原状态 ${order.status}，退 ${fee} / 订单 ${amount} 分）` +
+      `${event.reason ? `，原因：${event.reason}` : ''}`
+    )
 
     try {
       const r = await settleRefund(Object.assign({}, order, { _id: outTradeNo }))

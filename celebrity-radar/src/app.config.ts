@@ -20,7 +20,7 @@ export default defineAppConfig({
    * 过去只靠这段注释被人记住 —— 已收进 `npm run release:check`
    * （scripts/release-check.js）与路线图 §5 S0-5 行统一对账。
    */
-  __usePrivacyCheck__: false,
+  __usePrivacyCheck__: true,
   /*
    * 二级页已下沉到 package 分包（2026-10-14）：主包只留 4 个底部 tab 页 + 公共代码，
    * 主包从 ~1.41MB 降到 ~1.1MB、给后续迭代腾余量。分包页面路径 = package/<页名>/index。

@@ -1,0 +1,9 @@
+{
+  "name": "opsCheck",
+  "version": "1.0.0",
+  "description": "每日自检：汇总昨天 scan_logs 的执行结果，异常时推到企业微信机器人（OPS_WEBHOOK_URL）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

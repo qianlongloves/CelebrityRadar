@@ -156,7 +156,8 @@ export const publicConfig = {
    *
    * 如何启用（三步，缺一步都不行）：
    *   1. 微信公众平台 → 功能 → 订阅消息 → 公共模板库，按**自己的服务类目**挑一个同时含
-   *      `thing1`（提醒内容，≤20 字符）+ `date2`（时间）的模板；**申请/选用三枚不同的模板**
+   *      `thing1`（提醒内容，≤20 字符）+ 时间键（当前三枚模板都是 `time2`，值只能是 `HH:mm`）的模板；
+   *      **申请/选用三枚不同的模板**
    *      （关注更新 / 关键词预警 / 风险提醒各一枚，理由见下方 alertTemplateId）。
    *   2. 把三枚 ID 填进仓库根 `.env` 的 SUBSCRIBE_TEMPLATE_ID / ALERT_TEMPLATE_ID /
    *      RISK_TEMPLATE_ID（**只这一处**），再 `npm run build:weapp` 重新编译端上

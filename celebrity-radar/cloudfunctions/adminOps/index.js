@@ -22,8 +22,10 @@
  *   ping             环境自检（口令来源 / 关键环境变量齐不齐 / 各集合通不通）—— 排障第一步
  *   findUser         按昵称模糊找 openid（只知道昵称时用）
  *   getUser          一个用户的全景：账号 + 会员（权威 vs 镜像）+ 当日配额 + 当日防滥用计数
+ *   listOrders       按 openid / 订单号查订单（钱的全过程账本，2026-10-22 新增）
+ *   refund           代理 payCallback：置退款并撤销会员，记退款金额 / 退款单号 / 操作人
  *   grantMember      代理 payCallback：手动发放 / 续期会员（续期基数 = max(now, 权威, 镜像)）
- *   reconcile        代理 payCallback：立刻跑一次对账（含镜像修复）
+ *   reconcile        代理 payCallback：立刻跑一次对账（含镜像修复 + 异常单报告）
  *   resetQuota       清某用户某日的三张配额行 + 当日防滥用计数（联调常用）
  *   clearReportLock  把卡在 building 的报告锁恢复成 ready（生成中断留下的脏行）
  */
@@ -255,6 +257,77 @@ async function reconcile() {
 }
 
 /**
+ * 置退款（代理 payCallback 的 `adminOp:'refund'`，2026-10-22）。
+ *
+ * 补这个口的原因：refund 一直只存在于 payCallback 的运营写口里，而**没有任何带鉴权的入口
+ * 转发它** —— 要退款只能 CLI 直连支付回调函数、手拼 token，多一道手工步骤就多一处分歧
+ * （忘了带 reason、忘了撤销会员就走另一条路）。动作本身仍发生在微信商户平台
+ * （本函数不调微信退款接口），这里落的是状态迁移 + 会员撤销，顺带把
+ * **退款金额 / 微信退款单号 / 操作人**写进 orders —— 「退了多少、谁退的、拿什么去对微信账单」
+ * 从此能在一条记录里查到。
+ *
+ * 参数：outTradeNo（必填）、reason（原因）、fee（实际退款金额，分；不传＝全额）、
+ *       refundId（微信退款单号）、by（操作人标识，存后 6 位）。
+ */
+async function refund(e) {
+  const outTradeNo = str(e.outTradeNo)
+  if (!outTradeNo) return { error: '需要 outTradeNo' }
+  return proxyToPayCallback({
+    adminOp: 'refund',
+    outTradeNo,
+    reason: str(e.reason).slice(0, 200),
+    by: str(e.by),
+    fee: e.fee == null || e.fee === '' ? undefined : Number(e.fee),
+    refundId: str(e.refundId)
+  })
+}
+
+/**
+ * 查订单（2026-10-22）：按 openid 看一个人的全部订单，或按订单号看单笔。
+ *
+ * 为什么必须补：orders 是钱的全过程账本（下单 → 支付 → 发货 → 退款 → 撤销），
+ * 而运维工具里此前一条查询都没有 —— 客服问「我这单到底付了没」，只能去控制台翻集合。
+ * 返回**原样行**而不是挑几个字段：这条路的用途就是排障，少给一个字段就要再翻一次库。
+ */
+async function listOrders(e) {
+  const openid = str(e.openid)
+  const outTradeNo = str(e.outTradeNo)
+  const limit = Math.min(Math.max(Number(e.limit) || 20, 1), 50)
+
+  let rows = []
+  if (outTradeNo) {
+    try {
+      const res = await db.collection('orders').doc(outTradeNo).get()
+      if (res && res.data) rows = [res.data]
+    } catch (err) {
+      /* 行不存在时 doc().get() 抛错；排障场景下「没有这一单」与「读失败」都会再查一次，
+         这里不为它们分叉（真正的读失败会在上层的 ping 里暴露） */
+      rows = []
+    }
+  } else if (openid) {
+    const res = await db
+      .collection('orders')
+      .where({ _openid: openid })
+      .orderBy('created_at', 'desc')
+      .limit(limit)
+      .get()
+    rows = res.data || []
+  } else {
+    return { error: '需要 openid（看这个人的全部订单）或 outTradeNo（看某一单）' }
+  }
+
+  return {
+    count: rows.length,
+    orders: rows,
+    /* 把「下一步该做什么」写进回执：订单状态本身不解释自己 —— pending 既可能是没付，
+       也可能是付了但通知丢了；退款则是「商户平台的既成事实」，本系统只负责落账 */
+    hint:
+      'pending 超过 24 小时多半是回调丢失（对账的 stalePending 会报出来）：核对商户平台确已收款后，' +
+      '用 action=grantMember 补发；status=refunded 的单由对账自动倒扣会员天数'
+  }
+}
+
+/**
  * 清当日配额与防滥用计数（联调常用）。
  *
  * ⚠ 这是**放大成本**的动作：清掉之后同一天可以再免费生成 / 提问若干次。
@@ -301,7 +374,7 @@ async function clearReportLock(e) {
   return { found: true, personKey, state: 'ready', cleared: true, ageMinutes: Math.round(ageMs / 60000) }
 }
 
-const ACTIONS = { ping, findUser, getUser, grantMember, reconcile, resetQuota, clearReportLock }
+const ACTIONS = { ping, findUser, getUser, listOrders, refund, grantMember, reconcile, resetQuota, clearReportLock }
 
 exports.main = async (event) => {
   const blocked = callerGuard()

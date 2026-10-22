@@ -43,7 +43,9 @@
       "installDependency": true,
       "envVariables": {
         "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
-        "SUBSCRIBE_TEMPLATE_ID": "{{env.SUBSCRIBE_TEMPLATE_ID}}"
+        "SUBSCRIBE_TEMPLATE_ID": "{{env.SUBSCRIBE_TEMPLATE_ID}}",
+        "WX_APPID": "{{env.WX_APPID}}",
+        "WX_APPSECRET": "{{env.WX_APPSECRET}}"
       },
       "triggers": [
         {
@@ -60,7 +62,9 @@
       "installDependency": true,
       "envVariables": {
         "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
-        "ALERT_TEMPLATE_ID": "{{env.ALERT_TEMPLATE_ID}}"
+        "ALERT_TEMPLATE_ID": "{{env.ALERT_TEMPLATE_ID}}",
+        "WX_APPID": "{{env.WX_APPID}}",
+        "WX_APPSECRET": "{{env.WX_APPSECRET}}"
       },
       "triggers": [
         {
@@ -77,7 +81,9 @@
       "installDependency": true,
       "envVariables": {
         "BOCHA_API_KEY": "{{env.BOCHA_API_KEY}}",
-        "RISK_TEMPLATE_ID": "{{env.RISK_TEMPLATE_ID}}"
+        "RISK_TEMPLATE_ID": "{{env.RISK_TEMPLATE_ID}}",
+        "WX_APPID": "{{env.WX_APPID}}",
+        "WX_APPSECRET": "{{env.WX_APPSECRET}}"
       },
       "triggers": [
         {
@@ -124,6 +130,23 @@
       ]
     },
     {
+      "name": "opsCheck",
+      "timeout": 60,
+      "runtime": "Nodejs16.13",
+      "installDependency": true,
+      "envVariables": {
+        "OPS_WEBHOOK_URL": "{{env.OPS_WEBHOOK_URL}}",
+        "DB_ADMIN_TOKEN": "{{env.DB_ADMIN_TOKEN}}"
+      },
+      "triggers": [
+        {
+          "name": "dailyOpsCheck",
+          "type": "timer",
+          "config": "0 30 10 * * * *"
+        }
+      ]
+    },
+    {
       "name": "quotaGuard",
       "timeout": 60,
       "runtime": "Nodejs16.13",
@@ -155,6 +178,13 @@
           "config": "0 15 * * * * *"
         }
       ]
+    },
+    {
+      "name": "refundApply",
+      "timeout": 20,
+      "runtime": "Nodejs16.13",
+      "description": "用户发起退款申请（create / my）：只落申请单，不改订单状态",
+      "installDependency": true
     },
     {
       "name": "dbInit",

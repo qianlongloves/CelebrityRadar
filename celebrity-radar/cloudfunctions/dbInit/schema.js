@@ -127,7 +127,9 @@ const collections = [
          `{ op: 'grantMember'|'revokeMember', at, by }`，by = 超管 openid 的后 6 位（不存全量，够追溯）。
          为什么只留一条：会员变更本身以 `orders` / `refunded_orders` 为账本，这一列解决的是
          「用户说我的会员莫名没了，是系统退款还是谁手动改的」—— 只需要最近一次人工动作。
-         全量审计要落独立表，那是另一件事（本次不做）。 */
+         全量审计要落独立表，那是另一件事（本次不做）。
+         ⚠ 2026-10-22：自动发货**必须原样保留**这一列（writeMembership 同为 set 全量覆盖）。
+         因为人工发放**不写 orders**，这一列是它唯一的痕迹 —— 被下一次发货擦掉就再也查不到。 */
       f('last_admin_op', 'object?', { def: null })
     ],
     /* 主键（_id = openid）满足所有单点取；这里只为对账轮转加一条升序索引，
@@ -142,16 +144,20 @@ const collections = [
   {
     name: 'sys_config',
     purpose:
-      '运营开关（2026-10-18）：当前只放 `llm_vendors`（哪几家大模型厂商被**临时停用**）。只由云函数 adminConsole 写、aiProxy / hotBoardRefresh 读，端上不可读写',
+      '运营开关（2026-10-18 起）：两个文档 —— `llm_vendors`（哪几家大模型厂商被**临时停用**）、`membership_plans`（会员价格覆盖，2026-10-22 起）。只由云函数 adminConsole 写、aiProxy / hotBoardRefresh / payCreate 读，端上不可读写',
     acl: ACL.cloudOnly,
     fields: [
-      /* 固定两条：`llm_vendors`（模型开关）、`admins`（超管名单，二期开放端上增删）。
-         用 _id 定位而不是查 key，省一次索引。 */
+      /* 用 _id 定位而不是查 key，省一次索引：`llm_vendors` / `membership_plans` / `admins`（二期） */
       f('_id', 'string', { system: true, required: true }),
-      /* 被停用的厂商 key 数组（必须与 llm.config.js 的 VENDORS 键逐字一致）。
+      /* ① llm_vendors 专用。被停用的厂商 key 数组（必须与 llm.config.js 的 VENDORS 键逐字一致）。
          **空数组 = 全部启用**；停用某家后，云端裁决路由时会跳过它并回落到可用厂商，
          回执带 vendorFallback，端上诊断可查。停用不移除注册表 —— 恢复只需把这个名字删掉。 */
       f('disabled', 'array?', { def: [] }),
+      /* ② membership_plans 专用（2026-10-22）。id → 分数（整数），只覆盖金额；
+         days / name / body 仍取构建期常量。payCreate 读取时按 PLAN_LIMITS 校验，不合法整份丢弃。 */
+      f('prices', 'object?', { def: null }),
+      /* ② membership_plans 专用。id → 角标文案（空串 = 不显示），限 PLAN_LIMITS.badgeMax 字 */
+      f('badges', 'object?', { def: null }),
       f('updated_at', 'string?', { def: null }),
       /* 操作者 openid 后 6 位（不存全量：这里只需要「谁干的」可追溯，不需要完整标识） */
       f('updated_by', 'string?', { def: null }),
@@ -487,16 +493,97 @@ const collections = [
          对账每轮按它升序取单，坏单失败一次就往后沉一位，最多 MAX_RECONCILE_ATTEMPTS 轮
          就沉到队尾、不再占名额（否则一条永远补不成的单会把 20 个名额慢慢吃光，
          后面的单再也排不进来）。到上限后不再自动重试，只留日志等人工。 */
-      f('reconcile_attempts', 'number?', { def: 0 })
+      f('reconcile_attempts', 'number?', { def: 0 }),
+      /* ↓ 金额不符的留痕（2026-10-22 审计修补）。`failed` 是**不可逆**的异常终态
+         （见 payCallback：failed 单一律不再自动发货），所以判定那一刻必须把证据一起留下 ——
+         否则事后连「拿什么去商户平台查这一笔」都没有。`transaction_id` 是唯一能对上
+         微信那笔交易的凭据；`failed_reason` 目前只有 `amount_mismatch`。 */
+      f('failed_at', 'string?', { def: null }),
+      f('failed_reason', 'string?', { def: null }),
+      /* 对账已把这一单报进 summary 的时刻（避免每小时重复报同一单）。
+         只表示「已有人看到过一次」，清掉就会再报一次；不参与任何状态判定。 */
+      f('failed_reported', 'string?', { def: null }),
+      /* 超期未支付单（> 24h）已被对账报过的时刻：与 failed_reported 同一套噪声控制 */
+      f('stale_pending_reported', 'string?', { def: null }),
+      /* ↓ 退款凭据（2026-10-22）。退款发生在微信商户平台，本系统落的是**既成事实**，
+         所以「退了多少、谁退的、凭哪个退款单号」必须记全，否则财务无法与微信账单逐笔核对。 */
+      f('refunded_from', 'string?', { def: null, enumHint: ['pending', 'granting', 'paid', 'failed'] }),
+      f('refund_fee', 'number?', { def: null }),
+      f('refund_id', 'string?', { def: null }),
+      f('refunded_by', 'string?', { def: null }),
+      /* 调用方闸门拦下时留下的痕迹（`markGuardBlocked`，2026-10-16）：只报不改，
+         用途是「万一判据错了，一轮对账内就有人发现」—— 同样属于钱的可追溯性，故一并登记 */
+      f('guard_blocked', 'boolean?', { def: null }),
+      f('guard_blocked_at', 'string?', { def: null }),
+      f('guard_blocked_fee', 'number?', { def: null }),
+      f('guard_blocked_reported', 'string?', { def: null })
     ],
     indexes: [
-      ix('idx_openid_created_at', [['openid', 'asc'], ['created_at', 'desc']], { optional: true, supports: '客服按用户查单' }),
+      /* ⚠ 字段名是 `_openid`（云开发的创建者字段），不是 `openid`（2026-10-22 修正）。
+         原先声明成 `openid` ⇒ 索引与查询用的字段对不上 ⇒ 客服按用户查单走的是全表扫描。
+         控制台里若还留着那条旧索引（建在 openid 上），可以手工删掉：没有任何查询会用上它。 */
+      ix('idx_openid_created_at', [['_openid', 'asc'], ['created_at', 'desc']], {
+        optional: true,
+        supports: '客服按用户查单（adminOps.listOrders）'
+      }),
       /* 对账任务每小时按 status 扫两类残留（granting / refunded），P2-24 起还要按排序键取单。
          排序键必须进索引，否则 orderBy 会在内存里排全表（云函数侧有内存与耗时上限）。
          原先声明的 idx_status_paid_at 已被下面两条取代，控制台里若还留着可以手工删（留着只是白付写放大）。 */
       ix('idx_status_attempts_id', [['status', 'asc'], ['reconcile_attempts', 'asc'], ['_id', 'asc']], {
         optional: true,
         supports: 'payCallback 对账①③：两类残留（granting / 待撤销退款单）共用 —— 按「失败次数 + 下单时间」升序，坏单沉底'
+      })
+    ]
+  },
+  /*
+   * ↓ 退款申请（2026-10-22）：用户主动发起 → 超管在运维中心核实 → 点击退款。
+   *
+   * 为什么单独一张表，而不是在 orders 上加几个字段：
+   *   · 申请是「等人工处理」的队列，需要在运维中心按时间翻页；它还必须与订单状态**解耦** ——
+   *     用户提交时订单仍是 paid，处理完才由 payCallback 置 refunded，两个状态变化不能混在一行里；
+   *   · orders 对端上是 selfRead，把申请理由与管理员备注放进去，等于把内部处理意见也给了用户；
+   *   · 一单一条（`_id` 由订单号派生）反而让幂等变简单：重复提交撞同一个 id，不产生第二条待办。
+   *
+   * `_id = rr_<outTradeNo>`：一单一申请，天然幂等（重复提交撞同一个 _id，不会产生两条待办）。
+   */
+  {
+    name: 'refund_requests',
+    purpose: '用户发起的退款申请（pending → approved / rejected）；仅云函数可读写，用户在订单页看自己的申请，超管在运维中心看全部待办',
+    acl: ACL.cloudOnly,
+    fields: [
+      f('_id', 'string', { system: true, required: true }),
+      f('_openid', 'string', { system: true, required: true }),
+      f('out_trade_no', 'string', { required: true }),
+      f('status', 'string', { required: true, enumHint: ['pending', 'approved', 'rejected'] }),
+      /* 用户填写的理由。**必填**（refundApply 校验 2~200 字）—— 没有理由的申请，
+         超管核实的时候既不知道要查什么，也没法向财务解释这笔钱为什么退。 */
+      f('reason', 'string', { required: true }),
+      /* ↓ 申请当时的订单快照：处理一份待办时不必再查 orders；也让这条申请能独立阅读 */
+      f('plan', 'string?', { def: null }),
+      f('amount_fen', 'number?', { def: 0 }),
+      f('days', 'number?', { def: 0 }),
+      f('paid_at', 'string?', { def: null }),
+      f('order_status', 'string?', { def: null }),
+      f('created_at', 'string', { required: true }),
+      /* ↓ 处理结果（超管在运维中心点完之后写）。decided_by 只存 openid 后 6 位，与
+         memberships.last_admin_op 同口径：够追溯，不把超管 openid 散落到业务表里 */
+      f('decided_at', 'string?', { def: null }),
+      f('decided_by', 'string?', { def: null }),
+      f('decision_note', 'string?', { def: null }),
+      /* 批准时落：实际退款金额与微信退款单号（与 orders.refund_fee / refund_id 同源，
+         这里再存一份是为了「一条申请 -> 一笔退款」能单独对账，不必回溯订单） */
+      f('refund_fee', 'number?', { def: null }),
+      f('refund_id', 'string?', { def: null }),
+      /* 账号注销时写：`_openid` 被换成 `anon:<散列>`，这一列记录「何时解除关联」。
+         与 orders 同一口径 —— 交易记录留存，但不再与自然人挂钩。 */
+      f('account_deleted_at', 'string?', { def: null })
+    ],
+    indexes: [
+      ix('idx_status_created_at', [['status', 'asc'], ['created_at', 'desc']], {
+        supports: '运维中心待办列表：按 pending 过滤 + 提交时间倒序'
+      }),
+      ix('idx_openid_created_at', [['_openid', 'asc'], ['created_at', 'desc']], {
+        supports: '用户在订单页查看自己的申请（refundApply.my）'
       })
     ]
   },

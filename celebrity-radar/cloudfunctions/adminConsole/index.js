@@ -22,6 +22,8 @@
  */
 
 const cloud = require('wx-server-sdk')
+/* 价格默认值 + 可调边界：生成副本，真源 src/config/benefits.ts */
+const { PLANS, PLAN_LIMITS } = require('./benefits.config')
 
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 const db = cloud.database()
@@ -34,9 +36,14 @@ const QUOTA_TABLES = [
   ['ask', 'ask_quota'],
   ['refresh', 'refresh_quota']
 ]
-/** 运营开关固定两个文档：llm_vendors（模型厂商停用清单） */
+/**
+ * sys_config 下的运营开关文档（一张表收所有「不发版就能改」的开关）：
+ *   llm_vendors       模型厂商停用清单
+ *   membership_plans  会员价格覆盖（改价，见 plans / setPlans）
+ */
 const FLAG_COLL = 'sys_config'
 const FLAG_ID = 'llm_vendors'
+const PLAN_ID = 'membership_plans'
 
 const str = (v) => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim())
 const msgOf = (err) => str((err && (err.errMsg || err.message)) || err) || '未知错误'
@@ -103,11 +110,25 @@ async function me() {
     openid,
     isAdmin,
     adminCount: list.length,
+    /* 待核实的退款申请数（2026-10-22）：运维中心据此在「退款」tab 上挂红点，
+       并在有待办时直接切过去。**只有超管才查** —— 非超管拿到这个数既没法处理，
+       也等于把「平台有多少笔退款在排队」告诉了一个不相干的人。 */
+    pendingRefunds: isAdmin ? await pendingRefundCount() : 0,
     hint: isAdmin
       ? ''
       : list.length === 0
         ? '尚未配置超管：把下面这个 openid 写进云函数 adminConsole 的环境变量 ADMIN_OPENIDS（逗号分隔），重新部署后生效'
         : '你的 openid 不在 ADMIN_OPENIDS 白名单里'
+  }
+}
+
+/** 退款待办数。集合还没建（dbInit 尚未 sync）时按 0 处理，不能让运维中心因此打不开 */
+async function pendingRefundCount() {
+  try {
+    const res = await db.collection('refund_requests').where({ status: 'pending' }).count()
+    return Number(res.total) || 0
+  } catch (err) {
+    return 0
   }
 }
 
@@ -381,7 +402,311 @@ async function setVendor(e) {
   return { key, enabled, disabled: next, updated_at: doc.updated_at, updated_by: doc.updated_by }
 }
 
-const ACTIONS = { listUsers, getUser, grantMember, revokeMember, vendors, setVendor }
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 会员价格（2026-10-22）
+ *
+ * 价格原先只活在 `benefits.config.js` 里：调一次价要改真源、跑 config:sync、重新部署云函数。
+ * 现在改为**云端覆盖** —— 运维中心改金额，payCreate 一分钟内按新价下单，端上不用发版。
+ *
+ * ⚠ 边界必须落在这里（服务端），端上的输入校验只是体验：
+ *   · 金额上下限、整数分 —— 多打一个 0 是客诉，少打一个 0 是无声资损；
+ *   · 三档必须一次提交 —— 漏传一档会让它静默回到默认价，运维以为改成功；
+ *   · 只改金额与角标 —— days / name / body 不动（改天数会动发货口径）。
+ * 与 payCreate#sanitizePlanOverride 是同一条判据的两份实现（云函数各自独立打包），
+ * 边界值取自 PLAN_LIMITS，改范围只改真源。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** 金额（分）→ 展示文案：990 → `¥9.9`、6800 → `¥68`。与 payCreate#priceLabelOf 必须同口径 */
+function priceLabelOf(fen) {
+  const yuan = Math.round(fen) / 100
+  if (Number.isInteger(yuan)) return `¥${yuan}`
+  return `¥${String(yuan.toFixed(2)).replace(/0+$/, '').replace(/\.$/, '')}`
+}
+
+/**
+ * 读价格文档。**刻意不缓存**：运维页要看的就是「库里现在是什么」，
+ * 缓存会让刚保存完的页面显示旧值，看起来像没保存成功。
+ */
+async function readPlanDoc() {
+  try {
+    const res = await db.collection(FLAG_COLL).doc(PLAN_ID).get()
+    return (res && res.data) || null
+  } catch (err) {
+    /* 没配过价 = 全用构建期默认值，不是错误 */
+    return null
+  }
+}
+
+/** 价格现状：每档的「云端当前值」与「构建期默认值」并排给出，`source` 说明是否已被覆盖 */
+async function plans() {
+  const doc = await readPlanDoc()
+  const prices = doc && doc.prices && typeof doc.prices === 'object' ? doc.prices : {}
+  const badges = doc && doc.badges && typeof doc.badges === 'object' ? doc.badges : {}
+  return {
+    source: doc ? 'cloud' : 'local',
+    updated_at: doc && doc.updated_at ? doc.updated_at : null,
+    updated_by: doc && doc.updated_by ? doc.updated_by : null,
+    note: doc && doc.note ? doc.note : null,
+    plans: PLANS.map((p) => {
+      const cur = typeof prices[p.id] === 'number' ? prices[p.id] : p.priceFen
+      return {
+        id: p.id,
+        name: p.name,
+        days: p.days,
+        priceFen: cur,
+        priceLabel: priceLabelOf(cur),
+        badge: typeof badges[p.id] === 'string' ? badges[p.id] : p.badge,
+        defaultPriceFen: p.priceFen,
+        defaultPriceLabel: priceLabelOf(p.priceFen),
+        defaultBadge: p.badge
+      }
+    })
+  }
+}
+
+/**
+ * 改价：三档一次提交（数组），金额单位是**分**。
+ *
+ * 为什么强制三档全传：只改月卡时若只传 monthly，漏掉的两档会按「没配」落回默认价 ——
+ * 运营看到的是一次「只改了月卡」，实际发生的是「另外两档被重置」。宁可让调用方多传两个值。
+ */
+async function setPlans(e) {
+  const rows = Array.isArray(e.plans) ? e.plans : null
+  if (!rows) return { error: '需要 plans 数组（三档一次提交）' }
+
+  const byId = {}
+  for (const row of rows) {
+    const id = str(row && row.id)
+    if (!id) return { error: '每个档位都需要 id' }
+    if (byId[id]) return { error: `档位重复：${id}` }
+    byId[id] = row
+  }
+  const expected = PLANS.map((p) => p.id)
+  const missing = expected.filter((id) => !byId[id])
+  if (missing.length) {
+    return { error: `缺档位：${missing.join(' / ')}（三档必须一次提交，否则漏掉的档位会静默回到默认价）` }
+  }
+  const unknown = Object.keys(byId).filter((id) => expected.indexOf(id) < 0)
+  if (unknown.length) return { error: `未注册的档位：${unknown.join(' / ')}（可选：${expected.join(' / ')}）` }
+
+  const prices = {}
+  const badges = {}
+  for (const p of PLANS) {
+    const row = byId[p.id]
+    const fen = Number(row.priceFen)
+    if (!Number.isFinite(fen)) return { error: `${p.id} 的价格不是数字` }
+    if (Math.round(fen) !== fen) return { error: `${p.id} 的价格必须是整数分（元 × 100）` }
+    if (fen < PLAN_LIMITS.priceFenMin || fen > PLAN_LIMITS.priceFenMax) {
+      const lo = PLAN_LIMITS.priceFenMin / 100
+      const hi = PLAN_LIMITS.priceFenMax / 100
+      return { error: `${p.id} 的价格 ¥${fen / 100} 超出允许范围（¥${lo}~¥${hi}）` }
+    }
+    const badge = str(row.badge)
+    if (badge.length > PLAN_LIMITS.badgeMax) {
+      return { error: `${p.id} 的角标超过 ${PLAN_LIMITS.badgeMax} 字` }
+    }
+    prices[p.id] = fen
+    badges[p.id] = badge
+  }
+
+  const before = await readPlanDoc()
+  const doc = {
+    prices,
+    badges,
+    updated_at: nowIso(),
+    /* 与厂商开关同口径：只留 openid 后 6 位，够回答「是谁改的」 */
+    updated_by: openidOf().slice(-6),
+    note: str(e.note) || null
+  }
+  await db.collection(FLAG_COLL).doc(PLAN_ID).set({ data: doc })
+
+  const diff = PLANS.map((p) => {
+    const oldFen =
+      before && before.prices && typeof before.prices[p.id] === 'number' ? before.prices[p.id] : p.priceFen
+    return `${p.id} ${oldFen}→${prices[p.id]}`
+  })
+  console.log(`[adminConsole] 会员价格更新：${diff.join('，')}`)
+
+  return {
+    source: 'cloud',
+    updated_at: doc.updated_at,
+    updated_by: doc.updated_by,
+    plans: PLANS.map((p) => ({
+      id: p.id,
+      name: p.name,
+      days: p.days,
+      priceFen: prices[p.id],
+      priceLabel: priceLabelOf(prices[p.id]),
+      badge: badges[p.id],
+      defaultPriceFen: p.priceFen,
+      defaultPriceLabel: priceLabelOf(p.priceFen),
+      defaultBadge: p.badge
+    }))
+  }
+}
+
+/* ─────────── 退款申请（2026-10-22）：用户发起 → 超管核实 → 点击退款 ─────────── */
+
+const REFUND_PAGE_MAX = 30
+
+/**
+ * 退款申请列表。
+ *
+ * 默认只看 `pending`（待办），`status:'all'` 看全部处理结果 —— 两条口径分别对应
+ * 「现在该我做什么」和「上周那笔是谁批的」，混在一个列表里两头都不好用。
+ *
+ * 注意这是**唯一能看到用户退款理由与内部处理备注的地方**：refund_requests 的 ACL 是
+ * cloudOnly，端上一行都读不到（用户侧走 refundApply.my，只回自己的）。
+ */
+async function refundRequests(e) {
+  const status = str(e.status) || 'pending'
+  const page = Math.max(0, Math.floor(Number(e.page) || 0))
+  const size = Math.min(REFUND_PAGE_MAX, Math.max(1, Math.floor(Number(e.pageSize) || 20)))
+  const where = status === 'all' ? {} : { status }
+
+  let total = 0
+  try {
+    const c = await db.collection('refund_requests').where(where).count()
+    total = Number(c.total) || 0
+  } catch (err) {
+    /* 集合还不存在：明确告诉运维该做什么，而不是回一个空列表让他以为「没人申请」 */
+    return {
+      rows: [],
+      total: 0,
+      pending: 0,
+      note: 'refund_requests 集合还不存在：先执行一次 dbInit 的 sync（apply:true）'
+    }
+  }
+
+  const res = await db
+    .collection('refund_requests')
+    .where(where)
+    .orderBy('created_at', 'desc')
+    .skip(page * size)
+    .limit(size)
+    .get()
+
+  return {
+    rows: (res.data || []).map((r) => ({
+      id: r._id,
+      /* 用户只给后 8 位：运维核实时要对得上人，但列表不该把整串 openid 撒出来 */
+      openidTail: str(r._openid).slice(-8),
+      outTradeNo: r.out_trade_no,
+      status: r.status,
+      reason: r.reason,
+      plan: str(r.plan),
+      amountFen: Number(r.amount_fen) || 0,
+      days: Number(r.days) || 0,
+      paidAt: r.paid_at || null,
+      createdAt: r.created_at,
+      decidedAt: r.decided_at || null,
+      decidedBy: r.decided_by || null,
+      decisionNote: r.decision_note || null,
+      refundFee: typeof r.refund_fee === 'number' ? r.refund_fee : null,
+      refundId: r.refund_id || null
+    })),
+    total,
+    pending: await pendingRefundCount(),
+    page,
+    pageSize: size
+  }
+}
+
+/**
+ * 处理一条退款申请：`approve` = 核实后点退款，`reject` = 拒绝（必须写理由）。
+ *
+ * 两个刻意的顺序：
+ *   · **先退款成功、再置 approved**：反过来的话，payCallback 一拒绝，用户那边已经显示
+ *     「已退款」而钱没动 —— 那是最坏的一种不一致。
+ *   · **拒绝必须带理由**：用户会在订单页看到它。没有理由的拒绝，用户唯一能做的就是再申请一次。
+ *
+ * 真正的钱与订单状态都在 payCallback（adminOp:'refund'）：本函数只负责「申请单」这一侧，
+ * 以及把退款单号 / 金额记回申请，让「一条申请 ↔ 一笔退款」能单独对上。
+ */
+async function refundDecide(e) {
+  const id = str(e.id)
+  const decision = str(e.decision)
+  if (!id) return { error: '需要 id（申请记录的 _id）' }
+  if (decision !== 'approve' && decision !== 'reject') {
+    return { error: 'decision 只能是 approve（核实后退款）或 reject（拒绝）' }
+  }
+
+  let doc = null
+  try {
+    const r = await db.collection('refund_requests').doc(id).get()
+    doc = (r && r.data) || null
+  } catch (err) {
+    doc = null
+  }
+  if (!doc) return { error: `找不到这条申请：${id}` }
+  if (doc.status !== 'pending') {
+    return { error: `这条申请已经处理过（${doc.status}），不能重复操作` }
+  }
+
+  const now = new Date().toISOString()
+  const by = openidOf().slice(-6)
+  const note = str(e.note).slice(0, 200)
+
+  if (decision === 'reject') {
+    if (!note) return { error: '拒绝必须填写理由（用户会在订单页看到）' }
+    await db.collection('refund_requests').doc(id).update({
+      data: { status: 'rejected', decided_at: now, decided_by: by, decision_note: note }
+    })
+    return { status: 'rejected', outTradeNo: doc.out_trade_no }
+  }
+
+  const amount = Number(doc.amount_fen) || 0
+  const rawFee = e.fee === undefined || e.fee === null || e.fee === '' ? undefined : Math.round(Number(e.fee))
+  if (rawFee !== undefined && (!Number.isFinite(rawFee) || rawFee <= 0 || rawFee > amount)) {
+    return { error: `退款金额不合法：${e.fee}（订单 ${amount} 分，须为 1~${amount} 之间的整数分）` }
+  }
+
+  const out = unwrapProxy(
+    await proxyToPayCallback({
+      adminOp: 'refund',
+      outTradeNo: doc.out_trade_no,
+      reason: `用户申请：${doc.reason}`.slice(0, 200),
+      fee: rawFee,
+      refundId: str(e.refundId)
+    })
+  )
+  if (out.error) return out
+
+  const fee = rawFee === undefined ? amount : rawFee
+  const refundId = str(e.refundId) || null
+  await db.collection('refund_requests').doc(id).update({
+    data: {
+      status: 'approved',
+      decided_at: now,
+      decided_by: by,
+      decision_note: note || null,
+      refund_fee: fee,
+      refund_id: refundId
+    }
+  })
+
+  return {
+    status: 'approved',
+    outTradeNo: doc.out_trade_no,
+    refundFee: fee,
+    refundId,
+    /* payCallback 会告诉我们对账是否已经把会员天数倒扣掉（refunded 单由对账撤销） */
+    revoked: out.revoked === true
+  }
+}
+
+const ACTIONS = {
+  listUsers,
+  getUser,
+  grantMember,
+  revokeMember,
+  refundRequests,
+  refundDecide,
+  vendors,
+  setVendor,
+  plans,
+  setPlans
+}
 
 exports.main = async (event) => {
   const e = event || {}

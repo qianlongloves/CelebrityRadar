@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import Taro from '@tarojs/taro'
+import { useEffect, useRef, useState } from 'react'
+import Taro, { useDidShow } from '@tarojs/taro'
 import { Button, Text, View } from '@tarojs/components'
 import { useAuth } from '@/stores/auth'
 import { publicConfig } from '@/config/public'
@@ -349,6 +349,38 @@ export default function MemberPage() {
     }
   }, [])
 
+  /** 重读会员态（失败就保持原样：读不到时不要把已显示的会员卡擦成免费版） */
+  const refreshMember = async (): Promise<boolean> => {
+    const next = await readMemberState().catch(() => null)
+    if (!next) return false
+    setMember(next)
+    return next.member
+  }
+
+  /**
+   * 每次重新显示都同步一次会员态（2026-10-22 修）：此前本页只有 useEffect，
+   * 从订单页/收银台返回时不会重读，支付回调稍慢就一直是旧的有效期。
+   */
+  const firstShow = useRef(true)
+  useDidShow(() => {
+    /* 首次显示由上面的 useEffect 负责，避免进页打两次云函数 */
+    if (firstShow.current) {
+      firstShow.current = false
+      return
+    }
+    void refreshMember()
+  })
+
+  /** 轮询到会员生效为止（「支付成功但开通中」弹窗里点刷新时用；超时返回 false，交给用户稍后再看） */
+  const pollActivated = async (timeoutMs = 8000): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      if (await refreshMember()) return true
+      if (Date.now() >= deadline) return false
+      await new Promise<void>((resolve) => setTimeout(resolve, 1500))
+    }
+  }
+
   const selected = plans.find((p) => p.id === selectedId) ?? plans[0] ?? null
   const isMember = !!member?.member
 
@@ -410,18 +442,30 @@ export default function MemberPage() {
     }
 
     /* 钱已付：无论回调是否已落地都刷新一次状态，页面上的剩余天数立刻跟手 */
-    const next = await readMemberState().catch(() => null)
-    if (next) setMember(next)
+    const activatedNow = await refreshMember()
 
-    if (res.activated) {
+    if (res.activated || activatedNow) {
       Taro.showToast({ title: isMember ? '会员已续费' : '会员已开通', icon: 'success' })
-    } else {
-      await Taro.showModal({
-        title: '支付成功',
-        content: '会员开通中，通常几秒内生效；重新进入本页即可看到更新后的有效期。',
-        showCancel: false
-      })
+      return
     }
+
+    /* 回调还没到：给一个当场能点的刷新，而不是让用户自己猜「重新进入本页」指什么 */
+    const r = await Taro.showModal({
+      title: '支付成功',
+      content: '会员正在开通中，通常几秒内生效。可以点「刷新状态」立即查询。',
+      confirmText: '刷新状态',
+      cancelText: '稍后再看'
+    })
+    if (!r.confirm) return
+
+    Taro.showLoading({ title: '正在查询…', mask: true })
+    const ok = await pollActivated()
+    Taro.hideLoading()
+    Taro.showToast({
+      title: ok ? '会员已开通' : '仍在开通中，稍后自动生效',
+      icon: ok ? 'success' : 'none',
+      duration: ok ? 1500 : 2500
+    })
   }
 
   /** 当前等级的 emoji / 名称（顶部卡片标题用；非会员 / 未知档位回落 ⭐ 会员） */

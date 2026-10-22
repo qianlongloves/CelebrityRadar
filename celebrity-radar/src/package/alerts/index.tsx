@@ -32,6 +32,8 @@ import { loadScanLogs, latestLogByKey, monitorResultText, riskSignalTotal } from
 import { emptyStatus, loadEventStatus, loadStoredEvents, toDisplayEvents } from '@/utils/opinion-store'
 import { buildSubjectHits, hasSubjectSubs, toggleSubject } from '@/utils/event-subscribe'
 import { alertNotifyConfigured, requestAlertNotify, requestRiskNotify, riskNotifyConfigured } from '@/utils/notify'
+/* 读 users 行的 alert_ok / risk_ok：一次性订阅只能用一条，界面必须告诉用户「还剩几次就绪」 */
+import { readSelf } from '@/utils/auth'
 import { openSourceLink } from '@/utils/source-link'
 import { formatMoment8 } from '@/utils/time'
 import { decodeParam } from '@/utils/route'
@@ -155,6 +157,14 @@ export default function Alerts() {
   const [loading, setLoading] = useState(true)
   /** 提交中：防止连点造成两个并发的 addWatch（后一个会撞主键） */
   const [submitting, setSubmitting] = useState(false)
+  /**
+   * 两路提醒的授权是否还「就绪」（2026-10-22）。
+   *
+   * 一次性订阅的本质是「开一次收一次」，云端发完就把 users.alert_ok / risk_ok 复位。
+   * 此前界面固定显示「开启每日提醒」，用户发完再进来看到同一句话，不知道自己其实已经
+   * 没有待用授权了 —— 表现就是「有时候能收到、有时候收不到」。这两个布尔值让按钮说真话。
+   */
+  const [notifyArmed, setNotifyArmed] = useState({ alert: false, risk: false })
 
   const refresh = useCallback(async () => {
     if (!userId) {
@@ -168,12 +178,15 @@ export default function Alerts() {
       return
     }
     /* `loadEventStatus` 一起并进来：订阅栏要不要读事件表，得先看这一行有没有订阅（见下方注释） */
-    const [rows, res, member, evStatus] = await Promise.all([
+    const [rows, res, member, evStatus, self] = await Promise.all([
       listWatches(),
       loadAlerts(),
       readMemberState(),
-      loadEventStatus()
+      loadEventStatus(),
+      /* 失败就当「没有待用授权」：按钮退回「开启」是保守方向，点一下最多多要一次授权 */
+      readSelf().catch(() => null)
     ])
+    setNotifyArmed({ alert: !!self?.alert_ok, risk: !!self?.risk_ok })
     /* 读出来的状态立刻升到 state：下方「订阅的对象」那张卡的渲染判据用的就是它 */
     setStatus(evStatus)
     /* 同一张表混着两类行，必须拆开：关键词订阅归上方「关键词监测」，监控行归下方风险信号板块。
@@ -334,7 +347,12 @@ export default function Alerts() {
       success: async (r) => {
         if (!r.confirm) return
         const ok = await removeWatch(keyword)
-        if (ok) void refresh()
+        /* 失败必须说话（2026-10-22）：此前 false 时静默返回，用户以为点了没反应，会反复点 */
+        if (ok) {
+          void refresh()
+        } else {
+          Taro.showToast({ title: '取消失败，请稍后重试', icon: 'none' })
+        }
       }
     })
   }
@@ -349,19 +367,26 @@ export default function Alerts() {
       success: async (r) => {
         if (!r.confirm) return
         const ok = await unmonitorPerson(personKey, 'alerts')
-        if (ok) void refresh()
+        if (ok) {
+          void refresh()
+        } else {
+          Taro.showToast({ title: '取消失败，请稍后重试', icon: 'none' })
+        }
       }
     })
   }
 
   const handleNotify = async () => {
     const res = await requestAlertNotify()
+    /* 授权成功后按钮立刻变成「再开一次」，不必等下次进页刷新 */
+    if (res.ok) setNotifyArmed((prev) => ({ ...prev, alert: true }))
     Taro.showToast({ title: res.message, icon: res.ok ? 'success' : 'none' })
   }
 
   /** 风险提醒授权（与关键词提醒是两个模板、两份授权，见 utils/notify.ts） */
   const handleRiskNotify = async () => {
     const res = await requestRiskNotify()
+    if (res.ok) setNotifyArmed((prev) => ({ ...prev, risk: true }))
     Taro.showToast({ title: res.message, icon: res.ok ? 'success' : 'none' })
   }
 
@@ -710,9 +735,13 @@ export default function Alerts() {
               hoverClass='page-alerts__notify-btn--tap'
               onClick={() => void handleNotify()}
             >
-              <Text>开启每日提醒</Text>
+              <Text>{notifyArmed.alert ? '再开一次（已就绪 1 次）' : '开启每日提醒'}</Text>
             </View>
-            <Text className='page-alerts__notify-tip'>微信一次性订阅：开一次收一次，每次收到后可再开</Text>
+            <Text className='page-alerts__notify-tip'>
+              {notifyArmed.alert
+                ? '已授权 1 次，下次推送会消耗它；多点几次可多收几条'
+                : '微信一次性订阅：开一次收一次，每次收到后可再开'}
+            </Text>
           </View>
         )}
 
@@ -858,10 +887,12 @@ export default function Alerts() {
                 hoverClass='page-alerts__notify-btn--tap'
                 onClick={() => void handleRiskNotify()}
               >
-                <Text>开启风险提醒</Text>
+                <Text>{notifyArmed.risk ? '再开一次（已就绪 1 次）' : '开启风险提醒'}</Text>
               </View>
               <Text className='page-alerts__notify-tip'>
-                微信一次性订阅：开一次收一次；未开启也能在下方看到全部信号
+                {notifyArmed.risk
+                  ? '已授权 1 次，下次推送会消耗它；未开启也能在下方看到全部信号'
+                  : '微信一次性订阅：开一次收一次；未开启也能在下方看到全部信号'}
               </Text>
             </View>
           )}

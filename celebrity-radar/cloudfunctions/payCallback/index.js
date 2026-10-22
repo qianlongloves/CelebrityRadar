@@ -153,17 +153,28 @@ async function writeMembership(openid, m) {
     last_order_id: m.last_order_id,
     updated_at: new Date().toISOString()
   }
+  /* 下面两列遵循同一条规则：**调用方没给就保留原值**。set 是全量覆盖，漏一次就是清空；
+     而这两列丢了都回不来，所以宁可多读一次权威行。一次读同时兜住两列，不各读一遍。 */
+  const cur = Array.isArray(m.refunded_orders) && m.last_admin_op ? null : await readMembership(openid)
+
   if (Array.isArray(m.refunded_orders)) {
     data.refunded_orders = m.refunded_orders
-  } else {
-    const cur = await readMembership(openid)
-    const ledger = cur && cur.refunded_orders
+  } else if (cur && Array.isArray(cur.refunded_orders)) {
     /* 只有确实有名单时才写这一列：新行本来就没有名单可丢，不必凭空多出一个空数组 */
-    if (Array.isArray(ledger)) data.refunded_orders = ledger
+    data.refunded_orders = cur.refunded_orders
   }
-  /* 人工改会员的留痕（2026-10-18 运维中心）：只在调用方显式带时写。
-     自动发货 / 退款不需要它 —— 那些有 orders 账本可查，人工动作才需要「倒推是谁改的」。 */
+
+  /*
+   * 人工改会员的留痕（2026-10-18 运维中心；2026-10-22 审计修补）。
+   *
+   * 原先只在调用方显式带时写，注释给的理由是「自动发货有 orders 账本可查」——
+   * 这条理由对**人工发放**不成立：手动发放不写 orders，`last_admin_op` 是它**唯一**的痕迹。
+   * 而自动发货恰好不带这一列 ⇒ 用户被手动加了 30 天、之后又正常买一单，
+   * 那 30 天是谁给的、什么时候给的，就再也查不到了。所以与 refunded_orders 同口径保留。
+   */
   if (m.last_admin_op) data.last_admin_op = m.last_admin_op
+  else if (cur && cur.last_admin_op) data.last_admin_op = cur.last_admin_op
+
   await db.collection('memberships').doc(openid).set({ data })
 }
 
@@ -355,6 +366,52 @@ function callerGuard() {
 }
 
 /**
+ * 金额不符：把订单判为 `failed`，并**把回调给的证据一起留下**（2026-10-22 审计修补）。
+ *
+ * 原先只写 `status` + `callback_fee`，事后核对时缺两样东西：
+ *   · `transaction_id` —— 能拿去微信商户平台对单的唯一凭据；
+ *   · `failed_at` / `failed_reason` —— 什么时候、因为什么被判异常。
+ * 而 `failed` 单不触发任何自动流程（对账只报不改），证据链断在这里就没有第二次机会：
+ * 运营看着一条 failed 单，既不知道拿什么去查，也没法向用户解释那一笔钱去哪了。
+ *
+ * 只对 `pending` / `granting` 生效：若并发回调已经把它推到 `paid`，说明金额校验在那一趟
+ * 是通过的 —— 这时再改成 failed，等于用一次可疑回调推翻一次已经完成的发货。
+ */
+async function markFeeMismatch(order, outTradeNo, evidence) {
+  const patch = {
+    status: 'failed',
+    callback_fee: evidence.fee,
+    transaction_id: evidence.transactionId || null,
+    failed_at: new Date().toISOString(),
+    failed_reason: 'amount_mismatch'
+  }
+
+  let res = null
+  try {
+    res = await db
+      .collection('orders')
+      .where({ _id: outTradeNo, status: _.in(['pending', 'granting']) })
+      .update({ data: patch })
+  } catch (err) {
+    /*
+     * 条件更新（where + `_id` + `in`）万一在云上不被支持，**绝不能让它把回调打成 500** ——
+     * 那会让微信对一笔「金额确实不符」的通知无限重试，反而把异常放大。退回无条件写：
+     * 极端并发下可能覆盖掉一次刚成功的发货状态，但这是异常路径（正常支付走不到这里），
+     * 而账留下比账干净更重要。
+     */
+    log(`⚠ 条件更新失败，退回无条件写入订单 ${outTradeNo}：${(err && err.message) || err}`)
+    res = await db.collection('orders').doc(outTradeNo).update({ data: patch })
+  }
+
+  log(
+    `金额不符：订单 ${outTradeNo} 期望 ${order.amount_fen} 分，回调 ${evidence.fee} 分` +
+    `（transaction_id=${evidence.transactionId || '无'}）—— 未发货，已标 failed 等人工核对`
+  )
+  if (updatedOf(res) === 0) log(`订单 ${outTradeNo} 已被并发回调推进到终态，本次不覆盖它的状态`)
+  return res
+}
+
+/**
  * 被闸门拦下时，在订单上留一个**对账看得见**的痕迹（只对「像微信支付通知」的载荷做）。
  *
  * 为什么必须留：闸门的判据（`OPENID` 非空 ⇒ 端上调用）是**推断**，本函数没法自证它对不对。
@@ -461,12 +518,26 @@ exports.main = async (event) => {
     if (!order) return ack(`订单不存在：${outTradeNo}（非本系统订单或已被清理）`)
     if (order.status === 'paid') return ack(`订单已处理：${outTradeNo}`)
 
-    if (Number(totalFee) !== Number(order.amount_fen)) {
-      await db.collection('orders').doc(outTradeNo).update({
-        data: { status: 'failed', callback_fee: Number(totalFee) || null }
-      })
+    /*
+     * 金额**读不出来**（缺失 / 非数字）与金额**读出来不符**必须分开处理（2026-10-22 审计修补）。
+     *
+     * 原来两者走同一条路：`Number(undefined)` 是 NaN，而 NaN !== amount 恒成立 ⇒ 一份缺字段的
+     * 畸形载荷就能把一张好单推进 `failed`。而 `failed` 是不可逆的（下面的重读分支：failed 单一律
+     * 不发货），一次缺字段 = 用户付了钱永久拿不到会员。缺字段该等下一份正常通知，不该判死刑。
+     */
+    const fee = Number(totalFee)
+    if (!Number.isFinite(fee)) {
+      log(
+        `⚠ 通知缺少可用金额：订单 ${outTradeNo}（订单 ${order.amount_fen} 分，回调 totalFee=${totalFee}）` +
+        `—— 不置 failed、不发货，订单保持 ${order.status}，等后续通知或人工核对`
+      )
+      return ack(`无法解析回调金额（totalFee=${totalFee}），订单保持 ${order.status}：${outTradeNo}`)
+    }
+
+    if (fee !== Number(order.amount_fen)) {
+      await markFeeMismatch(order, outTradeNo, { fee, transactionId })
       return ack(
-        `金额不符：订单 ${order.amount_fen} 分 / 回调 ${totalFee} 分，订单 ${outTradeNo} 未发货，需人工核对`
+        `金额不符：订单 ${order.amount_fen} 分 / 回调 ${fee} 分，订单 ${outTradeNo} 未发货，需人工核对`
       )
     }
 

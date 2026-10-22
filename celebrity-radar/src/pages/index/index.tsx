@@ -135,14 +135,26 @@ export default function Index() {
   /* 每次显示发现页都重取：首次进入、从报告页返回（刚查过的人要出现在「最近」），
      以及从名人主页 / 关注列表返回（那边的关注变更要同步到卡片按钮上） */
   useDidShow(() => {
-    /* 走 listRecentHistory：按名人去重，避免 A→B→A 回访让同一个人在「最近」里占两格 */
-    void listRecentHistory(RECENT_LIMIT).then(setRecent)
-    void listFollows().then((rows) => setFollowedKeys(new Set(rows.map((r) => r.person_key))))
+    /* 四个读各自兜底（2026-10-22）：此前都没有 catch，任一 reject 就是一个未捕获的
+       未处理拒绝（真机上还可能连带中断同批渲染）。这里失败一律「保持原值」——
+       最近记录为空则不显示该区块、关注态取上一次的、榜单本来就有静态种子兜底
+       （见本文件顶部 HOT_PERSONS 注释），下次切回本页时 useDidShow 会自动重取。
+       走 listRecentHistory：按名人去重，避免 A→B→A 回访让同一个人在「最近」里占两格 */
+    void listRecentHistory(RECENT_LIMIT)
+      .then(setRecent)
+      .catch(() => undefined)
+    void listFollows()
+      .then((rows) => setFollowedKeys(new Set(rows.map((r) => r.person_key))))
+      .catch(() => undefined)
     /* 榜单带 TTL 内存缓存：重复进页不重复打云；命中缓存时返回同一数组引用，不触发重渲染 */
-    void loadHotBoard().then(setBoard)
+    void loadHotBoard()
+      .then(setBoard)
+      .catch(() => undefined)
     /* 仅取未读数点亮铃铛：不阻塞首屏，也不带 force —— watch 的 60s 内存缓存与关注流页共用，
        从关注流切回发现页时基本命中，冷启动最多多打 2×关注数 次缓存读（默认缓存可读，无写扩散） */
-    void loadMessages().then((feed) => setUnread(feed.unread))
+    void loadMessages()
+      .then((feed) => setUnread(feed.unread))
+      .catch(() => undefined)
     /* 「舆情」入口（及其未读红点）已于 2026-10-13 移除：未读只在舆情 tab 内可见，首页不再做
        loadInboxSummary 那次只读汇总（省掉 keyword_watches ×2 + keywords + risk_signals +
        opinion_events + opinion_event_status 共 6 次只读）。铃铛仍在，关注更新照旧归它管。 */

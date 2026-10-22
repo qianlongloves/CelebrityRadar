@@ -36,6 +36,8 @@ export interface AdminMeResult {
   openid: string
   isAdmin: boolean
   adminCount?: number
+  /** 待核实的退款申请数（只有超管才查、才返回；非超管恒 0） */
+  pendingRefunds?: number
   hint?: string
 }
 
@@ -66,6 +68,28 @@ export interface AdminUserDetail {
   conclusion: string
   quotasToday: Record<string, number>
   abuseCallsToday: number
+}
+
+/** 会员价格的一档：`priceFen` 是**当前生效值**，`default*` 是构建期常量（用于「默认 ¥9.9」提示） */
+export interface AdminPlanRow {
+  id: string
+  name: string
+  days: number
+  priceFen: number
+  priceLabel: string
+  badge: string
+  defaultPriceFen: number
+  defaultPriceLabel: string
+  defaultBadge: string
+}
+
+export interface AdminPlanState {
+  plans: AdminPlanRow[]
+  /** `cloud` = 已被运维中心改过；`local` = 还在用构建期价格 */
+  source: 'cloud' | 'local'
+  updated_at: string | null
+  updated_by: string | null
+  note: string | null
 }
 
 export interface AdminVendor {
@@ -157,6 +181,24 @@ export function adminRevokeMember(
   return call('revokeMember', { openid, reason })
 }
 
+/** 会员价格现状（云端覆盖值 + 构建期默认值 + 谁在哪天改的） */
+export function adminListPlans(): Promise<AdminResult<AdminPlanState>> {
+  return call<AdminPlanState>('plans')
+}
+
+/**
+ * 改价：**三档一次提交**，金额单位是分。
+ *
+ * 为什么不允许只传一档：漏传的档位会被服务端按「没配」写回默认价 —— 运营以为只改了
+ * 月卡，实际另外两档被重置。让调用方必须一次传全，是最省事故的做法（服务端也强制校验）。
+ */
+export function adminSetPlans(
+  plans: Array<{ id: string; priceFen: number; badge: string }>,
+  note = ''
+): Promise<AdminResult<AdminPlanState>> {
+  return call<AdminPlanState>('setPlans', { plans, note })
+}
+
 /** 厂商目录 + 停用清单 */
 export function adminListVendors(): Promise<AdminResult<AdminVendorState>> {
   return call<AdminVendorState>('vendors')
@@ -169,4 +211,86 @@ export function adminSetVendor(
   note = ''
 ): Promise<AdminResult<{ key: string; enabled: boolean; disabled: string[] }>> {
   return call('setVendor', { key, enabled, note })
+}
+
+/* ─────────── 退款核实（2026-10-22）：用户申请 → 超管核实 → 点击退款 ─────────── */
+
+export type AdminRefundStatus = 'pending' | 'approved' | 'rejected'
+
+/** 一条退款申请。`openidTail` 只给后 8 位：要对得上人，但列表不该把整串 openid 撒出来 */
+export interface AdminRefundRow {
+  id: string
+  openidTail: string
+  outTradeNo: string
+  status: AdminRefundStatus
+  reason: string
+  plan: string
+  /** 订单实付金额（分）—— 退款金额的上限 */
+  amountFen: number
+  days: number
+  paidAt: string | null
+  createdAt: string
+  decidedAt: string | null
+  decidedBy: string | null
+  decisionNote: string | null
+  refundFee: number | null
+  refundId: string | null
+}
+
+export interface AdminRefundList {
+  rows: AdminRefundRow[]
+  total: number
+  /** 全站待办数（与筛选无关），用于 tab 红点 */
+  pending: number
+  page: number
+  pageSize: number
+  /** 集合还不存在时的提示（先把 dbInit sync 跑一遍） */
+  note?: string
+}
+
+/**
+ * 退款申请列表。
+ *
+ * `status:'pending'` = 「现在该我做什么」，`'all'` = 「上周那笔是谁批的」。
+ * 两条口径分开取，混在一起两头都不好用（服务端也这么分）。
+ */
+export function adminRefundRequests(params: {
+  status?: AdminRefundStatus | 'all'
+  page?: number
+  pageSize?: number
+} = {}): Promise<AdminResult<AdminRefundList>> {
+  return call<AdminRefundList>('refundRequests', {
+    status: params.status || 'pending',
+    page: params.page ?? 0,
+    pageSize: params.pageSize ?? 20
+  })
+}
+
+/**
+ * 处理一条申请：`approve` = 核实后点退款，`reject` = 拒绝（必须写理由）。
+ *
+ * 金额单位是**分**；`fee` 省略表示全额退。真正的钱与订单状态在 payCallback，
+ * 本函数只是把「申请单」那一侧的处理结果记下来 —— 所以 approve 成功后订单页会看到
+ * 「已退款」，而订单状态由 payCallback 改，端上不碰。
+ */
+export function adminRefundDecide(
+  id: string,
+  decision: 'approve' | 'reject',
+  opts: { note?: string; fee?: number; refundId?: string } = {}
+): Promise<
+  AdminResult<{
+    status: AdminRefundStatus
+    outTradeNo: string
+    refundFee?: number
+    refundId?: string | null
+    revoked?: boolean
+  }>
+> {
+  return call('refundDecide', {
+    id,
+    decision,
+    note: opts.note || '',
+    fee: opts.fee,
+    refundId: opts.refundId || ''
+  })
 }

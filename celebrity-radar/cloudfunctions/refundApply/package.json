@@ -1,0 +1,9 @@
+{
+  "name": "refundApply",
+  "version": "1.0.0",
+  "description": "用户发起退款申请：落 refund_requests 待超管核实（不改订单状态）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

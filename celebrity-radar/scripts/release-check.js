@@ -244,7 +244,7 @@ const MANUAL_STEPS = [
     why: '这是 __usePrivacyCheck__ 能开 true 的「前置」，顺序不能反：指引未配置而开关为 true 时，头像 / 昵称等隐私接口会被平台直接拒绝，端上兜不住'
   },
   {
-    title: '云侧**已部署的函数**与本版是同一份代码（15 个函数，不只是 S0-6 那 4 个）',
+    title: '云侧**已部署的函数**与本版是同一份代码（18 个函数，不只是 S0-6 那 4 个）',
     why: '埋点名单的一致性已经机械化了（test/cases/74-event-enum.js 比对 events.enumHint ⇄ TrackEvent，npm test 会红），这里剩下的只有「云上跑的那份是不是这份源码」。⚠ 判据是**字节**不是**时间戳**：改完先本地部署、后提交，时间戳必然领先（内容其实一致）；反过来也骗人。做法：tcb fn code download <name> .tmp/<name> --env-id <env> 拉下来，与 cloudfunctions/<name> 逐文件 SHA256 比对（排除 node_modules）。2026-10-17 按此法查出两个真落后 —— notifyFollowUpdates#index.js（缺 S3-4 条数口径 + E1-①）与 dbInit#schema.js（缺 subs / enumHint），已重部署；详见 doc/产品优化路线图.md §5.2 S0-6'
   },
   {
