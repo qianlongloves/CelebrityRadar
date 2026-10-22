@@ -65,54 +65,102 @@
     text-decoration: underline;
   }
 
-  /* 范围分段：全部事件 | 我盯的。两段等宽、共用一条底槽，
-     选中态用品牌色 + 底色 —— 与页内其它「不可点角标」在体量上要能一眼分开。
-     ⚠ 左右必须留 **32rpx**（2026-10-18 用户反馈「tab 过长、跟下面卡片对不齐」）：
-     本段是页面的**直接子元素**，而下面的列表是 `.card`（`margin: 16rpx 32rpx`）——
-     不留边就等于贴满全宽，两段各自比卡片宽 32rpx，右边一对比就露出半格。
-     这个数不能写死在注释里当约定：它与 `.card` 的左右 margin 是**同一个值**，
-     改一边必须改另一边（用例 test/cases/88-events-scope.js 拿 `.card` 的真实值来比）。 */
-  &__scope {
+  /* 搜索 + 筛选卡（2026-10-22，替代原来的「全部事件 | 我跟进的」两段 tab）。
+     ⚠ 本段**本身就是 `.card`**（`margin: 16rpx 32rpx`），所以不再手写左右边距 ——
+     原来 tab 是页面的直接子元素，必须补 32rpx 才能与下面的卡片对齐（那次教训见用例 88）。 */
+  &__filter {
+    display: flex;
+    flex-direction: column;
+    gap: 14rpx;
+  }
+
+  /* 搜索框：圆角灰底 + 一枚静态放大镜（文本字符，不引图标库，省包体） */
+  &__search {
     display: flex;
     align-items: center;
-    gap: 8rpx;
-    margin: 4rpx 32rpx 16rpx;
-    padding: 6rpx;
+    gap: 10rpx;
+    height: 68rpx;
+    padding: 0 20rpx;
     border-radius: 999rpx;
     background: $bg;
     border: 2rpx solid $line;
     box-sizing: border-box;
   }
 
-  &__scope-tab {
+  &__search-icon {
+    font-size: 26rpx;
+    line-height: 1;
+    opacity: 0.65;
+  }
+
+  /* 输入框自身不能定宽：flex:1 + min-width:0 才能被父级压缩，否则小屏上把清除按钮顶出圆角 */
+  &__search-input {
     flex: 1;
     min-width: 0;
+    height: 68rpx;
+    font-size: 26rpx;
+    color: $text-1;
+  }
+
+  &__search-ph {
+    color: $text-3;
+    font-size: 26rpx;
+  }
+
+  /* 清除按钮：字符本身只有十几 rpx，左右补内边距把命中区撑到能点准 */
+  &__search-clear {
+    flex-shrink: 0;
+    padding: 0 8rpx;
+    font-size: 24rpx;
+    line-height: 1;
+    color: $text-3;
+  }
+
+  /* 两组 chip 共用一行 wrap：窄屏 / 超大字号下整枚换行，而不是把文字压扁 */
+  &__chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10rpx;
+  }
+
+  /* 胶囊用 View 做盒子、Text 只放文字（同原 tab：`<text>` 当定高胶囊会退化成行盒） */
+  &__chip {
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 60rpx;
+    height: 52rpx;
+    padding: 0 18rpx;
     border-radius: 999rpx;
-    /* 未选中态显式给透明底：切换时旧那段若残留一次背景，也不会露出半截色块 */
-    background: transparent;
-    font-size: 24rpx;
-    color: $text-2;
-    /* 胶囊是按钮不是链接：行内文字一律不带下划线（未选中那段曾出现一条贴文字底部的细线） */
-    text-decoration: none;
-    overflow: hidden;
+    background: $bg;
+    border: 2rpx solid $line;
+    box-sizing: border-box;
 
     &--on {
       background: $brand;
-      color: #fff;
-      font-weight: 600;
+      border-color: $brand;
     }
   }
 
-  /* 文字层单独一层：居中交给外层 View 的 flex，文字本身不做盒子（见 tsx 里那段注释） */
-  &__scope-tab-text {
-    font-size: 24rpx;
+  &__chip-text {
+    font-size: 22rpx;
     line-height: 1;
     white-space: nowrap;
+    color: $text-2;
     text-decoration: none;
+  }
+
+  /* 选中态的文字颜色在**父级**上加：chip 自己的 background 变了，文字要跟着变白 */
+  &__chip--on &__chip-text {
+    color: #fff;
+    font-weight: 600;
+  }
+
+  /* 有筛选才出现的出口：右对齐的小号文字链接（不出弹窗、不占整行） */
+  &__filter-reset {
+    align-self: flex-end;
+    font-size: 22rpx;
+    color: $brand;
   }
 
   /* 「我盯的」空态卡：说清「不是没有事件，是还没盯过」，并给出退路 */

@@ -1,7 +1,7 @@
 import { useAuth } from '@/stores/auth'
 import { diagLog } from './cloud-diagnostics'
 import { table } from './db'
-import { compareOpinionOrder } from './opinion-rank'
+import { compareEventOrder } from './opinion-rank'
 import type { OpinionEvent, OpinionEventMember } from './opinion-events'
 import type { OpinionEventRow, OpinionEventStatusRow } from '@/types/db'
 
@@ -457,7 +457,9 @@ export function toDisplayEvents(
       date: row.last_at || ''
     })
   }
-  out.sort(compareOpinionOrder)
+  /* 与端上聚类同口径：**最新的事件在前**（`compareEventOrder`），同刻再按相关强度兜底。
+     两条路各排一套的话，云端事件库刚产出 / 还没产出时列表顺序会整体跳一次。 */
+  out.sort(compareEventOrder)
   return out
 }
 

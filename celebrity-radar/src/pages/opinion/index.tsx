@@ -444,7 +444,12 @@ export default function Opinion() {
   }, [storedReady, storedEvents, opinionInput])
   const events = eventView.events
 
-  /** 今日要点：统一队列前 3 条（无来源 / 与我不相关的不凑数）—— 不受明细条数分层限制 */
+  /**
+   * 今日要点：队列里**按时间最新的 3 条**（门槛照旧：无来源 / 与我不相关的不凑数）。
+   * ⚠ 不能用 `queue.slice(0, 3)` —— 队列是按「与我相关的强度」排的，取前 3 会一直取到
+   * 那几条高影响的旧闻（2026-10-22 用户反馈「不是最新的」）。取最新在 pickDailyFocus 内部完成。
+   * 不受明细条数分层限制（免费/会员看到的要点条数一致）。
+   */
   const focus = useMemo(() => pickDailyFocus(queue), [queue])
 
   /** 每日舆情简报（P10，2026-10-14）：统一队列的数字 + 图表聚合（纯函数，见 utils/opinion-brief.ts） */

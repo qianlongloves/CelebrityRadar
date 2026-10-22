@@ -345,6 +345,31 @@ export function compareOpinionOrder(a: OpinionOrderKey, b: OpinionOrderKey): num
   return dateMs(b.date) - dateMs(a.date)
 }
 
+/**
+ * 「时间最新优先」比较器（纯函数）：时间新者在前；时间不可解析的按最旧算、垫底；
+ * 同刻返回 0 —— 由调用方依赖 `Array#sort` 的稳定性保持入参先后。
+ *
+ * 与 `compareOpinionOrder` 的分工（2026-10-22 用户反馈「看到的不是最新的」）：
+ *   那一套是**相关强度**序（监控词 > 关注的人 > 影响面 > 需回应 > 时间），时间只是最后一档，
+ *   于是「影响面高的旧闻」会稳稳压过「今天刚发生的事」。凡是**按时间读**的展示
+ *   （今日要点取前 N、事件列表 / 事件时间线）都必须走这个比较器，不能再用强度序。
+ */
+export function compareFreshness(a: { date: string }, b: { date: string }): number {
+  return dateMs(b.date) - dateMs(a.date)
+}
+
+/**
+ * 事件列表 / 事件时间线的展示序：**最新的事件在前**，同一天再按相关强度
+ * （`compareOpinionOrder`：命中监控词 > 命中关注的人 > 影响面 > 需回应）兜底。
+ *
+ * ⚠ 必须由**两条数据路共用**：端上聚类（`buildOpinionEvents`）与落库投影
+ *   （`opinion-store#toDisplayEvents`）。只改一边的话，页面在「云端事件库已产出 / 未产出」
+ *   之间切换时顺序会整体跳一次，用户会以为列表被重新排过。
+ */
+export function compareEventOrder(a: OpinionOrderKey, b: OpinionOrderKey): number {
+  return compareFreshness(a, b) || compareOpinionOrder(a, b)
+}
+
 /** 在 compareOpinionOrder 之上补「原始顺序」兜底：全相等时保持入参先后（稳定，不因同分抖动） */
 function compareOrdered(a: Ordered, b: Ordered): number {
   const c = compareOpinionOrder(a.e, b.e)
@@ -528,20 +553,20 @@ export function buildOpinionQueue(input: OpinionInput = {}): OpinionEntry[] {
 export const DAILY_FOCUS_MAX = 3
 
 /**
- * 今日要点：从排序好的队列里取前 N（默认 3）条。硬门槛（宁缺毋滥，不凑数）：
+ * 今日要点：从队列里取前 N（默认 3）条。两道门槛（宁缺毋滥，不凑数）：
  *   · **必须有来源** —— 无来源的条目不可追溯，一律不进（文件头红线 2）；
  *   · 必须「有真正需要你注意的依据」—— 命中监控词 / 命中风险类别 / 有风险级别，任一即可；
  *   · **刻意排除「仅命中关注的人」的普通动态** —— 这类动态已在「关注动态」卡呈现，再进
  *     今日要点只会与那张卡内容重合、且点了都跳 pages/feed，纯属重复。
+ *
+ * 排序：**过筛后按时间最新取前 N**（`compareFreshness`），不再沿用队列的相关强度序。
+ * 理由见 `compareFreshness` 的注释：强度序下「影响面高的旧闻」会长期占着这三格，
+ * 用户看到的就不是「今天」要注意的事（2026-10-22 反馈）。同刻保持队列原有相对顺序。
  */
 export function pickDailyFocus(queue: OpinionEntry[], limit: number = DAILY_FOCUS_MAX): OpinionEntry[] {
   if (!Array.isArray(queue) || limit <= 0) return []
-  const out: OpinionEntry[] = []
-  for (const e of queue) {
-    if (!e || !e.source) continue
-    if (!e.hitsKeyword && !e.category && e.impact === 'unknown') continue
-    out.push(e)
-    if (out.length >= limit) break
-  }
-  return out
+  const eligible = queue.filter(
+    (e) => !!e && !!e.source && (e.hitsKeyword || !!e.category || e.impact !== 'unknown')
+  )
+  return eligible.slice().sort(compareFreshness).slice(0, limit)
 }

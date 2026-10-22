@@ -1,6 +1,6 @@
 import {
   buildOpinionGroups,
-  compareOpinionOrder,
+  compareEventOrder,
   credibilityOf,
   isOfficialSource,
   normalizeTitle
@@ -34,7 +34,8 @@ import type { RiskCategory } from './risk'
  *   · 同事件判据 `sameEvent`（完全相同 / 长标题互相包含 / 长公共前缀）——分组用；
  *   · 分组本身走 `buildOpinionGroups`（它是 P1 去重内部那一步的对外投影，与 `buildOpinionQueue`
  *     **共用同一份实现**，于是「排序认为是一条」与「时间线分成几条」永远一致）；
- *   · 分级推导 `credibilityOf`（整组去重来源）与排序口径 `compareOpinionOrder` 同样复用。
+ *   · 分级推导 `credibilityOf`（整组去重来源）与排序口径 `compareEventOrder`（最新优先，
+ *     同刻才用 `compareOpinionOrder` 的相关强度序兜底）同样复用。
  *
  * ## 合规红线（改本文件前先读，与产品硬要求同等重要）
  *
@@ -375,9 +376,10 @@ function toMember(e: OpinionEntry): OpinionEventMember {
 
 /**
  * 事件聚合（纯函数，对任何输入都不抛错）：把 `buildOpinionGroups` 的每个同事件分组
- * 压成一个 `OpinionEvent`，再按 P1 的排序口径（compareOpinionOrder）排出展示顺序。
+ * 压成一个 `OpinionEvent`，再按**最新优先**（`compareEventOrder`）排出展示顺序。
  *
  * 分组、脏数据过滤、判断字段全部复用 P1；本函数只负责「组 → 事件」的最后一步聚合。
+ * ⚠ 排序口径必须与落库投影（`opinion-store#toDisplayEvents`）一致，见 `compareEventOrder`。
  */
 export function buildOpinionEvents(input: OpinionInput = {}): OpinionEvent[] {
   let groups: ReturnType<typeof buildOpinionGroups>
@@ -456,8 +458,9 @@ export function buildOpinionEvents(input: OpinionInput = {}): OpinionEvent[] {
     })
   }
 
-  /* 排序复用 P1 口径：与我相关（监控词 > 关注的人）→ 影响面 → 需回应 → 时间新者优先。
+  /* 排序：**最新的事件在前**，同刻再按相关强度（监控词 > 关注的人 > 影响面 > 需回应）兜底。
+     时间线是第一眼要看「新不新」的地方，相关强度只用于同一天内的排序。
      同分保持分组出现的先后（Array#sort 稳定）。 */
-  events.sort(compareOpinionOrder)
+  events.sort(compareEventOrder)
   return events.map((e, i) => ({ ...e, id: `event#${i}` }))
 }

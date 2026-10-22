@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import Taro, { useDidShow, usePullDownRefresh, useReachBottom, useRouter } from '@tarojs/taro'
-import { Text, View } from '@tarojs/components'
+import { Input, Text, View } from '@tarojs/components'
 import { listFollows } from '@/utils/follows'
 import { getFeedDetails } from '@/utils/cache'
 import { readWeeklyCache } from '@/utils/weekly'
@@ -24,6 +24,13 @@ import {
   setEventFollow
 } from '@/utils/opinion-store'
 import type { EventStatus } from '@/utils/opinion-store'
+import {
+  EVENT_IMPACT_LABELS,
+  EVENT_RANGE_LABELS,
+  filterEvents,
+  hasActiveFilter
+} from '@/utils/event-filter'
+import type { EventImpactFilter, EventRange } from '@/utils/event-filter'
 import { buildSubjectHits, subscribedLabelByEvent, subjectFreshCount } from '@/utils/event-subscribe'
 import { formatMoment8 } from '@/utils/time'
 import './index.scss'
@@ -67,18 +74,19 @@ import './index.scss'
  *   · 合规红线不变（见 `utils/opinion-events.ts` 文件头）：涉政涉军仍由上游拒答；无来源的条目
  *     不进事件；**聚合 ≠ 认定**；可信度最高只到「官方通报」。本页保留一句克制的轻量说明。
  *
- * ## 「我盯的」聚合视图（2026-10-18）
+ * ## 范围、搜索与筛选（2026-10-22 改造）
  *
- * 用户诉求：点「盯的事件」要能看到自己盯的那些事、并能点进完整事件线，而不是在长列表里一条条翻。
- * 做法是**在本页加一层范围**（`scope`：`all` / `follows`），不新开页面 —— 数据源、分页函数、
- * 每条事件的跳转都与「全部事件」完全同一套，只把渲染范围收窄到 `eventStatus.follows` 里的键。
- * 入口：舆情页事件卡的「盯的 N 条有新进展」与「我盯的 ›」带 `?only=follows` 直达；
- * 页内卡头的分段可随时切回「全部事件」（用户可能想对照着看）。
+ * 2026-10-18 曾在页内加「全部事件 | 我跟进的」两段 tab；用户反馈 tab 只解决了「我要看自己跟的」，
+ * 事件一多仍然只能一条条往下翻。本轮**去掉 tab**，换成卡内的**搜索框 + 两组筛选 chip**：
+ *   · 范围（全部 / 已跟进 / 未读）、影响面（影响面 / 高 / 中 / 低）、关键词三者**可叠加**；
+ *   · 判据全在 `utils/event-filter.ts`（纯函数，有用例 98 钉住），本页只负责搬 state；
+ *   · 「我跟进的」从 tab 降级为**筛选之一**，所以 `?only=follows` 照旧有效 ——
+ *     进来就把范围初始成 `follows`，与原来的直达体验一致。
+ *
+ * 排序与筛选是两件事：本页按**最新的事件在前**（`compareEventOrder`），筛选**不改变顺序**。
  */
 
 type Status = 'loading' | 'ready' | 'error'
-/** 列表范围：全部事件 / 我盯的（已跟进）。见文件头「我盯的」聚合视图 */
-type Scope = 'all' | 'follows'
 
 export default function Events() {
   const router = useRouter()
@@ -106,12 +114,15 @@ export default function Events() {
    */
   const loadedRef = useRef(false)
   /**
-   * 列表范围（2026-10-18）：`all` = 全部事件；`follows` = 只看我盯的（`eventStatus.follows`）。
+   * 筛选三个维度（2026-10-22，判据见 `utils/event-filter.ts`）：范围 × 影响面 × 关键词，可叠加。
    *
-   * 初值来自路由参数 `?only=follows` —— 舆情页事件卡的「盯的 N 条有新进展」和「我盯的 ›」
-   * 都带它直达，省掉「进来再点一次筛选」。参数缺失 / 取值不认识一律落回 all。
+   * 范围的初值来自路由参数 `?only=follows` —— 舆情页事件卡的「跟进的 N 条有新进展」与
+   * 「我盯的 ›」都带它直达，省掉「进来再点一次筛选」；参数缺失 / 取值不认识一律落回 `all`。
+   * 影响面与关键词一律从「不过滤」起步：用户没要求过滤时不该有任何收窄。
    */
-  const [scope, setScope] = useState<Scope>(router.params?.only === 'follows' ? 'follows' : 'all')
+  const [range, setRange] = useState<EventRange>(router.params?.only === 'follows' ? 'follows' : 'all')
+  const [impact, setImpact] = useState<EventImpactFilter>('all')
+  const [query, setQuery] = useState('')
 
   /** 本端聚类所需的输入：复用舆情页同一批既有读取函数，每块各自 try/catch（一块读失败不拖垮整页） */
   const collectInput = useCallback(async (): Promise<OpinionInput> => {
@@ -268,24 +279,62 @@ export default function Events() {
    * （见 utils/opinion-store 文件头），不另立「盯过」标记。
    */
   const followRows = events.filter((e) => !!eventStatus.follows[e.key])
-  /** 当前范围要渲染的那份列表；分页、触底、空态都基于它，不再各自判断 scope */
-  const scoped = scope === 'follows' ? followRows : events
+  /** 未读条数：判据与角标同源（`reads` 里没有这个键） */
+  const unreadCount = events.filter((e) => !eventStatus.reads[e.key]).length
+
+  /**
+   * 实际要渲染的那份列表：三个维度**只在这一次**过滤（范围 → 影响面 → 关键词）。
+   * 分页、触底、空态、页脚全部基于它 —— 若在渲染里各判一次，「列表里显示的条数」与
+   * 「还有 N 条」就会对不上。顺序由上游 `compareEventOrder` 决定（最新在前），本处**不排序**。
+   */
+  const filtered = filterEvents(events, {
+    range,
+    impact,
+    query,
+    follows: eventStatus.follows,
+    reads: eventStatus.reads
+  })
+  /** 是否有生效的筛选（决定空结果显示哪句话、「清除筛选」给不给） */
+  const filtering = hasActiveFilter({ range, impact, query })
 
   /* 客户端分段渲染：首屏只渲染第一页，触底追加下一页（每页 EVENTS_PAGE_SIZE 条，见该常量注释） */
-  const paged = pageSlice(scoped, page, EVENTS_PAGE_SIZE)
+  const paged = pageSlice(filtered, page, EVENTS_PAGE_SIZE)
 
   /* 触底加载更多：还有下一页才前进一页；到底则不动（不追加、不触发任何请求） */
   useReachBottom(() => {
-    setPage((p) => (p * EVENTS_PAGE_SIZE < scoped.length ? p + 1 : p))
+    setPage((p) => (p * EVENTS_PAGE_SIZE < filtered.length ? p + 1 : p))
   })
 
   /**
-   * 切换范围：**页号必须回 1**。两份列表长度与顺序都不同，沿用旧页号会翻到空页
-   * （`pageSlice` 超界返回空行），观感像「点了没反应」。这是换筛选、不是「返回」，不适用保留页号。
+   * 切换筛选：**页号必须回 1**。过滤后的长度与顺序都与原列表不同，沿用旧页号会翻到空页
+   * （`pageSlice` 超界返回空行），观感像「点了没反应」。换筛选不是「返回」，不适用保留页号。
    */
-  const switchScope = (next: Scope) => {
-    if (next === scope) return
-    setScope(next)
+  const switchRange = (next: EventRange) => {
+    if (next === range) return
+    setRange(next)
+    setPage(1)
+  }
+
+  const switchImpact = (next: EventImpactFilter) => {
+    if (next === impact) return
+    setImpact(next)
+    setPage(1)
+  }
+
+  /**
+   * 搜索是**逐字符**输入的：只有页号不在第 1 页时才回 1，
+   * 否则每敲一个字符都白跑一次 `setState` + 重渲染（列表可能有上百条）。
+   */
+  const onQueryChange = (next: string) => {
+    setQuery(next)
+    if (page !== 1) setPage(1)
+  }
+
+  /** 一键清空（空结果卡上的出口）：三个维度全回默认，页号回 1 */
+  const resetFilters = () => {
+    setRange('all')
+    setImpact('all')
+    setQuery('')
     setPage(1)
   }
 
@@ -380,8 +429,8 @@ export default function Events() {
       <View className='card page-events__head'>
         <View className='page-events__head-main'>
           <Text className='page-events__head-title'>
-            {scope === 'follows'
-              ? `★ 我跟进的 · ${followRows.length} 件`
+            {filtering
+              ? `🔎 筛选出 · ${filtered.length} 件`
               : events.length > 0
                 ? `🧩 事件 · ${events.length} 件事`
                 : '🧩 事件'}
@@ -394,7 +443,7 @@ export default function Events() {
             {/* 已跟进的另有计数：跟进 = 订阅（云端日报按同一判据提醒，见 opinion-store 文件头）。
                 2026-10-18 起它同时是**入口**：点一下就把列表收窄到「我盯的」，不用先想清楚去哪找。 */}
             {followCount > 0 && (
-              <Text className='count-badge page-events__follow-jump' onClick={() => switchScope('follows')}>
+              <Text className='count-badge page-events__follow-jump' onClick={() => switchRange('follows')}>
                 跟进的 {followCount} 条有新进展 ›
               </Text>
             )}
@@ -405,26 +454,67 @@ export default function Events() {
         )}
       </View>
 
-      {/* 范围分段：「全部事件 | 我盯的」。从「盯的 N 条有新进展」进来后，得有一条路退回全部；
-          两个数字分开报 —— 「我盯的」可能一件都没有新进展，那就没有角标可点。 */}
+      {/*
+        搜索 + 筛选（2026-10-22，替代原来的「全部事件 | 我跟进的」两段 tab）：
+        用户反馈 tab 只有两个口径、事件一多还是只能一条条翻。这里给三个**可叠加**维度：
+        关键词（标题 / 人物 / 来源）、范围（全部 / 已跟进 / 未读）、影响面（高 / 中 / 低）。
+        chip 一律用 View 做胶囊、Text 只放文字：`<text>` 是行内元素，拿它当定高定宽的胶囊
+        在部分基础库上会退化成行盒，选中态背景塌成一条粗线（2026-10-18 踩过）。
+      */}
       {status === 'ready' && events.length > 0 && (
-        <View className='page-events__scope'>
-          {/* 两段都用 View 做胶囊、Text 只放文字：`<text>` 是行内元素，拿它当定高定宽的
-              胶囊在部分基础库上会退化成行盒 —— 选中态背景塌成一条粗线，未选中那段的文字
-              下方还会带出一条下划线（2026-10-18 用户反馈）。View 的盒子模型在小程序里才是
-              完整的，height / border-radius / background 都能落到矩形上。 */}
-          <View
-            className={`page-events__scope-tab${scope === 'all' ? ' page-events__scope-tab--on' : ''}`}
-            onClick={() => switchScope('all')}
-          >
-            <Text className='page-events__scope-tab-text'>全部事件 {events.length}</Text>
+        <View className='card page-events__filter'>
+          <View className='page-events__search'>
+            <Text className='page-events__search-icon'>🔍</Text>
+            <Input
+              className='page-events__search-input'
+              value={query}
+              onInput={(e) => onQueryChange(e.detail.value)}
+              placeholder='搜事件标题、人物、关键词'
+              placeholderClass='page-events__search-ph'
+              confirmType='search'
+              /* 输入框在页面顶部，键盘遮不到它；关掉「自动上推」可避免整页跳动一次 */
+              adjustPosition={false}
+            />
+            {!!query && (
+              <Text className='page-events__search-clear' onClick={() => onQueryChange('')}>
+                ✕
+              </Text>
+            )}
           </View>
-          <View
-            className={`page-events__scope-tab${scope === 'follows' ? ' page-events__scope-tab--on' : ''}`}
-            onClick={() => switchScope('follows')}
-          >
-            <Text className='page-events__scope-tab-text'>我跟进的 {followRows.length}</Text>
+
+          <View className='page-events__chips'>
+            {(Object.keys(EVENT_RANGE_LABELS) as EventRange[]).map((r) => (
+              <View
+                key={r}
+                className={`page-events__chip${range === r ? ' page-events__chip--on' : ''}`}
+                onClick={() => switchRange(r)}
+              >
+                <Text className='page-events__chip-text'>
+                  {EVENT_RANGE_LABELS[r]}
+                  {r === 'follows' ? ` ${followRows.length}` : ''}
+                  {r === 'unread' ? ` ${unreadCount}` : ''}
+                </Text>
+              </View>
+            ))}
           </View>
+
+          <View className='page-events__chips'>
+            {(Object.keys(EVENT_IMPACT_LABELS) as EventImpactFilter[]).map((k) => (
+              <View
+                key={k}
+                className={`page-events__chip${impact === k ? ' page-events__chip--on' : ''}`}
+                onClick={() => switchImpact(k)}
+              >
+                <Text className='page-events__chip-text'>{EVENT_IMPACT_LABELS[k]}</Text>
+              </View>
+            ))}
+          </View>
+
+          {filtering && (
+            <Text className='page-events__filter-reset' onClick={resetFilters}>
+              清除搜索与筛选
+            </Text>
+          )}
         </View>
       )}
 
@@ -438,22 +528,38 @@ export default function Events() {
         <Text className='page-events__empty'>暂无可归并的事件，关注的人或监控词有新动态时会聚在这里</Text>
       )}
 
-      {/* 「我盯的」空态：不是「没有事件」，而是「还没盯过」—— 两条空态必须分开说，
-          否则用户会以为库里空了，反而去反复下拉刷新 */}
-      {status === 'ready' && events.length > 0 && scope === 'follows' && followRows.length === 0 && (
+      {/* 三种「空」必须分开说，否则用户会以为库里空了、反复下拉刷新：
+          ① 库里就没有事件 → 上面那句轻提示；② 跟进清单为空 → 告诉他怎么把事件加进来；
+          ③ 有数据但被筛掉了 → 只能说「没有符合条件」，并给一键清除。 */}
+      {status === 'ready' && events.length > 0 && range === 'follows' && followRows.length === 0 && (
         <View className='card page-events__empty-card'>
           <Text className='page-events__empty'>
             还没有跟进任何事件。在「全部事件」里点某条的「☆ 跟进」（或点开一条、在完整时间线页跟进）——
             之后这件事的后续会聚合在这里，点开就是完整事件线。
           </Text>
-          <Text className='page-events__empty-back' onClick={() => switchScope('all')}>
+          <Text className='page-events__empty-back' onClick={() => switchRange('all')}>
             去看全部事件 ›
           </Text>
         </View>
       )}
+      {/* 被筛空：与上一条**互斥**（跟进清单本身为空时上面已经说明了原因，不再叠一张卡） */}
+      {status === 'ready' &&
+        events.length > 0 &&
+        filtered.length === 0 &&
+        !(range === 'follows' && followRows.length === 0) && (
+          <View className='card page-events__empty-card'>
+            <Text className='page-events__empty'>
+              {query.trim() ? `没有匹配「${query.trim()}」的事件。` : '没有符合当前筛选条件的事件。'}
+              换个词，或放宽筛选条件试试。
+            </Text>
+            <Text className='page-events__empty-back' onClick={resetFilters}>
+              清除搜索与筛选 ›
+            </Text>
+          </View>
+        )}
 
       {status === 'ready' &&
-        scoped.length > 0 &&
+        filtered.length > 0 &&
         <>
           {paged.rows.map((ev) => {
             /* 「新事件」角标：没读过 → NEW；读过但最近有报道 → 有新进展 */
@@ -523,8 +629,8 @@ export default function Events() {
           <Text className='page-events__foot'>
             {paged.hasMore
               ? `上滑加载更多（还有 ${paged.remaining} 条）…`
-              : scope === 'follows'
-                ? '—— 我跟进的事件就这些 ——'
+              : filtering
+                ? `—— 符合条件的事件就 ${filtered.length} 条 ——`
                 : '—— 没有更多事件 ——'}
           </Text>
         </>
